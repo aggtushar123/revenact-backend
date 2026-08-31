@@ -57,7 +57,7 @@ expects.
 | — (infra) | `core` | ✅ Built — health check only |
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
-| Organizations (list/board/detail) | `customers` | 🟡 Full `tableData.ts` schema built and API-complete — see below. Frontend still unwired (mock data). Board, Details, activity feeds, nested Accounts/Contacts not started. |
+| Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view fetches real paginated data (`features/customers/customersSlice.ts` + `mapToOrgRow.ts`); MetricsPanel still on mock data (needs a stats endpoint, not built). Board, Details, activity feeds, nested Accounts/Contacts not started. |
 | Accounts | — | ⏳ Not started |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |

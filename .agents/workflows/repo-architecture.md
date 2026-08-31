@@ -115,12 +115,22 @@ financial fields, even ones the mock data happens to make look additive).
 | `views.py: CustomerListCreateView` | `GET/POST /customers/` — any authenticated user in the org (no admin gate, unlike User Management) |
 | `views.py: CustomerDetailView` | `GET/PATCH /customers/<id>/` — same org only, 404 outside it |
 
-**Status:** 🟡 Schema and API are complete for this pass. **The frontend
-is not wired to any of it** — `pages/organizations/List.tsx` still
-renders from `tableData.ts` entirely; this app is ahead of the frontend
-by design (explicit instruction: build the full DB schema, touch nothing
-in the frontend). Board view, Details page (activity feed, pinned
-attributes), and nested Accounts/Contacts are also not built.
+**Status:** 🟢 Schema and API complete; the List view is wired to real
+data — `react-ts-app`'s `pages/organizations/List.tsx` fetches
+`GET /api/v1/customers/` on mount via `features/customers/customersSlice.ts`
+and pages forward/back through DRF's own `next`/`previous` links (no
+hardcoded page-size assumption — see that slice and `List.tsx`).
+`features/customers/mapToOrgRow.ts` adapts each `Customer` into the
+table's existing `OrgRow` shape so the mock-data-era table/popover
+components didn't need to change — a few purely-presentational bits with
+no backend counterpart (pill colors, avatar initials, the old mock's
+"(Enterprise)"/"(Mid-Market)" tier suffix on lifecycle stage) are derived
+there rather than fabricated. `MetricsPanel` (the health/NPS/lifecycle
+summary banner) is intentionally still on mock data — computing real
+aggregates would need a dedicated stats endpoint, which wasn't part of
+this pass. Board view, Details page (activity feed, pinned attributes),
+nested Accounts/Contacts, and the Add/Edit/Search/Filter UI (still
+decorative) are also not built.
 
 ### Everything else
 
