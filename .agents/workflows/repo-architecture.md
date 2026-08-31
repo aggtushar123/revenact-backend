@@ -88,6 +88,7 @@ app label), mounted at `/api/v1/auth/` to match the frontend's
 | `views.py: LogoutView` | `POST /logout/` — blacklists the given refresh token |
 | `views.py: MeView` | `GET/PATCH /me/` — your own profile (any role) |
 | `views.py: ChangePasswordView` | `POST /me/change-password/` — self-service, needs current password |
+| `views.py: MembersListView` | `GET /members/` — any authenticated user, all org members (admin+CSMs), plain array. Not admin-gated — powers owner-pickers elsewhere (e.g. `customers`). |
 | `views.py: CSMListCreateView` | `GET/POST /csms/` — admin-only, list/add CSMs in their own org |
 | `views.py: CSMDetailView` | `GET/PATCH /csms/<id>/` — admin-only, edit/deactivate a CSM in their own org |
 | `permissions.py: IsOrgAdmin` | Gates admin-only actions |

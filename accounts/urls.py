@@ -10,6 +10,7 @@ urlpatterns = [
     path("logout/", views.LogoutView.as_view(), name="logout"),
     path("me/", views.MeView.as_view(), name="me"),
     path("me/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
+    path("members/", views.MembersListView.as_view(), name="members-list"),
     path("csms/", views.CSMListCreateView.as_view(), name="csm-list-create"),
     path("csms/<int:pk>/", views.CSMDetailView.as_view(), name="csm-detail"),
 ]

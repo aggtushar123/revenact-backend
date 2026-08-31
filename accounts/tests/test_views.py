@@ -398,3 +398,57 @@ class CSMDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.csm.refresh_from_db()
         self.assertEqual(self.csm.name, "Carl")
+
+
+class MembersListTests(APITestCase):
+    """Unlike /csms/, /members/ is not admin-gated — any org member can use
+    it to populate an owner-picker (e.g. for customers)."""
+
+    url = "/api/v1/auth/members/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_csm_can_list_all_org_members_not_just_csms(self):
+        self.client.force_authenticate(self.csm)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        emails = sorted(row["email"] for row in response.data)
+        self.assertEqual(emails, ["alice@acme.io", "carl@acme.io"])
+
+    def test_response_is_a_plain_list_not_paginated(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(self.url)
+        self.assertIsInstance(response.data, list)
+
+    def test_does_not_leak_another_organisations_members(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(self.url)
+        emails = [row["email"] for row in response.data]
+        self.assertNotIn("other@other.io", emails)

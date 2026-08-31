@@ -160,3 +160,19 @@ class CSMDetailView(generics.RetrieveUpdateAPIView):
                 BlacklistedToken.objects.get_or_create(token=token)
 
         return Response(UserSerializer(user).data)
+
+
+class MembersListView(generics.ListAPIView):
+    """GET /api/v1/auth/members/ — every member (admin + CSMs) of the
+    caller's own organisation. Unlike /csms/, this is not admin-gated —
+    it exists so any authenticated user can populate an owner-picker
+    (e.g. assigning a customer to a CSM) without needing User Management
+    access. Read-only; no pagination envelope, this list is expected to
+    stay small."""
+
+    serializer_class = UserSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        return User.objects.filter(organisation=self.request.user.organisation).order_by("name")

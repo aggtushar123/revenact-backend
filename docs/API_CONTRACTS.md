@@ -205,6 +205,17 @@ Does **not** invalidate existing sessions/tokens — unlike an admin
 deactivating you (below), which does. Changing your own password from an
 active session doesn't force that same session to re-authenticate.
 
+### `GET /api/v1/auth/members/`
+
+Auth: `IsAuthenticated` (any role) — **not** admin-gated, unlike everything
+below it. Every member (admin + CSMs) of the caller's own organisation.
+Exists so any authenticated user can populate an owner-picker (e.g. the
+`customers` app's "assign owner" field) without needing User Management
+access.
+
+**Response `200`** — a **plain array** (no pagination envelope; this list
+is expected to stay small), each entry the same shape as elsewhere.
+
 ### `GET /api/v1/auth/csms/`, `POST /api/v1/auth/csms/`
 
 Auth: **`IsAuthenticated` + org-admin only** (`accounts.permissions.IsOrgAdmin`).
