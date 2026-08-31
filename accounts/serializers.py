@@ -65,6 +65,12 @@ class LoginSerializer(TokenObtainPairSerializer):
         return data
 
 
+class LogoutSerializer(serializers.Serializer):
+    """Just the refresh token to blacklist — see accounts/views.py:LogoutView."""
+
+    refresh = serializers.CharField()
+
+
 class CreateCSMSerializer(serializers.Serializer):
     """Org-admin-only: adds a Customer Success Manager to the admin's own
     organisation. The admin sets the CSM's initial password directly (no

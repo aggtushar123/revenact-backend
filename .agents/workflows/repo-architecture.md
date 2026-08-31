@@ -85,12 +85,13 @@ app label), mounted at `/api/v1/auth/` to match the frontend's
 | `models.py: User` | Custom `AUTH_USER_MODEL` — email login, `organisation` FK, `role` (admin/csm) |
 | `views.py: SignupView` | `POST /signup/` — creates org + admin user, returns tokens |
 | `views.py: LoginView` | `POST /login/` — JWT login for any user |
+| `views.py: LogoutView` | `POST /logout/` — blacklists the given refresh token |
 | `views.py: CreateCSMView` | `POST /csms/` — admin-only, adds a CSM to their own org |
 | `permissions.py: IsOrgAdmin` | Gates admin-only actions |
 
 Full walkthrough: `auth-flow.md` in this same directory.
 
-**Status:** ✅ Built (signup, login, token refresh, add-CSM).
+**Status:** ✅ Built (signup, login, logout, token refresh, add-CSM).
 
 ### Everything else
 

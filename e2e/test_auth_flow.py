@@ -2,7 +2,8 @@
 HTTP (stdlib urllib, not self.client's in-process shortcut — no new
 dependency) — proves the full login flow described in the auth-flow doc:
 org signs up -> admin logs in -> admin adds a CSM -> CSM logs in with
-their own credentials."""
+their own credentials -> CSM logs out and their refresh token stops
+working."""
 
 import json
 import urllib.error
@@ -20,9 +21,11 @@ def http_post(url, payload, token=None):
     )
     try:
         with urllib.request.urlopen(request) as response:
-            return response.status, json.loads(response.read())
+            body = response.read()
+            return response.status, json.loads(body) if body else None
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read())
+        body = e.read()
+        return e.code, json.loads(body) if body else None
 
 
 class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
@@ -69,12 +72,21 @@ class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["user"]["organisation"]["id"], org_id)
         self.assertEqual(body["user"]["role"], "csm")
+        csm_access = body["access"]
+        csm_refresh = body["refresh"]
 
         # 5. The CSM cannot add other CSMs — only the org admin can.
-        csm_access = body["access"]
         status, body = http_post(
             self.api("/csms/"),
             {"name": "Someone Else", "email": "someone@acme.io", "password": "whatever12"},
             token=csm_access,
         )
         self.assertEqual(status, 403)
+
+        # 6. The CSM logs out — their refresh token is blacklisted and can
+        #    no longer be used to mint a new access token.
+        status, body = http_post(self.api("/logout/"), {"refresh": csm_refresh}, token=csm_access)
+        self.assertEqual(status, 205)
+
+        status, body = http_post(self.api("/token/refresh/"), {"refresh": csm_refresh})
+        self.assertEqual(status, 401)

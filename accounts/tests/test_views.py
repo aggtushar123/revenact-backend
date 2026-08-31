@@ -96,6 +96,58 @@ class LoginTests(APITestCase):
         self.assertIn("access", response.data)
 
 
+class LogoutTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        login = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "alice@acme.io", "password": "supersecret1"},
+            format="json",
+        )
+        self.access = login.data["access"]
+        self.refresh = login.data["refresh"]
+
+    def test_unauthenticated_cannot_logout(self):
+        response = self.client.post(
+            "/api/v1/auth/logout/", {"refresh": self.refresh}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_blacklists_the_refresh_token(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access}")
+        response = self.client.post(
+            "/api/v1/auth/logout/", {"refresh": self.refresh}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_205_RESET_CONTENT)
+
+        # The blacklisted refresh token can no longer mint a new access token.
+        refresh_attempt = self.client.post(
+            "/api/v1/auth/token/refresh/", {"refresh": self.refresh}, format="json"
+        )
+        self.assertEqual(refresh_attempt.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_is_idempotent(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access}")
+        first = self.client.post("/api/v1/auth/logout/", {"refresh": self.refresh}, format="json")
+        second = self.client.post("/api/v1/auth/logout/", {"refresh": self.refresh}, format="json")
+        self.assertEqual(first.status_code, status.HTTP_205_RESET_CONTENT)
+        self.assertEqual(second.status_code, status.HTTP_205_RESET_CONTENT)
+
+    def test_logout_rejects_garbage_token_gracefully(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access}")
+        response = self.client.post(
+            "/api/v1/auth/logout/", {"refresh": "not-a-real-token"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_205_RESET_CONTENT)
+
+
 class CreateCSMTests(APITestCase):
     url = "/api/v1/auth/csms/"
 

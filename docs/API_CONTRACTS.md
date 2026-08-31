@@ -55,7 +55,7 @@ expects.
 | Frontend feature | Backend app | Status |
 |---|---|---|
 | — (infra) | `core` | ✅ Built — health check only |
-| Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, token refresh, add-CSM |
+| Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh, add-CSM |
 | Organizations (list/board/detail) | — | ⏳ Not started |
 | Accounts | — | ⏳ Not started |
 | Contacts | — | ⏳ Not started |
@@ -159,6 +159,24 @@ they were created with.
 
 Auth: `AllowAny`. `{"refresh": "<jwt>"}` → `{"access": "<jwt>"}`. Standard
 simplejwt `TokenRefreshView`, unmodified.
+
+### `POST /api/v1/auth/logout/`
+
+Auth: **`IsAuthenticated`** — you need a valid access token to log out, but
+the call always succeeds regardless of the refresh token's own state.
+
+**Request** `{ "refresh": "<jwt>" }` → blacklists that refresh token (via
+`rest_framework_simplejwt.token_blacklist`) so it can no longer be used at
+`/token/refresh/`. `401` if unauthenticated; an invalid, expired, or
+already-blacklisted refresh token in the body is **not** an error — still
+`205` (idempotent: safe to call twice with the same token).
+
+**Response `205 Reset Content`** — empty body.
+
+Only the refresh token is revoked. The current access token (60 min
+lifetime) keeps working until it naturally expires — simplejwt doesn't
+track individual access tokens for revocation, only refresh tokens via
+this blacklist.
 
 ### `POST /api/v1/auth/csms/`
 

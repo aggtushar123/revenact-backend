@@ -1,5 +1,5 @@
 ---
-description: Multi-tenant auth flow - organisation signup, login, and admin-adds-CSM
+description: Multi-tenant auth flow - organisation signup, login, logout, and admin-adds-CSM
 ---
 
 # Auth Flow
@@ -29,7 +29,22 @@ regardless of role.
    on bad credentials — same response whether the email doesn't exist or
    the password is wrong (doesn't leak which).
 4. Access token expires in 60 min; refresh via `POST /api/v1/auth/token/refresh/`
-   with the refresh token (7-day lifetime, no rotation/blacklist yet).
+   with the refresh token (7-day lifetime).
+
+## Logout Flow
+
+1. `POST /api/v1/auth/logout/` with `Authorization: Bearer <access token>`
+   and `{"refresh": "<refresh token>"}` in the body.
+2. The refresh token gets blacklisted (`rest_framework_simplejwt.token_blacklist`)
+   — `/token/refresh/` will reject it with `401` afterward.
+3. Always `205`, even if the refresh token was already invalid/expired/
+   blacklisted — logging out isn't an error just because the token was
+   already dead. Safe to call twice.
+4. **The access token itself is not revoked** — it keeps working until its
+   own 60-min expiry. Only the refresh token is tracked for revocation.
+   Frontend clears its local access token immediately regardless (see
+   `authSlice.ts: logout`), so this only matters if a token was captured
+   by someone else before logout.
 
 ## Admin Adds a CSM
 
@@ -59,11 +74,11 @@ a user, or removing a member yet.
 | File | Purpose |
 |---|---|
 | `accounts/models.py` | `Organisation`, `User` (`AUTH_USER_MODEL`), `UserManager` |
-| `accounts/serializers.py` | `SignupSerializer`, `LoginSerializer`, `CreateCSMSerializer`, `UserSerializer` |
+| `accounts/serializers.py` | `SignupSerializer`, `LoginSerializer`, `LogoutSerializer`, `CreateCSMSerializer`, `UserSerializer` |
 | `accounts/permissions.py` | `IsOrgAdmin` |
-| `accounts/views.py` | `SignupView`, `LoginView` (simplejwt `TokenObtainPairView`), `CreateCSMView` |
-| `accounts/urls.py` | `/signup/`, `/login/`, `/token/refresh/`, `/csms/` |
-| `config/settings.py` | `AUTH_USER_MODEL`, `SIMPLE_JWT`, `DEFAULT_AUTHENTICATION_CLASSES`/`DEFAULT_PERMISSION_CLASSES` |
+| `accounts/views.py` | `SignupView`, `LoginView` (simplejwt `TokenObtainPairView`), `LogoutView`, `CreateCSMView` |
+| `accounts/urls.py` | `/signup/`, `/login/`, `/logout/`, `/token/refresh/`, `/csms/` |
+| `config/settings.py` | `AUTH_USER_MODEL`, `SIMPLE_JWT`, `DEFAULT_AUTHENTICATION_CLASSES`/`DEFAULT_PERMISSION_CLASSES`, `rest_framework_simplejwt.token_blacklist` in `INSTALLED_APPS` |
 
 ## Not Built Yet
 
@@ -71,8 +86,11 @@ a user, or removing a member yet.
 - Password reset / change password
 - Email verification
 - A second admin per organisation, or any role beyond admin/csm
-- Refresh token rotation/blacklist (a leaked refresh token is valid for its
-  full 7-day lifetime — acceptable for now, revisit before production)
+- Automatic refresh token rotation (a new refresh token issued — and the
+  old one blacklisted — on every `/token/refresh/` call). Logout-time
+  blacklisting is built; rotation-on-refresh is not.
+- Revoking a currently-live access token before its own 60-min expiry
+  (e.g. an admin force-logging-out another user's active session)
 
 ## Extending This
 
