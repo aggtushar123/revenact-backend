@@ -57,7 +57,7 @@ expects.
 | — (infra) | `core` | ✅ Built — health check only |
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
-| Organizations (list/board/detail) | `customers` | 🟡 Core list fields only — see below. Board, Details, activity feeds, nested Accounts/Contacts not started. |
+| Organizations (list/board/detail) | `customers` | 🟡 Full `tableData.ts` schema built and API-complete — see below. Frontend still unwired (mock data). Board, Details, activity feeds, nested Accounts/Contacts not started. |
 | Accounts | — | ⏳ Not started |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
@@ -262,63 +262,107 @@ right now).
 
 ---
 
-## `customers` — Organizations (list view only)
+## `customers` — Organizations
 
-Mirrors: `src/pages/organizations/List.tsx`, `src/components/organizations/tableData.ts`
-(core fields only — see Status above for what's deliberately deferred).
+Mirrors: `src/pages/organizations/List.tsx`, `src/components/organizations/tableData.ts`.
+The model's field set matches that mock schema column for column (as of
+this pass) — **the frontend itself is not wired to this app at all**; it
+still renders entirely from `tableData.ts`. This is schema/API only,
+ahead of the frontend, by design (see Status above).
 
 **Naming**: this is a separate model from `accounts.Organisation`. `Organisation`
 is the tenant (the company paying for Revenact — one admin, its CSMs).
 `Customer` is one of *that tenant's own* customers — the company a CSM is
-tracking for health/ARR/renewal. Same real-world shape ("a company"), two
-different roles in the system, hence two different names — never call a
-`Customer` an "organisation" in code or docs, and vice versa.
+tracking. Same real-world shape ("a company"), two different roles in the
+system, hence two different names — never call a `Customer` an
+"organisation" in code or docs, and vice versa.
 
 ### Models
 
-- `Customer` — `organisation` (FK, the tenant that owns this record),
-  `name`, `health_score` (0-100, `health_category` is *derived* from it at
-  read time via fixed thresholds — good ≥70, average 40-69, poor <40 —
-  not stored, so the two can never disagree), `arr` (decimal), `renewal_date`
-  (nullable), `lifecycle_stage` (choices: onboarding/kickoff/adoption/live/
-  renewal/churn/expansion/other), `owner` (FK to `accounts.User`, nullable —
-  the assigned CSM or admin).
+`Customer` — grouped by what the frontend table groups them as:
+
+- **Identity/provenance**: `organisation` (FK, the tenant — always
+  server-set, never client-supplied), `name`, `address` (the mock table's
+  "Name / Address" column), `domain`, `owner` (FK to `accounts.User`,
+  nullable, same-tenant only), `created_by`/`modified_by` (FK to
+  `accounts.User`, **always server-set** from the caller on create/update —
+  not client-settable even if present in the request body),
+  `created_at`/`updated_at` (the "Created Date"/"Modified Date" halves of
+  those two mock columns). "Revenact ID" is just this row's own `id` —
+  no separate field.
+- **Lifecycle/health**: `lifecycle_stage` (choices, unchanged from the
+  first pass), `health_score` (decimal **0.0–10.0** — matches this
+  table's actual scale, which is *not* the 0–100 scale used elsewhere in
+  the mock app, e.g. the dashboard's health donut; `health_category` is
+  *derived* from it — good ≥7.0, average 4.0–6.9, poor <4.0 — never
+  stored, so the two can't disagree), `pulse` (JSON list of small ints,
+  e.g. `[1,1,0,2,1]`, the recent-pulse-history dots), `ai_pulse_score`
+  (choices: very_satisfied/satisfied/moderate/high_risk — despite the
+  name this is a categorical AI-generated label in the actual mock data,
+  not a number), `ai_pulse_reason` (text), `nps_score` (integer, −100 to
+  100), `csat_score` (decimal, 0–100).
+- **Dates**: `joined_date`, `renewal_date`, `contract_start_date`,
+  `contract_end_date` — all plain nullable dates, no derivation.
+- **Financials** (all independently stored decimals, deliberately *not*
+  derived from each other — see note below): `arr_billed_at_account`,
+  `arr_billed_at_hq`, `implementation_fee`, `total_contract_value`,
+  `total_forecasted_renewal_revenue`.
+- **Product/usage**: `primary_product` + `additional_products_count` (the
+  mock's combined `productsUtilized: {primary, additional}` object,
+  split into two real columns), `top_source_channel`,
+  `total_contracted_seats`, `total_active_seats`,
+  `seat_utilization_percentage` (**derived** from those two — active ÷
+  contracted × 100, `None` if contracted is 0/unset — this one *is* a
+  pure function of its inputs with no independent real-world meaning, so
+  deriving it is safe, unlike the financial fields), `total_hires`,
+  `scope_web_app`, `ces_percentage`.
+- **Churn**: `churn_date`, `churn_reason`, `churn_comment` — all nullable/blank.
+
+**Why the financials aren't derived**: in the mock data, `total_contract_value`
+happens to equal `arr_billed_at_account + arr_billed_at_hq` in every
+sample row, and `total_forecasted_renewal_revenue` happens to be exactly
+`total_contract_value × 1.05` every time. Those look like formulas the
+mock generator used, not a business rule this schema should hard-code —
+real contract terms (discounts, multi-year escalators, custom renewal
+negotiations) can diverge from simple arithmetic. All five financial
+fields are independently stored and settable.
 
 ### Conventions specific to this app
 
 - **No admin gate** — unlike User Management, any authenticated user in the
-  tenant (admin or CSM) can list, create, and edit customers. This was a
-  deliberate choice: managing your team's access (`accounts`) is more
-  sensitive than managing shared customer records.
+  tenant (admin or CSM) can list, create, and edit customers.
 - **Owner must be same-tenant** — assigning `owner_id` to a user from a
   different organisation is a `400`, not silently ignored or allowed.
-- **`organisation` is never client-supplied** — always taken from
-  `request.user.organisation` server-side, even if a request body includes
-  an `organisation` field. There is no way to create a customer under a
-  different tenant than your own.
+- **`organisation`, `created_by`, `modified_by` are never client-supplied** —
+  `organisation` and `created_by` are set from `request.user` on create;
+  `modified_by` is reset to `request.user` on *every* update. Sending any
+  of the three in a request body has no effect.
 
 ### `GET /api/v1/customers/`, `POST /api/v1/customers/`
 
 Auth: `IsAuthenticated` (any role). Scoped to the caller's own organisation.
 
 GET: standard paginated envelope, ordered by name.
-POST **Request** `{ "name": "Globex Corp", "health_score": 82, "arr": "45000.00", "lifecycle_stage": "live", "renewal_date": "2027-01-15", "owner_id": 2 }`
-— all fields but `name` optional. **Response `201`** — the created customer,
-`owner` nested (same shape as elsewhere), `health_category` computed.
+POST: only `name` is required — every other field above is optional.
+**Response `201`** — the created customer, `owner`/`created_by`/`modified_by`
+nested (same user shape as elsewhere), `health_category` and
+`seat_utilization_percentage` computed.
 
 ### `GET /api/v1/customers/<id>/`, `PATCH /api/v1/customers/<id>/`
 
 Auth: same as above. **`404`, not `403`,** for a customer outside the
 caller's organisation.
 
-PATCH accepts any subset of the POST fields, including `owner_id` (`400`
-with a field error if the target user isn't in the caller's organisation).
+PATCH accepts any subset of the POST fields (partial update), including
+`owner_id` (`400` with a field error if the target user isn't in the
+caller's organisation). Every PATCH sets `modified_by` to the caller,
+regardless of which fields changed.
 
-Not built yet, and deliberately out of scope for this pass: Board view,
-the Details page (activity feed, pinned attributes), nested Accounts and
-Contacts, deleting a customer (only field edits exist so far), the full
-30+-field schema the frontend's mock data currently has (NPS, CSAT, TCV,
-seat utilization, churn tracking, etc.).
+Not built yet, and deliberately out of scope: Board view, the Details
+page (activity feed, pinned attributes), nested Accounts and Contacts,
+deleting a customer (only field edits exist so far), and — the biggest
+one — actually wiring any of this into the frontend, which still runs
+entirely on `tableData.ts`.
 
 ---
 

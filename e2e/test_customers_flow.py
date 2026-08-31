@@ -48,7 +48,7 @@ class CustomersFlowTests(LiveServerTestCase):
         # 3. Admin creates a customer.
         status, body = http_post(
             self.customers_api(),
-            {"name": "Globex Corp", "health_score": 82, "lifecycle_stage": "live"},
+            {"name": "Globex Corp", "health_score": "8.2", "lifecycle_stage": "live"},
             token=admin_access,
         )
         self.assertEqual(status, 201)

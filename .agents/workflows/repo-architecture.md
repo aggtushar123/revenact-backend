@@ -98,23 +98,29 @@ Full walkthrough: `auth-flow.md` in this same directory.
 **Status:** ✅ Built (signup, login, logout, token refresh, own-profile
 edit + password change, admin User Management for CSMs).
 
-### `customers` — Organizations (core list fields only)
+### `customers` — Organizations
 
 Not to be confused with `accounts.Organisation` (the tenant) — see
 `docs/API_CONTRACTS.md` → `customers` for why these are deliberately
 different models with different names. A `Customer` is one of a tenant's
-own customers, tracked for health/ARR/renewal.
+own customers. Field set matches `tableData.ts`'s mock schema column for
+column — see that doc section for the full field list, grouped, with the
+reasoning behind what's derived (`health_category`,
+`seat_utilization_percentage`) vs. independently stored (all the
+financial fields, even ones the mock data happens to make look additive).
 
 | File | Role |
 |---|---|
-| `models.py: Customer` | `organisation` FK, `name`, `health_score` (→ derived `health_category`), `arr`, `renewal_date`, `lifecycle_stage`, `owner` FK (nullable) |
+| `models.py: Customer` | Full `tableData.ts`-matching schema — identity/provenance, lifecycle/health, dates, financials, product/usage, churn |
 | `views.py: CustomerListCreateView` | `GET/POST /customers/` — any authenticated user in the org (no admin gate, unlike User Management) |
 | `views.py: CustomerDetailView` | `GET/PATCH /customers/<id>/` — same org only, 404 outside it |
 
-**Status:** 🟡 Core list fields only. Board view, Details page (activity
-feed, pinned attributes), nested Accounts/Contacts, and most of the
-frontend mock data's 30+ fields (NPS, CSAT, TCV, seat utilization, churn
-tracking, ...) are not built.
+**Status:** 🟡 Schema and API are complete for this pass. **The frontend
+is not wired to any of it** — `pages/organizations/List.tsx` still
+renders from `tableData.ts` entirely; this app is ahead of the frontend
+by design (explicit instruction: build the full DB schema, touch nothing
+in the frontend). Board view, Details page (activity feed, pinned
+attributes), and nested Accounts/Contacts are also not built.
 
 ### Everything else
 

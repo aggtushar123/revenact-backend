@@ -41,12 +41,57 @@ class CustomerListCreateTests(APITestCase):
 
         response = self.client.post(
             self.url,
-            {"name": "Initech", "health_score": 35, "lifecycle_stage": "churn"},
+            {"name": "Initech", "health_score": "3.5", "lifecycle_stage": "churn"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["health_category"], "poor")
         self.assertEqual(Customer.objects.get(name="Initech").organisation_id, self.org.id)
+
+    def test_create_sets_created_by_and_modified_by_from_the_caller(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(self.url, {"name": "Initech"}, format="json")
+        self.assertEqual(response.data["created_by"]["email"], "alice@acme.io")
+        self.assertEqual(response.data["modified_by"]["email"], "alice@acme.io")
+
+    def test_create_accepts_the_full_field_set(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            self.url,
+            {
+                "name": "Globex Corp",
+                "address": "Cupertino, CA",
+                "domain": "globex.com",
+                "ai_pulse_score": "very_satisfied",
+                "ai_pulse_reason": "Consistent high feature adoption.",
+                "pulse": [1, 1, 1, 1, 1],
+                "nps_score": 80,
+                "csat_score": "97.50",
+                "joined_date": "2024-10-19",
+                "renewal_date": "2026-03-02",
+                "contract_start_date": "2024-10-26",
+                "contract_end_date": "2025-08-12",
+                "arr_billed_at_account": "51200.00",
+                "arr_billed_at_hq": "128300.00",
+                "implementation_fee": "70000.00",
+                "total_contract_value": "179500.00",
+                "total_forecasted_renewal_revenue": "188475.00",
+                "primary_product": "Product A",
+                "additional_products_count": 3,
+                "top_source_channel": "Talent Pool Re-engage",
+                "total_contracted_seats": 560,
+                "total_active_seats": 471,
+                "total_hires": 124,
+                "scope_web_app": "N/A",
+                "ces_percentage": "98.00",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["seat_utilization_percentage"], 84.11)
+        customer = Customer.objects.get(name="Globex Corp")
+        self.assertEqual(customer.domain, "globex.com")
+        self.assertEqual(str(customer.total_contract_value), "179500.00")
 
     def test_csm_can_also_list_and_create(self):
         """Unlike User Management, customer records aren't admin-gated."""
@@ -98,6 +143,12 @@ class CustomerDetailTests(APITestCase):
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
         self.url = f"/api/v1/customers/{self.customer.id}/"
+
+    def test_update_sets_modified_by_from_the_caller(self):
+        self.client.force_authenticate(self.csm)
+        response = self.client.patch(self.url, {"name": "Globex Renamed"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["modified_by"]["email"], "carl@acme.io")
 
     def test_admin_can_assign_a_same_org_owner(self):
         self.client.force_authenticate(self.admin)
