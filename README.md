@@ -16,6 +16,7 @@ and documented API contract, in that order.
 | API docs | [drf-spectacular](https://drf-spectacular.readthedocs.io/) — auto-generated OpenAPI 3 schema, Swagger UI, and Redoc, always in sync with the actual code |
 | CORS | django-cors-headers, scoped to the Vite dev server origin |
 | Config | django-environ (`.env` file, see `.env.example`) |
+| Lint / format | [ruff](https://docs.astral.sh/ruff/) (`requirements-dev.txt`) |
 
 ## Project layout
 
@@ -67,7 +68,7 @@ unless your setup differs.
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # requirements.txt + ruff for local dev
 ```
 
 ### 3. Environment file
@@ -128,3 +129,12 @@ Every feature ships with three tiers of tests (see `.claude/skills/testing/SKILL
   (`<app>/tests/test_views.py`, `APITestCase`).
 - **End-to-end** — a full multi-step flow over real HTTP against a real
   live server + test DB, no browser (`e2e/`, `LiveServerTestCase`).
+
+## Lint & format
+
+```bash
+ruff check .            # lint
+ruff format .            # format
+```
+
+Both run in CI (see `.github/workflows/ci.yml`) and must pass before merge.
