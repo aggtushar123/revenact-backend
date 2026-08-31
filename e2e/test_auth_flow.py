@@ -2,8 +2,9 @@
 HTTP (stdlib urllib, not self.client's in-process shortcut — no new
 dependency) — proves the full login flow described in the auth-flow doc:
 org signs up -> admin logs in -> admin adds a CSM -> CSM logs in with
-their own credentials -> CSM logs out and their refresh token stops
-working."""
+their own credentials -> CSM edits their own profile -> admin manages
+the CSM via User Management (list, reset password, deactivate) -> admin
+logs out and their own refresh token stops working."""
 
 import json
 import urllib.error
@@ -12,13 +13,12 @@ import urllib.request
 from django.test import LiveServerTestCase
 
 
-def http_post(url, payload, token=None):
+def http_request(method, url, payload=None, token=None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(
-        url, data=json.dumps(payload).encode(), headers=headers, method="POST"
-    )
+    data = json.dumps(payload).encode() if payload is not None else None
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request) as response:
             body = response.read()
@@ -26,6 +26,18 @@ def http_post(url, payload, token=None):
     except urllib.error.HTTPError as e:
         body = e.read()
         return e.code, json.loads(body) if body else None
+
+
+def http_post(url, payload, token=None):
+    return http_request("POST", url, payload, token)
+
+
+def http_get(url, token=None):
+    return http_request("GET", url, token=token)
+
+
+def http_patch(url, payload, token=None):
+    return http_request("PATCH", url, payload, token)
 
 
 class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
@@ -52,6 +64,7 @@ class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
         )
         self.assertEqual(status, 200)
         admin_access = body["access"]
+        admin_refresh = body["refresh"]
 
         # 3. Admin adds a CSM to their organisation.
         status, body = http_post(
@@ -83,10 +96,61 @@ class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
         )
         self.assertEqual(status, 403)
 
-        # 6. The CSM logs out — their refresh token is blacklisted and can
-        #    no longer be used to mint a new access token.
-        status, body = http_post(self.api("/logout/"), {"refresh": csm_refresh}, token=csm_access)
+        # 6. The CSM views and edits their own profile.
+        status, body = http_get(self.api("/me/"), token=csm_access)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["email"], "carl@acme.io")
+
+        status, body = http_patch(self.api("/me/"), {"name": "Carl Renamed"}, token=csm_access)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["name"], "Carl Renamed")
+
+        # ...but not someone else's — User Management is admin-only.
+        status, body = http_get(self.api("/csms/"), token=csm_access)
+        self.assertEqual(status, 403)
+
+        # 7. The admin manages the CSM via User Management: list, then edit.
+        status, body = http_get(self.api("/csms/"), token=admin_access)
+        self.assertEqual(status, 200)
+        self.assertEqual([row["email"] for row in body["results"]], ["carl@acme.io"])
+        csm_id = body["results"][0]["id"]
+
+        status, body = http_patch(
+            self.api(f"/csms/{csm_id}/"), {"password": "newcsmpassword1"}, token=admin_access
+        )
+        self.assertEqual(status, 200)
+
+        status, body = http_post(
+            self.api("/login/"), {"email": "carl@acme.io", "password": "newcsmpassword1"}
+        )
+        self.assertEqual(status, 200)
+
+        # 8. The admin deactivates the CSM — their still-valid access token
+        #    is rejected on its very next request, not just future logins.
+        status, body = http_patch(
+            self.api(f"/csms/{csm_id}/"), {"is_active": False}, token=admin_access
+        )
+        self.assertEqual(status, 200)
+
+        status, body = http_get(self.api("/me/"), token=csm_access)
+        self.assertEqual(status, 401)
+
+        status, body = http_post(
+            self.api("/login/"), {"email": "carl@acme.io", "password": "newcsmpassword1"}
+        )
+        self.assertEqual(status, 401)
+
+        # Deactivating also blacklisted the CSM's refresh token from step 4
+        # (not just their access token above).
+        status, body = http_post(self.api("/token/refresh/"), {"refresh": csm_refresh})
+        self.assertEqual(status, 401)
+
+        # 9. The admin logs out — their own refresh token is blacklisted and
+        #    can no longer be used to mint a new access token.
+        status, body = http_post(
+            self.api("/logout/"), {"refresh": admin_refresh}, token=admin_access
+        )
         self.assertEqual(status, 205)
 
-        status, body = http_post(self.api("/token/refresh/"), {"refresh": csm_refresh})
+        status, body = http_post(self.api("/token/refresh/"), {"refresh": admin_refresh})
         self.assertEqual(status, 401)

@@ -1,5 +1,5 @@
 ---
-description: Multi-tenant auth flow - organisation signup, login, logout, and admin-adds-CSM
+description: Multi-tenant auth flow - signup, login, logout, own-profile editing, and admin User Management
 ---
 
 # Auth Flow
@@ -58,39 +58,86 @@ regardless of role.
    out-of-band (Slack, in person, whatever) — no invite email is sent.
    The CSM then logs in themselves via the same `/login/` endpoint.
 
+## User Profile — Your Own Profile (any role)
+
+1. `GET /api/v1/auth/me/` returns your own profile (same shape as the
+   `user` object from login/signup).
+2. `PATCH /api/v1/auth/me/` with `{"name": "..."}` updates it. Email and
+   role are read-only here — sending them is silently ignored, not an
+   error (`MeSerializer.Meta.read_only_fields`).
+3. To change your password: `POST /api/v1/auth/me/change-password/` with
+   `{"current_password": "...", "new_password": "..."}`. Requires proving
+   you know the current one — `400` with a field error if it's wrong.
+4. This does **not** invalidate your other sessions/tokens. Changing your
+   own password from an active session doesn't force that session to
+   re-authenticate (unlike admin deactivation, below, which does force
+   re-authentication — deliberately different: one is self-service from a
+   trusted session, the other is an external actor cutting off access).
+
+## User Management — Admin Manages Members
+
+1. `GET /api/v1/auth/csms/` lists the CSMs in the admin's own
+   organisation (paginated) — **not** the admin themselves. This is
+   "manage my members", separate from the admin's own `/me/`.
+2. `POST /api/v1/auth/csms/` — same as "Admin Adds a CSM" below.
+3. `GET/PATCH /api/v1/auth/csms/<id>/` — org-admin only, scoped to the
+   caller's own org. **A CSM outside that scope (wrong org, or not a CSM)
+   404s, not 403s** — an admin can't distinguish "doesn't exist" from
+   "exists but isn't yours" by the response.
+4. PATCH accepts any of `name`, `is_active`, `password` (partial —
+   send only what's changing):
+   - `password`: an **admin override**, no current-password check. This
+     is currently the *only* way a CSM recovers a forgotten password —
+     there's no self-serve reset flow.
+   - `is_active: false`: deactivates the CSM. Their access token is
+     rejected on its very next request (simplejwt's `JWTAuthentication`
+     checks `is_active` on every request — this isn't specific to
+     deactivation, it's just the first time this feature has made it
+     observable). Their outstanding refresh tokens also get blacklisted,
+     as defense-in-depth for the refresh path specifically.
+   - `is_active: true`: reactivates them — same account, they just log
+     in again (their old refresh token, if it was blacklisted while
+     deactivated, is still dead; they get a fresh one on next login).
+
 ## Roles
 
 | Role | Created by | Can do |
 |---|---|---|
-| `admin` | Signup (exactly one per org, at creation) | Everything a CSM can, plus add CSMs |
-| `csm` | An org admin, via `/csms/` | Everything except add CSMs |
+| `admin` | Signup (exactly one per org, at creation) | Everything a CSM can, plus User Management |
+| `csm` | An org admin, via `/csms/` | Everything except User Management |
 
-Both roles authenticate identically — `role` only gates the one admin-only
-action (`IsOrgAdmin`). There's no path to a second admin, demoting/promoting
-a user, or removing a member yet.
+Both roles authenticate identically and both can view/edit their own
+`/me/` — `role` only gates User Management (`IsOrgAdmin`). There's no
+path to a second admin, demoting/promoting a user, or removing (as
+opposed to deactivating) a member yet.
 
 ## Key Files
 
 | File | Purpose |
 |---|---|
 | `accounts/models.py` | `Organisation`, `User` (`AUTH_USER_MODEL`), `UserManager` |
-| `accounts/serializers.py` | `SignupSerializer`, `LoginSerializer`, `LogoutSerializer`, `CreateCSMSerializer`, `UserSerializer` |
+| `accounts/serializers.py` | `SignupSerializer`, `LoginSerializer`, `LogoutSerializer`, `CreateCSMSerializer`, `MeSerializer`, `ChangePasswordSerializer`, `EditCSMSerializer`, `UserSerializer` |
 | `accounts/permissions.py` | `IsOrgAdmin` |
-| `accounts/views.py` | `SignupView`, `LoginView` (simplejwt `TokenObtainPairView`), `LogoutView`, `CreateCSMView` |
-| `accounts/urls.py` | `/signup/`, `/login/`, `/logout/`, `/token/refresh/`, `/csms/` |
+| `accounts/views.py` | `SignupView`, `LoginView` (simplejwt `TokenObtainPairView`), `LogoutView`, `MeView`, `ChangePasswordView`, `CSMListCreateView`, `CSMDetailView` |
+| `accounts/urls.py` | `/signup/`, `/login/`, `/logout/`, `/token/refresh/`, `/me/`, `/me/change-password/`, `/csms/`, `/csms/<id>/` |
 | `config/settings.py` | `AUTH_USER_MODEL`, `SIMPLE_JWT`, `DEFAULT_AUTHENTICATION_CLASSES`/`DEFAULT_PERMISSION_CLASSES`, `rest_framework_simplejwt.token_blacklist` in `INSTALLED_APPS` |
 
 ## Not Built Yet
 
-- Listing/removing organisation members
-- Password reset / change password
+- Removing a member outright (only deactivate — the row and its history
+  stay)
+- A self-serve "forgot password" flow — admin password-reset via
+  `/csms/<id>/` is the only recovery path for a CSM right now
 - Email verification
-- A second admin per organisation, or any role beyond admin/csm
+- A second admin per organisation, promoting a CSM to admin, or any role
+  beyond admin/csm
 - Automatic refresh token rotation (a new refresh token issued — and the
-  old one blacklisted — on every `/token/refresh/` call). Logout-time
-  blacklisting is built; rotation-on-refresh is not.
-- Revoking a currently-live access token before its own 60-min expiry
-  (e.g. an admin force-logging-out another user's active session)
+  old one blacklisted — on every `/token/refresh/` call). Logout-time and
+  deactivation-time blacklisting are both built; rotation-on-refresh is not.
+- Invalidating other sessions when you change your *own* password (an
+  admin *deactivating* someone does force re-authentication — see User
+  Management above — but a self-service password change deliberately
+  doesn't touch other active sessions of the same account)
 
 ## Extending This
 

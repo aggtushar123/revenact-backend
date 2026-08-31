@@ -95,3 +95,60 @@ class CreateCSMSerializer(serializers.Serializer):
             organisation=organisation,
             role=User.Role.CSM,
         )
+
+
+class MeSerializer(serializers.ModelSerializer):
+    """Your own profile. Read: full profile. Write: `name` only — email and
+    role aren't self-editable. See ChangePasswordSerializer for passwords."""
+
+    avatar = serializers.SerializerMethodField()
+    organisation = OrganisationSerializer(read_only=True)
+
+    class Meta:
+        model = User
+        fields = ["id", "email", "name", "avatar", "role", "organisation"]
+        read_only_fields = ["id", "email", "role"]
+
+    def get_avatar(self, obj):
+        return f"https://i.pravatar.cc/150?u={obj.email}"
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """Self-service password change — requires the current password (unlike
+    an admin resetting a CSM's password via EditCSMSerializer, which is an
+    override and doesn't)."""
+
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_current_password(self, value):
+        if not self.context["request"].user.check_password(value):
+            raise serializers.ValidationError("Current password is incorrect.")
+        return value
+
+    def save(self):
+        user = self.context["request"].user
+        user.set_password(self.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        return user
+
+
+class EditCSMSerializer(serializers.ModelSerializer):
+    """Org-admin-only: edits a CSM in the admin's own organisation. `password`
+    is an admin override (no current-password check, unlike self-service
+    ChangePasswordSerializer) — there's no other way for a CSM to recover a
+    forgotten password yet, since there's no self-serve reset flow."""
+
+    password = serializers.CharField(write_only=True, required=False, min_length=8)
+
+    class Meta:
+        model = User
+        fields = ["name", "is_active", "password"]
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop("password", None)
+        instance = super().update(instance, validated_data)
+        if password:
+            instance.set_password(password)
+            instance.save(update_fields=["password"])
+        return instance

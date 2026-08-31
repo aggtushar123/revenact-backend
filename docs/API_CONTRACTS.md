@@ -55,7 +55,8 @@ expects.
 | Frontend feature | Backend app | Status |
 |---|---|---|
 | — (infra) | `core` | ✅ Built — health check only |
-| Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh, add-CSM |
+| Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
+| User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
 | Organizations (list/board/detail) | — | ⏳ Not started |
 | Accounts | — | ⏳ Not started |
 | Contacts | — | ⏳ Not started |
@@ -178,21 +179,75 @@ lifetime) keeps working until it naturally expires — simplejwt doesn't
 track individual access tokens for revocation, only refresh tokens via
 this blacklist.
 
-### `POST /api/v1/auth/csms/`
+### `GET /api/v1/auth/me/`, `PATCH /api/v1/auth/me/`
+
+Auth: `IsAuthenticated` — any user, admin or CSM, editing themselves.
+
+GET returns the same shape as the `user` object in login/signup. PATCH
+accepts `{ "name": "..." }` — `email` and `role` are read-only here; sending
+them is silently ignored (not an error), not written.
+
+**Response `200`** (both) — the (possibly updated) profile.
+
+### `POST /api/v1/auth/me/change-password/`
+
+Auth: `IsAuthenticated`. Self-service password change — requires proving
+you know the current one.
+
+**Request** `{ "current_password": "...", "new_password": "..." }`
+(`new_password` min 8 chars, same as everywhere else). `400` with
+`{"current_password": ["Current password is incorrect."]}` if it doesn't
+match.
+
+**Response `200`** — empty body.
+
+Does **not** invalidate existing sessions/tokens — unlike an admin
+deactivating you (below), which does. Changing your own password from an
+active session doesn't force that same session to re-authenticate.
+
+### `GET /api/v1/auth/csms/`, `POST /api/v1/auth/csms/`
 
 Auth: **`IsAuthenticated` + org-admin only** (`accounts.permissions.IsOrgAdmin`).
-The caller's own `organisation` is used — there's no way to add a CSM to a
-different org. `403` for an authenticated non-admin
+Scoped to the caller's own `organisation` — there's no way to see or add a
+CSM in a different org. `403` for an authenticated non-admin
 (`{"detail": "Only an organisation admin can do this."}`), `401` if
 unauthenticated.
 
-**Request** `{ "name": "Carl CSM", "email": "carl@acme.io", "password": "csmpassword1" }`
+GET lists the org's CSMs (paginated, per the usual envelope) — **not**
+the admin themselves; this is "manage my members", not "list my org".
+Ordered by name.
+
+POST: **Request** `{ "name": "Carl CSM", "email": "carl@acme.io", "password": "csmpassword1" }`
 **Response `201`** — the created user, same shape as the `user` object above
 (no tokens — the CSM logs in themselves via `/login/`).
 
-Not built yet, and deliberately out of scope for this pass: listing/removing
-org members, self-serve organisation signup validation beyond
-uniqueness (e.g. org name collisions), password reset, email verification.
+### `GET /api/v1/auth/csms/<id>/`, `PATCH /api/v1/auth/csms/<id>/`
+
+Auth: same as above — org-admin only, scoped to the caller's own org.
+**`404`, not `403`, for an id outside that scope** (wrong org, or not a
+CSM) — an admin can't use the response to tell "doesn't exist" apart from
+"exists but isn't yours".
+
+PATCH accepts any of `{ "name": "...", "is_active": true|false, "password": "..." }`,
+all optional (partial update). `password` here is an **admin override** —
+no current-password check, since there's no other way for a CSM to
+recover a forgotten password yet (no self-serve reset flow).
+
+Setting `is_active: false` also blacklists every outstanding refresh
+token for that user. Their access token is rejected on its very next
+request regardless (simplejwt's `JWTAuthentication` checks `is_active` on
+every request) — the blacklist call is defense-in-depth for the refresh
+token specifically, not what makes deactivation effective.
+
+**Response `200`** (both) — the (possibly updated) CSM, same shape as
+elsewhere.
+
+Not built yet, and deliberately out of scope for this pass: removing a
+member outright (only deactivate), a second admin per org or promoting a
+CSM to admin, self-serve organisation signup validation beyond email
+uniqueness (e.g. org name collisions), email verification, a self-serve
+"forgot password" flow (admin password-reset is the only recovery path
+right now).
 
 ---
 

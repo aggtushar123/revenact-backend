@@ -148,7 +148,7 @@ class LogoutTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_205_RESET_CONTENT)
 
 
-class CreateCSMTests(APITestCase):
+class CSMListCreateTests(APITestCase):
     url = "/api/v1/auth/csms/"
 
     def setUp(self):
@@ -196,3 +196,202 @@ class CreateCSMTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_admin_can_list_own_org_csms(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        emails = [row["email"] for row in response.data["results"]]
+        self.assertEqual(emails, ["carl@acme.io"])
+
+    def test_admin_does_not_see_csms_from_another_org(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+        response = self.client.get(self.url)
+        self.assertEqual(response.data["count"], 0)
+
+    def test_csm_cannot_list_csms(self):
+        self.client.force_authenticate(self.csm)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class MeViewTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_get_own_profile(self):
+        response = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["email"], "alice@acme.io")
+
+    def test_unauthenticated_cannot_get_profile(self):
+        self.client.force_authenticate(None)
+        response = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_can_update_own_name(self):
+        response = self.client.patch("/api/v1/auth/me/", {"name": "Alice Renamed"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["name"], "Alice Renamed")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.name, "Alice Renamed")
+
+    def test_cannot_change_own_email_or_role(self):
+        response = self.client.patch(
+            "/api/v1/auth/me/",
+            {"email": "hacked@evil.io", "role": "csm"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "alice@acme.io")
+        self.assertEqual(self.user.role, User.Role.ADMIN)
+
+
+class ChangePasswordTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.user)
+        self.url = "/api/v1/auth/me/change-password/"
+
+    def test_change_password_with_correct_current_password(self):
+        response = self.client.post(
+            self.url,
+            {"current_password": "supersecret1", "new_password": "newpassword1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("newpassword1"))
+        self.assertFalse(self.user.check_password("supersecret1"))
+
+    def test_change_password_rejects_wrong_current_password(self):
+        response = self.client.post(
+            self.url,
+            {"current_password": "wrongpassword", "new_password": "newpassword1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("supersecret1"))
+
+    def test_unauthenticated_cannot_change_password(self):
+        self.client.force_authenticate(None)
+        response = self.client.post(
+            self.url,
+            {"current_password": "supersecret1", "new_password": "newpassword1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class CSMDetailTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="csmpassword1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.url = f"/api/v1/auth/csms/{self.csm.id}/"
+
+    def test_admin_can_edit_csm_name(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(self.url, {"name": "Carl Renamed"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.csm.refresh_from_db()
+        self.assertEqual(self.csm.name, "Carl Renamed")
+
+    def test_admin_can_reset_csm_password_without_knowing_the_old_one(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(self.url, {"password": "brandnewpass1"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.csm.refresh_from_db()
+        self.assertTrue(self.csm.check_password("brandnewpass1"))
+
+    def test_admin_deactivating_csm_blacklists_their_outstanding_tokens(self):
+        login = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "carl@acme.io", "password": "csmpassword1"},
+            format="json",
+        )
+        csm_access = login.data["access"]
+
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(self.url, {"is_active": False}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # The CSM's still-unexpired access token is rejected immediately —
+        # not just future logins.
+        self.client.force_authenticate(None)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {csm_access}")
+        me_response = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(me_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        login_attempt = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "carl@acme.io", "password": "csmpassword1"},
+            format="json",
+        )
+        self.assertEqual(login_attempt.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_csm_cannot_edit_another_csm(self):
+        other_csm = User.objects.create_user(
+            email="dana@acme.io",
+            password="supersecret1",
+            name="Dana",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.client.force_authenticate(self.csm)
+        response = self.client.patch(
+            f"/api/v1/auth/csms/{other_csm.id}/", {"name": "Hacked"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_cannot_edit_csm_from_another_org(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+        response = self.client.patch(self.url, {"name": "Pwned"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.csm.refresh_from_db()
+        self.assertEqual(self.csm.name, "Carl")

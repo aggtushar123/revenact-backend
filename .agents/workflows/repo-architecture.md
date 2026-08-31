@@ -86,12 +86,16 @@ app label), mounted at `/api/v1/auth/` to match the frontend's
 | `views.py: SignupView` | `POST /signup/` — creates org + admin user, returns tokens |
 | `views.py: LoginView` | `POST /login/` — JWT login for any user |
 | `views.py: LogoutView` | `POST /logout/` — blacklists the given refresh token |
-| `views.py: CreateCSMView` | `POST /csms/` — admin-only, adds a CSM to their own org |
+| `views.py: MeView` | `GET/PATCH /me/` — your own profile (any role) |
+| `views.py: ChangePasswordView` | `POST /me/change-password/` — self-service, needs current password |
+| `views.py: CSMListCreateView` | `GET/POST /csms/` — admin-only, list/add CSMs in their own org |
+| `views.py: CSMDetailView` | `GET/PATCH /csms/<id>/` — admin-only, edit/deactivate a CSM in their own org |
 | `permissions.py: IsOrgAdmin` | Gates admin-only actions |
 
 Full walkthrough: `auth-flow.md` in this same directory.
 
-**Status:** ✅ Built (signup, login, logout, token refresh, add-CSM).
+**Status:** ✅ Built (signup, login, logout, token refresh, own-profile
+edit + password change, admin User Management for CSMs).
 
 ### Everything else
 
