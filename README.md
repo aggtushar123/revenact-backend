@@ -28,7 +28,8 @@ revenact-backend/
 ├── core/                 # Shared/infra app — health check, common utilities
 ├── docs/
 │   └── API_CONTRACTS.md   # Running log of every endpoint, request/response shape, and decision
-├── docker-compose.yml    # Postgres for local dev (alternative to a local install)
+├── Dockerfile              # Containerizes the Django app itself (the `web` service)
+├── docker-compose.yml    # web (this app) + db (Postgres) — the whole backend, dockerized
 ├── .env.example
 ├── requirements.txt
 └── manage.py
@@ -37,53 +38,52 @@ revenact-backend/
 As we build features, each one lands as its own Django app (e.g. `organizations/`,
 `accounts/`, `auth/`, `pipelines/`) mounted under `/api/v1/` in `config/urls.py` —
 mirroring the frontend's `src/pages/<domain>/` and `src/features/<domain>/` split.
+They all run inside the same `web` container/process — this is one dockerized
+service, not one container per app. If a future feature needs its own runtime
+process (a worker, a cache, ...), add it as its own service in
+`docker-compose.yml` alongside `web` and `db` — every backend service stays
+dockerized, not just the database.
 
 ## Getting started
 
-### 1. Database
-
-Two ways to get Postgres running locally — pick one.
-
-**Option A — Docker (recommended if you have Docker running):**
-
-```bash
-docker compose up -d db
-```
-
-**Option B — a local Postgres install** (e.g. Homebrew's `postgresql@15`):
-
-```bash
-psql -h localhost -U "$(whoami)" -d postgres <<'SQL'
-CREATE ROLE revenact LOGIN PASSWORD 'revenact';
-CREATE DATABASE revenact OWNER revenact;
-SQL
-```
-
-Either way, the default `.env` (copied from `.env.example`) already points at
-`postgres://revenact:revenact@localhost:5432/revenact` — no changes needed
-unless your setup differs.
-
-### 2. Python environment
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements-dev.txt   # requirements.txt + ruff for local dev
-```
-
-### 3. Environment file
+**Option A — fully Dockerized (recommended, needs Docker running):**
 
 ```bash
 cp .env.example .env    # already done in this checkout; edit values if needed
+docker compose up --build
 ```
 
-### 4. Migrate and run
+Builds the `web` image, starts `db`, waits for its healthcheck, runs
+migrations, then starts the dev server — all in one command. The API is
+live at `http://localhost:8000/`. Run one-off commands (tests, migrations,
+`createsuperuser`) with `docker compose exec web <command>`, e.g.
+`docker compose exec web python manage.py createsuperuser`.
 
-```bash
-python manage.py migrate
-python manage.py createsuperuser   # optional, for /admin access
-python manage.py runserver 8000
-```
+**Option B — local Python + Postgres:**
+
+1. Database — either `docker compose up -d db` or a local Postgres install:
+   ```bash
+   psql -h localhost -U "$(whoami)" -d postgres <<'SQL'
+   CREATE ROLE revenact LOGIN PASSWORD 'revenact';
+   CREATE DATABASE revenact OWNER revenact;
+   SQL
+   ```
+2. Python environment:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements-dev.txt   # requirements.txt + ruff for local dev
+   ```
+3. Environment file:
+   ```bash
+   cp .env.example .env    # already done in this checkout; edit values if needed
+   ```
+4. Migrate and run:
+   ```bash
+   python manage.py migrate
+   python manage.py createsuperuser   # optional, for /admin access
+   python manage.py runserver 8000
+   ```
 
 The API is now live at `http://localhost:8000/`.
 

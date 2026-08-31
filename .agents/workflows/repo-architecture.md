@@ -14,7 +14,7 @@ description: Full repository architecture, app map, and URL reference for the Re
 | API docs | drf-spectacular — auto-generated OpenAPI 3 schema, Swagger UI, Redoc |
 | CORS | django-cors-headers, scoped to the Vite dev server origin |
 | Config | django-environ (`.env`, see `.env.example`) |
-| Local Postgres | docker-compose (`db` service, `postgres:16-alpine`) |
+| Containerization | Docker — `docker-compose.yml` runs `web` (this Django app, built from `Dockerfile`) + `db` (`postgres:16-alpine`); `docker compose up --build` runs the whole backend |
 
 ## Top-Level Directory Map
 
@@ -36,7 +36,8 @@ revenact-backend/
 │   └── migrations/
 ├── docs/
 │   └── API_CONTRACTS.md        ← Narrative companion to the OpenAPI schema
-├── docker-compose.yml          ← Postgres for local dev
+├── Dockerfile                  ← Containerizes the Django app (`web` service)
+├── docker-compose.yml          ← web (this app) + db (Postgres) — whole backend
 ├── .env.example / .env
 ├── requirements.txt
 ├── manage.py
@@ -106,7 +107,10 @@ See the `api-contracts`, `flow-docs`, and `testing` Claude Code skills for
 the full workflow. Short version:
 
 1. `python manage.py startapp <name>` — models mirror the matching
-   frontend TS interfaces / mock data files.
+   frontend TS interfaces / mock data files. Runs inside the existing `web`
+   container; no new Dockerfile/compose service needed for a normal
+   Django app. Only add a new service to `docker-compose.yml` if the
+   feature needs its own runtime process (a worker, a cache, ...).
 2. Serializers + views + URLs, mounted at `/api/v1/<name>/`.
 3. Update `docs/API_CONTRACTS.md` (Status table + new endpoint section).
 4. Update this file's App List section with the new app.

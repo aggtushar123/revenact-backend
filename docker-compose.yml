@@ -16,5 +16,25 @@ services:
       timeout: 5s
       retries: 5
 
+  web:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Overrides .env's localhost DATABASE_URL — inside the compose
+      # network the DB is reachable at the `db` service name, not localhost.
+      DATABASE_URL: postgres://revenact:revenact@db:5432/revenact
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+
 volumes:
   revenact_pgdata:
