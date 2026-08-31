@@ -45,6 +45,8 @@ this file in the same change.** A PR that adds a view without touching
 4. Generate + apply migrations.
 5. Sanity-check the live schema: `GET /api/schema/` (or hit `/api/docs/`)
    matches what you just wrote in prose.
+6. Add unit + integration + end-to-end tests for the endpoint — see the
+   `testing` skill. Not optional; a feature without all three isn't done.
 
 Commit as `feat(<app>): ...` for the endpoint plus `docs: update
 API_CONTRACTS.md with <app> endpoints` (or squash both into one `feat(<app>)`

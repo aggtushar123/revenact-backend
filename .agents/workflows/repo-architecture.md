@@ -22,7 +22,9 @@ description: Full repository architecture, app map, and URL reference for the Re
 revenact-backend/
 ├── .agents/workflows/          ← Workflow knowledge files (this file)
 ├── .claude/skills/             ← Claude Code skills (karpathy-guidelines,
-│                                  commit-messages, flow-docs, api-contracts)
+│                                  commit-messages, flow-docs, api-contracts,
+│                                  testing)
+├── e2e/                        ← Cross-app end-to-end flow tests (LiveServerTestCase)
 ├── config/                     ← Django project (settings, root URLconf)
 │   ├── settings.py
 │   ├── urls.py                 ← /admin, /api/schema, /api/docs, /api/redoc, /api/v1/*
@@ -100,8 +102,8 @@ Response (JSON)            ← DRF Response, paginated if a list endpoint
 
 ## Adding a New Feature — Checklist
 
-See the `api-contracts` and `flow-docs` Claude Code skills for the full
-workflow. Short version:
+See the `api-contracts`, `flow-docs`, and `testing` Claude Code skills for
+the full workflow. Short version:
 
 1. `python manage.py startapp <name>` — models mirror the matching
    frontend TS interfaces / mock data files.
@@ -109,4 +111,7 @@ workflow. Short version:
 3. Update `docs/API_CONTRACTS.md` (Status table + new endpoint section).
 4. Update this file's App List section with the new app.
 5. Generate + apply migrations.
-6. Commit per the `commit-messages` skill.
+6. Add unit tests (`<app>/tests/test_*.py`), an integration test
+   (`APITestCase`), and — if the feature completes a user-facing flow — an
+   end-to-end test in `e2e/` (`LiveServerTestCase`).
+7. Commit per the `commit-messages` skill.

@@ -112,6 +112,8 @@ This backend grows in lockstep with the frontend, one feature at a time:
 4. `docs/API_CONTRACTS.md` is updated with the new endpoints and any notable
    shape decisions.
 5. Migrations are generated and applied.
+6. Unit, integration, and end-to-end tests are added for the feature (see
+   the `testing` skill) — a feature isn't done without all three.
 
 ## Tests
 
@@ -119,4 +121,10 @@ This backend grows in lockstep with the frontend, one feature at a time:
 python manage.py test
 ```
 
-(No app-specific tests yet — added alongside each feature as it's built.)
+Every feature ships with three tiers of tests (see `.claude/skills/testing/SKILL.md`):
+
+- **Unit** — one function/method in isolation (`<app>/tests/test_<unit>.py`).
+- **Integration** — one endpoint through the real stack + test DB
+  (`<app>/tests/test_views.py`, `APITestCase`).
+- **End-to-end** — a full multi-step flow over real HTTP against a real
+  live server + test DB, no browser (`e2e/`, `LiveServerTestCase`).
