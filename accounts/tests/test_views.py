@@ -203,6 +203,9 @@ class CSMListCreateTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         emails = [row["email"] for row in response.data["results"]]
         self.assertEqual(emails, ["carl@acme.io"])
+        # is_active must be visible here — the User Management UI needs it
+        # to render each CSM's active/deactivated status.
+        self.assertTrue(response.data["results"][0]["is_active"])
 
     def test_admin_does_not_see_csms_from_another_org(self):
         other_org = Organisation.objects.create(name="Other Org")

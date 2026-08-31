@@ -14,14 +14,16 @@ class OrganisationSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     """Read-only representation embedded in signup/login responses — shaped
     to match the frontend's `User` type in authSlice.ts (email, name,
-    avatar), plus organisation + role for tenant-scoping the UI."""
+    avatar), plus organisation + role for tenant-scoping the UI.
+    `is_active` matters for the User Management list (a deactivated CSM
+    still shows up there, just greyed out/toggleable — it isn't a delete)."""
 
     avatar = serializers.SerializerMethodField()
     organisation = OrganisationSerializer(read_only=True)
 
     class Meta:
         model = User
-        fields = ["id", "email", "name", "avatar", "role", "organisation"]
+        fields = ["id", "email", "name", "avatar", "role", "organisation", "is_active"]
 
     def get_avatar(self, obj):
         return f"https://i.pravatar.cc/150?u={obj.email}"
