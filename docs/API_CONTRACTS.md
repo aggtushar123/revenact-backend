@@ -57,7 +57,7 @@ expects.
 | — (infra) | `core` | ✅ Built — health check only |
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
-| Organizations (list/board/detail) | — | ⏳ Not started |
+| Organizations (list/board/detail) | `customers` | 🟡 Core list fields only — see below. Board, Details, activity feeds, nested Accounts/Contacts not started. |
 | Accounts | — | ⏳ Not started |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
@@ -248,6 +248,66 @@ CSM to admin, self-serve organisation signup validation beyond email
 uniqueness (e.g. org name collisions), email verification, a self-serve
 "forgot password" flow (admin password-reset is the only recovery path
 right now).
+
+---
+
+## `customers` — Organizations (list view only)
+
+Mirrors: `src/pages/organizations/List.tsx`, `src/components/organizations/tableData.ts`
+(core fields only — see Status above for what's deliberately deferred).
+
+**Naming**: this is a separate model from `accounts.Organisation`. `Organisation`
+is the tenant (the company paying for Revenact — one admin, its CSMs).
+`Customer` is one of *that tenant's own* customers — the company a CSM is
+tracking for health/ARR/renewal. Same real-world shape ("a company"), two
+different roles in the system, hence two different names — never call a
+`Customer` an "organisation" in code or docs, and vice versa.
+
+### Models
+
+- `Customer` — `organisation` (FK, the tenant that owns this record),
+  `name`, `health_score` (0-100, `health_category` is *derived* from it at
+  read time via fixed thresholds — good ≥70, average 40-69, poor <40 —
+  not stored, so the two can never disagree), `arr` (decimal), `renewal_date`
+  (nullable), `lifecycle_stage` (choices: onboarding/kickoff/adoption/live/
+  renewal/churn/expansion/other), `owner` (FK to `accounts.User`, nullable —
+  the assigned CSM or admin).
+
+### Conventions specific to this app
+
+- **No admin gate** — unlike User Management, any authenticated user in the
+  tenant (admin or CSM) can list, create, and edit customers. This was a
+  deliberate choice: managing your team's access (`accounts`) is more
+  sensitive than managing shared customer records.
+- **Owner must be same-tenant** — assigning `owner_id` to a user from a
+  different organisation is a `400`, not silently ignored or allowed.
+- **`organisation` is never client-supplied** — always taken from
+  `request.user.organisation` server-side, even if a request body includes
+  an `organisation` field. There is no way to create a customer under a
+  different tenant than your own.
+
+### `GET /api/v1/customers/`, `POST /api/v1/customers/`
+
+Auth: `IsAuthenticated` (any role). Scoped to the caller's own organisation.
+
+GET: standard paginated envelope, ordered by name.
+POST **Request** `{ "name": "Globex Corp", "health_score": 82, "arr": "45000.00", "lifecycle_stage": "live", "renewal_date": "2027-01-15", "owner_id": 2 }`
+— all fields but `name` optional. **Response `201`** — the created customer,
+`owner` nested (same shape as elsewhere), `health_category` computed.
+
+### `GET /api/v1/customers/<id>/`, `PATCH /api/v1/customers/<id>/`
+
+Auth: same as above. **`404`, not `403`,** for a customer outside the
+caller's organisation.
+
+PATCH accepts any subset of the POST fields, including `owner_id` (`400`
+with a field error if the target user isn't in the caller's organisation).
+
+Not built yet, and deliberately out of scope for this pass: Board view,
+the Details page (activity feed, pinned attributes), nested Accounts and
+Contacts, deleting a customer (only field edits exist so far), the full
+30+-field schema the frontend's mock data currently has (NPS, CSAT, TCV,
+seat utilization, churn tracking, etc.).
 
 ---
 

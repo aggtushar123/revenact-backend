@@ -27,4 +27,5 @@ urlpatterns = [
     path("api/v1/", include("core.urls")),
     # `accounts` app, mounted at /auth/ to match the frontend's features/auth/.
     path("api/v1/auth/", include("accounts.urls")),
+    path("api/v1/customers/", include("customers.urls")),
 ]

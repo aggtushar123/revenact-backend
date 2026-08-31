@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     # Local
     "accounts",
     "core",
+    "customers",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app

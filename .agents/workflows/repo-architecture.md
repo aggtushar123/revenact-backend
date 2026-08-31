@@ -97,10 +97,28 @@ Full walkthrough: `auth-flow.md` in this same directory.
 **Status:** ✅ Built (signup, login, logout, token refresh, own-profile
 edit + password change, admin User Management for CSMs).
 
+### `customers` — Organizations (core list fields only)
+
+Not to be confused with `accounts.Organisation` (the tenant) — see
+`docs/API_CONTRACTS.md` → `customers` for why these are deliberately
+different models with different names. A `Customer` is one of a tenant's
+own customers, tracked for health/ARR/renewal.
+
+| File | Role |
+|---|---|
+| `models.py: Customer` | `organisation` FK, `name`, `health_score` (→ derived `health_category`), `arr`, `renewal_date`, `lifecycle_stage`, `owner` FK (nullable) |
+| `views.py: CustomerListCreateView` | `GET/POST /customers/` — any authenticated user in the org (no admin gate, unlike User Management) |
+| `views.py: CustomerDetailView` | `GET/PATCH /customers/<id>/` — same org only, 404 outside it |
+
+**Status:** 🟡 Core list fields only. Board view, Details page (activity
+feed, pinned attributes), nested Accounts/Contacts, and most of the
+frontend mock data's 30+ fields (NPS, CSAT, TCV, seat utilization, churn
+tracking, ...) are not built.
+
 ### Everything else
 
-Not started yet. Per `docs/API_CONTRACTS.md`'s Status table: Organizations,
-Contacts, Pipelines, Dashboards, Copilot, Scenarios, Company Brain are all ⏳.
+Not started yet. Per `docs/API_CONTRACTS.md`'s Status table: Contacts,
+Pipelines, Dashboards, Copilot, Scenarios, Company Brain are all ⏳.
 
 ## Data Flow Summary
 
