@@ -73,11 +73,29 @@ in `config/urls.py`.
 
 **Status:** ✅ Built (health check only).
 
+### `accounts` — Auth (`authSlice.ts`, `Login.tsx`)
+
+Django app named `accounts` (avoids colliding with `django.contrib.auth`'s
+app label), mounted at `/api/v1/auth/` to match the frontend's
+`features/auth/`. Also the app that defines `AUTH_USER_MODEL`.
+
+| File | Role |
+|---|---|
+| `models.py: Organisation` | The tenant — `name`, unique `slug`, `created_at` |
+| `models.py: User` | Custom `AUTH_USER_MODEL` — email login, `organisation` FK, `role` (admin/csm) |
+| `views.py: SignupView` | `POST /signup/` — creates org + admin user, returns tokens |
+| `views.py: LoginView` | `POST /login/` — JWT login for any user |
+| `views.py: CreateCSMView` | `POST /csms/` — admin-only, adds a CSM to their own org |
+| `permissions.py: IsOrgAdmin` | Gates admin-only actions |
+
+Full walkthrough: `auth-flow.md` in this same directory.
+
+**Status:** ✅ Built (signup, login, token refresh, add-CSM).
+
 ### Everything else
 
-Not started yet. Per `docs/API_CONTRACTS.md`'s Status table: Auth,
-Organizations, Accounts, Contacts, Pipelines, Dashboards, Copilot,
-Scenarios, Company Brain are all ⏳.
+Not started yet. Per `docs/API_CONTRACTS.md`'s Status table: Organizations,
+Contacts, Pipelines, Dashboards, Copilot, Scenarios, Company Brain are all ⏳.
 
 ## Data Flow Summary
 
@@ -97,9 +115,10 @@ config/urls.py           ← routes /api/v1/<app>/... to <app>.urls
 Response (JSON)            ← DRF Response, paginated if a list endpoint
 ```
 
-> No auth is enforced yet — every endpoint is `AllowAny` until the auth
-> feature (mirroring `react-ts-app`'s `authSlice.ts`) is ported. See
-> `docs/API_CONTRACTS.md` → Conventions.
+> Auth landed with the `accounts` app — `DEFAULT_PERMISSION_CLASSES` is
+> `IsAuthenticated`. New endpoints require a valid JWT unless they
+> explicitly set `AllowAny` (only signup/login/token-refresh do). See
+> `docs/API_CONTRACTS.md` → Conventions and `auth-flow.md`.
 
 ## Adding a New Feature — Checklist
 

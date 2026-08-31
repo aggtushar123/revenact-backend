@@ -64,10 +64,14 @@ live at `http://localhost:8000/`. Run one-off commands (tests, migrations,
 1. Database — either `docker compose up -d db` or a local Postgres install:
    ```bash
    psql -h localhost -U "$(whoami)" -d postgres <<'SQL'
-   CREATE ROLE revenact LOGIN PASSWORD 'revenact';
+   CREATE ROLE revenact LOGIN PASSWORD 'revenact' CREATEDB;
    CREATE DATABASE revenact OWNER revenact;
    SQL
    ```
+   `CREATEDB` is required for a local install — `manage.py test` creates and
+   drops its own `test_revenact` database on each run. (Docker's `db`
+   service and CI's Postgres service both grant this by default, nothing
+   to do there.)
 2. Python environment:
    ```bash
    python3 -m venv venv

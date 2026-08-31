@@ -4,6 +4,7 @@ Django settings for the Revenact backend.
 Docs: https://docs.djangoproject.com/en/5.2/topics/settings/
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -35,11 +36,19 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Third-party
     "rest_framework",
+    "rest_framework_simplejwt",
     "corsheaders",
     "drf_spectacular",
     # Local
+    "accounts",
     "core",
 ]
+
+# Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
+# is named `accounts` (not `auth`) to avoid colliding with django.contrib.auth's
+# app label, but it's mounted at /api/v1/auth/ to match the frontend's
+# features/auth/ domain — see docs/API_CONTRACTS.md.
+AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -112,13 +121,14 @@ CORS_ALLOW_CREDENTIALS = True
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    # NOTE: no auth backend wired up yet — this project has no auth feature
-    # ported from the frontend yet. Every view is open (AllowAny) until then.
-    # When auth lands, switch this to JWTAuthentication + IsAuthenticated and
-    # mark individual views AllowAny where the frontend genuinely needs it
-    # (e.g. the login endpoint itself).
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
+    # Auth landed (accounts app) — endpoints require a valid JWT by default
+    # now. Views that must stay public (signup, login) set AllowAny
+    # explicitly; see accounts/views.py.
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.AllowAny",
+        "rest_framework.permissions.IsAuthenticated",
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
@@ -132,6 +142,14 @@ if DEBUG:
     REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"].append(
         "rest_framework.renderers.BrowsableAPIRenderer"
     )
+
+# --- JWT (djangorestframework-simplejwt) -----------------------------------------
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "UPDATE_LAST_LOGIN": True,
+}
 
 # --- drf-spectacular (OpenAPI schema + Swagger/Redoc UI) -------------------------
 

@@ -41,8 +41,11 @@ test database, spanning more than one call (create → list → update →
 delete; or a flow that crosses more than one app).
 
 - Base class: `django.test.LiveServerTestCase` — starts a real server on
-  `self.live_server_url`; hit it with `rest_framework.test.APIClient` (or
-  `requests`) pointed at that URL, not `self.client`'s in-process shortcut.
+  `self.live_server_url`; hit it with a real HTTP client (stdlib
+  `urllib.request` — no new dependency) against that URL. `self.client`
+  and `rest_framework.test.APIClient` don't work here: both call straight
+  into the WSGI handler in-process and never touch the socket, which
+  defeats the point of this tier.
 - This is **API-level e2e, no browser** — it proves the real HTTP/DB path
   works end to end without needing a UI driver. (`react-ts-app` has its own
   `testing` skill for the frontend side.)

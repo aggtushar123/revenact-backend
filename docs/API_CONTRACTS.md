@@ -26,9 +26,12 @@ what's intentionally not built yet).
   ```json
   { "count": 142, "next": "...", "previous": null, "results": [...] }
   ```
-- **Auth**: not implemented yet (see below) — every endpoint is currently
-  `AllowAny`. This will change to JWT auth once the login/session feature is
-  ported from the frontend's `authSlice.ts`.
+- **Auth**: JWT via `djangorestframework-simplejwt`. `DEFAULT_PERMISSION_CLASSES`
+  is `IsAuthenticated` — every endpoint requires a valid `Authorization:
+  Bearer <access token>` header unless it explicitly sets `AllowAny` (signup,
+  login, token refresh, and `core`'s health check). Send the access token on
+  every authenticated request; refresh it via `/api/v1/auth/token/refresh/`
+  when it expires (60 min lifetime; refresh tokens last 7 days).
 - **Errors**: standard DRF error shape, e.g.
   `{"detail": "..."}` or field-level `{"field_name": ["error message"]}`.
 - **IDs**: Postgres auto-incrementing integers (`BigAutoField`) unless a
@@ -52,7 +55,7 @@ expects.
 | Frontend feature | Backend app | Status |
 |---|---|---|
 | — (infra) | `core` | ✅ Built — health check only |
-| Auth (`authSlice.ts`, `Login.tsx`) | — | ⏳ Not started |
+| Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, token refresh, add-CSM |
 | Organizations (list/board/detail) | — | ⏳ Not started |
 | Accounts | — | ⏳ Not started |
 | Contacts | — | ⏳ Not started |
@@ -78,6 +81,100 @@ Liveness check. No auth, no params.
   "time": "2026-08-31T12:30:16.307241+00:00"
 }
 ```
+
+---
+
+## `accounts` — Auth (`authSlice.ts`, `Login.tsx`)
+
+Mirrors: `src/pages/auth/Login.tsx`, `src/features/auth/authSlice.ts`,
+`src/features/auth/loginSchema.ts`.
+
+The Django app is named `accounts`, not `auth` — `auth` is already taken by
+`django.contrib.auth`'s app label and can't be reused. It's mounted at
+`/api/v1/auth/` (not `/api/v1/accounts/`) so the URL still matches the
+frontend's `features/auth/` domain. See the `flow-docs` skill's
+`auth-flow.md` for the full walkthrough of who can do what.
+
+### Models
+
+- `Organisation` — `name`, `slug` (auto-generated from `name`, unique),
+  `created_at`. The tenant. Created only via signup.
+- `User` (custom `AUTH_USER_MODEL`, replaces Django's default) — `email`
+  (unique, `USERNAME_FIELD`), `name`, `organisation` (FK, **null only for
+  platform-staff superusers** — every org admin/CSM has one), `role`
+  (`admin` | `csm`), `is_active`, `is_staff`, `date_joined`. No `avatar`
+  field — it's derived at serialization time (see below), not stored.
+
+### Auth model
+
+- **One organisation, two roles.** `admin` = the user created at signup
+  (owns the org). `csm` = added by an admin afterward. No "multiple admins"
+  or finer-grained permissions yet — just enough to gate the one
+  admin-only action that exists so far (adding a CSM).
+- **CSM provisioning is admin-direct, not invite-based.** The admin sets
+  the CSM's email + initial password themselves in the request body; the
+  CSM logs in with exactly what the admin gave them. No email sending
+  involved (deliberately, for now).
+- **`avatar` is computed, not stored** — `https://i.pravatar.cc/150?u=<email>`,
+  matching the placeholder scheme the frontend's dummy users already used
+  in `authSlice.ts`. Swap for a real upload field if that's ever needed.
+
+### `POST /api/v1/auth/signup/`
+
+Auth: `AllowAny`. Creates an `Organisation` + its first `User` (`role=admin`)
+in one call, and logs them in immediately (same shape as login) so the
+frontend doesn't need a separate "now log in" step after signup.
+
+**Request**
+```json
+{ "organisation_name": "Acme Inc", "name": "Alice Admin", "email": "alice@acme.io", "password": "supersecret1" }
+```
+
+**Response `201`**
+```json
+{
+  "user": {
+    "id": 1, "email": "alice@acme.io", "name": "Alice Admin",
+    "avatar": "https://i.pravatar.cc/150?u=alice@acme.io",
+    "role": "admin",
+    "organisation": { "id": 1, "name": "Acme Inc", "slug": "acme-inc" }
+  },
+  "access": "<jwt>", "refresh": "<jwt>"
+}
+```
+
+`400` if the email is already registered (field error: `{"email": ["A user with this email already exists."]}`).
+
+### `POST /api/v1/auth/login/`
+
+Auth: `AllowAny`. Works for any user — org admin or CSM — same credentials
+they were created with.
+
+**Request** `{ "email": "...", "password": "..." }`
+**Response `200`** — same shape as signup's response (`user`, `access`,
+`refresh`). `401` on bad credentials:
+`{"detail": "No active account found with the given credentials"}`.
+
+### `POST /api/v1/auth/token/refresh/`
+
+Auth: `AllowAny`. `{"refresh": "<jwt>"}` → `{"access": "<jwt>"}`. Standard
+simplejwt `TokenRefreshView`, unmodified.
+
+### `POST /api/v1/auth/csms/`
+
+Auth: **`IsAuthenticated` + org-admin only** (`accounts.permissions.IsOrgAdmin`).
+The caller's own `organisation` is used — there's no way to add a CSM to a
+different org. `403` for an authenticated non-admin
+(`{"detail": "Only an organisation admin can do this."}`), `401` if
+unauthenticated.
+
+**Request** `{ "name": "Carl CSM", "email": "carl@acme.io", "password": "csmpassword1" }`
+**Response `201`** — the created user, same shape as the `user` object above
+(no tokens — the CSM logs in themselves via `/login/`).
+
+Not built yet, and deliberately out of scope for this pass: listing/removing
+org members, self-serve organisation signup validation beyond
+uniqueness (e.g. org name collisions), password reset, email verification.
 
 ---
 

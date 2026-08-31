@@ -25,4 +25,6 @@ urlpatterns = [
     path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
     # Feature apps mount here, one `include()` per app, as we build each one.
     path("api/v1/", include("core.urls")),
+    # `accounts` app, mounted at /auth/ to match the frontend's features/auth/.
+    path("api/v1/auth/", include("accounts.urls")),
 ]
