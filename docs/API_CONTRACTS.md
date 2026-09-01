@@ -348,6 +348,12 @@ to customers whose `name` (case-insensitive substring) or Revenact ID
 and `18`) matches; blank/omitted returns everything. Powers the
 frontend's search box — there's no separate "External ID" field in the
 schema, so that part of its placeholder text isn't wired to anything.
+`?renewal_within=<days>` filters to non-churned customers with a
+`renewal_date` on or before today+<days> — **no lower bound**, so an
+already-overdue renewal (more urgent, not less) is included, not
+filtered out; ordered soonest/most-overdue-first instead of by name.
+Powers the Organizations page's Renewal card/popover (1-month/3-month
+toggle). A non-integer value is ignored, not an error.
 POST: only `name` is required — every other field above is optional.
 **Response `201`** — the created customer, `owner`/`created_by`/`modified_by`
 nested (same user shape as elsewhere), `health_category` and

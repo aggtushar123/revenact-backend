@@ -1,5 +1,8 @@
 """Integration tier: through the real URLconf + real test DB."""
 
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -175,6 +178,99 @@ class CustomerSearchTests(APITestCase):
         response = self.client.get(self.url, {"search": "globex"})
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["id"], self.globex.id)
+
+
+class CustomerRenewalWindowTests(APITestCase):
+    """?renewal_within= on GET /api/v1/customers/ — powers the
+    Organizations page's Renewal card/popover."""
+
+    url = "/api/v1/customers/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+        self.today = timezone.localdate()
+
+        self.soon = Customer.objects.create(
+            organisation=self.org, name="Renews Soon", renewal_date=self.today + timedelta(days=10)
+        )
+        self.later = Customer.objects.create(
+            organisation=self.org, name="Renews Later", renewal_date=self.today + timedelta(days=45)
+        )
+        self.far = Customer.objects.create(
+            organisation=self.org,
+            name="Renews Far Out",
+            renewal_date=self.today + timedelta(days=100),
+        )
+        Customer.objects.create(organisation=self.org, name="No Renewal Date Set")
+        Customer.objects.create(
+            organisation=self.org,
+            name="Already Renewed",
+            renewal_date=self.today - timedelta(days=5),
+        )
+        Customer.objects.create(
+            organisation=self.org,
+            name="Churned But Due Soon",
+            renewal_date=self.today + timedelta(days=5),
+            lifecycle_stage=Customer.LifecycleStage.CHURN,
+        )
+
+    def test_within_30_days_includes_the_overdue_one_and_the_soon_one_ordered_by_date(self):
+        response = self.client.get(self.url, {"renewal_within": 30})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [c["name"] for c in response.data["results"]]
+        # "Already Renewed" is overdue (renewal_date in the past) — that's
+        # *more* urgent than "Renews Soon", not excluded, so it sorts first.
+        self.assertEqual(names, ["Already Renewed", "Renews Soon"])
+
+    def test_within_90_days_also_includes_later_but_not_far_out(self):
+        response = self.client.get(self.url, {"renewal_within": 90})
+        names = [c["name"] for c in response.data["results"]]
+        self.assertEqual(names, ["Already Renewed", "Renews Soon", "Renews Later"])
+
+    def test_excludes_customers_with_no_renewal_date(self):
+        response = self.client.get(self.url, {"renewal_within": 365})
+        names = {c["name"] for c in response.data["results"]}
+        self.assertNotIn("No Renewal Date Set", names)
+
+    def test_includes_a_renewal_date_already_in_the_past_as_overdue(self):
+        # An overdue renewal needs attention *more* urgently than an
+        # upcoming one, not less — there's no lower bound on the window.
+        response = self.client.get(self.url, {"renewal_within": 365})
+        names = {c["name"] for c in response.data["results"]}
+        self.assertIn("Already Renewed", names)
+
+    def test_excludes_churned_customers_even_if_their_renewal_date_is_due(self):
+        response = self.client.get(self.url, {"renewal_within": 30})
+        names = {c["name"] for c in response.data["results"]}
+        self.assertNotIn("Churned But Due Soon", names)
+
+    def test_non_integer_value_is_ignored_rather_than_erroring(self):
+        response = self.client.get(self.url, {"renewal_within": "soon-ish"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Falls through to the unfiltered (name-ordered) listing.
+        self.assertEqual(response.data["count"], 6)
+
+    def test_omitted_param_returns_the_normal_unfiltered_listing(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.data["count"], 6)
+
+    def test_still_scoped_to_the_callers_organisation(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        Customer.objects.create(
+            organisation=other_org, name="Not Yours", renewal_date=self.today + timedelta(days=1)
+        )
+
+        response = self.client.get(self.url, {"renewal_within": 30})
+        names = {c["name"] for c in response.data["results"]}
+        self.assertNotIn("Not Yours", names)
 
 
 class CustomerDetailTests(APITestCase):
