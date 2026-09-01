@@ -55,6 +55,16 @@ class CustomersFlowTests(LiveServerTestCase):
         self.assertEqual(body["health_category"], "good")
         customer_id = body["id"]
 
+        # 3b. The frontend's search box (name / Revenact ID) works over
+        #     the real endpoint, not just in the ORM-level unit tests.
+        status, body = http_get(self.customers_api("?search=globex"), token=admin_access)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["count"], 1)
+
+        status, body = http_get(self.customers_api(f"?search={customer_id}"), token=admin_access)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["results"][0]["id"], customer_id)
+
         # 4. The CSM (not just the admin) can see it and edit it — customer
         #    records aren't admin-gated the way User Management is.
         status, body = http_get(self.customers_api(), token=csm_access)

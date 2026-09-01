@@ -342,7 +342,12 @@ fields are independently stored and settable.
 
 Auth: `IsAuthenticated` (any role). Scoped to the caller's own organisation.
 
-GET: standard paginated envelope, ordered by name.
+GET: standard paginated envelope, ordered by name. `?search=<text>` filters
+to customers whose `name` (case-insensitive substring) or Revenact ID
+(the row's own `id`, also substring — e.g. `?search=8` matches id `8`
+and `18`) matches; blank/omitted returns everything. Powers the
+frontend's search box — there's no separate "External ID" field in the
+schema, so that part of its placeholder text isn't wired to anything.
 POST: only `name` is required — every other field above is optional.
 **Response `201`** — the created customer, `owner`/`created_by`/`modified_by`
 nested (same user shape as elsewhere), `health_category` and

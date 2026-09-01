@@ -124,6 +124,59 @@ class CustomerListCreateTests(APITestCase):
         self.assertEqual(Customer.objects.get(name="Sneaky Co").organisation_id, self.org.id)
 
 
+class CustomerSearchTests(APITestCase):
+    """?search= on GET /api/v1/customers/ — matches name or Revenact ID
+    (the row's own `id`), per the frontend's search box."""
+
+    url = "/api/v1/customers/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+        self.globex = Customer.objects.create(organisation=self.org, name="Globex Corp")
+        self.initech = Customer.objects.create(organisation=self.org, name="Initech")
+
+    def test_search_matches_name_case_insensitively(self):
+        response = self.client.get(self.url, {"search": "globex"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Globex Corp")
+
+    def test_search_matches_a_substring_of_the_name(self):
+        response = self.client.get(self.url, {"search": "tech"})
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Initech")
+
+    def test_search_matches_revenact_id(self):
+        response = self.client.get(self.url, {"search": str(self.initech.id)})
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.initech.id)
+
+    def test_search_with_no_matches_returns_an_empty_page_not_an_error(self):
+        response = self.client.get(self.url, {"search": "nonexistent-co"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 0)
+
+    def test_blank_search_returns_everything(self):
+        response = self.client.get(self.url, {"search": "  "})
+        self.assertEqual(response.data["count"], 2)
+
+    def test_search_still_scoped_to_the_callers_organisation(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        Customer.objects.create(organisation=other_org, name="Globex Impostor")
+
+        response = self.client.get(self.url, {"search": "globex"})
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.globex.id)
+
+
 class CustomerDetailTests(APITestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
