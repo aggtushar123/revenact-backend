@@ -3,8 +3,9 @@ from datetime import timedelta
 from django.db.models import CharField, Q
 from django.db.models.functions import Cast
 from django.utils import timezone
-from rest_framework import generics
+from rest_framework import generics, views
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 from .models import Customer
 from .serializers import CustomerSerializer
@@ -59,6 +60,90 @@ class CustomerListCreateView(generics.ListCreateAPIView):
                 )
 
         return queryset
+
+
+class CustomerStatsView(views.APIView):
+    """GET /api/v1/customers/stats/ — aggregate rollups for the
+    Organizations page's MetricsPanel (Health / NPS / Lifecycle Stages
+    sections), scoped to the caller's own organisation.
+
+    Every customer counts here, churned ones included — "churn" is
+    itself one of the lifecycle buckets below, unlike ?renewal_within=
+    (on the list endpoint), which excludes them because renewal is moot
+    for an already-churned customer.
+
+    There's no stored MRR field (see Customer model's docstring on why —
+    financials are stored independently, not derived, except this one:
+    MRR has no independent meaning of its own here, it's purely
+    `arr_billed_at_account / 12`) — computed the same way here as the
+    frontend already does it elsewhere (features/customers/mapToOrgRow.ts).
+
+    NPS: a customer with no `nps_score` set is excluded from the
+    promoters/passives/detractors breakdown and the score's denominator
+    (there's nothing to bucket it as) rather than silently counted as a
+    passive.
+
+    This aggregates in Python over the caller's own customers rather
+    than via SQL-side conditional aggregation, because `health_category`
+    is a derived Python property (from `health_score`), not a real
+    column to GROUP BY — see Customer.health_category. Fine at the scale
+    of one tenant's own customer list."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        customers = Customer.objects.filter(organisation=request.user.organisation)
+
+        health = {
+            cat: {"count": 0, "mrr": 0.0, "arr": 0.0} for cat in Customer.HealthCategory.values
+        }
+        lifecycle = {
+            stage: {"count": 0, "mrr": 0.0, "arr": 0.0} for stage in Customer.LifecycleStage.values
+        }
+        promoters = passives = detractors = 0
+        scored = 0
+
+        for customer in customers:
+            arr = float(customer.arr_billed_at_account)
+            mrr = arr / 12
+
+            health_bucket = health[customer.health_category]
+            health_bucket["count"] += 1
+            health_bucket["mrr"] += mrr
+            health_bucket["arr"] += arr
+
+            lifecycle_bucket = lifecycle[customer.lifecycle_stage]
+            lifecycle_bucket["count"] += 1
+            lifecycle_bucket["mrr"] += mrr
+            lifecycle_bucket["arr"] += arr
+
+            if customer.nps_score is not None:
+                scored += 1
+                if customer.nps_score > 0:
+                    promoters += 1
+                elif customer.nps_score == 0:
+                    passives += 1
+                else:
+                    detractors += 1
+
+        for bucket in (*health.values(), *lifecycle.values()):
+            bucket["mrr"] = round(bucket["mrr"], 2)
+            bucket["arr"] = round(bucket["arr"], 2)
+
+        nps_score = round((promoters - detractors) / scored * 100) if scored else 0
+
+        return Response(
+            {
+                "health": health,
+                "nps": {
+                    "promoters": promoters,
+                    "passives": passives,
+                    "detractors": detractors,
+                    "score": nps_score,
+                },
+                "lifecycle": lifecycle,
+            }
+        )
 
 
 class CustomerDetailView(generics.RetrieveUpdateAPIView):

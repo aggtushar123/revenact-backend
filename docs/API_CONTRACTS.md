@@ -57,7 +57,7 @@ expects.
 | — (infra) | `core` | ✅ Built — health check only |
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
-| Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view fetches real paginated data (`features/customers/customersSlice.ts` + `mapToOrgRow.ts`); MetricsPanel still on mock data (needs a stats endpoint, not built). Board, Details, activity feeds, nested Accounts/Contacts not started. |
+| Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view and MetricsPanel (Health/NPS/Lifecycle/Number of Organizations/Renewal) all fetch real data (`features/customers/customersSlice.ts`, `mapToOrgRow.ts`, `?renewal_within=`, `/stats/`). Board, Details, activity feeds, nested Accounts/Contacts not started. |
 | Accounts | — | ⏳ Not started |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
@@ -358,6 +358,41 @@ POST: only `name` is required — every other field above is optional.
 **Response `201`** — the created customer, `owner`/`created_by`/`modified_by`
 nested (same user shape as elsewhere), `health_category` and
 `seat_utilization_percentage` computed.
+
+### `GET /api/v1/customers/stats/`
+
+Auth: `IsAuthenticated`. Scoped to the caller's own organisation, every
+customer included (churned ones too — "churn" is itself a lifecycle
+bucket below, unlike `?renewal_within=` above which excludes them).
+Powers the Organizations page's MetricsPanel (Health / NPS / Lifecycle
+Stages sections).
+
+```json
+{
+  "health": {
+    "good":    { "count": 1, "mrr": 4266.67, "arr": 51200.0 },
+    "average": { "count": 0, "mrr": 0.0,     "arr": 0.0 },
+    "poor":    { "count": 2, "mrr": 7800.0,  "arr": 93600.0 }
+  },
+  "nps": { "promoters": 1, "passives": 0, "detractors": 2, "score": -33 },
+  "lifecycle": {
+    "onboarding": { "count": 0, "mrr": 0.0, "arr": 0.0 },
+    "kickoff":    { "count": 0, "mrr": 0.0, "arr": 0.0 },
+    "adoption":   { "count": 0, "mrr": 0.0, "arr": 0.0 },
+    "live":       { "count": 2, "mrr": 10066.67, "arr": 120800.0 },
+    "renewal":    { "count": 0, "mrr": 0.0, "arr": 0.0 },
+    "churn":      { "count": 1, "mrr": 2000.0, "arr": 24000.0 },
+    "expansion":  { "count": 0, "mrr": 0.0, "arr": 0.0 },
+    "other":      { "count": 0, "mrr": 0.0, "arr": 0.0 }
+  }
+}
+```
+
+`mrr` is derived (`arr_billed_at_account / 12`) — there's no stored MRR
+field. `nps.score = round((promoters - detractors) / scored * 100)`; a
+customer with no `nps_score` set is excluded from the breakdown and
+from `scored`, not counted as a passive. An empty organisation returns
+all-zero buckets, not an error.
 
 ### `GET /api/v1/customers/<id>/`, `PATCH /api/v1/customers/<id>/`
 

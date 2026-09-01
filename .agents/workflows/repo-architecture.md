@@ -126,11 +126,11 @@ components didn't need to change — a few purely-presentational bits with
 no backend counterpart (pill colors, avatar initials, the old mock's
 "(Enterprise)"/"(Mid-Market)" tier suffix on lifecycle stage) are derived
 there rather than fabricated. `MetricsPanel` (the health/NPS/lifecycle
-summary banner) is intentionally still on mock data — computing real
-aggregates would need a dedicated stats endpoint, which wasn't part of
-this pass. Board view, Details page (activity feed, pinned attributes),
-nested Accounts/Contacts, and the Add/Edit/Search/Filter UI (still
-decorative) are also not built.
+summary banner) now fetches `GET /api/v1/customers/stats/` too (see
+`docs/API_CONTRACTS.md` -> that endpoint) — every field on that banner is
+real. Board view, Details page (activity feed, pinned attributes), nested
+Accounts/Contacts, and the Add/Edit/Search/Filter UI (still decorative)
+are also not built.
 
 ### Everything else
 

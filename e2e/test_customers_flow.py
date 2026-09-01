@@ -65,6 +65,13 @@ class CustomersFlowTests(LiveServerTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["results"][0]["id"], customer_id)
 
+        # 3c. The frontend's MetricsPanel stats (Health/NPS/Lifecycle) work
+        #     over the real endpoint too.
+        status, body = http_get(self.customers_api("stats/"), token=admin_access)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["health"]["good"]["count"], 1)
+        self.assertEqual(body["lifecycle"]["live"]["count"], 1)
+
         # 4. The CSM (not just the admin) can see it and edit it — customer
         #    records aren't admin-gated the way User Management is.
         status, body = http_get(self.customers_api(), token=csm_access)
