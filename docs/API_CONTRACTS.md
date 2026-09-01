@@ -354,6 +354,9 @@ already-overdue renewal (more urgent, not less) is included, not
 filtered out; ordered soonest/most-overdue-first instead of by name.
 Powers the Organizations page's Renewal card/popover (1-month/3-month
 toggle). A non-integer value is ignored, not an error.
+Archived customers (`is_archived=true`) never appear in this list, or
+in `?renewal_within=`, or in the stats endpoint below — soft-hidden,
+not deleted; see the detail endpoint below for how to archive/unarchive.
 POST: only `name` is required — every other field above is optional.
 **Response `201`** — the created customer, `owner`/`created_by`/`modified_by`
 nested (same user shape as elsewhere), `health_category` and
@@ -403,6 +406,15 @@ PATCH accepts any subset of the POST fields (partial update), including
 `owner_id` (`400` with a field error if the target user isn't in the
 caller's organisation). Every PATCH sets `modified_by` to the caller,
 regardless of which fields changed.
+
+**Archive/unarchive**: `PATCH {"is_archived": true}` / `{"is_archived":
+false}` — no dedicated endpoint, just a normal field. Distinct from
+`lifecycle_stage=churn`: archiving is "stop showing me this" (a soft
+delete — the record isn't touched otherwise), churning is a business
+outcome (with its own `churn_date`/`churn_reason`/`churn_comment`
+fields, still visible in lists unless separately archived). The detail
+endpoint itself always works regardless of `is_archived` — only the
+list/renewal-window/stats endpoints filter it out.
 
 Not built yet, and deliberately out of scope: Board view, the Details
 page (activity feed, pinned attributes), nested Accounts and Contacts,

@@ -73,6 +73,12 @@ class Customer(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)  # "Created Date"
     updated_at = models.DateTimeField(auto_now=True)  # "Modified Date"
+    is_archived = models.BooleanField(
+        default=False,
+        help_text="Soft-hide from the default list/stats/renewal views without deleting. "
+        "Distinct from lifecycle_stage=churn — archiving is 'stop showing me this', "
+        "churning is a business outcome.",
+    )
 
     # --- Lifecycle & health ---------------------------------------------------
 

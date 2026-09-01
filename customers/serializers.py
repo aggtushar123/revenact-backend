@@ -71,6 +71,7 @@ class CustomerSerializer(serializers.ModelSerializer):
             "churn_date",
             "churn_reason",
             "churn_comment",
+            "is_archived",
         ]
         read_only_fields = ["created_at", "updated_at"]
 

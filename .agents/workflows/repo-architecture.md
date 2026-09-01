@@ -130,9 +130,15 @@ no backend counterpart (pill colors, avatar initials, the old mock's
 there rather than fabricated. `MetricsPanel` (the health/NPS/lifecycle
 summary banner) now fetches `GET /api/v1/customers/stats/` too (see
 `docs/API_CONTRACTS.md` -> that endpoint) — every field on that banner is
-real. Board view, Details page (activity feed, pinned attributes), nested
-Accounts/Contacts, and the Add/Edit/Search/Filter UI (still decorative)
-are also not built.
+real. Add/Edit/Churn/Archive Organization are wired too (a quick-add/edit
+form covering identity, ownership, lifecycle stage, and contract dates
+only — financials, product usage, and NPS/CSAT/health are meant to sync
+from other systems later, not be hand-typed; Churn and Archive are
+separate actions from the general edit form — see `is_archived` on the
+`Customer` model and the detail endpoint's archive/unarchive note in
+`docs/API_CONTRACTS.md`). Board view, Details page (activity feed, pinned
+attributes), nested Accounts/Contacts, and Search/Filter-by-column UI
+(still decorative) are not built.
 
 ### Everything else
 

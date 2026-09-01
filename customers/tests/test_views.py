@@ -404,6 +404,67 @@ class CustomerStatsTests(APITestCase):
         self.assertEqual(good["arr"], 100.0)
 
 
+class CustomerArchiveTests(APITestCase):
+    """is_archived — soft-hides a customer from the list and stats
+    endpoints (PATCH-able like any other field; no dedicated endpoint)."""
+
+    url = "/api/v1/customers/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+        self.customer = Customer.objects.create(
+            organisation=self.org,
+            name="Globex Corp",
+            health_score="9.0",
+            arr_billed_at_account="1200.00",
+        )
+
+    def test_new_customers_are_not_archived_by_default(self):
+        response = self.client.get(f"{self.url}{self.customer.id}/")
+        self.assertEqual(response.data["is_archived"], False)
+
+    def test_archiving_hides_it_from_the_list(self):
+        self.client.patch(f"{self.url}{self.customer.id}/", {"is_archived": True}, format="json")
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.data["count"], 0)
+
+    def test_archiving_hides_it_from_stats(self):
+        self.client.patch(f"{self.url}{self.customer.id}/", {"is_archived": True}, format="json")
+
+        response = self.client.get(f"{self.url}stats/")
+        self.assertEqual(response.data["health"]["good"]["count"], 0)
+
+    def test_archiving_hides_it_from_the_renewal_window(self):
+        self.customer.renewal_date = timezone.localdate()
+        self.customer.save()
+
+        self.client.patch(f"{self.url}{self.customer.id}/", {"is_archived": True}, format="json")
+
+        response = self.client.get(self.url, {"renewal_within": 30})
+        self.assertEqual(response.data["count"], 0)
+
+    def test_archived_customer_still_reachable_directly_and_can_be_unarchived(self):
+        detail_url = f"{self.url}{self.customer.id}/"
+        self.client.patch(detail_url, {"is_archived": True}, format="json")
+
+        response = self.client.get(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["is_archived"], True)
+
+        response = self.client.patch(detail_url, {"is_archived": False}, format="json")
+        self.assertEqual(response.data["is_archived"], False)
+        self.assertEqual(self.client.get(self.url).data["count"], 1)
+
+
 class CustomerDetailTests(APITestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")

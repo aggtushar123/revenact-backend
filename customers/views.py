@@ -31,13 +31,21 @@ class CustomerListCreateView(generics.ListCreateAPIView):
     filtered out. Excludes already-churned customers (renewal is moot
     for those) and anything with no `renewal_date` set. Powers the
     Organizations page's "Renewal" card/popover. A non-integer value is
-    ignored rather than raising an error."""
+    ignored rather than raising an error.
+
+    Archived customers (`is_archived=True`) never appear here — soft-
+    hidden, same as from the stats endpoint below. They're still
+    reachable directly via the detail endpoint (not deleted), and PATCH
+    `is_archived` on it to unarchive; there's just no "show archived"
+    view yet."""
 
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = Customer.objects.filter(organisation=self.request.user.organisation)
+        queryset = Customer.objects.filter(
+            organisation=self.request.user.organisation, is_archived=False
+        )
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -87,12 +95,16 @@ class CustomerStatsView(views.APIView):
     than via SQL-side conditional aggregation, because `health_category`
     is a derived Python property (from `health_score`), not a real
     column to GROUP BY — see Customer.health_category. Fine at the scale
-    of one tenant's own customer list."""
+    of one tenant's own customer list.
+
+    Archived customers are excluded, same as from the list endpoint."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        customers = Customer.objects.filter(organisation=request.user.organisation)
+        customers = Customer.objects.filter(
+            organisation=request.user.organisation, is_archived=False
+        )
 
         health = {
             cat: {"count": 0, "mrr": 0.0, "arr": 0.0} for cat in Customer.HealthCategory.values
