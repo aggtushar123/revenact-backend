@@ -114,6 +114,8 @@ financial fields, even ones the mock data happens to make look additive).
 | `models.py: Customer` | Full `tableData.ts`-matching schema — identity/provenance, lifecycle/health, dates, financials, product/usage, churn |
 | `views.py: CustomerListCreateView` | `GET/POST /customers/` — any authenticated user in the org (no admin gate, unlike User Management) |
 | `views.py: CustomerDetailView` | `GET/PATCH /customers/<id>/` — same org only, 404 outside it |
+| `views.py: CustomerStatsView` | `GET /customers/stats/` — Health/NPS/Lifecycle rollups for MetricsPanel |
+| `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
 
 **Status:** 🟢 Schema and API complete; the List view is wired to real
 data — `react-ts-app`'s `pages/organizations/List.tsx` fetches
