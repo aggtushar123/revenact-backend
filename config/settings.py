@@ -153,6 +153,32 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
 }
 
+# --- Email (forgot/reset password) -----------------------------------------------
+# SMTP creds are optional: with none set, mail falls back to Django's console
+# backend (prints to the runserver terminal instead of sending) so local dev
+# still works without real credentials. Set EMAIL_HOST_USER/EMAIL_HOST_PASSWORD
+# in .env to send for real — see .env.example for the Gmail app-password setup.
+
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_BACKEND = (
+    "django.core.mail.backends.smtp.EmailBackend"
+    if EMAIL_HOST_USER
+    else "django.core.mail.backends.console.EmailBackend"
+)
+EMAIL_HOST = env("EMAIL_HOST", default="smtp.gmail.com")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default=EMAIL_HOST_USER or "noreply@revenact.local")
+
+# Origin the emailed reset link points at (a frontend route, not this API).
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")
+
+# How long a password-reset link stays valid. Consumed by
+# django.contrib.auth.tokens.default_token_generator, which accounts/serializers.py
+# uses directly — see ForgotPasswordSerializer/ResetPasswordSerializer.
+PASSWORD_RESET_TIMEOUT = 60 * 60  # 1 hour
+
 # --- drf-spectacular (OpenAPI schema + Swagger/Redoc UI) -------------------------
 
 SPECTACULAR_SETTINGS = {

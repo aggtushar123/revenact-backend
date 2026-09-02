@@ -12,9 +12,11 @@ from .serializers import (
     ChangePasswordSerializer,
     CreateCSMSerializer,
     EditCSMSerializer,
+    ForgotPasswordSerializer,
     LoginSerializer,
     LogoutSerializer,
     MeSerializer,
+    ResetPasswordSerializer,
     SignupSerializer,
     UserSerializer,
 )
@@ -102,6 +104,42 @@ class ChangePasswordView(generics.GenericAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(status=status.HTTP_200_OK)
+
+
+class ForgotPasswordView(generics.GenericAPIView):
+    """POST /api/v1/auth/password-reset/ — { email }. Emails a reset link
+    when that address matches a user, but always responds 200 with the same
+    generic message either way (see ForgotPasswordSerializer) so the
+    endpoint can't be used to probe which emails are registered."""
+
+    serializer_class = ForgotPasswordSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {"detail": "If an account exists for that email, we've sent a password reset link."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ResetPasswordView(generics.GenericAPIView):
+    """POST /api/v1/auth/password-reset/confirm/ — { uid, token, new_password },
+    the uid+token pair from the emailed link. Sets the new password if
+    they're valid and unexpired; `400` with a generic error otherwise. Does
+    not log the caller in — they sign in with the new password same as any
+    other login, same as ChangePasswordView doesn't either."""
+
+    serializer_class = ResetPasswordSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({"detail": "Your password has been reset."}, status=status.HTTP_200_OK)
 
 
 class CSMListCreateView(generics.ListCreateAPIView):

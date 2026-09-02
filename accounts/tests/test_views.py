@@ -1,6 +1,10 @@
 """Integration tier: through the real URLconf + real test DB, one endpoint
 at a time (rest_framework.test.APITestCase)."""
 
+from django.contrib.auth.tokens import default_token_generator
+from django.core import mail
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -452,3 +456,114 @@ class MembersListTests(APITestCase):
         response = self.client.get(self.url)
         emails = [row["email"] for row in response.data]
         self.assertNotIn("other@other.io", emails)
+
+
+class ForgotPasswordTests(APITestCase):
+    url = "/api/v1/auth/password-reset/"
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io", password="oldpassword1", name="Alice Admin",
+            organisation=org, role=User.Role.ADMIN,
+        )
+
+    def test_known_email_gets_a_reset_email(self):
+        response = self.client.post(self.url, {"email": "alice@acme.io"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["alice@acme.io"])
+        self.assertIn("reset-password?uid=", mail.outbox[0].body)
+
+    def test_unknown_email_still_returns_200_but_sends_nothing(self):
+        response = self.client.post(self.url, {"email": "nobody@nowhere.io"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_lookup_is_case_insensitive(self):
+        response = self.client.post(self.url, {"email": "ALICE@acme.io"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_rejects_missing_email(self):
+        response = self.client.post(self.url, {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ResetPasswordTests(APITestCase):
+    url = "/api/v1/auth/password-reset/confirm/"
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io", password="oldpassword1", name="Alice Admin",
+            organisation=org, role=User.Role.ADMIN,
+        )
+        self.uid = urlsafe_base64_encode(force_bytes(self.user.pk))
+        self.token = default_token_generator.make_token(self.user)
+
+    def test_valid_token_resets_the_password(self):
+        response = self.client.post(
+            self.url,
+            {"uid": self.uid, "token": self.token, "new_password": "newpassword1"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("newpassword1"))
+        self.assertFalse(self.user.check_password("oldpassword1"))
+
+    def test_token_cannot_be_reused_once_the_password_has_changed(self):
+        # default_token_generator's hash includes the password field, so a
+        # successful reset invalidates the same token for a second use.
+        self.client.post(
+            self.url,
+            {"uid": self.uid, "token": self.token, "new_password": "newpassword1"},
+            format="json",
+        )
+        response = self.client.post(
+            self.url,
+            {"uid": self.uid, "token": self.token, "new_password": "anotherpassword1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_garbage_token_is_rejected(self):
+        response = self.client.post(
+            self.url,
+            {"uid": self.uid, "token": "not-a-real-token", "new_password": "newpassword1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_garbage_uid_is_rejected(self):
+        response = self.client.post(
+            self.url,
+            {"uid": "not-a-real-uid", "token": self.token, "new_password": "newpassword1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_uid_for_a_nonexistent_user_is_rejected(self):
+        bogus_uid = urlsafe_base64_encode(force_bytes(999999))
+        response = self.client.post(
+            self.url,
+            {"uid": bogus_uid, "token": self.token, "new_password": "newpassword1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_new_password_too_short_is_rejected_and_old_one_still_works(self):
+        response = self.client.post(
+            self.url,
+            {"uid": self.uid, "token": self.token, "new_password": "short"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("oldpassword1"))
