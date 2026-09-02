@@ -45,5 +45,15 @@ urlpatterns = [
         views.AccountTaskListView.as_view(),
         name="account-tasks",
     ),
+    path(
+        "<int:customer_id>/notes/",
+        views.CustomerNoteListView.as_view(),
+        name="customer-notes",
+    ),
+    path(
+        "<int:customer_id>/accounts/<int:account_id>/notes/",
+        views.AccountNoteListView.as_view(),
+        name="account-notes",
+    ),
     path("<int:pk>/", views.CustomerDetailView.as_view(), name="customer-detail"),
 ]

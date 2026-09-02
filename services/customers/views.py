@@ -14,6 +14,7 @@ from .serializers import (
     ActivitySerializer,
     CustomerSerializer,
     EmailSerializer,
+    NoteSerializer,
     TaskSerializer,
 )
 
@@ -347,3 +348,42 @@ class AccountTaskListView(generics.ListAPIView):
             customer__organisation=self.request.user.organisation,
         )
         return account.tasks.all()
+
+
+class CustomerNoteListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/notes/ — every
+    organization-level Note for one Customer, scoped to the caller's
+    own organisation. Same 404-not-empty-list convention as
+    CustomerActivityListView. Powers ActivityFeed's "Notes" filter on
+    the Organization Details page's General tab."""
+
+    serializer_class = NoteSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+        return customer.notes.all()
+
+
+class AccountNoteListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/accounts/<account_id>/notes/
+    — every account-level Note for one Account, scoped to both its
+    customer_id and the caller's own organisation. Same reasoning as
+    AccountActivityListView. Powers ActivityFeed's "Notes" filter on
+    the standalone Account page."""
+
+    serializer_class = NoteSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        account = get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+        return account.notes.all()

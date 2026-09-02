@@ -472,3 +472,72 @@ class Task(models.Model):
     def __str__(self):
         parent = self.customer or self.account
         return f"{self.title} — {parent}"
+
+
+class Note(models.Model):
+    """A logged note — same "belongs to exactly one of Customer or
+    Account" shape as Activity/Email/Task above, backing the "Notes"
+    filter within ActivityFeed on both the Organization Details page's
+    General tab and the standalone Account page.
+
+    Mirrors the frontend's mock NoteItem shape
+    (react-ts-app/src/components/organizations/activityData.ts):
+    `title`/`author_name`/`body`/`logged_at` are the card's fields.
+    `links` is a real field, unlike Activity's decorative "Pulse"
+    badge — the mock's card always showed a hardcoded "1 Links"
+    regardless of the note, which was a bug, not a deliberate
+    decoration; this makes it a real per-note count, shown on the
+    card only when greater than zero ("links if any").
+
+    No `tags` field — the mock carries one, but the component that
+    renders NoteItem never displays it, so there's no card field to
+    back. No `group` field either — the card's date-group header is
+    derived from `logged_at` at render time, same as Activity/Email/
+    Task's own date fields.
+
+    `author_name` is plain text, not a FK — same reasoning as Task's
+    `assignee_name`/Email's `sender_name`: the mock's names aren't
+    real signed-up users in any seeded organisation."""
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="notes",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level note. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="notes",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level note. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    title = models.CharField(max_length=255)
+    author_name = models.CharField(max_length=150)
+    body = models.TextField()
+    logged_at = models.DateField()
+    links = models.PositiveIntegerField(
+        default=0, help_text="Count shown on the card's link line — only rendered when > 0."
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-logged_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="note_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.title} — {parent}"

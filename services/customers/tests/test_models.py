@@ -4,7 +4,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from services.accounts.models import Organisation
-from services.customers.models import Account, Activity, Customer, Email, Task
+from services.customers.models import Account, Activity, Customer, Email, Note, Task
 
 
 class HealthCategoryTests(TestCase):
@@ -194,3 +194,42 @@ class TaskParentConstraintTests(TestCase):
     def test_status_defaults_to_pending(self):
         task = Task.objects.create(customer=self.customer, **self._task_kwargs())
         self.assertEqual(task.status, Task.Status.PENDING)
+
+
+class NoteParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Activity/Email/Task."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def _note_kwargs(self):
+        return {
+            "title": "Call Notes: Product Feedback Session",
+            "author_name": "Edgar Holmes",
+            "body": "Customer expressed interest in AI-powered analytics.",
+            "logged_at": "2026-03-04",
+        }
+
+    def test_customer_only_is_valid(self):
+        note = Note.objects.create(customer=self.customer, **self._note_kwargs())
+        self.assertIsNone(note.account)
+
+    def test_account_only_is_valid(self):
+        note = Note.objects.create(account=self.account, **self._note_kwargs())
+        self.assertIsNone(note.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Note.objects.create(**self._note_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Note.objects.create(
+                customer=self.customer, account=self.account, **self._note_kwargs()
+            )
+
+    def test_links_defaults_to_zero(self):
+        note = Note.objects.create(customer=self.customer, **self._note_kwargs())
+        self.assertEqual(note.links, 0)

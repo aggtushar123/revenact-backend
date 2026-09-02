@@ -61,7 +61,8 @@ expects.
 | Accounts (Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. Accounts tab fetches/displays real accounts and Add/Edit Account is wired (`createAccount`/`updateAccount` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
-| Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `TASKS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
+| Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
+| Notes (`ActivityFeed`'s "Notes" filter) | `customers` (`Note` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `NOTES_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
@@ -678,6 +679,50 @@ Auth: `IsAuthenticated`. Every account-level `Task` for one `Account`,
 scoped to both its `customer_id` and the caller's own organisation —
 same reasoning as the Activity account-level endpoint. Powers
 ActivityFeed's "Tasks" filter on the standalone Account page.
+
+**Response `200`** — same shape as the Customer-scoped list above.
+
+### Models — `Note`
+
+Mirrors: `src/components/shared/ActivityFeed.tsx`'s "Notes" filter,
+`src/components/organizations/activity/NotesTab.tsx` (the card:
+title, author ("Logged by"), body, date, a link count shown only
+when positive).
+
+Same "belongs to exactly one of `Customer` or `Account`" shape as
+`Activity`/`Email`/`Task` (read-only for this round).
+
+Fields: `title`, `author_name` (plain text, not a FK — same reasoning
+as Task's `assignee_name`), `body`, `logged_at`, `links` (a real
+field — the frontend mock's card always showed a hardcoded "1 Links"
+regardless of the note, which was a bug, not a deliberate decoration
+the way Activity's "Pulse" badge is; this makes it a real per-note
+count, shown on the card only when greater than zero). No `tags`
+field — the mock carries one, but the component that renders it never
+displays it, so there's no card field to back. No `group` field
+either — the card's date-group header is derived from `logged_at` at
+render time.
+
+See `seed_demo_notes` management command for demo data (run after
+`seed_demo_accounts`) — `links` varies across 0 and a few positive
+counts on purpose, to exercise both the shown and hidden states.
+
+### `GET /api/v1/customers/<customer_id>/notes/`
+
+Auth: `IsAuthenticated`. Every organization-level `Note` for one
+`Customer`, scoped to the caller's own organisation — same
+404-not-empty-list convention as the Activity list endpoint. Powers
+ActivityFeed's "Notes" filter on the Organization Details page.
+
+**Response `200`** — a plain array, each entry: `id`, `title`,
+`author_name`, `body`, `logged_at`, `links`.
+
+### `GET /api/v1/customers/<customer_id>/accounts/<account_id>/notes/`
+
+Auth: `IsAuthenticated`. Every account-level `Note` for one `Account`,
+scoped to both its `customer_id` and the caller's own organisation —
+same reasoning as the Activity account-level endpoint. Powers
+ActivityFeed's "Notes" filter on the standalone Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
 
