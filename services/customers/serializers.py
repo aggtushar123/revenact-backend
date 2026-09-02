@@ -3,7 +3,7 @@ from rest_framework import serializers
 from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
 
-from .models import Account, Activity, Customer, Email, Note, Task, Ticket
+from .models import Account, Activity, CalendarEvent, Customer, Email, Note, Task, Ticket
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -209,4 +209,21 @@ class TicketSerializer(serializers.ModelSerializer):
             "priority",
             "opened_at",
             "links",
+        ]
+
+
+class CalendarEventSerializer(serializers.ModelSerializer):
+    """Read-only — see CalendarEvent model's docstring."""
+
+    class Meta:
+        model = CalendarEvent
+        fields = [
+            "id",
+            "title",
+            "description",
+            "type",
+            "event_date",
+            "start_time",
+            "end_time",
+            "attendee_count",
         ]

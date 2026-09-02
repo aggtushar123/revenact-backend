@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Account, Activity, Customer, Email, Note, Task, Ticket
+from .models import Account, Activity, CalendarEvent, Customer, Email, Note, Task, Ticket
 
 
 @admin.register(Customer)
@@ -88,4 +88,21 @@ class TicketAdmin(admin.ModelAdmin):
     ]
     list_filter = ["status", "priority"]
     search_fields = ["ticket_number", "title", "assignee_name", "customer__name", "account__name"]
+    readonly_fields = ["created_at"]
+
+
+@admin.register(CalendarEvent)
+class CalendarEventAdmin(admin.ModelAdmin):
+    list_display = [
+        "title",
+        "type",
+        "customer",
+        "account",
+        "event_date",
+        "start_time",
+        "end_time",
+        "attendee_count",
+    ]
+    list_filter = ["type"]
+    search_fields = ["title", "customer__name", "account__name"]
     readonly_fields = ["created_at"]

@@ -63,7 +63,8 @@ expects.
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
 | Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
 | Notes (`ActivityFeed`'s "Notes" filter) | `customers` (`Note` model) | 🟢 Read-only, API-complete — see below. `NotesTab.tsx` fetches real data through `fetchNotesForCustomer`/`fetchNotesForAccount`; the link line now reflects a real per-note count. No create/update endpoint yet. |
-| Tickets (`ActivityFeed`'s "Tickets" filter) | `customers` (`Ticket` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `TICKETS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
+| Tickets (`ActivityFeed`'s "Tickets" filter) | `customers` (`Ticket` model) | 🟢 Read-only, API-complete — see below. `TicketsTab.tsx` fetches real data through `fetchTicketsForCustomer`/`fetchTicketsForAccount`; the flag icon now reflects real priority and the link line a real per-ticket count. No create/update endpoint yet. |
+| Calendar Events (`ActivityFeed`'s "Calendar Events" filter) | `customers` (`CalendarEvent` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `CALENDAR_EVENTS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
@@ -775,6 +776,53 @@ Auth: `IsAuthenticated`. Every account-level `Ticket` for one
 `Account`, scoped to both its `customer_id` and the caller's own
 organisation — same reasoning as the Activity account-level endpoint.
 Powers ActivityFeed's "Tickets" filter on the standalone Account page.
+
+**Response `200`** — same shape as the Customer-scoped list above.
+
+### Models — `CalendarEvent`
+
+Mirrors: `src/components/shared/ActivityFeed.tsx`'s "Calendar Events"
+filter, `src/components/organizations/activity/CalendarEventsTab.tsx`
+(the card: a type icon/badge, title, description, start–end time, an
+attendee count, grouped by date).
+
+Same "belongs to exactly one of `Customer` or `Account`" shape as
+`Activity`/`Email`/`Task`/`Note`/`Ticket` (read-only for this round).
+Unlike `Ticket`'s card, nothing here was found unwired in the mock —
+`type` already colored the icon/badge for real, and every other field
+maps to a real value.
+
+Fields: `title`, `description`, `type` (`TextChoices` —
+`meeting`/`call`/`review`/`demo`), `event_date`, `start_time`,
+`end_time`, `attendee_count`. The mock's own `attendees` field carries
+a full array of names, but the card only ever renders
+`attendees.length` ("N attendees"), never the names — so this stores
+`attendee_count` directly rather than a list no UI surface displays.
+No `group` field — the card's date-group header is derived from
+`event_date` at render time.
+
+See `seed_demo_calendar_events` management command for demo data (run
+after `seed_demo_accounts`).
+
+### `GET /api/v1/customers/<customer_id>/calendar-events/`
+
+Auth: `IsAuthenticated`. Every organization-level `CalendarEvent` for
+one `Customer`, scoped to the caller's own organisation — same
+404-not-empty-list convention as the Activity list endpoint. Powers
+ActivityFeed's "Calendar Events" filter on the Organization Details
+page.
+
+**Response `200`** — a plain array, each entry: `id`, `title`,
+`description`, `type`, `event_date`, `start_time`, `end_time`,
+`attendee_count`.
+
+### `GET /api/v1/customers/<customer_id>/accounts/<account_id>/calendar-events/`
+
+Auth: `IsAuthenticated`. Every account-level `CalendarEvent` for one
+`Account`, scoped to both its `customer_id` and the caller's own
+organisation — same reasoning as the Activity account-level endpoint.
+Powers ActivityFeed's "Calendar Events" filter on the standalone
+Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
 

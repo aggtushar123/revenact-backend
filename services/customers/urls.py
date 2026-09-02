@@ -65,5 +65,15 @@ urlpatterns = [
         views.AccountTicketListView.as_view(),
         name="account-tickets",
     ),
+    path(
+        "<int:customer_id>/calendar-events/",
+        views.CustomerCalendarEventListView.as_view(),
+        name="customer-calendar-events",
+    ),
+    path(
+        "<int:customer_id>/accounts/<int:account_id>/calendar-events/",
+        views.AccountCalendarEventListView.as_view(),
+        name="account-calendar-events",
+    ),
     path("<int:pk>/", views.CustomerDetailView.as_view(), name="customer-detail"),
 ]

@@ -626,3 +626,76 @@ class Ticket(models.Model):
     def __str__(self):
         parent = self.customer or self.account
         return f"{self.ticket_number} {self.title} — {parent}"
+
+
+class CalendarEvent(models.Model):
+    """A scheduled meeting/call/review/demo — same "belongs to exactly
+    one of Customer or Account" shape as Activity/Email/Task/Note/
+    Ticket above, backing the "Calendar Events" filter within
+    ActivityFeed on both the Organization Details page's General tab
+    and the standalone Account page.
+
+    Field set was reverse-engineered from the frontend card
+    (react-ts-app/src/components/organizations/activity/
+    CalendarEventsTab.tsx) — unlike Ticket's card, nothing here was
+    found unwired; `type` already colored the icon/badge for real, and
+    every other field the card touches maps to a real value. The one
+    departure from the mock's own shape: the mock's `attendees` field
+    carries a full array of names, but the card only ever renders
+    `attendees.length` ("N attendees") — never the names themselves —
+    so this stores `attendee_count` directly rather than a list no UI
+    surface displays (same reasoning as Note's excluded `tags` and
+    Ticket's excluded `description`, applied to the part of a field
+    that isn't shown rather than the whole field for once, since the
+    *count* clearly is shown)."""
+
+    class EventType(models.TextChoices):
+        MEETING = "meeting", "Meeting"
+        CALL = "call", "Call"
+        REVIEW = "review", "Review"
+        DEMO = "demo", "Demo"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="calendar_events",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level event. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="calendar_events",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level event. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    title = models.CharField(max_length=255)
+    description = models.CharField(max_length=500)
+    type = models.CharField(max_length=8, choices=EventType.choices)
+    event_date = models.DateField()
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    attendee_count = models.PositiveIntegerField(
+        default=0, help_text='Shown on the card as "N attendees" — not a list of names.'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-event_date", "start_time", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="calendarevent_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.title} — {parent}"

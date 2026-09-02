@@ -12,6 +12,7 @@ from .models import Account, Customer
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
+    CalendarEventSerializer,
     CustomerSerializer,
     EmailSerializer,
     NoteSerializer,
@@ -427,3 +428,42 @@ class AccountTicketListView(generics.ListAPIView):
             customer__organisation=self.request.user.organisation,
         )
         return account.tickets.all()
+
+
+class CustomerCalendarEventListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/calendar-events/ — every
+    organization-level CalendarEvent for one Customer, scoped to the
+    caller's own organisation. Same 404-not-empty-list convention as
+    CustomerActivityListView. Powers ActivityFeed's "Calendar Events"
+    filter on the Organization Details page's General tab."""
+
+    serializer_class = CalendarEventSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+        return customer.calendar_events.all()
+
+
+class AccountCalendarEventListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/accounts/<account_id>/calendar-events/
+    — every account-level CalendarEvent for one Account, scoped to
+    both its customer_id and the caller's own organisation. Same
+    reasoning as AccountActivityListView. Powers ActivityFeed's
+    "Calendar Events" filter on the standalone Account page."""
+
+    serializer_class = CalendarEventSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        account = get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+        return account.calendar_events.all()

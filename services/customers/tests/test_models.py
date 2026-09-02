@@ -4,7 +4,16 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from services.accounts.models import Organisation
-from services.customers.models import Account, Activity, Customer, Email, Note, Task, Ticket
+from services.customers.models import (
+    Account,
+    Activity,
+    CalendarEvent,
+    Customer,
+    Email,
+    Note,
+    Task,
+    Ticket,
+)
 
 
 class HealthCategoryTests(TestCase):
@@ -273,3 +282,42 @@ class TicketParentConstraintTests(TestCase):
     def test_status_defaults_to_open(self):
         ticket = Ticket.objects.create(customer=self.customer, **self._ticket_kwargs())
         self.assertEqual(ticket.status, Ticket.Status.OPEN)
+
+
+class CalendarEventParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Activity/Email/Task/
+    Note/Ticket."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def _event_kwargs(self):
+        return {
+            "title": "Quarterly Business Review",
+            "description": "Q1 2026 QBR with stakeholders",
+            "type": CalendarEvent.EventType.REVIEW,
+            "event_date": "2026-03-15",
+            "start_time": "10:00",
+            "end_time": "11:30",
+            "attendee_count": 3,
+        }
+
+    def test_customer_only_is_valid(self):
+        event = CalendarEvent.objects.create(customer=self.customer, **self._event_kwargs())
+        self.assertIsNone(event.account)
+
+    def test_account_only_is_valid(self):
+        event = CalendarEvent.objects.create(account=self.account, **self._event_kwargs())
+        self.assertIsNone(event.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            CalendarEvent.objects.create(**self._event_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            CalendarEvent.objects.create(
+                customer=self.customer, account=self.account, **self._event_kwargs()
+            )

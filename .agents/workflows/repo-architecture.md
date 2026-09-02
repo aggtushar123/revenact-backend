@@ -157,6 +157,9 @@ financial fields, even ones the mock data happens to make look additive).
 | `models.py: Ticket` | Same exactly-one-parent shape as `Activity`/`Email`/`Task`/`Note` — a support ticket backing `ActivityFeed`'s "Tickets" filter. Read-only so far. Field set (including `priority`, not just `status`) was reverse-engineered from the card, not dictated up front — see the model's own docstring. |
 | `views.py: CustomerTicketListView` | `GET /customers/<customer_id>/tickets/` — org-level tickets for one Customer, same 404 convention |
 | `views.py: AccountTicketListView` | `GET /customers/<customer_id>/accounts/<account_id>/tickets/` — account-level tickets for one Account |
+| `models.py: CalendarEvent` | Same exactly-one-parent shape as `Activity`/`Email`/`Task`/`Note`/`Ticket` — a scheduled meeting/call/review/demo backing `ActivityFeed`'s "Calendar Events" filter. Read-only so far. `attendee_count` is stored directly rather than a list of names, since the card only ever renders the count. |
+| `views.py: CustomerCalendarEventListView` | `GET /customers/<customer_id>/calendar-events/` — org-level events for one Customer, same 404 convention |
+| `views.py: AccountCalendarEventListView` | `GET /customers/<customer_id>/accounts/<account_id>/calendar-events/` — account-level events for one Account |
 | `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
 | `management/commands/seed_demo_accounts.py` | Dev-only: seeds Account rows (from accountsData.ts) under existing demo Customers — run after seed_demo_customers. Idempotent. |
 | `management/commands/seed_demo_activities.py` | Dev-only: seeds Activity rows under every seeded Customer/Account — run after seed_demo_accounts. Idempotent. |
@@ -164,6 +167,7 @@ financial fields, even ones the mock data happens to make look additive).
 | `management/commands/seed_demo_tasks.py` | Dev-only: seeds Task rows under every seeded Customer/Account — due dates are offsets from the run date, not fixed calendar dates (a due date is inherently relative to "now"), so idempotency keys on (parent, title) and re-running refreshes the dates. Idempotent. |
 | `management/commands/seed_demo_notes.py` | Dev-only: seeds Note rows under every seeded Customer/Account — `links` varies across 0 and a few positive counts to exercise both card states. Idempotent. |
 | `management/commands/seed_demo_tickets.py` | Dev-only: seeds Ticket rows under every seeded Customer/Account — `links` and `priority` both vary across their full range to exercise every card state. Idempotent. |
+| `management/commands/seed_demo_calendar_events.py` | Dev-only: seeds CalendarEvent rows under every seeded Customer/Account — spans all four event types. Idempotent. |
 
 **Status:** 🟢 Schema and API complete; the List view and the Details
 page's General + Accounts tabs are wired to real data — `react-ts-app`'s
@@ -219,17 +223,25 @@ too: `NotesTab.tsx` fetches real data through
 `Activity`/`Email`/`Task` — the link line now reflects a real per-note
 count instead of a hardcoded "1 Links".
 
-`Ticket` (backing `ActivityFeed`'s "Tickets" filter) is 🟡
-backend-only, same stage the others were in before their own frontend
-pass: model, the two scoped list endpoints above, and demo seed data
-all exist, but `TicketsTab.tsx` still reads the `TICKETS_DATA`/
-`ACCOUNT_ID_MAP` mock rather than these endpoints.
+`Ticket` (backing `ActivityFeed`'s "Tickets" filter) is 🟢
+frontend-wired too: `TicketsTab.tsx` fetches real data through
+`fetchTicketsForCustomer`/`fetchTicketsForAccount`, same pattern as
+the others — the flag icon now reflects real `priority` (previously
+unwired regardless of the mock's own priority values) and the link
+line a real per-ticket count.
 
-The feed's remaining filters (Calendar Events/Slack) are still 100%
-mock — no backend model yet.
+`CalendarEvent` (backing `ActivityFeed`'s "Calendar Events" filter) is
+🟡 backend-only, same stage the others were in before their own
+frontend pass: model, the two scoped list endpoints above, and demo
+seed data all exist, but `CalendarEventsTab.tsx` still reads the
+`CALENDAR_EVENTS_DATA`/`ACCOUNT_ID_MAP` mock rather than these
+endpoints.
+
+The feed's one remaining filter (Slack) is still 100% mock — no
+backend model yet.
 
 Not built yet: Board view, nested Contacts, Search/Filter-by-column UI
-(still decorative), and the frontend wiring for `Ticket` above.
+(still decorative), and the frontend wiring for `CalendarEvent` above.
 
 ### Everything else
 
