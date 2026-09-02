@@ -18,6 +18,11 @@ class Customer(models.Model):
     "Revenact ID" (a column in the frontend table) is just this row's own
     `id` — there's no separate field for it.
 
+    `email`/`phone` aren't part of that original mock schema — they back
+    ActivityFeed's Overview tab (Domain/Location/Email/Phone), which
+    used to show a fabricated `contact@<domain>` and a hardcoded phone
+    number identical for every organization.
+
     A few fields are *derived*, not stored, to avoid ever disagreeing with
     the values they're computed from: `health_category` (from
     `health_score`) and `seat_utilization_percentage` (from
@@ -57,6 +62,10 @@ class Customer(models.Model):
     name = models.CharField(max_length=255)
     address = models.CharField(max_length=255, blank=True, help_text='"Name / Address" column.')
     domain = models.CharField(max_length=255, blank=True)
+    email = models.EmailField(blank=True, help_text="Primary contact email, shown on Overview.")
+    phone = models.CharField(
+        max_length=32, blank=True, help_text="Primary contact phone, shown on Overview."
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         related_name="owned_customers",
@@ -179,6 +188,15 @@ class Account(models.Model):
     lifecycle stage and health mean exactly the same thing as a
     customer's, just at a finer grain.
 
+    `domain`/`address`/`email`/`phone` all fall back to the parent
+    Customer's own value when blank — the frontend's own
+    mapAccountToAccountRow.ts does the falling back (same as it
+    already did for `domain` alone before `address`/`email`/`phone`
+    existed here), not this model or its serializer; a sub-account
+    with no info of its own is assumed to share its parent's contact
+    details rather than have none, matching ActivityFeed's Overview
+    tab for the standalone Account page.
+
     Add/Edit Account is wired (AccountListCreateView/AccountDetailView) —
     see those views' docstrings for exactly which fields the UI sends."""
 
@@ -188,6 +206,20 @@ class Account(models.Model):
         max_length=255,
         blank=True,
         help_text="Falls back to the parent customer's domain (for the logo) when blank.",
+    )
+    address = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Falls back to the parent customer's address (Overview's Location) when blank.",
+    )
+    email = models.EmailField(
+        blank=True,
+        help_text="Falls back to the parent customer's email (Overview) when blank.",
+    )
+    phone = models.CharField(
+        max_length=32,
+        blank=True,
+        help_text="Falls back to the parent customer's phone (Overview) when blank.",
     )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,

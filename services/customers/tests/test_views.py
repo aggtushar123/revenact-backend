@@ -74,6 +74,8 @@ class CustomerListCreateTests(APITestCase):
                 "name": "Globex Corp",
                 "address": "Cupertino, CA",
                 "domain": "globex.com",
+                "email": "contact@globex.com",
+                "phone": "+1 (555) 010-2030",
                 "ai_pulse_score": "very_satisfied",
                 "ai_pulse_reason": "Consistent high feature adoption.",
                 "pulse": [1, 1, 1, 1, 1],
@@ -103,6 +105,8 @@ class CustomerListCreateTests(APITestCase):
         self.assertEqual(response.data["seat_utilization_percentage"], 84.11)
         customer = Customer.objects.get(name="Globex Corp")
         self.assertEqual(customer.domain, "globex.com")
+        self.assertEqual(customer.email, "contact@globex.com")
+        self.assertEqual(customer.phone, "+1 (555) 010-2030")
         self.assertEqual(str(customer.total_contract_value), "179500.00")
 
     def test_csm_can_also_list_and_create(self):
@@ -630,7 +634,14 @@ class AccountListCreateTests(APITestCase):
 
         response = self.client.post(
             self.url,
-            {"name": "North America", "domain": "na.globex.com", "lifecycle_stage": "onboarding"},
+            {
+                "name": "North America",
+                "domain": "na.globex.com",
+                "address": "Austin, TX",
+                "email": "na@globex.com",
+                "phone": "+1 (555) 020-4040",
+                "lifecycle_stage": "onboarding",
+            },
             format="json",
         )
 
@@ -639,6 +650,9 @@ class AccountListCreateTests(APITestCase):
         account = Account.objects.get(name="North America")
         self.assertEqual(account.customer_id, self.customer.id)
         self.assertEqual(account.domain, "na.globex.com")
+        self.assertEqual(account.address, "Austin, TX")
+        self.assertEqual(account.email, "na@globex.com")
+        self.assertEqual(account.phone, "+1 (555) 020-4040")
 
     def test_create_only_requires_a_name(self):
         self.client.force_authenticate(self.admin)

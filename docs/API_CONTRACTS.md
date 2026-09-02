@@ -329,13 +329,16 @@ system, hence two different names — never call a `Customer` an
 
 - **Identity/provenance**: `organisation` (FK, the tenant — always
   server-set, never client-supplied), `name`, `address` (the mock table's
-  "Name / Address" column), `domain`, `owner` (FK to `accounts.User`,
-  nullable, same-tenant only), `created_by`/`modified_by` (FK to
-  `accounts.User`, **always server-set** from the caller on create/update —
-  not client-settable even if present in the request body),
-  `created_at`/`updated_at` (the "Created Date"/"Modified Date" halves of
-  those two mock columns). "Revenact ID" is just this row's own `id` —
-  no separate field.
+  "Name / Address" column), `domain`, `email`/`phone` (contact info —
+  not part of the original mock schema; back ActivityFeed's Overview
+  tab, replacing what used to be a fabricated `contact@<domain>` and a
+  phone number hardcoded identically for every organization), `owner`
+  (FK to `accounts.User`, nullable, same-tenant only),
+  `created_by`/`modified_by` (FK to `accounts.User`, **always
+  server-set** from the caller on create/update — not client-settable
+  even if present in the request body), `created_at`/`updated_at` (the
+  "Created Date"/"Modified Date" halves of those two mock columns).
+  "Revenact ID" is just this row's own `id` — no separate field.
 - **Lifecycle/health**: `lifecycle_stage` (choices, unchanged from the
   first pass), `health_score` (decimal **0.0–10.0** — matches this
   table's actual scale, which is *not* the 0–100 scale used elsewhere in
@@ -488,24 +491,35 @@ derivation, rather than redefining them — an account's lifecycle stage
 and health mean the same thing as a customer's, just at a finer grain.
 
 Fields: `customer` (FK, server-scoped — **read-only**, never client-
-supplied, see the endpoints below), `name`, `domain` (blank falls back
-to the parent customer's domain for the logo — frontend responsibility,
-not enforced server-side), `owner` (FK to `accounts.User`, nullable,
-same-tenant only, validated the same way as `Customer.owner_id`),
-`created_at`/`updated_at`, `lifecycle_stage`, `health_score` (0.0–10.0,
-`health_category` derived, same thresholds as Customer), `pulse` (JSON
-list), `ai_pulse_score`, `ai_pulse_reason`, `nps_score` (−100 to 100),
-`csat_score` (0–100), `renewal_date`, `arr` (MRR is derived, `arr / 12`,
-not stored — same convention as Customer).
+supplied, see the endpoints below), `name`, `domain`/`address`/`email`/
+`phone` (each blank falls back to the parent customer's own domain/
+address/email/phone — for the logo and for ActivityFeed's Overview tab
+on the standalone Account page — frontend responsibility, in
+`mapAccountToAccountRow.ts`, not enforced server-side; `address`/
+`email`/`phone` aren't part of the original `AccountRow` mock schema,
+added alongside Customer's own for the same Overview-tab reason),
+`owner` (FK to `accounts.User`, nullable, same-tenant only, validated
+the same way as `Customer.owner_id`), `created_at`/`updated_at`,
+`lifecycle_stage`, `health_score` (0.0–10.0, `health_category` derived,
+same thresholds as Customer), `pulse` (JSON list), `ai_pulse_score`,
+`ai_pulse_reason`, `nps_score` (−100 to 100), `csat_score` (0–100),
+`renewal_date`, `arr` (MRR is derived, `arr / 12`, not stored — same
+convention as Customer).
 
 **Add/Edit Account** covers identity, ownership, lifecycle stage, and
 renewal date — same product decision as Customer's own Add/Edit form.
 `health_score`/`pulse`/`ai_pulse_score`/`ai_pulse_reason`/`nps_score`/
-`csat_score`/`arr` are technically writable via `AccountSerializer` too
-(not restricted at the API layer, same as `CustomerSerializer`) but the
-Add/Edit Account UI never sends them — meant to sync from other systems
-later. See `seed_demo_accounts` management command for demo data (run
-after `seed_demo_customers`).
+`csat_score`/`arr`/`address`/`email`/`phone` are technically writable
+via `AccountSerializer` too (not restricted at the API layer, same as
+`CustomerSerializer`) but the Add/Edit Account UI never sends them —
+meant to sync from other systems later (`address`/`email`/`phone`
+specifically could be added to that form as a follow-up, same category
+as the identity fields it already covers, but that's a separate ask
+from wiring the Overview tab's read path). See `seed_demo_accounts`
+management command for demo data (run after `seed_demo_customers`) —
+a handful of accounts are given their own address/email/phone there on
+purpose, distinct from their parent's, to demonstrate both the
+override and the fallback.
 
 ### `GET /api/v1/customers/<customer_id>/accounts/`, `POST /api/v1/customers/<customer_id>/accounts/`
 

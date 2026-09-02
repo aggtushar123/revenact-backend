@@ -15,6 +15,13 @@ noted on the Account model itself:
   Customer.AIPulseScore's 4 choices — both collapse to "high_risk" here,
   the closest fit.
 
+A handful of accounts (North America Enterprise, Apple EMEA, Heinz
+Europe, Hyatt EMEA & APAC) are given their own address/email/phone on
+purpose, distinct from their parent Customer's — the rest are left
+blank so ActivityFeed's Overview tab for a standalone Account page
+demonstrates falling back to the parent's own contact info (see
+mapAccountToAccountRow.ts), not just the override case.
+
 Idempotent: matched by (customer, name), so re-running updates existing
 rows instead of duplicating them. Silently skips any customer_name that
 doesn't exist yet in the target organisation (e.g. seed_demo_customers
@@ -37,6 +44,9 @@ DEMO_ACCOUNTS = [
         "customer_name": "Apple Inc",
         "name": "North America Enterprise",
         "domain": "apple.com",
+        "address": "Austin, TX",
+        "email": "na-enterprise@apple.com",
+        "phone": "+1 (512) 555-0199",
         "owner_email": "carl@acme.io",
         "lifecycle_stage": "live",
         "health_score": "9.5",
@@ -55,6 +65,9 @@ DEMO_ACCOUNTS = [
         "customer_name": "Apple Inc",
         "name": "Apple EMEA",
         "domain": "apple.com",
+        "address": "Cork, Ireland",
+        "email": "emea@apple.com",
+        "phone": "+353 21 428 5555",
         "owner_email": "carl@acme.io",
         "lifecycle_stage": "live",
         "health_score": "9.8",
@@ -132,6 +145,9 @@ DEMO_ACCOUNTS = [
         "customer_name": "Kraft Heinz",
         "name": "Heinz Europe",
         "domain": "kraftheinz.com",
+        "address": "Amsterdam, Netherlands",
+        "email": "europe@kraftheinz.com",
+        "phone": "+31 20 555 0134",
         "owner_email": "carl@acme.io",
         "lifecycle_stage": "onboarding",
         "health_score": "6.4",
@@ -162,6 +178,9 @@ DEMO_ACCOUNTS = [
         "customer_name": "Hyatt Hotels Corporation",
         "name": "Hyatt EMEA & APAC",
         "domain": "hyatt.com",
+        "address": "Zurich, Switzerland",
+        "email": "emea-apac@hyatt.com",
+        "phone": "+41 44 555 0177",
         "owner_email": "carl@acme.io",
         "lifecycle_stage": "adoption",
         "health_score": "5.8",

@@ -135,8 +135,8 @@ financial fields, even ones the mock data happens to make look additive).
 
 | File | Role |
 |---|---|
-| `models.py: Customer` | Full `tableData.ts`-matching schema — identity/provenance, lifecycle/health, dates, financials, product/usage, churn |
-| `models.py: Account` | One-to-many under `Customer` (`customer` FK, `related_name="accounts"`) — a named sub-account with its own health/pulse/NPS/CSAT. Mirrors `accountsData.ts`'s `AccountRow`; reuses `Customer`'s LifecycleStage/AIPulseScore choices and health thresholds rather than redefining them. |
+| `models.py: Customer` | Full `tableData.ts`-matching schema — identity/provenance, lifecycle/health, dates, financials, product/usage, churn. `email`/`phone` are additions beyond that original mock schema, backing ActivityFeed's Overview tab. |
+| `models.py: Account` | One-to-many under `Customer` (`customer` FK, `related_name="accounts"`) — a named sub-account with its own health/pulse/NPS/CSAT. Mirrors `accountsData.ts`'s `AccountRow`; reuses `Customer`'s LifecycleStage/AIPulseScore choices and health thresholds rather than redefining them. `domain`/`address`/`email`/`phone` all fall back to the parent Customer's own value when blank — implemented in `mapAccountToAccountRow.ts`, not the model/serializer. |
 | `views.py: CustomerListCreateView` | `GET/POST /customers/` — any authenticated user in the org (no admin gate, unlike User Management) |
 | `views.py: CustomerDetailView` | `GET/PATCH /customers/<id>/` — same org only, 404 outside it |
 | `views.py: CustomerStatsView` | `GET /customers/stats/` — Health/NPS/Lifecycle rollups for MetricsPanel |
@@ -185,7 +185,12 @@ formatting logic between the two mappers lives in `formatters.ts`.
 `MetricsPanel` (the health/NPS/lifecycle summary banner) fetches
 `GET /api/v1/customers/stats/` too (see `docs/API_CONTRACTS.md` -> that
 endpoint) — every field on that banner, and on the Details page's own
-metrics banner and PinnedAttributes/ActivityFeed panels, is real.
+metrics banner and PinnedAttributes/ActivityFeed panels, is real,
+including ActivityFeed's own Overview tab (Domain/Location/Email/
+Phone) — that used to show a fabricated `contact@<domain>` and a
+phone number hardcoded identically for every organization/account
+before `Customer.email`/`.phone` and `Account.address`/`.email`/
+`.phone` existed.
 Add/Edit/Churn/Archive Organization are wired too (a quick-add/edit form
 covering identity, ownership, lifecycle stage, and contract dates only —
 financials, product usage, and NPS/CSAT/health are meant to sync from

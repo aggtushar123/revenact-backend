@@ -88,6 +88,30 @@ class AccountHealthCategoryTests(TestCase):
         self.assertEqual(self._account(3.9).health_category, Customer.HealthCategory.POOR)
 
 
+class ContactInfoDefaultsTests(TestCase):
+    """email/phone (Customer) and address/email/phone (Account) back
+    ActivityFeed's Overview tab. All blank=True, defaulting to "" —
+    the frontend's own mapAccountToAccountRow.ts is what falls an
+    Account's blank value back to its parent Customer's, not this
+    model, so there's nothing to pin down here beyond "blank by
+    default", same as domain already was."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+
+    def test_customer_email_and_phone_default_to_blank(self):
+        customer = Customer.objects.create(organisation=self.org, name="Some Co")
+        self.assertEqual(customer.email, "")
+        self.assertEqual(customer.phone, "")
+
+    def test_account_address_email_and_phone_default_to_blank(self):
+        customer = Customer.objects.create(organisation=self.org, name="Some Co")
+        account = Account.objects.create(customer=customer, name="Some Region")
+        self.assertEqual(account.address, "")
+        self.assertEqual(account.email, "")
+        self.assertEqual(account.phone, "")
+
+
 class ActivityParentConstraintTests(TestCase):
     """An Activity belongs to exactly one of customer/account — enforced
     by a DB CheckConstraint (see the model's own docstring for why
