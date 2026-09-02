@@ -9,7 +9,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Account, Customer
-from .serializers import AccountSerializer, ActivitySerializer, CustomerSerializer, EmailSerializer
+from .serializers import (
+    AccountSerializer,
+    ActivitySerializer,
+    CustomerSerializer,
+    EmailSerializer,
+    TaskSerializer,
+)
 
 
 class CustomerListCreateView(generics.ListCreateAPIView):
@@ -302,3 +308,42 @@ class AccountEmailListView(generics.ListAPIView):
             customer__organisation=self.request.user.organisation,
         )
         return account.emails.all()
+
+
+class CustomerTaskListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/tasks/ — every
+    organization-level Task for one Customer, scoped to the caller's
+    own organisation. Same 404-not-empty-list convention as
+    CustomerActivityListView. Powers ActivityFeed's "Tasks" filter on
+    the Organization Details page's General tab."""
+
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+        return customer.tasks.all()
+
+
+class AccountTaskListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/accounts/<account_id>/tasks/
+    — every account-level Task for one Account, scoped to both its
+    customer_id and the caller's own organisation. Same reasoning as
+    AccountActivityListView. Powers ActivityFeed's "Tasks" filter on
+    the standalone Account page."""
+
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        account = get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+        return account.tasks.all()

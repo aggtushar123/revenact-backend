@@ -4,7 +4,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from services.accounts.models import Organisation
-from services.customers.models import Account, Activity, Customer, Email
+from services.customers.models import Account, Activity, Customer, Email, Task
 
 
 class HealthCategoryTests(TestCase):
@@ -155,3 +155,42 @@ class EmailParentConstraintTests(TestCase):
             Email.objects.create(
                 customer=self.customer, account=self.account, **self._email_kwargs()
             )
+
+
+class TaskParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Activity/Email."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def _task_kwargs(self):
+        return {
+            "title": "Prepare QBR deck",
+            "assignee_name": "Edgar Holmes",
+            "due_date": "2026-03-15",
+            "priority": Task.Priority.HIGH,
+        }
+
+    def test_customer_only_is_valid(self):
+        task = Task.objects.create(customer=self.customer, **self._task_kwargs())
+        self.assertIsNone(task.account)
+
+    def test_account_only_is_valid(self):
+        task = Task.objects.create(account=self.account, **self._task_kwargs())
+        self.assertIsNone(task.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Task.objects.create(**self._task_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Task.objects.create(
+                customer=self.customer, account=self.account, **self._task_kwargs()
+            )
+
+    def test_status_defaults_to_pending(self):
+        task = Task.objects.create(customer=self.customer, **self._task_kwargs())
+        self.assertEqual(task.status, Task.Status.PENDING)

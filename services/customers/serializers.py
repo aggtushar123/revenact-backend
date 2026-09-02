@@ -3,7 +3,7 @@ from rest_framework import serializers
 from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
 
-from .models import Account, Activity, Customer, Email
+from .models import Account, Activity, Customer, Email, Task
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -175,3 +175,13 @@ class EmailSerializer(serializers.ModelSerializer):
             "watchers",
             "is_starred",
         ]
+
+
+class TaskSerializer(serializers.ModelSerializer):
+    """Read-only — see Task model's docstring. No "group" field —
+    the frontend derives the Overdue/This Week/Next Week/Later bucket
+    from `due_date` at render time."""
+
+    class Meta:
+        model = Task
+        fields = ["id", "title", "assignee_name", "due_date", "priority", "status"]

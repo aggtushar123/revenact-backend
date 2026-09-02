@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Account, Activity, Customer, Email
+from services.customers.models import Account, Activity, Customer, Email, Task
 
 
 class CustomerListCreateTests(APITestCase):
@@ -1070,6 +1070,163 @@ class AccountEmailListTests(APITestCase):
         self.client.force_authenticate(self.admin)
 
         url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/emails/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_admin_gets_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomerTaskListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/tasks/"
+
+    def _task_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Prepare QBR deck",
+            "assignee_name": "Edgar Holmes",
+            "due_date": "2026-03-15",
+            "priority": Task.Priority.HIGH,
+            "status": Task.Status.IN_PROGRESS,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_customers_tasks_as_a_plain_array(self):
+        Task.objects.create(customer=self.customer, **self._task_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["title"], "Prepare QBR deck")
+        self.assertEqual(response.data[0]["assignee_name"], "Edgar Holmes")
+        self.assertEqual(response.data[0]["priority"], "high")
+        self.assertEqual(response.data[0]["status"], "in-progress")
+
+    def test_does_not_include_an_accounts_tasks(self):
+        account = Account.objects.create(customer=self.customer, name="North America")
+        Task.objects.create(account=account, **self._task_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_customers_tasks(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Task.objects.create(customer=other_customer, **self._task_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/tasks/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_customer_id_is_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AccountTaskListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/tasks/"
+
+    def _task_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Resolve integration escalation",
+            "assignee_name": "Edgar Holmes",
+            "due_date": "2026-03-05",
+            "priority": Task.Priority.HIGH,
+            "status": Task.Status.IN_PROGRESS,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_accounts_tasks(self):
+        Task.objects.create(account=self.account, **self._task_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["title"], "Resolve integration escalation")
+
+    def test_does_not_include_the_customers_own_tasks(self):
+        Task.objects.create(customer=self.customer, **self._task_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_accounts_tasks(self):
+        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        Task.objects.create(account=other_account, **self._task_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_wrong_customer_id_in_the_url_is_404_even_for_a_valid_account_id(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/tasks/"
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 

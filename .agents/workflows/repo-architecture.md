@@ -148,10 +148,14 @@ financial fields, even ones the mock data happens to make look additive).
 | `models.py: Email` | Same exactly-one-parent shape as `Activity` — a logged email backing `ActivityFeed`'s "Emails" filter. Read-only so far. |
 | `views.py: CustomerEmailListView` | `GET /customers/<customer_id>/emails/` — org-level emails for one Customer, same 404 convention |
 | `views.py: AccountEmailListView` | `GET /customers/<customer_id>/accounts/<account_id>/emails/` — account-level emails for one Account |
+| `models.py: Task` | Same exactly-one-parent shape as `Activity`/`Email` — a to-do item backing `ActivityFeed`'s "Tasks" filter. Read-only so far. No stored `group` — the Overdue/This Week/Next Week/Later bucket is computed from `due_date` at render time. |
+| `views.py: CustomerTaskListView` | `GET /customers/<customer_id>/tasks/` — org-level tasks for one Customer, same 404 convention |
+| `views.py: AccountTaskListView` | `GET /customers/<customer_id>/accounts/<account_id>/tasks/` — account-level tasks for one Account |
 | `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
 | `management/commands/seed_demo_accounts.py` | Dev-only: seeds Account rows (from accountsData.ts) under existing demo Customers — run after seed_demo_customers. Idempotent. |
 | `management/commands/seed_demo_activities.py` | Dev-only: seeds Activity rows under every seeded Customer/Account — run after seed_demo_accounts. Idempotent. |
 | `management/commands/seed_demo_emails.py` | Dev-only: seeds Email rows under every seeded Customer/Account — run after seed_demo_accounts. Idempotent. |
+| `management/commands/seed_demo_tasks.py` | Dev-only: seeds Task rows under every seeded Customer/Account — due dates are offsets from the run date, not fixed calendar dates (a due date is inherently relative to "now"), so idempotency keys on (parent, title) and re-running refreshes the dates. Idempotent. |
 
 **Status:** 🟢 Schema and API complete; the List view and the Details
 page's General + Accounts tabs are wired to real data — `react-ts-app`'s
@@ -190,17 +194,22 @@ frontend-wired: `ActivitiesTab.tsx` fetches real data through
 string ids like 'acc-1', so every real account used to fall back to
 the same hardcoded activities — the bug this wiring fixed).
 
-`Email` (backing `ActivityFeed`'s "Emails" filter) is 🟡 backend-only,
-same shape and same stage `Activity` was in before its own frontend
-pass: model, the two scoped list endpoints above, and demo seed data
-all exist, but `EmailsTab.tsx` still reads the `EMAILS_DATA`/
-`ACCOUNT_ID_MAP` mock rather than these endpoints.
+`Email` (backing `ActivityFeed`'s "Emails" filter) is 🟢 frontend-wired
+too: `EmailsTab.tsx` fetches real data through
+`fetchEmailsForCustomer`/`fetchEmailsForAccount`, same pattern as
+`Activity`.
 
-The feed's remaining filters (Tasks/Notes/Tickets/Calendar Events/
-Slack) are still 100% mock — no backend model yet.
+`Task` (backing `ActivityFeed`'s "Tasks" filter) is 🟡 backend-only,
+same stage `Activity`/`Email` were in before their own frontend pass:
+model, the two scoped list endpoints above, and demo seed data all
+exist, but `TasksTab.tsx` still reads the `TASKS_DATA`/`ACCOUNT_ID_MAP`
+mock rather than these endpoints.
+
+The feed's remaining filters (Notes/Tickets/Calendar Events/Slack) are
+still 100% mock — no backend model yet.
 
 Not built yet: Board view, nested Contacts, Search/Filter-by-column UI
-(still decorative), and the frontend wiring for `Email` above.
+(still decorative), and the frontend wiring for `Task` above.
 
 ### Everything else
 

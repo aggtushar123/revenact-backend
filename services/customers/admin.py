@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Account, Activity, Customer, Email
+from .models import Account, Activity, Customer, Email, Task
 
 
 @admin.register(Customer)
@@ -48,4 +48,20 @@ class EmailAdmin(admin.ModelAdmin):
     list_display = ["subject", "sender_name", "recipient_name", "customer", "account", "sent_at"]
     list_filter = ["is_starred"]
     search_fields = ["subject", "sender_name", "recipient_name", "customer__name", "account__name"]
+    readonly_fields = ["created_at"]
+
+
+@admin.register(Task)
+class TaskAdmin(admin.ModelAdmin):
+    list_display = [
+        "title",
+        "assignee_name",
+        "customer",
+        "account",
+        "due_date",
+        "priority",
+        "status",
+    ]
+    list_filter = ["priority", "status"]
+    search_fields = ["title", "assignee_name", "customer__name", "account__name"]
     readonly_fields = ["created_at"]

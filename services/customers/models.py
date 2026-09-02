@@ -400,3 +400,75 @@ class Email(models.Model):
     def __str__(self):
         parent = self.customer or self.account
         return f"{self.subject} — {parent}"
+
+
+class Task(models.Model):
+    """A CSM to-do item — same "belongs to exactly one of Customer or
+    Account" shape as Activity/Email above, backing the "Tasks" filter
+    within ActivityFeed on both the Organization Details page's General
+    tab and the standalone Account page.
+
+    Mirrors the frontend's mock TaskItem shape
+    (react-ts-app/src/components/organizations/activityData.ts):
+    `title`/`assignee_name`/`due_date`/`priority`/`status` are the
+    card's fields. No `group` field — the card's "Overdue"/"This
+    Week"/"Next Week"/"Later" bucket is a function of `due_date` and
+    the current date, not a fixed value, so it's computed on the
+    frontend at render time rather than stored (a stored bucket would
+    go stale the moment a week rolls over).
+
+    `assignee_name` is plain text, not a FK to `accounts.User` — same
+    reasoning as Email's `sender_name`/`recipient_name`: the mock's
+    names (Edgar Holmes, Natalie Reyes, Sarah Chen) are demo flavor
+    text, not real signed-up users in any seeded organisation."""
+
+    class Priority(models.TextChoices):
+        HIGH = "high", "High"
+        MEDIUM = "medium", "Medium"
+        LOW = "low", "Low"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        IN_PROGRESS = "in-progress", "In Progress"
+        COMPLETED = "completed", "Completed"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="tasks",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level task. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="tasks",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level task. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    title = models.CharField(max_length=255)
+    assignee_name = models.CharField(max_length=150)
+    due_date = models.DateField()
+    priority = models.CharField(max_length=8, choices=Priority.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["due_date", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="task_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.title} — {parent}"

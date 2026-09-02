@@ -60,7 +60,8 @@ expects.
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
 | Accounts (Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. Accounts tab fetches/displays real accounts and Add/Edit Account is wired (`createAccount`/`updateAccount` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
-| Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `EMAILS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
+| Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
+| Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `TASKS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
@@ -633,6 +634,50 @@ Auth: `IsAuthenticated`. Every account-level `Email` for one `Account`,
 scoped to both its `customer_id` and the caller's own organisation —
 same reasoning as the Activity account-level endpoint. Powers
 ActivityFeed's "Emails" filter on the standalone Account page.
+
+**Response `200`** — same shape as the Customer-scoped list above.
+
+### Models — `Task`
+
+Mirrors: `src/components/shared/ActivityFeed.tsx`'s "Tasks" filter,
+`src/components/organizations/activity/TasksTab.tsx` (the card:
+title, assignee, due date, priority, status).
+
+Same "belongs to exactly one of `Customer` or `Account`" shape as
+`Activity`/`Email` (read-only for this round).
+
+Fields: `title`, `assignee_name` (plain text, not a FK — same
+reasoning as Email's `sender_name`/`recipient_name`: the mock's names
+aren't real signed-up users in any seeded organisation), `due_date`,
+`priority` (`TextChoices` — `high`/`medium`/`low`), `status`
+(`TextChoices` — `pending`/`in-progress`/`completed`, defaults to
+`pending`). No `group` field — the card's "Overdue"/"This Week"/"Next
+Week"/"Later" bucket is a function of `due_date` and the current date,
+computed on the frontend at render time rather than stored (a stored
+bucket would go stale the moment a week rolls over).
+
+See `seed_demo_tasks` management command for demo data (run after
+`seed_demo_accounts`) — unlike Activity/Email's fixed calendar dates,
+its due dates are computed as offsets from the date the command is
+run, since a Task's due date is inherently relative to "now" in a way
+a past event's date isn't.
+
+### `GET /api/v1/customers/<customer_id>/tasks/`
+
+Auth: `IsAuthenticated`. Every organization-level `Task` for one
+`Customer`, scoped to the caller's own organisation — same
+404-not-empty-list convention as the Activity list endpoint. Powers
+ActivityFeed's "Tasks" filter on the Organization Details page.
+
+**Response `200`** — a plain array, each entry: `id`, `title`,
+`assignee_name`, `due_date`, `priority`, `status`.
+
+### `GET /api/v1/customers/<customer_id>/accounts/<account_id>/tasks/`
+
+Auth: `IsAuthenticated`. Every account-level `Task` for one `Account`,
+scoped to both its `customer_id` and the caller's own organisation —
+same reasoning as the Activity account-level endpoint. Powers
+ActivityFeed's "Tasks" filter on the standalone Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
 
