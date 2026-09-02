@@ -158,3 +158,88 @@ class Customer(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class Account(models.Model):
+    """A named sub-account under one of the tenant's Customers — e.g. a
+    regional or business-unit deployment of that customer, tracked with
+    its own health/pulse/NPS/CSAT distinct from the parent Customer's own
+    aggregate numbers. A Customer can have any number of these (one-to-
+    many); an Account belongs to exactly one Customer.
+
+    Field set mirrors the frontend's `accountsData.ts` mock schema
+    (`AccountRow`) column for column, the same way Customer mirrors
+    `tableData.ts`. Two mock fields deliberately have no column here:
+    `orgName` is just the parent customer's own `name` (available via the
+    `customer` FK — no need to duplicate it), and `revenactId` is this
+    row's own `id`, same convention as Customer's "Revenact ID".
+
+    Reuses Customer's LifecycleStage/AIPulseScore choices and
+    HEALTH_THRESHOLDS rather than redefining them — an account's
+    lifecycle stage and health mean exactly the same thing as a
+    customer's, just at a finer grain.
+
+    Read-only from the API for now (AccountListView) — there's no
+    Add/Edit Account UI yet; that's an intentional next step once this
+    relationship itself is wired into the frontend."""
+
+    customer = models.ForeignKey(Customer, related_name="accounts", on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    domain = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Falls back to the parent customer's domain (for the logo) when blank.",
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="owned_accounts",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="The CSM (or admin) assigned to this account. Must be in the same organisation.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    lifecycle_stage = models.CharField(
+        max_length=20,
+        choices=Customer.LifecycleStage.choices,
+        default=Customer.LifecycleStage.ONBOARDING,
+    )
+    health_score = models.DecimalField(
+        max_digits=3,
+        decimal_places=1,
+        default=5.0,
+        help_text="0.0-10.0. health_category is derived from this, not stored.",
+    )
+    pulse = models.JSONField(
+        default=list, blank=True, help_text="Recent pulse-history dots, e.g. [1,1,0,2,1]."
+    )
+    ai_pulse_score = models.CharField(
+        max_length=20, choices=Customer.AIPulseScore.choices, blank=True
+    )
+    ai_pulse_reason = models.TextField(blank=True)
+    nps_score = models.IntegerField(null=True, blank=True, help_text="-100 to 100.")
+    csat_score = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True, help_text="0-100 (%)."
+    )
+    renewal_date = models.DateField(null=True, blank=True)
+    arr = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text="MRR is derived (arr / 12) rather than stored, same as Customer.",
+    )
+
+    @property
+    def health_category(self):
+        for threshold, category in Customer.HEALTH_THRESHOLDS:
+            if self.health_score >= threshold:
+                return category
+        return Customer.HealthCategory.POOR
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.customer.name})"

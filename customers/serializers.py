@@ -3,7 +3,7 @@ from rest_framework import serializers
 from accounts.models import User
 from accounts.serializers import UserSerializer
 
-from .models import Customer
+from .models import Account, Customer
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -91,3 +91,37 @@ class CustomerSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         validated_data["modified_by"] = self.context["request"].user
         return super().update(instance, validated_data)
+
+
+class AccountSerializer(serializers.ModelSerializer):
+    """Read-only for now (see AccountListView) — no `owner_id`/create/
+    update yet. Shaped to mirror CustomerSerializer's own conventions
+    (nested owner, derived health_category) since an account's health/
+    lifecycle mean the same thing as a customer's, just at a finer grain."""
+
+    health_category = serializers.ChoiceField(
+        choices=Customer.HealthCategory.choices, read_only=True
+    )
+    owner = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Account
+        fields = [
+            "id",
+            "customer",
+            "name",
+            "domain",
+            "owner",
+            "created_at",
+            "updated_at",
+            "lifecycle_stage",
+            "health_score",
+            "health_category",
+            "pulse",
+            "ai_pulse_score",
+            "ai_pulse_reason",
+            "nps_score",
+            "csat_score",
+            "renewal_date",
+            "arr",
+        ]

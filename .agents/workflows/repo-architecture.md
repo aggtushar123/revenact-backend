@@ -34,6 +34,12 @@ revenact-backend/
 │   ├── views.py                 health_check
 │   ├── urls.py                  mounted at /api/v1/ in config/urls.py
 │   └── migrations/
+├── services/                   ← Cross-app business logic that isn't a
+│   │                              serializer/view's job — a plain package,
+│   │                              not a Django app (no models/migrations,
+│   │                              not in INSTALLED_APPS).
+│   └── email.py                 send_password_reset_email — used by
+│                                 accounts.serializers.ForgotPasswordSerializer
 ├── docs/
 │   └── API_CONTRACTS.md        ← Narrative companion to the OpenAPI schema
 ├── Dockerfile                  ← Containerizes the Django app (`web` service)
@@ -88,6 +94,8 @@ app label), mounted at `/api/v1/auth/` to match the frontend's
 | `views.py: LogoutView` | `POST /logout/` — blacklists the given refresh token |
 | `views.py: MeView` | `GET/PATCH /me/` — your own profile (any role) |
 | `views.py: ChangePasswordView` | `POST /me/change-password/` — self-service, needs current password |
+| `views.py: ForgotPasswordView` | `POST /password-reset/` — `AllowAny`, always 200; emails a reset link when the address matches a user (via `services/email.py`) |
+| `views.py: ResetPasswordView` | `POST /password-reset/confirm/` — `AllowAny`, consumes the emailed uid/token to set a new password |
 | `views.py: MembersListView` | `GET /members/` — any authenticated user, all org members (admin+CSMs), plain array. Not admin-gated — powers owner-pickers elsewhere (e.g. `customers`). |
 | `views.py: CSMListCreateView` | `GET/POST /csms/` — admin-only, list/add CSMs in their own org |
 | `views.py: CSMDetailView` | `GET/PATCH /csms/<id>/` — admin-only, edit/deactivate a CSM in their own org |
@@ -96,7 +104,8 @@ app label), mounted at `/api/v1/auth/` to match the frontend's
 Full walkthrough: `auth-flow.md` in this same directory.
 
 **Status:** ✅ Built (signup, login, logout, token refresh, own-profile
-edit + password change, admin User Management for CSMs).
+edit + password change, self-serve forgot/reset password, admin User
+Management for CSMs).
 
 ### `customers` — Organizations
 
@@ -112,33 +121,42 @@ financial fields, even ones the mock data happens to make look additive).
 | File | Role |
 |---|---|
 | `models.py: Customer` | Full `tableData.ts`-matching schema — identity/provenance, lifecycle/health, dates, financials, product/usage, churn |
+| `models.py: Account` | One-to-many under `Customer` (`customer` FK, `related_name="accounts"`) — a named sub-account with its own health/pulse/NPS/CSAT. Mirrors `accountsData.ts`'s `AccountRow`; reuses `Customer`'s LifecycleStage/AIPulseScore choices and health thresholds rather than redefining them. |
 | `views.py: CustomerListCreateView` | `GET/POST /customers/` — any authenticated user in the org (no admin gate, unlike User Management) |
 | `views.py: CustomerDetailView` | `GET/PATCH /customers/<id>/` — same org only, 404 outside it |
 | `views.py: CustomerStatsView` | `GET /customers/stats/` — Health/NPS/Lifecycle rollups for MetricsPanel |
+| `views.py: AccountListView` | `GET /customers/<customer_id>/accounts/` — read-only, 404 (not empty list) for a customer_id outside the caller's org |
 | `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
+| `management/commands/seed_demo_accounts.py` | Dev-only: seeds Account rows (from accountsData.ts) under existing demo Customers — run after seed_demo_customers. Idempotent. |
 
-**Status:** 🟢 Schema and API complete; the List view is wired to real
-data — `react-ts-app`'s `pages/organizations/List.tsx` fetches
-`GET /api/v1/customers/` on mount via `features/customers/customersSlice.ts`
-and pages forward/back through DRF's own `next`/`previous` links (no
-hardcoded page-size assumption — see that slice and `List.tsx`).
-`features/customers/mapToOrgRow.ts` adapts each `Customer` into the
-table's existing `OrgRow` shape so the mock-data-era table/popover
-components didn't need to change — a few purely-presentational bits with
-no backend counterpart (pill colors, avatar initials, the old mock's
-"(Enterprise)"/"(Mid-Market)" tier suffix on lifecycle stage) are derived
-there rather than fabricated. `MetricsPanel` (the health/NPS/lifecycle
-summary banner) now fetches `GET /api/v1/customers/stats/` too (see
-`docs/API_CONTRACTS.md` -> that endpoint) — every field on that banner is
-real. Add/Edit/Churn/Archive Organization are wired too (a quick-add/edit
-form covering identity, ownership, lifecycle stage, and contract dates
-only — financials, product usage, and NPS/CSAT/health are meant to sync
-from other systems later, not be hand-typed; Churn and Archive are
-separate actions from the general edit form — see `is_archived` on the
-`Customer` model and the detail endpoint's archive/unarchive note in
-`docs/API_CONTRACTS.md`). Board view, Details page (activity feed, pinned
-attributes), nested Accounts/Contacts, and Search/Filter-by-column UI
-(still decorative) are not built.
+**Status:** 🟢 Schema and API complete; the List view and the Details
+page's General + Accounts tabs are wired to real data — `react-ts-app`'s
+`pages/organizations/List.tsx` fetches `GET /api/v1/customers/` on mount
+via `features/customers/customersSlice.ts` and pages forward/back
+through DRF's own `next`/`previous` links (no hardcoded page-size
+assumption — see that slice and `List.tsx`). `features/customers/
+mapToOrgRow.ts` adapts each `Customer` into the table's existing
+`OrgRow` shape so the mock-data-era table/popover components didn't need
+to change — a few purely-presentational bits with no backend counterpart
+(pill colors, avatar initials) are derived there rather than fabricated,
+and the same pattern (`mapToAccountRow.ts`) does the same job for
+`Account` -> `AccountRow` on the Details page's Accounts tab. Shared
+formatting logic between the two mappers lives in `formatters.ts`.
+`MetricsPanel` (the health/NPS/lifecycle summary banner) fetches
+`GET /api/v1/customers/stats/` too (see `docs/API_CONTRACTS.md` -> that
+endpoint) — every field on that banner, and on the Details page's own
+metrics banner and PinnedAttributes/ActivityFeed panels, is real.
+Add/Edit/Churn/Archive Organization are wired too (a quick-add/edit form
+covering identity, ownership, lifecycle stage, and contract dates only —
+financials, product usage, and NPS/CSAT/health are meant to sync from
+other systems later, not be hand-typed; Churn and Archive are separate
+actions from the general edit form — see `is_archived` on the `Customer`
+model and the detail endpoint's archive/unarchive note in
+`docs/API_CONTRACTS.md`).
+
+Not built yet: Board view, nested Contacts, Add/Edit Account UI (Account
+is read-only from the API so far — see above), and Search/Filter-by-
+column UI (still decorative).
 
 ### Everything else
 

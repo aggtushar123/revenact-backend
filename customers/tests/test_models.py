@@ -3,7 +3,7 @@
 from django.test import TestCase
 
 from accounts.models import Organisation
-from customers.models import Customer
+from customers.models import Account, Customer
 
 
 class HealthCategoryTests(TestCase):
@@ -49,3 +49,30 @@ class SeatUtilizationTests(TestCase):
     def test_none_when_contracted_seats_is_zero(self):
         customer = self._customer(contracted=0, active=0)
         self.assertIsNone(customer.seat_utilization_percentage)
+
+
+class AccountHealthCategoryTests(TestCase):
+    """Account.health_category reuses Customer.HEALTH_THRESHOLDS directly
+    (see Account model's docstring) — same thresholds, same behavior,
+    just pinned down again here in case that ever drifts."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+
+    def _account(self, score):
+        return Account.objects.create(
+            customer=self.customer, name="Some Region", health_score=score
+        )
+
+    def test_score_at_or_above_7_is_good(self):
+        self.assertEqual(self._account(7.0).health_category, Customer.HealthCategory.GOOD)
+        self.assertEqual(self._account(9.9).health_category, Customer.HealthCategory.GOOD)
+
+    def test_score_4_to_6point9_is_average(self):
+        self.assertEqual(self._account(4.0).health_category, Customer.HealthCategory.AVERAGE)
+        self.assertEqual(self._account(6.9).health_category, Customer.HealthCategory.AVERAGE)
+
+    def test_score_below_4_is_poor(self):
+        self.assertEqual(self._account(0.0).health_category, Customer.HealthCategory.POOR)
+        self.assertEqual(self._account(3.9).health_category, Customer.HealthCategory.POOR)

@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import Organisation, User
-from customers.models import Customer
+from customers.models import Account, Customer
 
 
 class CustomerListCreateTests(APITestCase):
@@ -532,3 +532,86 @@ class CustomerDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.name, "Globex")
+
+
+class AccountListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/"
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_customers_accounts(self):
+        Account.objects.create(customer=self.customer, name="North America", health_score=8.5)
+        Account.objects.create(customer=self.customer, name="EMEA", health_score=6.0)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = {row["name"] for row in response.data}
+        self.assertEqual(names, {"North America", "EMEA"})
+
+    def test_response_is_a_plain_list_not_paginated(self):
+        Account.objects.create(customer=self.customer, name="North America")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+        self.assertIsInstance(response.data, list)
+
+    def test_includes_derived_health_category_and_nested_owner(self):
+        Account.objects.create(
+            customer=self.customer, name="North America", health_score=8.5, owner=self.admin
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        row = response.data[0]
+        self.assertEqual(row["health_category"], "good")
+        self.assertEqual(row["owner"]["name"], "Alice")
+
+    def test_empty_customer_returns_an_empty_list_not_an_error(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_customers_accounts(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Account.objects.create(customer=other_customer, name="Initech HQ")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/accounts/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_customer_id_is_404_not_403(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        Account.objects.create(customer=self.customer, name="North America")
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

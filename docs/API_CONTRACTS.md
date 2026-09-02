@@ -57,8 +57,8 @@ expects.
 | — (infra) | `core` | ✅ Built — health check only |
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
-| Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view and MetricsPanel (Health/NPS/Lifecycle/Number of Organizations/Renewal) all fetch real data (`features/customers/customersSlice.ts`, `mapToOrgRow.ts`, `?renewal_within=`, `/stats/`). Board, Details, activity feeds, nested Accounts/Contacts not started. |
-| Accounts | — | ⏳ Not started |
+| Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, activity feeds, nested Contacts not started. |
+| Accounts (Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + `GET .../accounts/` built, one-to-many under `Customer` — see below. Read-only so far, but the Accounts tab itself fetches and displays real accounts (`features/customers/customersSlice.ts`'s `fetchAccountsForCustomer`, `mapToAccountRow.ts`). No Add/Edit Account UI yet — a clean next step now that the relationship itself is wired end to end. |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
@@ -204,6 +204,46 @@ match.
 Does **not** invalidate existing sessions/tokens — unlike an admin
 deactivating you (below), which does. Changing your own password from an
 active session doesn't force that same session to re-authenticate.
+
+### `POST /api/v1/auth/password-reset/`
+
+Auth: `AllowAny`. Step 1 of the forgot-password flow (`ForgotPassword.tsx`).
+
+**Request** `{ "email": "..." }`
+**Response `200`** — always, regardless of whether the email matches a
+user: `{"detail": "If an account exists for that email, we've sent a
+password reset link."}`. This is deliberate — a `404`/different message
+for an unknown email would let the endpoint be used to enumerate
+registered addresses.
+
+When the email does match, sends a plaintext email (`django.core.mail`) to
+that address with a link to `{FRONTEND_URL}/reset-password?uid=...&token=...`.
+Uses Django's built-in `django.contrib.auth.tokens.default_token_generator`
+— the token is tied to the user's pk, current password hash, and
+last_login, and expires after `PASSWORD_RESET_TIMEOUT` (1 hour); nothing is
+stored server-side for this step.
+
+`EMAIL_BACKEND` falls back to Django's console backend (prints to the
+`runserver` terminal) when `EMAIL_HOST_USER`/`EMAIL_HOST_PASSWORD` aren't
+set in `.env` — see `.env.example`. `400` if `email` is missing/malformed.
+
+### `POST /api/v1/auth/password-reset/confirm/`
+
+Auth: `AllowAny`. Step 2 — consumes the `uid`/`token` pair from the emailed
+link (`ResetPassword.tsx`, reading them off its own URL's query string).
+
+**Request** `{ "uid": "...", "token": "...", "new_password": "..." }`
+(`new_password` min 8 chars, same as everywhere else).
+**Response `200`** — `{"detail": "Your password has been reset."}`. Does
+**not** log the caller in — they sign in at `/login/` with the new
+password same as any other time.
+
+`400` for any invalid case — bad/unknown uid, wrong token, or an expired
+one — all collapsed to the same generic
+`{"non_field_errors": ["This reset link is invalid or has expired."]}`,
+again to avoid leaking which case it was. A token stops working the moment
+it's used once, since the generator's hash includes the password field
+that the reset itself just changed.
 
 ### `GET /api/v1/auth/members/`
 
@@ -416,11 +456,61 @@ fields, still visible in lists unless separately archived). The detail
 endpoint itself always works regardless of `is_archived` — only the
 list/renewal-window/stats endpoints filter it out.
 
-Not built yet, and deliberately out of scope: Board view, the Details
-page (activity feed, pinned attributes), nested Accounts and Contacts,
-deleting a customer (only field edits exist so far), and — the biggest
-one — actually wiring any of this into the frontend, which still runs
-entirely on `tableData.ts`.
+Not built yet, and deliberately out of scope: Board view, nested
+Contacts, deleting a customer (only field edits exist so far). Accounts
+(one Customer has many) are now built — see below. The rest of this app
+*is* wired into the frontend (List page, MetricsPanel, Add/Edit/Churn/
+Archive, and the Details page's General tab) — the note that used to be
+here saying it wasn't is stale.
+
+### Models — `Account`
+
+Mirrors: `src/pages/organizations/Details.tsx` (`AccountsTab`,
+`AccountsMetricsBanner`), `src/components/organizations/accountsData.ts`.
+One-to-many under `Customer` (`customer` FK, `related_name="accounts"`)
+— a named sub-account (regional/business-unit deployment) of one of the
+tenant's own customers, with its own health/pulse/NPS/CSAT tracking
+independent of the parent Customer's aggregate numbers.
+
+Field set mirrors `AccountRow` (the mock schema) column for column, same
+approach as `Customer` mirrors `tableData.ts`. Two mock fields
+deliberately have no column: `orgName` is just `customer.name` (no need
+to duplicate it) and `revenactId` is this row's own `id`. Reuses
+`Customer.LifecycleStage`/`Customer.AIPulseScore` as its own field
+choices and `Customer.HEALTH_THRESHOLDS` for its `health_category`
+derivation, rather than redefining them — an account's lifecycle stage
+and health mean the same thing as a customer's, just at a finer grain.
+
+Fields: `customer` (FK, server-scoped), `name`, `domain` (blank falls
+back to the parent customer's domain for the logo — frontend
+responsibility, not enforced server-side), `owner` (FK to
+`accounts.User`, nullable, same-tenant only — not yet validated
+server-side since there's no write endpoint yet), `created_at`/
+`updated_at`, `lifecycle_stage`, `health_score` (0.0–10.0,
+`health_category` derived, same thresholds as Customer), `pulse` (JSON
+list), `ai_pulse_score`, `ai_pulse_reason`, `nps_score` (−100 to 100),
+`csat_score` (0–100), `renewal_date`, `arr` (MRR is derived, `arr / 12`,
+not stored — same convention as Customer).
+
+**Read-only for now** — no create/update endpoint yet; that's an
+intentional next step once the relationship itself was wired into the
+frontend (this pass). See `seed_demo_accounts` management command for
+demo data (run after `seed_demo_customers`).
+
+### `GET /api/v1/customers/<customer_id>/accounts/`
+
+Auth: `IsAuthenticated`. Every `Account` under one `Customer`, scoped to
+the caller's own organisation. **`404`, not `403` or an empty list,**
+for a `customer_id` outside the caller's organisation or that doesn't
+exist — checked once via `get_object_or_404` on the parent `Customer`
+before touching its accounts, so a real customer in another org 404s the
+same way a nonexistent id does (a caller can't otherwise tell "no
+accounts" apart from "not your customer").
+
+**Response `200`** — a **plain array** (no pagination envelope; an
+individual customer's account list is expected to stay small), each
+entry with `owner` nested and `health_category` computed, same
+conventions as `CustomerSerializer`.
 
 ---
 

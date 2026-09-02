@@ -2,13 +2,14 @@ from datetime import timedelta
 
 from django.db.models import CharField, Q
 from django.db.models.functions import Cast
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, views
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Customer
-from .serializers import CustomerSerializer
+from .serializers import AccountSerializer, CustomerSerializer
 
 
 class CustomerListCreateView(generics.ListCreateAPIView):
@@ -167,3 +168,27 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
 
     def get_queryset(self):
         return Customer.objects.filter(organisation=self.request.user.organisation)
+
+
+class AccountListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/accounts/ — every Account under
+    one Customer, scoped to the caller's own organisation. Read-only for
+    now — see Account model's docstring; POST lands with the Add Account
+    UI later.
+
+    404 (not 403) for a customer_id outside the caller's organisation or
+    that doesn't exist, same convention as CustomerDetailView — this is
+    checked once up front via get_object_or_404 rather than left to fall
+    out of an empty queryset, so a real customer in another org 404s the
+    same way a nonexistent id does, instead of silently returning `[]`
+    either way and leaving the two indistinguishable to the frontend."""
+
+    serializer_class = AccountSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+        return customer.accounts.all()
