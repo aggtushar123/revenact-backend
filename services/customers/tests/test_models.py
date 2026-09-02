@@ -4,7 +4,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from services.accounts.models import Organisation
-from services.customers.models import Account, Activity, Customer, Email, Note, Task
+from services.customers.models import Account, Activity, Customer, Email, Note, Task, Ticket
 
 
 class HealthCategoryTests(TestCase):
@@ -233,3 +233,43 @@ class NoteParentConstraintTests(TestCase):
     def test_links_defaults_to_zero(self):
         note = Note.objects.create(customer=self.customer, **self._note_kwargs())
         self.assertEqual(note.links, 0)
+
+
+class TicketParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Activity/Email/Task/Note."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def _ticket_kwargs(self):
+        return {
+            "ticket_number": "TKT-1042",
+            "title": "Dashboard loading slow on large datasets",
+            "assignee_name": "Support Team",
+            "priority": Ticket.Priority.HIGH,
+            "opened_at": "2026-03-03",
+        }
+
+    def test_customer_only_is_valid(self):
+        ticket = Ticket.objects.create(customer=self.customer, **self._ticket_kwargs())
+        self.assertIsNone(ticket.account)
+
+    def test_account_only_is_valid(self):
+        ticket = Ticket.objects.create(account=self.account, **self._ticket_kwargs())
+        self.assertIsNone(ticket.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Ticket.objects.create(**self._ticket_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Ticket.objects.create(
+                customer=self.customer, account=self.account, **self._ticket_kwargs()
+            )
+
+    def test_status_defaults_to_open(self):
+        ticket = Ticket.objects.create(customer=self.customer, **self._ticket_kwargs())
+        self.assertEqual(ticket.status, Ticket.Status.OPEN)

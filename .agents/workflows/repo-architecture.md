@@ -154,12 +154,16 @@ financial fields, even ones the mock data happens to make look additive).
 | `models.py: Note` | Same exactly-one-parent shape as `Activity`/`Email`/`Task` — a logged note backing `ActivityFeed`'s "Notes" filter. Read-only so far. `links` is a real field (the old mock always showed a hardcoded "1 Links", a bug this replaces), shown on the card only when > 0. |
 | `views.py: CustomerNoteListView` | `GET /customers/<customer_id>/notes/` — org-level notes for one Customer, same 404 convention |
 | `views.py: AccountNoteListView` | `GET /customers/<customer_id>/accounts/<account_id>/notes/` — account-level notes for one Account |
+| `models.py: Ticket` | Same exactly-one-parent shape as `Activity`/`Email`/`Task`/`Note` — a support ticket backing `ActivityFeed`'s "Tickets" filter. Read-only so far. Field set (including `priority`, not just `status`) was reverse-engineered from the card, not dictated up front — see the model's own docstring. |
+| `views.py: CustomerTicketListView` | `GET /customers/<customer_id>/tickets/` — org-level tickets for one Customer, same 404 convention |
+| `views.py: AccountTicketListView` | `GET /customers/<customer_id>/accounts/<account_id>/tickets/` — account-level tickets for one Account |
 | `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
 | `management/commands/seed_demo_accounts.py` | Dev-only: seeds Account rows (from accountsData.ts) under existing demo Customers — run after seed_demo_customers. Idempotent. |
 | `management/commands/seed_demo_activities.py` | Dev-only: seeds Activity rows under every seeded Customer/Account — run after seed_demo_accounts. Idempotent. |
 | `management/commands/seed_demo_emails.py` | Dev-only: seeds Email rows under every seeded Customer/Account — run after seed_demo_accounts. Idempotent. |
 | `management/commands/seed_demo_tasks.py` | Dev-only: seeds Task rows under every seeded Customer/Account — due dates are offsets from the run date, not fixed calendar dates (a due date is inherently relative to "now"), so idempotency keys on (parent, title) and re-running refreshes the dates. Idempotent. |
 | `management/commands/seed_demo_notes.py` | Dev-only: seeds Note rows under every seeded Customer/Account — `links` varies across 0 and a few positive counts to exercise both card states. Idempotent. |
+| `management/commands/seed_demo_tickets.py` | Dev-only: seeds Ticket rows under every seeded Customer/Account — `links` and `priority` both vary across their full range to exercise every card state. Idempotent. |
 
 **Status:** 🟢 Schema and API complete; the List view and the Details
 page's General + Accounts tabs are wired to real data — `react-ts-app`'s
@@ -209,17 +213,23 @@ too: `TasksTab.tsx` fetches real data through
 `Activity`/`Email` — the Overdue/This Week/Next Week/Later bucket is
 computed client-side from `due_date` against today, not stored.
 
-`Note` (backing `ActivityFeed`'s "Notes" filter) is 🟡 backend-only,
-same stage `Activity`/`Email`/`Task` were in before their own frontend
+`Note` (backing `ActivityFeed`'s "Notes" filter) is 🟢 frontend-wired
+too: `NotesTab.tsx` fetches real data through
+`fetchNotesForCustomer`/`fetchNotesForAccount`, same pattern as
+`Activity`/`Email`/`Task` — the link line now reflects a real per-note
+count instead of a hardcoded "1 Links".
+
+`Ticket` (backing `ActivityFeed`'s "Tickets" filter) is 🟡
+backend-only, same stage the others were in before their own frontend
 pass: model, the two scoped list endpoints above, and demo seed data
-all exist, but `NotesTab.tsx` still reads the `NOTES_DATA`/
+all exist, but `TicketsTab.tsx` still reads the `TICKETS_DATA`/
 `ACCOUNT_ID_MAP` mock rather than these endpoints.
 
-The feed's remaining filters (Tickets/Calendar Events/Slack) are still
-100% mock — no backend model yet.
+The feed's remaining filters (Calendar Events/Slack) are still 100%
+mock — no backend model yet.
 
 Not built yet: Board view, nested Contacts, Search/Filter-by-column UI
-(still decorative), and the frontend wiring for `Note` above.
+(still decorative), and the frontend wiring for `Ticket` above.
 
 ### Everything else
 

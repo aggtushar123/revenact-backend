@@ -16,6 +16,7 @@ from .serializers import (
     EmailSerializer,
     NoteSerializer,
     TaskSerializer,
+    TicketSerializer,
 )
 
 
@@ -387,3 +388,42 @@ class AccountNoteListView(generics.ListAPIView):
             customer__organisation=self.request.user.organisation,
         )
         return account.notes.all()
+
+
+class CustomerTicketListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/tickets/ — every
+    organization-level Ticket for one Customer, scoped to the caller's
+    own organisation. Same 404-not-empty-list convention as
+    CustomerActivityListView. Powers ActivityFeed's "Tickets" filter on
+    the Organization Details page's General tab."""
+
+    serializer_class = TicketSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+        return customer.tickets.all()
+
+
+class AccountTicketListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/accounts/<account_id>/tickets/
+    — every account-level Ticket for one Account, scoped to both its
+    customer_id and the caller's own organisation. Same reasoning as
+    AccountActivityListView. Powers ActivityFeed's "Tickets" filter on
+    the standalone Account page."""
+
+    serializer_class = TicketSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        account = get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+        return account.tickets.all()

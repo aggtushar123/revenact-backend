@@ -62,7 +62,8 @@ expects.
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
 | Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
-| Notes (`ActivityFeed`'s "Notes" filter) | `customers` (`Note` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `NOTES_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
+| Notes (`ActivityFeed`'s "Notes" filter) | `customers` (`Note` model) | 🟢 Read-only, API-complete — see below. `NotesTab.tsx` fetches real data through `fetchNotesForCustomer`/`fetchNotesForAccount`; the link line now reflects a real per-note count. No create/update endpoint yet. |
+| Tickets (`ActivityFeed`'s "Tickets" filter) | `customers` (`Ticket` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `TICKETS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
@@ -723,6 +724,57 @@ Auth: `IsAuthenticated`. Every account-level `Note` for one `Account`,
 scoped to both its `customer_id` and the caller's own organisation —
 same reasoning as the Activity account-level endpoint. Powers
 ActivityFeed's "Notes" filter on the standalone Account page.
+
+**Response `200`** — same shape as the Customer-scoped list above.
+
+### Models — `Ticket`
+
+Mirrors: `src/components/shared/ActivityFeed.tsx`'s "Tickets" filter,
+`src/components/organizations/activity/TicketsTab.tsx` (the card:
+assignee, date, title + ticket number, a status icon, a priority
+flag icon, a link count shown only when positive).
+
+Field set was reverse-engineered from the card rather than dictated
+up front. Same "belongs to exactly one of `Customer` or `Account`"
+shape as `Activity`/`Email`/`Task`/`Note` (read-only for this round).
+
+Fields: `ticket_number` (e.g. `"TKT-1042"`), `title`, `assignee_name`
+(plain text, not a FK — same reasoning as Task's `assignee_name`: the
+mock's names are often a team, e.g. "Support Team"), `status`
+(`TextChoices` — `open`/`in-progress`/`resolved`/`closed`, defaults to
+`open` — already colored the card's status icon in the mock),
+`priority` (`TextChoices` — `critical`/`high`/`medium`/`low` — the
+mock carried real priority values but never actually used them to
+style the flag icon, which rendered identically regardless; this pass
+wires it up, same bug shape as the old hardcoded "1 Links" text),
+`links` (a real field — same fix as `Note.links`, shown on the card
+only when greater than zero). No `description` field — the mock's
+own `TicketItem` type carries one, but no component renders it
+anywhere (no ticket detail view exists), so there's no card field to
+back it, same reasoning as `Note`'s excluded `tags`. No `group`
+field — the card's date-group header is derived from `opened_at` at
+render time.
+
+See `seed_demo_tickets` management command for demo data (run after
+`seed_demo_accounts`) — `links` and `priority` both vary across their
+full range on purpose, to exercise every card state.
+
+### `GET /api/v1/customers/<customer_id>/tickets/`
+
+Auth: `IsAuthenticated`. Every organization-level `Ticket` for one
+`Customer`, scoped to the caller's own organisation — same
+404-not-empty-list convention as the Activity list endpoint. Powers
+ActivityFeed's "Tickets" filter on the Organization Details page.
+
+**Response `200`** — a plain array, each entry: `id`, `ticket_number`,
+`title`, `assignee_name`, `status`, `priority`, `opened_at`, `links`.
+
+### `GET /api/v1/customers/<customer_id>/accounts/<account_id>/tickets/`
+
+Auth: `IsAuthenticated`. Every account-level `Ticket` for one
+`Account`, scoped to both its `customer_id` and the caller's own
+organisation — same reasoning as the Activity account-level endpoint.
+Powers ActivityFeed's "Tickets" filter on the standalone Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
 

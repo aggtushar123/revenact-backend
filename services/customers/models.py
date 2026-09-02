@@ -541,3 +541,88 @@ class Note(models.Model):
     def __str__(self):
         parent = self.customer or self.account
         return f"{self.title} — {parent}"
+
+
+class Ticket(models.Model):
+    """A support ticket — same "belongs to exactly one of Customer or
+    Account" shape as Activity/Email/Task/Note above, backing the
+    "Tickets" filter within ActivityFeed on both the Organization
+    Details page's General tab and the standalone Account page.
+
+    Field set was reverse-engineered from the frontend card
+    (react-ts-app/src/components/organizations/activity/TicketsTab.tsx)
+    rather than dictated up front — the mock's own TicketItem type
+    carries a `description` too, but no component anywhere renders it
+    (no ticket detail view exists), so it's left out here the same way
+    Note's unrendered `tags` field was. `status` and `priority` are
+    both real fields the card visibly depends on: `status` already
+    colors the status icon (open/in-progress vs resolved/closed);
+    `priority` did NOT actually drive anything in the mock (the flag
+    icon rendered identically regardless of priority) even though the
+    mock data carried 4 real priority values — same bug shape as the
+    old hardcoded "1 Links" text Note/Email/Activity had, so this pass
+    wires the flag icon to real priority too, in addition to fixing
+    the link count.
+
+    `assignee_name` is plain text, not a FK — same reasoning as
+    Task/Email's own assignee/sender fields (the mock's names are
+    often a team, e.g. "Support Team", "Engineering"). No `group`
+    field — the card's date-group header is derived from `opened_at`
+    at render time."""
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        IN_PROGRESS = "in-progress", "In Progress"
+        RESOLVED = "resolved", "Resolved"
+        CLOSED = "closed", "Closed"
+
+    class Priority(models.TextChoices):
+        CRITICAL = "critical", "Critical"
+        HIGH = "high", "High"
+        MEDIUM = "medium", "Medium"
+        LOW = "low", "Low"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="tickets",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level ticket. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="tickets",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level ticket. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    ticket_number = models.CharField(max_length=32, help_text='e.g. "TKT-1042".')
+    title = models.CharField(max_length=255)
+    assignee_name = models.CharField(max_length=150)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
+    priority = models.CharField(max_length=8, choices=Priority.choices)
+    opened_at = models.DateField()
+    links = models.PositiveIntegerField(
+        default=0, help_text="Count shown on the card's link line — only rendered when > 0."
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-opened_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="ticket_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.ticket_number} {self.title} — {parent}"

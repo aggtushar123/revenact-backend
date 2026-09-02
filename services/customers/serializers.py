@@ -3,7 +3,7 @@ from rest_framework import serializers
 from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
 
-from .models import Account, Activity, Customer, Email, Note, Task
+from .models import Account, Activity, Customer, Email, Note, Task, Ticket
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -193,3 +193,20 @@ class NoteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Note
         fields = ["id", "title", "author_name", "body", "logged_at", "links"]
+
+
+class TicketSerializer(serializers.ModelSerializer):
+    """Read-only — see Ticket model's docstring."""
+
+    class Meta:
+        model = Ticket
+        fields = [
+            "id",
+            "ticket_number",
+            "title",
+            "assignee_name",
+            "status",
+            "priority",
+            "opened_at",
+            "links",
+        ]
