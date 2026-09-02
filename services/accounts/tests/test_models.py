@@ -2,7 +2,7 @@
 
 from django.test import TestCase
 
-from accounts.models import Organisation, User
+from services.accounts.models import Organisation, User
 
 
 class OrganisationSlugTests(TestCase):

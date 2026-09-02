@@ -2,8 +2,8 @@
 
 from django.test import TestCase
 
-from accounts.models import Organisation
-from customers.models import Account, Customer
+from services.accounts.models import Organisation
+from services.customers.models import Account, Customer
 
 
 class HealthCategoryTests(TestCase):

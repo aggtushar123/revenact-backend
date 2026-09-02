@@ -8,7 +8,7 @@ from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from accounts.models import Organisation, User
+from services.accounts.models import Organisation, User
 
 
 class SignupTests(APITestCase):

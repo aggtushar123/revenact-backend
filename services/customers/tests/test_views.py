@@ -6,8 +6,8 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from accounts.models import Organisation, User
-from customers.models import Account, Customer
+from services.accounts.models import Organisation, User
+from services.customers.models import Account, Customer
 
 
 class CustomerListCreateTests(APITestCase):

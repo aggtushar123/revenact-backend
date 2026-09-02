@@ -26,6 +26,9 @@ revenact-backend/
 │   ├── settings.py
 │   └── urls.py           # /admin, /api/schema, /api/docs, /api/redoc, /api/v1/*
 ├── core/                 # Shared/infra app — health check, common utilities
+├── services/             # Houses the `accounts` and `customers` Django apps,
+│   ├── accounts/          #   plus cross-app business logic (services/email.py)
+│   └── customers/         #   that isn't a serializer/view's job
 ├── docs/
 │   └── API_CONTRACTS.md   # Running log of every endpoint, request/response shape, and decision
 ├── Dockerfile              # Containerizes the Django app itself (the `web` service)

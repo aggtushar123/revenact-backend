@@ -19,8 +19,8 @@ Usage:
 
 from django.core.management.base import BaseCommand, CommandError
 
-from accounts.models import Organisation, User
-from customers.models import Customer
+from services.accounts.models import Organisation, User
+from services.customers.models import Customer
 
 # One entry per company. `owner_email` is resolved to a same-organisation
 # User at runtime (None leaves the customer unassigned, same as the mock's

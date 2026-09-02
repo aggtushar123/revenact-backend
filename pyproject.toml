@@ -14,4 +14,4 @@ select = ["E", "F", "I"]  # pyflakes + pycodestyle + isort-style import sorting
 "*/migrations/*.py" = ["E501", "I001"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["config", "core", "accounts"]
+known-first-party = ["config", "core", "services"]

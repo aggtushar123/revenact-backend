@@ -1,12 +1,12 @@
 """Unit tier: exercises send_password_reset_email directly, no HTTP layer.
-accounts/tests/test_views.py's ForgotPasswordTests already cover the full
-request/response flow through the API — these just pin down the function's
-own contract in isolation."""
+services/accounts/tests/test_views.py's ForgotPasswordTests already cover
+the full request/response flow through the API — these just pin down the
+function's own contract in isolation."""
 
 from django.core import mail
 from django.test import TestCase
 
-from accounts.models import Organisation, User
+from services.accounts.models import Organisation, User
 from services.email import send_password_reset_email
 
 

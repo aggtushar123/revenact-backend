@@ -26,8 +26,8 @@ Usage:
 
 from django.core.management.base import BaseCommand, CommandError
 
-from accounts.models import User
-from customers.models import Account, Customer
+from services.accounts.models import User
+from services.customers.models import Account, Customer
 
 # `customer_name` must match a Customer.name already seeded by
 # seed_demo_customers. `owner_email` resolves to a same-organisation User

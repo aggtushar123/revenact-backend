@@ -34,12 +34,24 @@ revenact-backend/
 │   ├── views.py                 health_check
 │   ├── urls.py                  mounted at /api/v1/ in config/urls.py
 │   └── migrations/
-├── services/                   ← Cross-app business logic that isn't a
-│   │                              serializer/view's job — a plain package,
-│   │                              not a Django app (no models/migrations,
-│   │                              not in INSTALLED_APPS).
+├── services/                   ← Houses the `accounts` and `customers`
+│   │                              Django apps (moved here from top-level),
+│   │                              plus cross-app business logic that isn't
+│   │                              a serializer/view's job. `services/`
+│   │                              itself is a plain package, not a Django
+│   │                              app — INSTALLED_APPS lists
+│   │                              "services.accounts"/"services.customers"
+│   │                              directly, each keeping its original app
+│   │                              label ("accounts"/"customers", set
+│   │                              explicitly in its apps.py) so
+│   │                              AUTH_USER_MODEL, migration dependencies,
+│   │                              and every ForeignKey("accounts.X")/
+│   │                              ("customers.X") string elsewhere needed
+│   │                              no changes.
+│   ├── accounts/                 Auth — see App List below
+│   ├── customers/                Organizations — see App List below
 │   └── email.py                 send_password_reset_email — used by
-│                                 accounts.serializers.ForgotPasswordSerializer
+│                                 services.accounts.serializers.ForgotPasswordSerializer
 ├── docs/
 │   └── API_CONTRACTS.md        ← Narrative companion to the OpenAPI schema
 ├── Dockerfile                  ← Containerizes the Django app (`web` service)
@@ -51,8 +63,11 @@ revenact-backend/
 ```
 
 Each frontend feature (`react-ts-app/src/pages/<domain>/`,
-`src/features/<domain>/`) gets its own Django app here
+`src/features/<domain>/`) gets its own Django app
 (`python manage.py startapp <domain>`), mounted under `/api/v1/<domain>/`.
+`core` lives at the top level; `accounts` and `customers` live under
+`services/` (see above) — pick whichever placement fits when adding a
+new one, there's no fixed rule forcing every future app under `services/`.
 
 ## URL Map (`config/urls.py`)
 

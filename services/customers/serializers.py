@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
-from accounts.models import User
-from accounts.serializers import UserSerializer
+from services.accounts.models import User
+from services.accounts.serializers import UserSerializer
 
 from .models import Account, Customer
 

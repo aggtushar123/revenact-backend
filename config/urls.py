@@ -24,8 +24,12 @@ urlpatterns = [
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
     path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
     # Feature apps mount here, one `include()` per app, as we build each one.
+    # `accounts`/`customers` live at services/accounts/, services/customers/
+    # (see config/settings.py's INSTALLED_APPS) — only the Python import
+    # path changed, not the URL path or the app label these `include()`
+    # calls' own `path()` prefixes and `name=` reverses still resolve by.
     path("api/v1/", include("core.urls")),
     # `accounts` app, mounted at /auth/ to match the frontend's features/auth/.
-    path("api/v1/auth/", include("accounts.urls")),
-    path("api/v1/customers/", include("customers.urls")),
+    path("api/v1/auth/", include("services.accounts.urls")),
+    path("api/v1/customers/", include("services.customers.urls")),
 ]

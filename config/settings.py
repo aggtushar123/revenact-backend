@@ -41,15 +41,19 @@ INSTALLED_APPS = [
     "corsheaders",
     "drf_spectacular",
     # Local
-    "accounts",
     "core",
-    "customers",
+    "services.accounts",
+    "services.customers",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
 # is named `accounts` (not `auth`) to avoid colliding with django.contrib.auth's
 # app label, but it's mounted at /api/v1/auth/ to match the frontend's
-# features/auth/ domain — see docs/API_CONTRACTS.md.
+# features/auth/ domain — see docs/API_CONTRACTS.md. Lives at
+# services/accounts/ (see services/accounts/apps.py's explicit `label`),
+# but the app label itself — and so AUTH_USER_MODEL, migration
+# dependencies, and every ForeignKey("accounts.X")/("customers.X") string
+# elsewhere — is unaffected by where the package physically lives.
 AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
