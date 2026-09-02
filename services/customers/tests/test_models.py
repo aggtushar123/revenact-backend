@@ -1,9 +1,10 @@
 """Unit tier: model logic in isolation, no HTTP."""
 
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from services.accounts.models import Organisation
-from services.customers.models import Account, Customer
+from services.customers.models import Account, Activity, Customer
 
 
 class HealthCategoryTests(TestCase):
@@ -76,3 +77,44 @@ class AccountHealthCategoryTests(TestCase):
     def test_score_below_4_is_poor(self):
         self.assertEqual(self._account(0.0).health_category, Customer.HealthCategory.POOR)
         self.assertEqual(self._account(3.9).health_category, Customer.HealthCategory.POOR)
+
+
+class ActivityParentConstraintTests(TestCase):
+    """An Activity belongs to exactly one of customer/account — enforced
+    by a DB CheckConstraint (see the model's own docstring for why
+    that's at the DB level rather than serializer validation: there's
+    no create/update endpoint yet to run the latter through)."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def test_customer_only_is_valid(self):
+        activity = Activity.objects.create(
+            customer=self.customer,
+            type=Activity.ActivityType.HEALTH_CHECK_REVIEW,
+            occurred_at="2026-03-05",
+        )
+        self.assertIsNone(activity.account)
+
+    def test_account_only_is_valid(self):
+        activity = Activity.objects.create(
+            account=self.account,
+            type=Activity.ActivityType.HEALTH_CHECK_REVIEW,
+            occurred_at="2026-03-05",
+        )
+        self.assertIsNone(activity.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Activity.objects.create(type=Activity.ActivityType.OTHER, occurred_at="2026-03-05")
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Activity.objects.create(
+                customer=self.customer,
+                account=self.account,
+                type=Activity.ActivityType.OTHER,
+                occurred_at="2026-03-05",
+            )

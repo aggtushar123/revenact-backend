@@ -3,7 +3,7 @@ from rest_framework import serializers
 from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
 
-from .models import Account, Customer
+from .models import Account, Activity, Customer
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -144,3 +144,16 @@ class AccountSerializer(serializers.ModelSerializer):
         if owner is not None and owner.organisation_id != request.user.organisation_id:
             raise serializers.ValidationError("Owner must be a member of your own organisation.")
         return owner
+
+
+class ActivitySerializer(serializers.ModelSerializer):
+    """Read-only — see Activity model's docstring. `type_display` is the
+    card's title text (the human label, e.g. "Health Check Review");
+    `type` itself (the enum value) is included too in case a future
+    frontend pass wants to key off it (icon/color per type, filtering)."""
+
+    type_display = serializers.CharField(source="get_type_display", read_only=True)
+
+    class Meta:
+        model = Activity
+        fields = ["id", "type", "type_display", "occurred_at", "links", "watchers"]

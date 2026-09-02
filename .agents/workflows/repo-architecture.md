@@ -142,8 +142,12 @@ financial fields, even ones the mock data happens to make look additive).
 | `views.py: CustomerStatsView` | `GET /customers/stats/` — Health/NPS/Lifecycle rollups for MetricsPanel |
 | `views.py: AccountListCreateView` | `GET/POST /customers/<customer_id>/accounts/` — 404 (not empty list) for a customer_id outside the caller's org; POST's `customer` always comes from the URL |
 | `views.py: AccountDetailView` | `GET/PATCH /customers/<customer_id>/accounts/<id>/` — same org + customer only, 404 outside it |
+| `models.py: Activity` | Belongs to exactly one of `Customer` or `Account` (two nullable FKs + a DB `CheckConstraint`, not a `GenericForeignKey`) — a timeline entry backing `ActivityFeed`'s "Activities" filter. Read-only so far — no create/update endpoint yet. |
+| `views.py: CustomerActivityListView` | `GET /customers/<customer_id>/activities/` — org-level activities for one Customer, 404 (not empty list) outside the caller's org |
+| `views.py: AccountActivityListView` | `GET /customers/<customer_id>/accounts/<account_id>/activities/` — account-level activities for one Account, 404 for either id outside scope |
 | `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
 | `management/commands/seed_demo_accounts.py` | Dev-only: seeds Account rows (from accountsData.ts) under existing demo Customers — run after seed_demo_customers. Idempotent. |
+| `management/commands/seed_demo_activities.py` | Dev-only: seeds Activity rows (from activityData.ts/accountActivityData.ts) under existing demo Customers/Accounts — run after seed_demo_accounts. Idempotent. |
 
 **Status:** 🟢 Schema and API complete; the List view and the Details
 page's General + Accounts tabs are wired to real data — `react-ts-app`'s
@@ -174,8 +178,18 @@ Accounts tab — `AccountFormModal.tsx`, same identity/ownership/lifecycle
 scoping as Organization's own form. No Churn/Archive for Account —
 Account has no `churn_date`/`is_archived` fields, and it wasn't asked for.
 
-Not built yet: Board view, nested Contacts, and Search/Filter-by-column
-UI (still decorative).
+`Activity` (backing `ActivityFeed`'s "Activities" filter specifically —
+the feed's other filters, e.g. Emails/Tasks/Notes, are still all mock)
+is 🟡 backend-only: model, the two scoped list endpoints above, and
+demo seed data all exist, but `ActivitiesTab.tsx` still reads the
+`ACTIVITIES_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/
+`accountActivityData.ts` rather than these endpoints — that mock's
+`ACCOUNT_ID_MAP` only knows the mock's own string ids ('acc-1' etc.),
+so it falls back to the same hardcoded activities for every real
+account today.
+
+Not built yet: Board view, nested Contacts, Search/Filter-by-column UI
+(still decorative), and the frontend wiring for `Activity` above.
 
 ### Everything else
 

@@ -242,3 +242,85 @@ class Account(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.customer.name})"
+
+
+class Activity(models.Model):
+    """A timeline entry — a CSM-visible event belonging to either a
+    Customer (organization-level) or one of its Accounts (account-
+    level), never both. Backs the "Activities" filter within
+    ActivityFeed on both the Organization Details page's General tab
+    and the standalone Account page — same component, same card shape,
+    reading a different scope depending on which entity it's mounted
+    under (see AccountListView's own docstring for the analogous
+    one-model-two-scopes reasoning).
+
+    Mirrors the frontend's mock ActivityItem shape
+    (react-ts-app/src/components/organizations/activityData.ts): `type`
+    is the card's title, `occurred_at` its date, `links`/`watchers` the
+    two small counters on the card. No `pulse` field — the card's
+    "Pulse" badge is decorative in the mock (always shown, tied to
+    nothing) and stays that way here; it wasn't asked for as a real
+    value, just described as part of what's already on the card.
+
+    `customer`/`account` are both nullable FKs rather than a single
+    generic relation — simpler for exactly two possible parents, and
+    the CheckConstraint below enforces exactly one is set at the DB
+    level (not just app-level validation, since there's no
+    create/update endpoint yet to run that validation through)."""
+
+    class ActivityType(models.TextChoices):
+        VALUE_REINFORCEMENT = "value_reinforcement", "Value Reinforcement"
+        ENABLEMENT_RETRAINING = "enablement_retraining", "Enablement or Re-Training"
+        HEALTH_CHECK_REVIEW = "health_check_review", "Health Check Review"
+        PRODUCT_USAGE_ANALYSIS = "product_usage_analysis", "Product Usage Analysis"
+        ESCALATION_TRIGGERED = "escalation_triggered", "Escalation Triggered"
+        ONBOARDING_MILESTONE = "onboarding_milestone", "Onboarding Milestone Reached"
+        SUCCESS_PLAN_CREATED = "success_plan_created", "Success Plan Created"
+        SUCCESS_PLAN_UPDATED = "success_plan_updated", "Success Plan Updated"
+        EXECUTIVE_ALIGNMENT_SESSION = "executive_alignment_session", "Executive Alignment Session"
+        RENEWAL_PROPOSAL_SUBMITTED = "renewal_proposal_submitted", "Renewal Proposal Submitted"
+        OTHER = "other", "Other"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="activities",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level activity. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="activities",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level activity. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    type = models.CharField(max_length=32, choices=ActivityType.choices)
+    occurred_at = models.DateField()
+    links = models.PositiveIntegerField(
+        default=0, help_text="Count shown on the card's link icon."
+    )
+    watchers = models.PositiveIntegerField(
+        default=0, help_text="Count shown on the card's eye icon."
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-occurred_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="activity_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.get_type_display()} — {parent}"

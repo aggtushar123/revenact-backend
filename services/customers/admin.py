@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Account, Customer
+from .models import Account, Activity, Customer
 
 
 @admin.register(Customer)
@@ -33,3 +33,11 @@ class AccountAdmin(admin.ModelAdmin):
     list_filter = ["customer__organisation", "lifecycle_stage", "ai_pulse_score"]
     search_fields = ["name", "domain", "customer__name"]
     readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(Activity)
+class ActivityAdmin(admin.ModelAdmin):
+    list_display = ["type", "customer", "account", "occurred_at", "links", "watchers"]
+    list_filter = ["type"]
+    search_fields = ["customer__name", "account__name"]
+    readonly_fields = ["created_at"]

@@ -57,8 +57,9 @@ expects.
 | — (infra) | `core` | ✅ Built — health check only |
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
-| Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, activity feeds, nested Contacts not started. |
+| Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
 | Accounts (Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. Accounts tab fetches/displays real accounts and Add/Edit Account is wired (`createAccount`/`updateAccount` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. |
+| Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `ACTIVITIES_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
@@ -534,6 +535,59 @@ endpoint). `owner_id` follows the same same-organisation validation as
 create.
 
 **Response `200`** (both) — the (possibly updated) account.
+
+### Models — `Activity`
+
+Mirrors: `src/components/shared/ActivityFeed.tsx`'s "Activities" filter,
+`src/components/organizations/activity/ActivitiesTab.tsx` (the card:
+title, date, watchers/links counts), rendered on both the Organization
+Details page's General tab and the standalone Account page.
+
+A timeline entry belonging to **exactly one** of `Customer`
+(organization-level) or `Account` (account-level), never both — modeled
+as two nullable FKs rather than a `GenericForeignKey` (simpler for
+exactly two possible parent types), enforced by a DB `CheckConstraint`
+(`activity_belongs_to_exactly_one_parent`) rather than serializer
+validation, since there's no create/update endpoint yet to run that
+validation through — this round is **read-only**.
+
+Fields: `type` (`TextChoices` — `value_reinforcement`,
+`enablement_retraining`, `health_check_review`,
+`product_usage_analysis`, `escalation_triggered`,
+`onboarding_milestone`, `success_plan_created`, `success_plan_updated`,
+`executive_alignment_session`, `renewal_proposal_submitted`, `other`),
+`occurred_at` (date), `links`/`watchers` (counts shown on the card's
+link/eye icons). No `pulse` field — the card's "Pulse" badge is
+decorative in the mock (always shown, tied to nothing), so it stays
+decorative here too. No `group` field either — the mock's date-grouping
+key is just a different string format of `occurred_at` and is derived
+on the frontend instead of duplicated in storage.
+
+See `seed_demo_activities` management command for demo data (run after
+`seed_demo_accounts`).
+
+### `GET /api/v1/customers/<customer_id>/activities/`
+
+Auth: `IsAuthenticated`. Every organization-level `Activity` for one
+`Customer`, scoped to the caller's own organisation. **`404`, not an
+empty list,** for a `customer_id` outside that scope — same convention
+as the Account list endpoint above. Powers ActivityFeed's "Activities"
+filter on the Organization Details page.
+
+**Response `200`** — a plain array, each entry: `id`, `type`,
+`type_display` (the human label, e.g. `"Health Check Review"` — the
+card's title text), `occurred_at`, `links`, `watchers`.
+
+### `GET /api/v1/customers/<customer_id>/accounts/<account_id>/activities/`
+
+Auth: `IsAuthenticated`. Every account-level `Activity` for one
+`Account`, scoped to both its `customer_id` and the caller's own
+organisation — **`404`** for either mismatch, same reasoning as the
+Account detail endpoint. Powers ActivityFeed's "Activities" filter on
+the standalone Account page — same component as the Customer-scoped
+endpoint above, reading a different scope.
+
+**Response `200`** — same shape as the Customer-scoped list above.
 
 ---
 

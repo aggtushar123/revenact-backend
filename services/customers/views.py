@@ -9,7 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Account, Customer
-from .serializers import AccountSerializer, CustomerSerializer
+from .serializers import AccountSerializer, ActivitySerializer, CustomerSerializer
 
 
 class CustomerListCreateView(generics.ListCreateAPIView):
@@ -222,3 +222,44 @@ class AccountDetailView(generics.RetrieveUpdateAPIView):
             customer_id=self.kwargs["customer_id"],
             customer__organisation=self.request.user.organisation,
         )
+
+
+class CustomerActivityListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/activities/ — every
+    organization-level Activity for one Customer, scoped to the
+    caller's own organisation. 404 (not an empty list) for a
+    customer_id outside that scope, same convention as
+    AccountListCreateView. Powers ActivityFeed's "Activities" filter on
+    the Organization Details page's General tab."""
+
+    serializer_class = ActivitySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+        return customer.activities.all()
+
+
+class AccountActivityListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/accounts/<account_id>/activities/
+    — every account-level Activity for one Account, scoped to both its
+    customer_id and the caller's own organisation. 404 for either
+    mismatch, same reasoning as AccountDetailView. Powers ActivityFeed's
+    "Activities" filter on the standalone Account page — same component
+    as the Customer-scoped view above, reading a different scope."""
+
+    serializer_class = ActivitySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        account = get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+        return account.activities.all()

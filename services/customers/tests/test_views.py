@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Account, Customer
+from services.customers.models import Account, Activity, Customer
 
 
 class CustomerListCreateTests(APITestCase):
@@ -765,3 +765,158 @@ class AccountDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.account.refresh_from_db()
         self.assertEqual(self.account.name, "North America")
+
+
+class CustomerActivityListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/activities/"
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_customers_activities_with_type_display_and_plain_array(self):
+        Activity.objects.create(
+            customer=self.customer,
+            type=Activity.ActivityType.SUCCESS_PLAN_CREATED,
+            occurred_at="2026-03-01",
+            links=2,
+            watchers=1,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["type_display"], "Success Plan Created")
+        self.assertEqual(response.data[0]["links"], 2)
+        self.assertEqual(response.data[0]["watchers"], 1)
+
+    def test_does_not_include_an_accounts_activities(self):
+        account = Account.objects.create(customer=self.customer, name="North America")
+        Activity.objects.create(
+            account=account, type=Activity.ActivityType.OTHER, occurred_at="2026-03-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_customers_activities(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Activity.objects.create(
+            customer=other_customer, type=Activity.ActivityType.OTHER, occurred_at="2026-03-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/activities/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_customer_id_is_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AccountActivityListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/activities/"
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_accounts_activities(self):
+        Activity.objects.create(
+            account=self.account,
+            type=Activity.ActivityType.EXECUTIVE_ALIGNMENT_SESSION,
+            occurred_at="2026-03-20",
+            links=0,
+            watchers=3,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["type_display"], "Executive Alignment Session")
+        self.assertEqual(response.data[0]["watchers"], 3)
+
+    def test_does_not_include_the_customers_own_activities(self):
+        Activity.objects.create(
+            customer=self.customer, type=Activity.ActivityType.OTHER, occurred_at="2026-03-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_accounts_activities(self):
+        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        Activity.objects.create(
+            account=other_account, type=Activity.ActivityType.OTHER, occurred_at="2026-03-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_wrong_customer_id_in_the_url_is_404_even_for_a_valid_account_id(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/activities/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_admin_gets_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
