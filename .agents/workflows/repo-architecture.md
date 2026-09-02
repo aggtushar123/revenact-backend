@@ -140,7 +140,8 @@ financial fields, even ones the mock data happens to make look additive).
 | `views.py: CustomerListCreateView` | `GET/POST /customers/` — any authenticated user in the org (no admin gate, unlike User Management) |
 | `views.py: CustomerDetailView` | `GET/PATCH /customers/<id>/` — same org only, 404 outside it |
 | `views.py: CustomerStatsView` | `GET /customers/stats/` — Health/NPS/Lifecycle rollups for MetricsPanel |
-| `views.py: AccountListView` | `GET /customers/<customer_id>/accounts/` — read-only, 404 (not empty list) for a customer_id outside the caller's org |
+| `views.py: AccountListCreateView` | `GET/POST /customers/<customer_id>/accounts/` — 404 (not empty list) for a customer_id outside the caller's org; POST's `customer` always comes from the URL |
+| `views.py: AccountDetailView` | `GET/PATCH /customers/<customer_id>/accounts/<id>/` — same org + customer only, 404 outside it |
 | `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
 | `management/commands/seed_demo_accounts.py` | Dev-only: seeds Account rows (from accountsData.ts) under existing demo Customers — run after seed_demo_customers. Idempotent. |
 
@@ -167,11 +168,14 @@ financials, product usage, and NPS/CSAT/health are meant to sync from
 other systems later, not be hand-typed; Churn and Archive are separate
 actions from the general edit form — see `is_archived` on the `Customer`
 model and the detail endpoint's archive/unarchive note in
-`docs/API_CONTRACTS.md`).
+`docs/API_CONTRACTS.md`). Add/Edit Account (same product decision: name/
+domain/owner/lifecycle stage/renewal date only) is wired too, on the
+Accounts tab — `AccountFormModal.tsx`, same identity/ownership/lifecycle
+scoping as Organization's own form. No Churn/Archive for Account —
+Account has no `churn_date`/`is_archived` fields, and it wasn't asked for.
 
-Not built yet: Board view, nested Contacts, Add/Edit Account UI (Account
-is read-only from the API so far — see above), and Search/Filter-by-
-column UI (still decorative).
+Not built yet: Board view, nested Contacts, and Search/Filter-by-column
+UI (still decorative).
 
 ### Everything else
 

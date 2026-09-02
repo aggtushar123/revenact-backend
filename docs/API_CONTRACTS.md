@@ -58,7 +58,7 @@ expects.
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, activity feeds, nested Contacts not started. |
-| Accounts (Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + `GET .../accounts/` built, one-to-many under `Customer` — see below. Read-only so far, but the Accounts tab itself fetches and displays real accounts (`features/customers/customersSlice.ts`'s `fetchAccountsForCustomer`, `mapToAccountRow.ts`). No Add/Edit Account UI yet — a clean next step now that the relationship itself is wired end to end. |
+| Accounts (Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. Accounts tab fetches/displays real accounts and Add/Edit Account is wired (`createAccount`/`updateAccount` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
@@ -481,36 +481,59 @@ choices and `Customer.HEALTH_THRESHOLDS` for its `health_category`
 derivation, rather than redefining them — an account's lifecycle stage
 and health mean the same thing as a customer's, just at a finer grain.
 
-Fields: `customer` (FK, server-scoped), `name`, `domain` (blank falls
-back to the parent customer's domain for the logo — frontend
-responsibility, not enforced server-side), `owner` (FK to
-`accounts.User`, nullable, same-tenant only — not yet validated
-server-side since there's no write endpoint yet), `created_at`/
-`updated_at`, `lifecycle_stage`, `health_score` (0.0–10.0,
+Fields: `customer` (FK, server-scoped — **read-only**, never client-
+supplied, see the endpoints below), `name`, `domain` (blank falls back
+to the parent customer's domain for the logo — frontend responsibility,
+not enforced server-side), `owner` (FK to `accounts.User`, nullable,
+same-tenant only, validated the same way as `Customer.owner_id`),
+`created_at`/`updated_at`, `lifecycle_stage`, `health_score` (0.0–10.0,
 `health_category` derived, same thresholds as Customer), `pulse` (JSON
 list), `ai_pulse_score`, `ai_pulse_reason`, `nps_score` (−100 to 100),
 `csat_score` (0–100), `renewal_date`, `arr` (MRR is derived, `arr / 12`,
 not stored — same convention as Customer).
 
-**Read-only for now** — no create/update endpoint yet; that's an
-intentional next step once the relationship itself was wired into the
-frontend (this pass). See `seed_demo_accounts` management command for
-demo data (run after `seed_demo_customers`).
+**Add/Edit Account** covers identity, ownership, lifecycle stage, and
+renewal date — same product decision as Customer's own Add/Edit form.
+`health_score`/`pulse`/`ai_pulse_score`/`ai_pulse_reason`/`nps_score`/
+`csat_score`/`arr` are technically writable via `AccountSerializer` too
+(not restricted at the API layer, same as `CustomerSerializer`) but the
+Add/Edit Account UI never sends them — meant to sync from other systems
+later. See `seed_demo_accounts` management command for demo data (run
+after `seed_demo_customers`).
 
-### `GET /api/v1/customers/<customer_id>/accounts/`
+### `GET /api/v1/customers/<customer_id>/accounts/`, `POST /api/v1/customers/<customer_id>/accounts/`
 
-Auth: `IsAuthenticated`. Every `Account` under one `Customer`, scoped to
-the caller's own organisation. **`404`, not `403` or an empty list,**
-for a `customer_id` outside the caller's organisation or that doesn't
-exist — checked once via `get_object_or_404` on the parent `Customer`
-before touching its accounts, so a real customer in another org 404s the
-same way a nonexistent id does (a caller can't otherwise tell "no
-accounts" apart from "not your customer").
+Auth: `IsAuthenticated`. GET: every `Account` under one `Customer`,
+scoped to the caller's own organisation. **`404`, not `403` or an empty
+list,** for a `customer_id` outside the caller's organisation or that
+doesn't exist — checked once via `get_object_or_404` on the parent
+`Customer` before touching its accounts, so a real customer in another
+org 404s the same way a nonexistent id does (a caller can't otherwise
+tell "no accounts" apart from "not your customer").
 
-**Response `200`** — a **plain array** (no pagination envelope; an
+**Response `200`** (GET) — a **plain array** (no pagination envelope; an
 individual customer's account list is expected to stay small), each
 entry with `owner` nested and `health_category` computed, same
 conventions as `CustomerSerializer`.
+
+POST: only `name` is required. `customer` is always taken from the URL's
+`customer_id` — sending a different value in the body is silently
+ignored, same convention as `organisation`/`created_by` on the Customer
+create endpoint. `owner_id` (optional) is `400` if the target user isn't
+in the caller's organisation.
+
+**Response `201`** — the created account, same shape as a GET list entry.
+
+### `GET /api/v1/customers/<customer_id>/accounts/<id>/`, `PATCH /api/v1/customers/<customer_id>/accounts/<id>/`
+
+Auth: `IsAuthenticated`. **`404`, not `403`,** for either id outside the
+caller's organisation/customer. PATCH accepts any subset of the POST
+fields (partial update); `customer` in the body is ignored (read-only —
+there's no way to move an account to a different customer via this
+endpoint). `owner_id` follows the same same-organisation validation as
+create.
+
+**Response `200`** (both) — the (possibly updated) account.
 
 ---
 

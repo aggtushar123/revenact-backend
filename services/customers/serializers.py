@@ -94,15 +94,26 @@ class CustomerSerializer(serializers.ModelSerializer):
 
 
 class AccountSerializer(serializers.ModelSerializer):
-    """Read-only for now (see AccountListView) — no `owner_id`/create/
-    update yet. Shaped to mirror CustomerSerializer's own conventions
-    (nested owner, derived health_category) since an account's health/
-    lifecycle mean the same thing as a customer's, just at a finer grain."""
+    """Shaped to mirror CustomerSerializer's own conventions (nested
+    owner, derived health_category, an `owner_id` write field validated
+    same-organisation-only) since an account's health/lifecycle mean the
+    same thing as a customer's, just at a finer grain.
+
+    `customer` is read-only here — never client-supplied. AccountListCreateView
+    sets it from the URL's customer_id on create; there's no way to move
+    an account to a different customer via this serializer."""
 
     health_category = serializers.ChoiceField(
         choices=Customer.HealthCategory.choices, read_only=True
     )
     owner = UserSerializer(read_only=True)
+    owner_id = serializers.PrimaryKeyRelatedField(
+        source="owner",
+        queryset=User.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = Account
@@ -112,6 +123,7 @@ class AccountSerializer(serializers.ModelSerializer):
             "name",
             "domain",
             "owner",
+            "owner_id",
             "created_at",
             "updated_at",
             "lifecycle_stage",
@@ -125,3 +137,10 @@ class AccountSerializer(serializers.ModelSerializer):
             "renewal_date",
             "arr",
         ]
+        read_only_fields = ["customer", "created_at", "updated_at"]
+
+    def validate_owner_id(self, owner):
+        request = self.context["request"]
+        if owner is not None and owner.organisation_id != request.user.organisation_id:
+            raise serializers.ValidationError("Owner must be a member of your own organisation.")
+        return owner

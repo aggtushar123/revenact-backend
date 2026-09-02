@@ -179,9 +179,8 @@ class Account(models.Model):
     lifecycle stage and health mean exactly the same thing as a
     customer's, just at a finer grain.
 
-    Read-only from the API for now (AccountListView) — there's no
-    Add/Edit Account UI yet; that's an intentional next step once this
-    relationship itself is wired into the frontend."""
+    Add/Edit Account is wired (AccountListCreateView/AccountDetailView) —
+    see those views' docstrings for exactly which fields the UI sends."""
 
     customer = models.ForeignKey(Customer, related_name="accounts", on_delete=models.CASCADE)
     name = models.CharField(max_length=255)

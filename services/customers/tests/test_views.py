@@ -534,7 +534,7 @@ class CustomerDetailTests(APITestCase):
         self.assertEqual(self.customer.name, "Globex")
 
 
-class AccountListTests(APITestCase):
+class AccountListCreateTests(APITestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
         self.admin = User.objects.create_user(
@@ -615,3 +615,153 @@ class AccountListTests(APITestCase):
 
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_can_add_an_account(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"name": "North America", "domain": "na.globex.com", "lifecycle_stage": "onboarding"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["customer"], self.customer.id)
+        account = Account.objects.get(name="North America")
+        self.assertEqual(account.customer_id, self.customer.id)
+        self.assertEqual(account.domain, "na.globex.com")
+
+    def test_create_only_requires_a_name(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(self.url, {"name": "North America"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_create_accepts_an_owner_in_the_same_organisation(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            self.url, {"name": "North America", "owner_id": self.admin.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["owner"]["email"], "alice@acme.io")
+
+    def test_create_rejects_an_owner_from_another_organisation(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_user = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"name": "North America", "owner_id": other_user.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Account.objects.filter(name="North America").exists())
+
+    def test_created_account_is_assigned_to_the_url_customer_not_a_supplied_one(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"name": "Sneaky", "customer": other_customer.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Account.objects.get(name="Sneaky").customer_id, self.customer.id)
+
+    def test_create_for_a_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            "/api/v1/customers/999999/accounts/", {"name": "North America"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AccountDetailTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/"
+
+    def test_unauthenticated_cannot_view_or_edit(self):
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+        response = self.client.patch(self.url, {"name": "Renamed"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_admin_can_view_and_edit(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["name"], "North America")
+
+        response = self.client.patch(
+            self.url, {"name": "North America Enterprise", "lifecycle_stage": "live"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.name, "North America Enterprise")
+        self.assertEqual(self.account.lifecycle_stage, "live")
+
+    def test_edit_cannot_move_the_account_to_a_different_customer(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(self.url, {"customer": other_customer.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.customer_id, self.customer.id)
+
+    def test_edit_rejects_an_owner_from_another_organisation(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_user = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(self.url, {"owner_id": other_user.id}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_wrong_customer_id_in_the_url_is_404_even_for_a_valid_account_id(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_admin_gets_404_not_403(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        response = self.client.patch(self.url, {"name": "Pwned"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.name, "North America")

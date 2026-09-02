@@ -8,7 +8,7 @@ from rest_framework import generics, views
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Customer
+from .models import Account, Customer
 from .serializers import AccountSerializer, CustomerSerializer
 
 
@@ -170,25 +170,55 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
         return Customer.objects.filter(organisation=self.request.user.organisation)
 
 
-class AccountListView(generics.ListAPIView):
-    """GET /api/v1/customers/<customer_id>/accounts/ — every Account under
-    one Customer, scoped to the caller's own organisation. Read-only for
-    now — see Account model's docstring; POST lands with the Add Account
-    UI later.
+class AccountListCreateView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/ — every Account
+    under one Customer (GET), or adds a new one to it (POST), scoped to
+    the caller's own organisation. `customer` is never client-supplied —
+    taken from the URL and validated against the caller's org before
+    either operation.
 
     404 (not 403) for a customer_id outside the caller's organisation or
-    that doesn't exist, same convention as CustomerDetailView — this is
-    checked once up front via get_object_or_404 rather than left to fall
-    out of an empty queryset, so a real customer in another org 404s the
-    same way a nonexistent id does, instead of silently returning `[]`
-    either way and leaving the two indistinguishable to the frontend."""
+    that doesn't exist, same convention as CustomerDetailView — checked
+    once up front via get_object_or_404 rather than left to fall out of
+    an empty queryset, so a real customer in another org 404s the same
+    way a nonexistent id does, instead of silently returning `[]` either
+    way and leaving the two indistinguishable to the frontend.
+
+    Add/Edit Account (this view's POST + AccountDetailView's PATCH below)
+    covers identity, ownership, lifecycle stage, and renewal date — the
+    fields an account genuinely has going in. Health/pulse/AI-pulse/NPS/
+    CSAT/ARR are technically writable via AccountSerializer too (not
+    restricted at the API layer, same as CustomerSerializer) but the
+    Add/Edit Account UI never sends them — meant to sync from other
+    systems later, same reasoning as Customer's own Add/Edit form."""
 
     serializer_class = AccountSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
-    def get_queryset(self):
-        customer = get_object_or_404(
+    def get_customer(self):
+        return get_object_or_404(
             Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
         )
-        return customer.accounts.all()
+
+    def get_queryset(self):
+        return self.get_customer().accounts.all()
+
+    def perform_create(self, serializer):
+        serializer.save(customer=self.get_customer())
+
+
+class AccountDetailView(generics.RetrieveUpdateAPIView):
+    """GET/PATCH /api/v1/customers/<customer_id>/accounts/<id>/ — scoped
+    to the caller's own organisation and the given customer_id. 404, not
+    403, for either id outside that scope. See AccountListCreateView's
+    docstring for what's actually editable."""
+
+    serializer_class = AccountSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Account.objects.filter(
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
