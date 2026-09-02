@@ -3,7 +3,7 @@ from rest_framework import serializers
 from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
 
-from .models import Account, Activity, Customer
+from .models import Account, Activity, Customer, Email
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -157,3 +157,21 @@ class ActivitySerializer(serializers.ModelSerializer):
     class Meta:
         model = Activity
         fields = ["id", "type", "type_display", "occurred_at", "links", "watchers"]
+
+
+class EmailSerializer(serializers.ModelSerializer):
+    """Read-only — see Email model's docstring."""
+
+    class Meta:
+        model = Email
+        fields = [
+            "id",
+            "subject",
+            "sender_name",
+            "recipient_name",
+            "body",
+            "sent_at",
+            "links",
+            "watchers",
+            "is_starred",
+        ]

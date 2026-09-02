@@ -145,9 +145,13 @@ financial fields, even ones the mock data happens to make look additive).
 | `models.py: Activity` | Belongs to exactly one of `Customer` or `Account` (two nullable FKs + a DB `CheckConstraint`, not a `GenericForeignKey`) — a timeline entry backing `ActivityFeed`'s "Activities" filter. Read-only so far — no create/update endpoint yet. |
 | `views.py: CustomerActivityListView` | `GET /customers/<customer_id>/activities/` — org-level activities for one Customer, 404 (not empty list) outside the caller's org |
 | `views.py: AccountActivityListView` | `GET /customers/<customer_id>/accounts/<account_id>/activities/` — account-level activities for one Account, 404 for either id outside scope |
+| `models.py: Email` | Same exactly-one-parent shape as `Activity` — a logged email backing `ActivityFeed`'s "Emails" filter. Read-only so far. |
+| `views.py: CustomerEmailListView` | `GET /customers/<customer_id>/emails/` — org-level emails for one Customer, same 404 convention |
+| `views.py: AccountEmailListView` | `GET /customers/<customer_id>/accounts/<account_id>/emails/` — account-level emails for one Account |
 | `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
 | `management/commands/seed_demo_accounts.py` | Dev-only: seeds Account rows (from accountsData.ts) under existing demo Customers — run after seed_demo_customers. Idempotent. |
-| `management/commands/seed_demo_activities.py` | Dev-only: seeds Activity rows (from activityData.ts/accountActivityData.ts) under existing demo Customers/Accounts — run after seed_demo_accounts. Idempotent. |
+| `management/commands/seed_demo_activities.py` | Dev-only: seeds Activity rows under every seeded Customer/Account — run after seed_demo_accounts. Idempotent. |
+| `management/commands/seed_demo_emails.py` | Dev-only: seeds Email rows under every seeded Customer/Account — run after seed_demo_accounts. Idempotent. |
 
 **Status:** 🟢 Schema and API complete; the List view and the Details
 page's General + Accounts tabs are wired to real data — `react-ts-app`'s
@@ -178,18 +182,25 @@ Accounts tab — `AccountFormModal.tsx`, same identity/ownership/lifecycle
 scoping as Organization's own form. No Churn/Archive for Account —
 Account has no `churn_date`/`is_archived` fields, and it wasn't asked for.
 
-`Activity` (backing `ActivityFeed`'s "Activities" filter specifically —
-the feed's other filters, e.g. Emails/Tasks/Notes, are still all mock)
-is 🟡 backend-only: model, the two scoped list endpoints above, and
-demo seed data all exist, but `ActivitiesTab.tsx` still reads the
-`ACTIVITIES_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/
-`accountActivityData.ts` rather than these endpoints — that mock's
-`ACCOUNT_ID_MAP` only knows the mock's own string ids ('acc-1' etc.),
-so it falls back to the same hardcoded activities for every real
-account today.
+`Activity` (backing `ActivityFeed`'s "Activities" filter) is 🟢
+frontend-wired: `ActivitiesTab.tsx` fetches real data through
+`fetchActivitiesForCustomer`/`fetchActivitiesForAccount` in
+`customersSlice.ts` instead of the old `ACTIVITIES_DATA`/
+`ACCOUNT_ID_MAP` mock (that mock's `ACCOUNT_ID_MAP` only knew its own
+string ids like 'acc-1', so every real account used to fall back to
+the same hardcoded activities — the bug this wiring fixed).
+
+`Email` (backing `ActivityFeed`'s "Emails" filter) is 🟡 backend-only,
+same shape and same stage `Activity` was in before its own frontend
+pass: model, the two scoped list endpoints above, and demo seed data
+all exist, but `EmailsTab.tsx` still reads the `EMAILS_DATA`/
+`ACCOUNT_ID_MAP` mock rather than these endpoints.
+
+The feed's remaining filters (Tasks/Notes/Tickets/Calendar Events/
+Slack) are still 100% mock — no backend model yet.
 
 Not built yet: Board view, nested Contacts, Search/Filter-by-column UI
-(still decorative), and the frontend wiring for `Activity` above.
+(still decorative), and the frontend wiring for `Email` above.
 
 ### Everything else
 

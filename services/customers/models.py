@@ -324,3 +324,79 @@ class Activity(models.Model):
     def __str__(self):
         parent = self.customer or self.account
         return f"{self.get_type_display()} — {parent}"
+
+
+class Email(models.Model):
+    """A logged email — same "belongs to exactly one of Customer or
+    Account" shape as Activity above (see that model's own docstring
+    for why two nullable FKs + a CheckConstraint rather than a
+    GenericForeignKey), backing the "Emails" filter within ActivityFeed
+    on both the Organization Details page's General tab and the
+    standalone Account page.
+
+    Mirrors the frontend's mock EmailItem shape
+    (react-ts-app/src/components/organizations/activityData.ts):
+    `subject`/`sender_name`/`recipient_name`/`body` are the card's
+    text, `sent_at` is formatted into the card's separate date and
+    time displays on the frontend rather than stored as two different
+    strings, `links`/`watchers` the two small counters, `is_starred`
+    the star icon — unlike Activity's decorative "Pulse" badge, the
+    mock's star is a real per-item flag (shown only when true), so it
+    stays a real field here too.
+
+    `sender_name`/`recipient_name` are plain text, not a FK to a
+    Contact — there's no Contact model yet (the frontend's own Contacts
+    tab is still 100% mock), and the mock data itself often names a
+    team rather than a person (e.g. "Support Team", "Product Team").
+    `sender_avatar` isn't stored either — the frontend derives a
+    placeholder avatar straight from sender_name today, no different
+    from before this model existed."""
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="emails",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level email. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="emails",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level email. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    subject = models.CharField(max_length=255)
+    sender_name = models.CharField(max_length=150)
+    recipient_name = models.CharField(max_length=150)
+    body = models.TextField(help_text="The summarized preview shown on the card.")
+    sent_at = models.DateTimeField()
+    links = models.PositiveIntegerField(
+        default=0, help_text="Count shown on the card's link icon."
+    )
+    watchers = models.PositiveIntegerField(
+        default=0, help_text="Count shown on the card's eye icon (views)."
+    )
+    is_starred = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-sent_at", "-id"]
+        verbose_name_plural = "emails"
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="email_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.subject} — {parent}"

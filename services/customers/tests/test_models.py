@@ -4,7 +4,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from services.accounts.models import Organisation
-from services.customers.models import Account, Activity, Customer
+from services.customers.models import Account, Activity, Customer, Email
 
 
 class HealthCategoryTests(TestCase):
@@ -117,4 +117,41 @@ class ActivityParentConstraintTests(TestCase):
                 account=self.account,
                 type=Activity.ActivityType.OTHER,
                 occurred_at="2026-03-05",
+            )
+
+
+class EmailParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Activity — see that
+    model's own docstring, and Email's, for why."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def _email_kwargs(self):
+        return {
+            "subject": "Welcome aboard",
+            "sender_name": "Edgar Holmes",
+            "recipient_name": "Natalie Reyes",
+            "body": "Hi Natalie, excited to get started.",
+            "sent_at": "2026-03-05T18:20:00Z",
+        }
+
+    def test_customer_only_is_valid(self):
+        email = Email.objects.create(customer=self.customer, **self._email_kwargs())
+        self.assertIsNone(email.account)
+
+    def test_account_only_is_valid(self):
+        email = Email.objects.create(account=self.account, **self._email_kwargs())
+        self.assertIsNone(email.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Email.objects.create(**self._email_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Email.objects.create(
+                customer=self.customer, account=self.account, **self._email_kwargs()
             )

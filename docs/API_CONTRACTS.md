@@ -59,7 +59,8 @@ expects.
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
 | Accounts (Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. Accounts tab fetches/displays real accounts and Add/Edit Account is wired (`createAccount`/`updateAccount` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. |
-| Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `ACTIVITIES_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
+| Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
+| Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `EMAILS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts | — | ⏳ Not started |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
@@ -586,6 +587,52 @@ organisation — **`404`** for either mismatch, same reasoning as the
 Account detail endpoint. Powers ActivityFeed's "Activities" filter on
 the standalone Account page — same component as the Customer-scoped
 endpoint above, reading a different scope.
+
+**Response `200`** — same shape as the Customer-scoped list above.
+
+### Models — `Email`
+
+Mirrors: `src/components/shared/ActivityFeed.tsx`'s "Emails" filter,
+`src/components/organizations/activity/EmailsTab.tsx` (the card:
+subject, sender/recipient, a summarized body, watchers/links, a
+starred flag) plus the thread panel it opens into.
+
+Same "belongs to exactly one of `Customer` or `Account`" shape as
+`Activity` (two nullable FKs + a DB `CheckConstraint`, read-only for
+this round — see that model's own docstring for the full reasoning).
+
+Fields: `subject`, `sender_name`/`recipient_name` (plain text, not a
+FK — there's no Contact model yet, and the mock data often names a
+team rather than a person, e.g. "Support Team"), `body` (the
+summarized preview shown on the card), `sent_at` (a single
+`DateTimeField` — the frontend formats it into the card's separate
+date and time displays rather than storing two different strings),
+`links`/`watchers` (the card's two counters), `is_starred` (the star
+icon — a real per-item flag, unlike Activity's decorative "Pulse"
+badge, so it's a real field here). `sender_avatar` isn't stored — the
+frontend derives a placeholder avatar from `sender_name`, same as
+before this model existed.
+
+See `seed_demo_emails` management command for demo data (run after
+`seed_demo_accounts`).
+
+### `GET /api/v1/customers/<customer_id>/emails/`
+
+Auth: `IsAuthenticated`. Every organization-level `Email` for one
+`Customer`, scoped to the caller's own organisation — same
+404-not-empty-list convention as the Activity list endpoint. Powers
+ActivityFeed's "Emails" filter on the Organization Details page.
+
+**Response `200`** — a plain array, each entry: `id`, `subject`,
+`sender_name`, `recipient_name`, `body`, `sent_at`, `links`,
+`watchers`, `is_starred`.
+
+### `GET /api/v1/customers/<customer_id>/accounts/<account_id>/emails/`
+
+Auth: `IsAuthenticated`. Every account-level `Email` for one `Account`,
+scoped to both its `customer_id` and the caller's own organisation —
+same reasoning as the Activity account-level endpoint. Powers
+ActivityFeed's "Emails" filter on the standalone Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
 

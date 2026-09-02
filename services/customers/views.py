@@ -9,7 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Account, Customer
-from .serializers import AccountSerializer, ActivitySerializer, CustomerSerializer
+from .serializers import AccountSerializer, ActivitySerializer, CustomerSerializer, EmailSerializer
 
 
 class CustomerListCreateView(generics.ListCreateAPIView):
@@ -263,3 +263,42 @@ class AccountActivityListView(generics.ListAPIView):
             customer__organisation=self.request.user.organisation,
         )
         return account.activities.all()
+
+
+class CustomerEmailListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/emails/ — every
+    organization-level Email for one Customer, scoped to the caller's
+    own organisation. Same 404-not-empty-list convention as
+    CustomerActivityListView. Powers ActivityFeed's "Emails" filter on
+    the Organization Details page's General tab."""
+
+    serializer_class = EmailSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+        return customer.emails.all()
+
+
+class AccountEmailListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/accounts/<account_id>/emails/
+    — every account-level Email for one Account, scoped to both its
+    customer_id and the caller's own organisation. Same reasoning as
+    AccountActivityListView. Powers ActivityFeed's "Emails" filter on
+    the standalone Account page."""
+
+    serializer_class = EmailSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        account = get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+        return account.emails.all()

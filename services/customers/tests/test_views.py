@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Account, Activity, Customer
+from services.customers.models import Account, Activity, Customer, Email
 
 
 class CustomerListCreateTests(APITestCase):
@@ -904,6 +904,172 @@ class AccountActivityListTests(APITestCase):
         self.client.force_authenticate(self.admin)
 
         url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/activities/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_admin_gets_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomerEmailListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/emails/"
+
+    def _email_kwargs(self, **overrides):
+        kwargs = {
+            "subject": "Welcome aboard",
+            "sender_name": "Edgar Holmes",
+            "recipient_name": "Natalie Reyes",
+            "body": "Hi Natalie, excited to get started.",
+            "sent_at": "2026-03-05T18:20:00Z",
+            "links": 3,
+            "watchers": 2,
+            "is_starred": True,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_customers_emails_as_a_plain_array(self):
+        Email.objects.create(customer=self.customer, **self._email_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["subject"], "Welcome aboard")
+        self.assertEqual(response.data[0]["sender_name"], "Edgar Holmes")
+        self.assertEqual(response.data[0]["recipient_name"], "Natalie Reyes")
+        self.assertEqual(response.data[0]["links"], 3)
+        self.assertEqual(response.data[0]["watchers"], 2)
+        self.assertTrue(response.data[0]["is_starred"])
+
+    def test_does_not_include_an_accounts_emails(self):
+        account = Account.objects.create(customer=self.customer, name="North America")
+        Email.objects.create(account=account, **self._email_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_customers_emails(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Email.objects.create(customer=other_customer, **self._email_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/emails/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_customer_id_is_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AccountEmailListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/emails/"
+
+    def _email_kwargs(self, **overrides):
+        kwargs = {
+            "subject": "Escalation: Critical Integration Issue",
+            "sender_name": "Edgar Holmes",
+            "recipient_name": "Support Team",
+            "body": "Priority escalation.",
+            "sent_at": "2026-03-02T08:15:00Z",
+            "links": 0,
+            "watchers": 5,
+            "is_starred": False,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_accounts_emails(self):
+        Email.objects.create(account=self.account, **self._email_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["subject"], "Escalation: Critical Integration Issue")
+        self.assertEqual(response.data[0]["watchers"], 5)
+
+    def test_does_not_include_the_customers_own_emails(self):
+        Email.objects.create(customer=self.customer, **self._email_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_accounts_emails(self):
+        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        Email.objects.create(account=other_account, **self._email_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_wrong_customer_id_in_the_url_is_404_even_for_a_valid_account_id(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/emails/"
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
