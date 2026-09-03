@@ -11,6 +11,7 @@ from services.customers.models import (
     Account,
     Activity,
     CalendarEvent,
+    Contact,
     Customer,
     Email,
     Note,
@@ -1747,3 +1748,391 @@ class AccountCalendarEventListTests(APITestCase):
 
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomerContactListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/contacts/"
+
+    def _contact_kwargs(self, **overrides):
+        kwargs = {
+            "name": "Sarah Chen",
+            "role": Contact.Role.EXECUTIVE_SPONSOR,
+            "email": "sarah.chen@globex.com",
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_customers_contacts_as_a_plain_array(self):
+        Contact.objects.create(customer=self.customer, **self._contact_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["name"], "Sarah Chen")
+        self.assertEqual(response.data[0]["role"], "executive_sponsor")
+        self.assertEqual(response.data[0]["role_display"], "Executive Sponsor")
+
+    def test_does_not_include_an_accounts_contacts(self):
+        account = Account.objects.create(customer=self.customer, name="North America")
+        Contact.objects.create(account=account, **self._contact_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_customers_contacts(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Contact.objects.create(customer=other_customer, **self._contact_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/contacts/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_customer_id_is_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AccountContactListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/contacts/"
+
+    def _contact_kwargs(self, **overrides):
+        kwargs = {
+            "name": "James Wilson",
+            "role": Contact.Role.CHAMPION,
+            "email": "j.wilson@globex.com",
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_accounts_contacts(self):
+        Contact.objects.create(account=self.account, **self._contact_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["name"], "James Wilson")
+
+    def test_does_not_include_the_customers_own_contacts(self):
+        Contact.objects.create(customer=self.customer, **self._contact_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_accounts_contacts(self):
+        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        Contact.objects.create(account=other_account, **self._contact_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_wrong_customer_id_in_the_url_is_404_even_for_a_valid_account_id(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/contacts/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_admin_gets_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ContactListTests(APITestCase):
+    """/api/v1/contacts/ — the one Contact view not nested under a
+    single Customer/Account (see ContactListView's own docstring)."""
+
+    url = "/api/v1/contacts/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_both_org_level_and_account_level_contacts(self):
+        Contact.objects.create(
+            customer=self.customer,
+            name="Sarah Chen",
+            role=Contact.Role.EXECUTIVE_SPONSOR,
+            email="sarah.chen@globex.com",
+        )
+        Contact.objects.create(
+            account=self.account,
+            name="James Wilson",
+            role=Contact.Role.CHAMPION,
+            email="j.wilson@globex.com",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        names = {row["name"] for row in response.data["results"]}
+        self.assertEqual(names, {"Sarah Chen", "James Wilson"})
+
+    def test_response_includes_company_and_account_name(self):
+        Contact.objects.create(
+            account=self.account,
+            name="James Wilson",
+            role=Contact.Role.CHAMPION,
+            email="j.wilson@globex.com",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        row = response.data["results"][0]
+        self.assertEqual(row["company_id"], self.customer.id)
+        self.assertEqual(row["company_name"], "Globex")
+        self.assertEqual(row["account_name"], "North America")
+
+    def test_org_level_contact_has_no_account_name(self):
+        Contact.objects.create(
+            customer=self.customer,
+            name="Sarah Chen",
+            role=Contact.Role.EXECUTIVE_SPONSOR,
+            email="sarah.chen@globex.com",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertIsNone(response.data["results"][0]["account_name"])
+
+    def test_search_matches_name(self):
+        Contact.objects.create(
+            customer=self.customer,
+            name="Sarah Chen",
+            role=Contact.Role.EXECUTIVE_SPONSOR,
+            email="sarah.chen@globex.com",
+        )
+        Contact.objects.create(
+            customer=self.customer,
+            name="James Wilson",
+            role=Contact.Role.CHAMPION,
+            email="j.wilson@globex.com",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url, {"search": "sarah"})
+
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Sarah Chen")
+
+    def test_company_filter_matches_account_level_contacts_too(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Contact.objects.create(
+            customer=other_customer,
+            name="Peter Gibbons",
+            role=Contact.Role.INFLUENCER,
+            email="peter@initech.com",
+        )
+        Contact.objects.create(
+            account=self.account,
+            name="James Wilson",
+            role=Contact.Role.CHAMPION,
+            email="j.wilson@globex.com",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url, {"company": self.customer.id})
+
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "James Wilson")
+
+    def test_does_not_leak_another_organisations_contacts(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        Contact.objects.create(
+            customer=other_customer,
+            name="Someone Else",
+            role=Contact.Role.OTHER,
+            email="someone@otherco.com",
+        )
+        Contact.objects.create(
+            customer=self.customer,
+            name="Sarah Chen",
+            role=Contact.Role.EXECUTIVE_SPONSOR,
+            email="sarah.chen@globex.com",
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Someone Else")
+
+
+class ContactStatsTests(APITestCase):
+    url = "/api/v1/contacts/stats/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+
+    def test_unauthenticated_cannot_view(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_totals_active_and_sentiment_breakdown(self):
+        Contact.objects.create(
+            customer=self.customer, name="A", role=Contact.Role.CHAMPION, email="a@globex.com",
+            status=Contact.Status.ACTIVE, sentiment=Contact.Sentiment.POSITIVE,
+        )
+        Contact.objects.create(
+            customer=self.customer, name="B", role=Contact.Role.CHAMPION, email="b@globex.com",
+            status=Contact.Status.ACTIVE, sentiment=Contact.Sentiment.NEGATIVE,
+        )
+        Contact.objects.create(
+            customer=self.customer, name="C", role=Contact.Role.CHAMPION, email="c@globex.com",
+            status=Contact.Status.INACTIVE, sentiment=Contact.Sentiment.NEUTRAL,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total"], 3)
+        self.assertEqual(response.data["active"], 2)
+        self.assertEqual(response.data["sentiment"]["positive"], 1)
+        self.assertEqual(response.data["sentiment"]["negative"], 1)
+        self.assertEqual(response.data["sentiment"]["neutral"], 1)
+
+    def test_growth_is_none_when_nothing_existed_30_days_ago(self):
+        Contact.objects.create(
+            customer=self.customer, name="A", role=Contact.Role.CHAMPION, email="a@globex.com",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertIsNone(response.data["growth_30d_pct"])
+
+    def test_growth_compares_against_the_30_day_old_total(self):
+        old = Contact.objects.create(
+            customer=self.customer, name="A", role=Contact.Role.CHAMPION, email="a@globex.com",
+        )
+        Contact.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=45)
+        )
+        Contact.objects.create(
+            customer=self.customer, name="B", role=Contact.Role.CHAMPION, email="b@globex.com",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        # 1 contact existed 30+ days ago, 2 exist now -> +100%.
+        self.assertEqual(response.data["growth_30d_pct"], 100.0)
+
+    def test_does_not_count_another_organisations_contacts(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        Contact.objects.create(
+            customer=other_customer,
+            name="Someone",
+            role=Contact.Role.OTHER,
+            email="someone@otherco.com",
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["total"], 1)

@@ -3,7 +3,7 @@ from rest_framework import serializers
 from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
 
-from .models import Account, Activity, CalendarEvent, Customer, Email, Note, Task, Ticket
+from .models import Account, Activity, CalendarEvent, Contact, Customer, Email, Note, Task, Ticket
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -232,3 +232,49 @@ class CalendarEventSerializer(serializers.ModelSerializer):
             "end_time",
             "attendee_count",
         ]
+
+
+class ContactSerializer(serializers.ModelSerializer):
+    """Read-only — see Contact model's docstring. `company_id`/
+    `company_name` are the ultimate parent Customer regardless of
+    whether this is an organization- or account-level contact (see
+    Contact.company) — the nested Customer/Account-scoped list views
+    below don't strictly need them (the page already knows its own
+    scope) but get them for free since it's the same serializer; the
+    standalone top-level ContactListView does need them, since it spans
+    every Customer. `account_name` is set only for an account-level
+    contact, so the standalone page can show which account within the
+    company it belongs to (a plain SerializerMethodField rather than
+    `source="account.name"`, since a dotted source would raise on a
+    null `account` rather than reliably falling back)."""
+
+    role_display = serializers.CharField(source="get_role_display", read_only=True)
+    company_id = serializers.SerializerMethodField()
+    company_name = serializers.SerializerMethodField()
+    account_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Contact
+        fields = [
+            "id",
+            "name",
+            "role",
+            "role_display",
+            "email",
+            "phone",
+            "status",
+            "sentiment",
+            "last_contacted_at",
+            "company_id",
+            "company_name",
+            "account_name",
+        ]
+
+    def get_company_id(self, obj):
+        return obj.company.id
+
+    def get_company_name(self, obj):
+        return obj.company.name
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None

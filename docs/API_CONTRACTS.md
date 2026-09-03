@@ -65,7 +65,7 @@ expects.
 | Notes (`ActivityFeed`'s "Notes" filter) | `customers` (`Note` model) | 🟢 Read-only, API-complete — see below. `NotesTab.tsx` fetches real data through `fetchNotesForCustomer`/`fetchNotesForAccount`; the link line now reflects a real per-note count. No create/update endpoint yet. |
 | Tickets (`ActivityFeed`'s "Tickets" filter) | `customers` (`Ticket` model) | 🟢 Read-only, API-complete — see below. `TicketsTab.tsx` fetches real data through `fetchTicketsForCustomer`/`fetchTicketsForAccount`; the flag icon now reflects real priority and the link line a real per-ticket count. No create/update endpoint yet. |
 | Calendar Events (`ActivityFeed`'s "Calendar Events" filter) | `customers` (`CalendarEvent` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `CALENDAR_EVENTS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
-| Contacts | — | ⏳ Not started |
+| Contacts (standalone `/contacts/list` page, Organization/Account Details' Contacts tabs) | `customers` (`Contact` model) | 🟢 Read-only, API-complete — see below. Global paginated+searchable list (`ContactListView`/`ContactStatsView`) plus two scoped list endpoints (per-Customer, per-Account) exist and are seeded; all three frontend surfaces fetch real data. No create/update endpoint yet. |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot | — | ⏳ Not started |
@@ -839,6 +839,130 @@ Powers ActivityFeed's "Calendar Events" filter on the standalone
 Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
+
+### Models — `Contact`
+
+Mirrors: `src/components/organizations/contactsData.ts`'s mock
+`Contact` shape (name, role, email, phone, status, sentiment, last
+contacted). Unlike `Activity`/`Email`/`Task`/`Note`/`Ticket`/
+`CalendarEvent` above — which each back one filter *within*
+ActivityFeed — Contact backs its own sibling tab: the Contacts tab on
+the Organization Details page, the Contacts tab on the standalone
+Account page, and the global `/contacts/list` page.
+
+Same "belongs to exactly one of `Customer` or `Account`" shape as
+every model above (two nullable FKs + a `CheckConstraint`). `role` is
+a closed set matching the mock's own 7 MEDDIC-style stakeholder roles
+plus an `OTHER` catch-all; `status` (`active`/`inactive`) and
+`sentiment` (`positive`/`neutral`/`negative`) are the card's pill/dot.
+`last_contacted_at` is a real datetime, not the mock's frozen "2 hours
+ago" string — the frontend formats it relative-to-now itself
+(date-fns), so it stays accurate as time passes. `avatar` isn't
+stored, same as every other entity's avatar in this codebase — derived
+from `name` on the frontend.
+
+`Contact.company` (a Python property, not a DB column) resolves to the
+ultimate parent `Customer`: itself for an org-level contact, or its
+account's own customer for an account-level one. `ContactSerializer`
+exposes this as `company_id`/`company_name` (plus `account_name`,
+`None` for an org-level contact) — needed by the standalone
+`/contacts/list` page, which spans every Customer/Account at once and
+can't assume which FK is set the way the two nested views below can.
+
+See `seed_demo_contacts` management command for demo data (run after
+`seed_demo_accounts`).
+
+### `GET /api/v1/customers/<customer_id>/contacts/`
+
+Auth: `IsAuthenticated`. Every organization-level `Contact` for one
+`Customer`, scoped to the caller's own organisation — same
+404-not-empty-list convention as the Activity list endpoint. Powers
+the Organization Details page's own Contacts tab.
+
+**Response `200`** — a plain array, each entry: `id`, `name`, `role`,
+`role_display`, `email`, `phone`, `status`, `sentiment`,
+`last_contacted_at`, `company_id`, `company_name`, `account_name`
+(`null` here — org-level).
+
+### `GET /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/`
+
+Auth: `IsAuthenticated`. Every account-level `Contact` for one
+`Account`, scoped to both its `customer_id` and the caller's own
+organisation — same reasoning as the Activity account-level endpoint.
+Powers the standalone Account page's own Contacts tab.
+
+**Response `200`** — same shape as the Customer-scoped list above,
+`account_name` set to that account's own name.
+
+### `GET /api/v1/contacts/`
+
+Auth: `IsAuthenticated`. Every `Contact` across every `Customer`/
+`Account` the caller's own organisation owns — org-level and
+account-level alike. The one Contact view not nested under
+`/customers/<id>/...` (mounted directly in the project's root
+`config/urls.py` instead), since it spans every Customer/Account at
+once. Powers the standalone Contacts page (`/contacts/list`).
+
+Paginated with the shared `DEFAULT_PAGINATION_CLASS`/`PAGE_SIZE`
+(unlike every other Contact/Activity/Email/... list endpoint above,
+which turns pagination off for what's normally a single entity's
+already-small nested list) — same reasoning as `GET /api/v1/customers/`.
+
+Query params:
+- `?search=` — matches `name`/`email`/`role` (substring, case-
+  insensitive), same convention as the Customer list's own search.
+- `?company=<customer_id>` — filters to one company, matching a
+  contact directly on that `Customer` or on any of its `Account`s.
+
+**Response `200`**
+```json
+{
+  "count": 16,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 2,
+      "name": "James Wilson",
+      "role": "champion",
+      "role_display": "Champion",
+      "email": "j.wilson@apple.com",
+      "phone": "+1 (408) 555-0456",
+      "status": "active",
+      "sentiment": "positive",
+      "last_contacted_at": "2026-09-02T04:35:18.707403Z",
+      "company_id": 6,
+      "company_name": "Apple Inc",
+      "account_name": null
+    }
+  ]
+}
+```
+
+### `GET /api/v1/contacts/stats/`
+
+Auth: `IsAuthenticated`. Aggregate rollups for the standalone Contacts
+page's MetricsPanel (Total/Active/Sentiment/Growth cards), across every
+`Contact` the caller's organisation owns — same "spans everything, not
+just the current page" reasoning as `GET /api/v1/customers/stats/`.
+
+`growth_30d_pct` compares today's total against the total as of 30 days
+ago (contacts whose `created_at` already predates the cutoff) — the
+only "growth" there's real data for; there's no historical daily-
+snapshot table to compare a true count-30-days-ago against anything
+richer. `null` (not `0`) when there were no contacts yet 30 days ago,
+since a percentage change off a zero base is undefined, not zero.
+
+**Response `200`**
+```json
+{
+  "total": 16,
+  "active": 14,
+  "sentiment": { "positive": 9, "neutral": 3, "negative": 4 },
+  "sentiment_pct": { "positive": 56, "neutral": 19, "negative": 25 },
+  "growth_30d_pct": 433.3
+}
+```
 
 ---
 

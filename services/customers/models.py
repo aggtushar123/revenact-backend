@@ -731,3 +731,107 @@ class CalendarEvent(models.Model):
     def __str__(self):
         parent = self.customer or self.account
         return f"{self.title} — {parent}"
+
+
+class Contact(models.Model):
+    """A person at a Customer or one of its Accounts. Same "belongs to
+    exactly one of Customer or Account" shape as Activity/Email/Task/
+    Note/Ticket/CalendarEvent above — two nullable FKs + a
+    CheckConstraint — but unlike those, which each back one filter
+    *within* ActivityFeed, Contact backs its own sibling tab: the
+    "Contacts" tab on the Organization Details page, the "Contacts" tab
+    on the standalone Account page, and the global /contacts/list page
+    (which lists every Contact across every Customer/Account the
+    caller's organisation owns — see ContactListView below, the one
+    List view here that isn't nested under a single Customer/Account).
+
+    Mirrors the frontend's mock Contact shape
+    (react-ts-app/src/components/organizations/contactsData.ts):
+    `role` is the mock's own closed set of 7 MEDDIC-style stakeholder
+    roles plus an `OTHER` catch-all; `status`/`sentiment` are the
+    pill/dot the card already renders. `last_contacted_at` is a real
+    datetime rather than the mock's frozen "2 hours ago" string — the
+    frontend formats it relative-to-now itself (date-fns), so the text
+    stays accurate as time passes instead of drifting stale the way a
+    stored string would. `avatar` isn't stored — same as every other
+    entity's avatar in this codebase (e.g. Customer/Account owners),
+    derived from `name` on the frontend."""
+
+    class Role(models.TextChoices):
+        EXECUTIVE_SPONSOR = "executive_sponsor", "Executive Sponsor"
+        CHAMPION = "champion", "Champion"
+        ECONOMIC_BUYER = "economic_buyer", "Economic Buyer"
+        TECHNICAL_LEAD = "technical_lead", "Technical Lead"
+        DECISION_MAKER = "decision_maker", "Decision Maker"
+        INFLUENCER = "influencer", "Influencer"
+        FINANCE_MANAGER = "finance_manager", "Finance Manager"
+        OTHER = "other", "Other"
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        INACTIVE = "inactive", "Inactive"
+
+    class Sentiment(models.TextChoices):
+        POSITIVE = "positive", "Positive"
+        NEUTRAL = "neutral", "Neutral"
+        NEGATIVE = "negative", "Negative"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="contacts",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level contact. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="contacts",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level contact. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    name = models.CharField(max_length=150)
+    role = models.CharField(max_length=32, choices=Role.choices, default=Role.OTHER)
+    email = models.EmailField()
+    phone = models.CharField(max_length=32, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    sentiment = models.CharField(
+        max_length=16, choices=Sentiment.choices, default=Sentiment.NEUTRAL
+    )
+    last_contacted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Formatted as relative time ('2 hours ago') on the frontend.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name_plural = "contacts"
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="contact_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.name} — {parent}"
+
+    @property
+    def company(self) -> Customer:
+        """The ultimate parent Customer: itself if this is an
+        organization-level contact, else its account's own customer.
+        Used by ContactSerializer's company_id/company_name fields —
+        needed by the standalone /contacts/list page, which spans every
+        Customer and so can't assume which FK is set the way the
+        nested Customer/Account-scoped list views can."""
+        return self.customer or self.account.customer

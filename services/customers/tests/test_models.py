@@ -8,6 +8,7 @@ from services.customers.models import (
     Account,
     Activity,
     CalendarEvent,
+    Contact,
     Customer,
     Email,
     Note,
@@ -345,3 +346,63 @@ class CalendarEventParentConstraintTests(TestCase):
             CalendarEvent.objects.create(
                 customer=self.customer, account=self.account, **self._event_kwargs()
             )
+
+
+class ContactParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Activity/Email/Task/
+    Note/Ticket/CalendarEvent."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def _contact_kwargs(self):
+        return {
+            "name": "Jamie Lee",
+            "role": Contact.Role.CHAMPION,
+            "email": "jamie.lee@someco.com",
+        }
+
+    def test_customer_only_is_valid(self):
+        contact = Contact.objects.create(customer=self.customer, **self._contact_kwargs())
+        self.assertIsNone(contact.account)
+
+    def test_account_only_is_valid(self):
+        contact = Contact.objects.create(account=self.account, **self._contact_kwargs())
+        self.assertIsNone(contact.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Contact.objects.create(**self._contact_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Contact.objects.create(
+                customer=self.customer, account=self.account, **self._contact_kwargs()
+            )
+
+
+class ContactCompanyPropertyTests(TestCase):
+    """Contact.company resolves to the ultimate parent Customer whether
+    the contact is org-level or account-level — see ContactSerializer's
+    own docstring for why the standalone /contacts/list page needs it."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def test_org_level_contact_company_is_its_own_customer(self):
+        contact = Contact.objects.create(
+            customer=self.customer, name="Jamie Lee", role=Contact.Role.CHAMPION,
+            email="jamie.lee@someco.com",
+        )
+        self.assertEqual(contact.company, self.customer)
+
+    def test_account_level_contact_company_is_the_accounts_customer(self):
+        contact = Contact.objects.create(
+            account=self.account, name="Jamie Lee", role=Contact.Role.CHAMPION,
+            email="jamie.lee@someco.com",
+        )
+        self.assertEqual(contact.company, self.customer)

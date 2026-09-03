@@ -160,6 +160,10 @@ financial fields, even ones the mock data happens to make look additive).
 | `models.py: CalendarEvent` | Same exactly-one-parent shape as `Activity`/`Email`/`Task`/`Note`/`Ticket` — a scheduled meeting/call/review/demo backing `ActivityFeed`'s "Calendar Events" filter. Read-only so far. `attendee_count` is stored directly rather than a list of names, since the card only ever renders the count. |
 | `views.py: CustomerCalendarEventListView` | `GET /customers/<customer_id>/calendar-events/` — org-level events for one Customer, same 404 convention |
 | `views.py: AccountCalendarEventListView` | `GET /customers/<customer_id>/accounts/<account_id>/calendar-events/` — account-level events for one Account |
+| `models.py: Contact` | Same exactly-one-parent shape as `Activity`/`Email`/`Task`/`Note`/`Ticket`/`CalendarEvent` — a person at a Customer or Account. Unlike those (which each back one filter *within* `ActivityFeed`), Contact backs its own sibling tab (Organization/Account Details' own Contacts tabs) plus the global `/contacts/list` page. `company` is a Python property (not a column) resolving to the ultimate parent Customer either way — see `ContactSerializer`'s `company_id`/`company_name`/`account_name`. Read-only so far. |
+| `views.py: CustomerContactListView` | `GET /customers/<customer_id>/contacts/` — org-level contacts for one Customer, same 404 convention |
+| `views.py: AccountContactListView` | `GET /customers/<customer_id>/accounts/<account_id>/contacts/` — account-level contacts for one Account |
+| `views.py: ContactListView` / `ContactStatsView` | `GET /api/v1/contacts/` (paginated, `?search=`/`?company=`) and `GET /api/v1/contacts/stats/` — the one Contact view spanning every Customer/Account, mounted at its own top-level prefix in `config/urls.py` rather than nested under `services.customers.urls`. Powers the standalone `/contacts/list` page. |
 | `management/commands/seed_demo_customers.py` | Dev-only: seeds an org with the tableData.ts mock's 14 companies — `python manage.py seed_demo_customers --org-email <admin email>`. Idempotent. |
 | `management/commands/seed_demo_accounts.py` | Dev-only: seeds Account rows (from accountsData.ts) under existing demo Customers — run after seed_demo_customers. Idempotent. |
 | `management/commands/seed_demo_activities.py` | Dev-only: seeds Activity rows under every seeded Customer/Account — run after seed_demo_accounts. Idempotent. |
@@ -168,6 +172,7 @@ financial fields, even ones the mock data happens to make look additive).
 | `management/commands/seed_demo_notes.py` | Dev-only: seeds Note rows under every seeded Customer/Account — `links` varies across 0 and a few positive counts to exercise both card states. Idempotent. |
 | `management/commands/seed_demo_tickets.py` | Dev-only: seeds Ticket rows under every seeded Customer/Account — `links` and `priority` both vary across their full range to exercise every card state. Idempotent. |
 | `management/commands/seed_demo_calendar_events.py` | Dev-only: seeds CalendarEvent rows under every seeded Customer/Account — spans all four event types. Idempotent. |
+| `management/commands/seed_demo_contacts.py` | Dev-only: seeds Contact rows under every seeded Customer/Account — the first 7 are the original `contactsData.ts` mock's own contacts, unchanged; a few also backdate `created_at` so `ContactStatsView`'s `growth_30d_pct` has a real non-null number to show. Idempotent. |
 
 **Status:** 🟢 Schema and API complete; the List view and the Details
 page's General + Accounts tabs are wired to real data — `react-ts-app`'s

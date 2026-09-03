@@ -17,6 +17,8 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
+from services.customers.views import ContactListView, ContactStatsView
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     # API docs — the live, always-in-sync API contract.
@@ -32,4 +34,12 @@ urlpatterns = [
     # `accounts` app, mounted at /auth/ to match the frontend's features/auth/.
     path("api/v1/auth/", include("services.accounts.urls")),
     path("api/v1/customers/", include("services.customers.urls")),
+    # Contact lives in the `customers` app (services/customers/models.py)
+    # but is mounted at its own top-level /api/v1/contacts/ prefix rather
+    # than nested under /customers/ — it's the one Contact view that spans
+    # every Customer/Account at once (see ContactListView's own
+    # docstring), unlike every other nested list under
+    # services.customers.urls above.
+    path("api/v1/contacts/stats/", ContactStatsView.as_view(), name="contact-stats"),
+    path("api/v1/contacts/", ContactListView.as_view(), name="contact-list"),
 ]

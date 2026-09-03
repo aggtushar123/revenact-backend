@@ -8,11 +8,12 @@ from rest_framework import generics, views
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Account, Customer
+from .models import Account, Contact, Customer
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
     CalendarEventSerializer,
+    ContactSerializer,
     CustomerSerializer,
     EmailSerializer,
     NoteSerializer,
@@ -467,3 +468,145 @@ class AccountCalendarEventListView(generics.ListAPIView):
             customer__organisation=self.request.user.organisation,
         )
         return account.calendar_events.all()
+
+
+class CustomerContactListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/contacts/ — every
+    organization-level Contact for one Customer, scoped to the
+    caller's own organisation. Same 404-not-empty-list convention as
+    CustomerActivityListView. Powers the Organization Details page's
+    own Contacts tab."""
+
+    serializer_class = ContactSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+        return customer.contacts.all()
+
+
+class AccountContactListView(generics.ListAPIView):
+    """GET /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/
+    — every account-level Contact for one Account, scoped to both its
+    customer_id and the caller's own organisation. Same reasoning as
+    AccountActivityListView. Powers the standalone Account page's own
+    Contacts tab."""
+
+    serializer_class = ContactSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        account = get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+        return account.contacts.all()
+
+
+class ContactListView(generics.ListAPIView):
+    """GET /api/v1/contacts/ — every Contact across every Customer/
+    Account the caller's own organisation owns, organization-level and
+    account-level alike. Powers the standalone Contacts page
+    (react-ts-app's /contacts/list) — the one place a Contact is
+    browsed independent of which Customer/Account it belongs to, so
+    this is the one Contact view that isn't nested under
+    /customers/<id>/... (mounted directly at /api/v1/contacts/ in the
+    project's root urls.py instead).
+
+    Paginated with the shared DEFAULT_PAGINATION_CLASS/PAGE_SIZE —
+    unlike every other List view in this file, which turns pagination
+    off for what's normally a single entity's already-small nested
+    list — since this one can span every contact the tenant has, same
+    reasoning as CustomerListCreateView.
+
+    `?search=` matches name/email/role (substring, case-insensitive),
+    same convention as CustomerListCreateView's own search. `?company=
+    <customer_id>` filters to one company, matching a contact directly
+    on that Customer or on any of its Accounts."""
+
+    serializer_class = ContactSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        queryset = Contact.objects.filter(
+            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
+        ).select_related("customer", "account", "account__customer")
+
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(email__icontains=search) | Q(role__icontains=search)
+            )
+
+        company = self.request.query_params.get("company")
+        if company:
+            try:
+                company_id = int(company)
+            except ValueError:
+                company_id = None
+            if company_id is not None:
+                queryset = queryset.filter(
+                    Q(customer_id=company_id) | Q(account__customer_id=company_id)
+                )
+
+        return queryset
+
+
+class ContactStatsView(views.APIView):
+    """GET /api/v1/contacts/stats/ — aggregate rollups for the
+    standalone Contacts page's MetricsPanel (Total/Active/Sentiment/
+    Growth cards), scoped to the caller's own organisation, across
+    every Contact (org-level and account-level alike) — same
+    "spans everything, not just the current page" reasoning as
+    CustomerStatsView.
+
+    `growth_30d_pct` compares today's total against the total as of 30
+    days ago (contacts whose `created_at` already predates the
+    cutoff) — the only "growth" there's real data for; there's no
+    historical daily-snapshot table to compare a true count-30-days-ago
+    against anything richer. `None` (not 0) when there were no
+    contacts yet 30 days ago, since a percentage change off a zero base
+    is undefined, not zero."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        organisation = request.user.organisation
+        contacts = Contact.objects.filter(
+            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
+        )
+
+        total = contacts.count()
+        active = contacts.filter(status=Contact.Status.ACTIVE).count()
+
+        sentiment_counts = {
+            sentiment: contacts.filter(sentiment=sentiment).count()
+            for sentiment in Contact.Sentiment.values
+        }
+        sentiment_pct = {
+            sentiment: (round(count / total * 100) if total else 0)
+            for sentiment, count in sentiment_counts.items()
+        }
+
+        cutoff = timezone.now() - timedelta(days=30)
+        total_30d_ago = contacts.filter(created_at__lte=cutoff).count()
+        growth_30d_pct = (
+            round((total - total_30d_ago) / total_30d_ago * 100, 1) if total_30d_ago else None
+        )
+
+        return Response(
+            {
+                "total": total,
+                "active": active,
+                "sentiment": sentiment_counts,
+                "sentiment_pct": sentiment_pct,
+                "growth_30d_pct": growth_30d_pct,
+            }
+        )
