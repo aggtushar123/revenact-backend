@@ -1,6 +1,17 @@
 from django.contrib import admin
 
-from .models import Account, Activity, CalendarEvent, Contact, Customer, Email, Note, Task, Ticket
+from .models import (
+    Account,
+    Activity,
+    CalendarEvent,
+    Contact,
+    Customer,
+    Email,
+    Note,
+    Opportunity,
+    Task,
+    Ticket,
+)
 
 
 @admin.register(Customer)
@@ -121,4 +132,12 @@ class ContactAdmin(admin.ModelAdmin):
     ]
     list_filter = ["role", "status", "sentiment"]
     search_fields = ["name", "email", "customer__name", "account__name"]
+    readonly_fields = ["created_at"]
+
+
+@admin.register(Opportunity)
+class OpportunityAdmin(admin.ModelAdmin):
+    list_display = ["title", "stage", "priority", "mrr", "customer", "account"]
+    list_filter = ["stage", "priority"]
+    search_fields = ["title", "customer__name", "account__name"]
     readonly_fields = ["created_at"]

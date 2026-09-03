@@ -5,10 +5,11 @@ from django.db.models.functions import Cast
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, views
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Account, Contact, Customer
+from .models import Account, Contact, Customer, Opportunity
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
@@ -17,6 +18,7 @@ from .serializers import (
     CustomerSerializer,
     EmailSerializer,
     NoteSerializer,
+    OpportunitySerializer,
     TaskSerializer,
     TicketSerializer,
 )
@@ -667,5 +669,122 @@ class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         organisation = self.request.user.organisation
         return Contact.objects.filter(
+            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
+        )
+
+
+class CustomerOpportunityListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/opportunities/ — same
+    shape as CustomerContactListView: GET rolls up every Opportunity
+    under this Customer, both organisation-level (directly on it) and
+    account-level (on any of its Accounts); POST always adds an
+    organisation-level one, `customer` taken from the URL. An
+    account-level Opportunity is added via AccountOpportunityListView
+    below instead. Scoped to the caller's own organisation."""
+
+    serializer_class = OpportunitySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_customer(self):
+        return get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+
+    def get_queryset(self):
+        customer = self.get_customer()
+        return Opportunity.objects.filter(Q(customer=customer) | Q(account__customer=customer))
+
+    def perform_create(self, serializer):
+        serializer.save(customer=self.get_customer())
+
+
+class AccountOpportunityListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/opportunities/
+    — every account-level Opportunity for one Account (GET), or adds a
+    new one to it (POST); `account` taken from the URL. Same reasoning
+    as AccountContactListView."""
+
+    serializer_class = OpportunitySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_account(self):
+        return get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+
+    def get_queryset(self):
+        return self.get_account().opportunities.all()
+
+    def perform_create(self, serializer):
+        serializer.save(account=self.get_account())
+
+
+class OpportunityListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/opportunities/ — every Opportunity across every
+    Customer/Account the caller's own organisation owns, organisation-
+    level and account-level alike. Powers the standalone Pipelines
+    board's own "Opportunities" tab (react-ts-app's
+    src/pages/pipelines/PipelinesPage.tsx) — the one place an
+    Opportunity is browsed independent of which Customer/Account it
+    belongs to, same reasoning as ContactListView.
+
+    Unlike ContactListView, pagination is off here — a Kanban board
+    needs every card in every column to render/drag-and-drop
+    correctly, not one page of them; there's no reasonable way to
+    paginate a board and keep every column complete.
+
+    POST takes a `customer_id` or an `account_id` in the request body
+    (neither is a real serializer field — `perform_create` below reads
+    whichever one was sent directly off the raw request) and creates
+    the Opportunity under that parent — the standalone board's own "Add
+    Opportunity" picks a company (and optionally one of its accounts)
+    the same way the standalone Contacts page's "Add Contact" does.
+    Exactly one of the two must be given, same invariant as the model's
+    own CheckConstraint."""
+
+    serializer_class = OpportunitySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        return Opportunity.objects.filter(
+            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
+        ).select_related("customer", "account", "account__customer")
+
+    def perform_create(self, serializer):
+        organisation = self.request.user.organisation
+        account_id = self.request.data.get("account_id")
+        customer_id = self.request.data.get("customer_id")
+        if account_id:
+            account = get_object_or_404(
+                Account, pk=account_id, customer__organisation=organisation
+            )
+            serializer.save(account=account)
+        elif customer_id:
+            customer = get_object_or_404(Customer, pk=customer_id, organisation=organisation)
+            serializer.save(customer=customer)
+        else:
+            raise ValidationError("Provide either customer_id or account_id.")
+
+
+class OpportunityDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/opportunities/<id>/ — a single
+    Opportunity, scoped to the caller's own organisation, regardless of
+    whether it's organisation-level or account-level. Flat, not nested
+    — same reasoning as ContactDetailView. Powers both the board's
+    drag-and-drop (PATCH `stage`) and its Edit/Delete card actions."""
+
+    serializer_class = OpportunitySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        return Opportunity.objects.filter(
             Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
         )

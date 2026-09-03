@@ -12,6 +12,7 @@ from services.customers.models import (
     Customer,
     Email,
     Note,
+    Opportunity,
     Task,
     Ticket,
 )
@@ -406,3 +407,64 @@ class ContactCompanyPropertyTests(TestCase):
             email="jamie.lee@someco.com",
         )
         self.assertEqual(contact.company, self.customer)
+
+
+class OpportunityParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Contact/Activity/
+    Email/Task/Note/Ticket/CalendarEvent."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def _opportunity_kwargs(self):
+        return {
+            "title": "Renewal Expansion Opportunity",
+            "mrr": "2500.00",
+            "stage": Opportunity.Stage.DISCOVERY,
+            "priority": Opportunity.Priority.HIGH,
+        }
+
+    def test_customer_only_is_valid(self):
+        opportunity = Opportunity.objects.create(
+            customer=self.customer, **self._opportunity_kwargs()
+        )
+        self.assertIsNone(opportunity.account)
+
+    def test_account_only_is_valid(self):
+        opportunity = Opportunity.objects.create(account=self.account, **self._opportunity_kwargs())
+        self.assertIsNone(opportunity.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Opportunity.objects.create(**self._opportunity_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Opportunity.objects.create(
+                customer=self.customer, account=self.account, **self._opportunity_kwargs()
+            )
+
+
+class OpportunityCompanyPropertyTests(TestCase):
+    """Opportunity.company resolves to the ultimate parent Customer
+    whether the opportunity is org-level or account-level — same
+    reasoning as ContactCompanyPropertyTests above."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def test_org_level_opportunity_company_is_its_own_customer(self):
+        opportunity = Opportunity.objects.create(
+            customer=self.customer, title="Upsell", mrr="1000.00",
+        )
+        self.assertEqual(opportunity.company, self.customer)
+
+    def test_account_level_opportunity_company_is_the_accounts_customer(self):
+        opportunity = Opportunity.objects.create(
+            account=self.account, title="Upsell", mrr="1000.00",
+        )
+        self.assertEqual(opportunity.company, self.customer)

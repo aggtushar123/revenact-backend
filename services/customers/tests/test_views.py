@@ -15,6 +15,7 @@ from services.customers.models import (
     Customer,
     Email,
     Note,
+    Opportunity,
     Task,
     Ticket,
 )
@@ -2309,4 +2310,405 @@ class ContactDetailTests(APITestCase):
     def test_nonexistent_id_is_404(self):
         self.client.force_authenticate(self.admin)
         response = self.client.get("/api/v1/contacts/999999/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomerOpportunityListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/opportunities/"
+
+    def _opportunity_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Renewal Expansion Opportunity",
+            "mrr": "2500.00",
+            "stage": Opportunity.Stage.DISCOVERY,
+            "priority": Opportunity.Priority.HIGH,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_customers_opportunities_as_a_plain_array(self):
+        Opportunity.objects.create(customer=self.customer, **self._opportunity_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["title"], "Renewal Expansion Opportunity")
+        self.assertEqual(response.data[0]["stage"], "discovery")
+        self.assertEqual(response.data[0]["stage_display"], "Discovery")
+        self.assertEqual(response.data[0]["mrr"], "2500.00")
+
+    def test_rolls_up_this_customers_own_accounts_opportunities_too(self):
+        account = Account.objects.create(customer=self.customer, name="North America")
+        Opportunity.objects.create(
+            customer=self.customer, **self._opportunity_kwargs(title="Org-Level Opp")
+        )
+        Opportunity.objects.create(
+            account=account, **self._opportunity_kwargs(title="Account-Level Opp")
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        titles = {row["title"] for row in response.data}
+        self.assertEqual(titles, {"Org-Level Opp", "Account-Level Opp"})
+        account_row = next(row for row in response.data if row["title"] == "Account-Level Opp")
+        self.assertEqual(account_row["account_name"], "North America")
+
+    def test_does_not_leak_another_customers_opportunities(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Opportunity.objects.create(customer=other_customer, **self._opportunity_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/opportunities/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_customer_id_is_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_can_add_an_organization_level_opportunity(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, self._opportunity_kwargs(title="New Opp"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        opportunity = Opportunity.objects.get(pk=response.data["id"])
+        self.assertEqual(opportunity.customer, self.customer)
+        self.assertIsNone(opportunity.account)
+
+
+class AccountOpportunityListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/opportunities/"
+
+    def _opportunity_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Q2 Business Review — Executive Session",
+            "mrr": "1500.00",
+            "stage": Opportunity.Stage.NEGOTIATION,
+            "priority": Opportunity.Priority.MEDIUM,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_accounts_opportunities(self):
+        Opportunity.objects.create(account=self.account, **self._opportunity_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["title"], "Q2 Business Review — Executive Session")
+
+    def test_does_not_include_the_customers_own_opportunities(self):
+        Opportunity.objects.create(customer=self.customer, **self._opportunity_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_accounts_opportunities(self):
+        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        Opportunity.objects.create(account=other_account, **self._opportunity_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_wrong_customer_id_in_the_url_is_404_even_for_a_valid_account_id(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/opportunities/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_admin_gets_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_can_add_an_account_level_opportunity(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, self._opportunity_kwargs(title="New Opp"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        opportunity = Opportunity.objects.get(pk=response.data["id"])
+        self.assertEqual(opportunity.account, self.account)
+        self.assertIsNone(opportunity.customer)
+        self.assertEqual(response.data["account_name"], "North America")
+
+
+class OpportunityListTests(APITestCase):
+    """/api/v1/opportunities/ — the one Opportunity view not nested
+    under a single Customer/Account (see OpportunityListView's own
+    docstring). Powers the standalone Pipelines board."""
+
+    url = "/api/v1/opportunities/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_both_org_level_and_account_level_opportunities_as_a_plain_array(self):
+        Opportunity.objects.create(
+            customer=self.customer, title="Org Opp", mrr="1000.00",
+        )
+        Opportunity.objects.create(
+            account=self.account, title="Account Opp", mrr="2000.00",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        titles = {row["title"] for row in response.data}
+        self.assertEqual(titles, {"Org Opp", "Account Opp"})
+
+    def test_does_not_leak_another_organisations_opportunities(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        Opportunity.objects.create(
+            customer=other_customer, title="Someone Else's Opp", mrr="500.00"
+        )
+        Opportunity.objects.create(customer=self.customer, title="Globex Opp", mrr="500.00")
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["title"], "Someone Else's Opp")
+
+    def test_posting_with_customer_id_creates_an_organization_level_opportunity(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"title": "New Opp", "mrr": "1000.00", "customer_id": self.customer.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        opportunity = Opportunity.objects.get(pk=response.data["id"])
+        self.assertEqual(opportunity.customer, self.customer)
+        self.assertIsNone(opportunity.account)
+
+    def test_posting_with_account_id_creates_an_account_level_opportunity(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"title": "New Opp", "mrr": "1000.00", "account_id": self.account.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        opportunity = Opportunity.objects.get(pk=response.data["id"])
+        self.assertEqual(opportunity.account, self.account)
+        self.assertIsNone(opportunity.customer)
+
+    def test_posting_with_neither_customer_id_nor_account_id_is_400(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url, {"title": "New Opp", "mrr": "1000.00"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_post_against_another_organisations_customer_id(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"title": "New Opp", "mrr": "1000.00", "customer_id": other_customer.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class OpportunityDetailTests(APITestCase):
+    """GET/PATCH/DELETE /api/v1/opportunities/<id>/ — flat, not nested
+    under a Customer/Account (see OpportunityDetailView's own
+    docstring). Covers both an organization-level and an account-level
+    Opportunity, since the scoping query has to cover both shapes."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.org_opportunity = Opportunity.objects.create(
+            customer=self.customer,
+            title="Org Opp",
+            mrr="1000.00",
+            stage=Opportunity.Stage.DISCOVERY,
+        )
+        self.account_opportunity = Opportunity.objects.create(
+            account=self.account,
+            title="Account Opp",
+            mrr="2000.00",
+            stage=Opportunity.Stage.NEGOTIATION,
+        )
+
+    def test_unauthenticated_cannot_view(self):
+        response = self.client.get(f"/api/v1/opportunities/{self.org_opportunity.id}/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_can_retrieve_an_organization_level_opportunity(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(f"/api/v1/opportunities/{self.org_opportunity.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["title"], "Org Opp")
+
+    def test_can_retrieve_an_account_level_opportunity(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(f"/api/v1/opportunities/{self.account_opportunity.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["account_name"], "North America")
+
+    def test_can_update_the_stage_drag_and_drop(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            f"/api/v1/opportunities/{self.org_opportunity.id}/",
+            {"stage": "closed_won"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.org_opportunity.refresh_from_db()
+        self.assertEqual(self.org_opportunity.stage, Opportunity.Stage.CLOSED_WON)
+
+    def test_updating_cannot_move_an_opportunity_between_parents(self):
+        self.client.force_authenticate(self.admin)
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+
+        response = self.client.patch(
+            f"/api/v1/opportunities/{self.org_opportunity.id}/",
+            {"customer": other_customer.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.org_opportunity.refresh_from_db()
+        self.assertEqual(self.org_opportunity.customer, self.customer)
+
+    def test_can_delete_an_opportunity(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.delete(f"/api/v1/opportunities/{self.org_opportunity.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Opportunity.objects.filter(pk=self.org_opportunity.id).exists())
+
+    def test_another_organisations_admin_gets_404_for_view_update_and_delete(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+        url = f"/api/v1/opportunities/{self.org_opportunity.id}/"
+
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            self.client.patch(url, {"title": "Hijacked"}, format="json").status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        self.assertEqual(self.client.delete(url).status_code, status.HTTP_404_NOT_FOUND)
+        self.org_opportunity.refresh_from_db()
+        self.assertEqual(self.org_opportunity.title, "Org Opp")
+
+    def test_nonexistent_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/opportunities/999999/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

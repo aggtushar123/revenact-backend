@@ -66,7 +66,7 @@ expects.
 | Tickets (`ActivityFeed`'s "Tickets" filter) | `customers` (`Ticket` model) | 🟢 Read-only, API-complete — see below. `TicketsTab.tsx` fetches real data through `fetchTicketsForCustomer`/`fetchTicketsForAccount`; the flag icon now reflects real priority and the link line a real per-ticket count. No create/update endpoint yet. |
 | Calendar Events (`ActivityFeed`'s "Calendar Events" filter) | `customers` (`CalendarEvent` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `CALENDAR_EVENTS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts (standalone `/contacts/list` page, Organization/Account Details' Contacts tabs) | `customers` (`Contact` model) | 🟢 Full CRUD, API-complete — see below. Global paginated+searchable list (`ContactListView`/`ContactStatsView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat `ContactDetailView` (GET/PATCH/DELETE by id, regardless of parent) exist and are seeded; the standalone list page's Add/Edit/Delete are wired to them. |
-| Pipelines | — | ⏳ Not started |
+| Pipelines (standalone board's own "Opportunities" tab) | `customers` (`Opportunity` model) | 🟢 Full CRUD, API-complete — see below. Global unpaginated list (`OpportunityListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat `OpportunityDetailView` (GET/PATCH/DELETE by id) exist and are seeded; the board's own Add/Edit/Delete/drag-and-drop are wired to them. "Risks" tab is still 100% mock. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot | — | ⏳ Not started |
 | Scenarios | — | ⏳ Not started |
@@ -1001,6 +1001,102 @@ above. **Response `204`** (DELETE) — empty body.
   "growth_30d_pct": 433.3
 }
 ```
+
+### Models — `Opportunity`
+
+Mirrors: `src/pages/pipelines/PipelinesPage.tsx`'s mock `PipelineCard`/
+`Column` shape — a sales opportunity moving through the standalone
+Pipelines board's "Opportunities" tab.
+
+Same "belongs to exactly one of `Customer` or `Account`" shape as
+`Contact` above — there can be an organisation-level opportunity and,
+separately, one tied to a specific Account (the mock's own card list
+already mixed both, e.g. "Apple Inc" alongside "Apple EMEA", before
+this model existed). `stage` is the closed set of 6 Kanban columns the
+board already has (`discovery`/`qualification`/`solution_validation`/
+`proposal_price_review`/`negotiation`/`closed_won`) — a fixed enum, not
+a separate configurable-pipeline model, since no per-tenant
+customisation was asked for. `priority` (`high`/`medium`/`low`) is a
+real field, same as Task/Ticket's own. `mrr` is a
+`DecimalField(max_digits=12, decimal_places=2)`, same shape as
+Account's own ARR-family fields.
+
+The mock's own `orgColor`/`orgInitials` aren't stored — decorative,
+derived from the company name on the frontend (`EntityAvatar`, same as
+every other entity). The mock's own per-column `count` isn't stored
+either — it never actually matched `cards.length` in the mock (e.g.
+"Discovery" claimed 12 while only listing 3 cards), a stale hardcoded
+number; the frontend derives a real count from how many Opportunities
+it actually fetched per stage.
+
+See `seed_demo_opportunities` management command for demo data (run
+after `seed_demo_accounts`).
+
+### `GET/POST /api/v1/customers/<customer_id>/opportunities/`
+
+Auth: `IsAuthenticated`. GET: every Opportunity under this Customer,
+rolled up from both levels (organisation-level and account-level),
+same reasoning as the Contact customer-scoped endpoint. POST always
+adds an organisation-level Opportunity; `customer` taken from the URL.
+
+**Response `200`** (GET) — a plain array, each entry: `id`, `title`,
+`mrr`, `stage`, `stage_display`, `priority`, `priority_display`,
+`company_id`, `company_name`, `account_name` (`null` for an
+organisation-level row). **Response `201`** (POST) — one such entry.
+
+### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/opportunities/`
+
+Auth: `IsAuthenticated`. GET: every account-level Opportunity for one
+Account. POST: adds a new one to it; `account` taken from the URL.
+
+**Response `200`**/**`201`** — same shape as the Customer-scoped
+endpoint above, `account_name` set to that account's own name.
+
+### `GET/POST /api/v1/opportunities/`
+
+Auth: `IsAuthenticated`. GET: every Opportunity across every Customer/
+Account the caller's own organisation owns. The one Opportunity view
+not nested under `/customers/<id>/...`, mounted at its own top-level
+prefix, same reasoning as `ContactListView`. Powers the standalone
+Pipelines board's own "Opportunities" tab.
+
+Unlike `GET /api/v1/contacts/`, **pagination is off** here — a Kanban
+board needs every card in every column to render/drag-and-drop
+correctly, not one page of them.
+
+POST takes a `customer_id` or an `account_id` in the request body
+(neither is a real serializer field) and creates the Opportunity under
+that parent — exactly one of the two must be given (`400` otherwise).
+
+**Response `200`**
+```json
+[
+  {
+    "id": 4,
+    "title": "Renewal Expansion Opportunity",
+    "mrr": "30000.00",
+    "stage": "qualification",
+    "stage_display": "Qualification",
+    "priority": "high",
+    "priority_display": "High",
+    "company_id": 6,
+    "company_name": "Apple Inc",
+    "account_name": "Apple EMEA"
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/opportunities/<id>/`
+
+Auth: `IsAuthenticated`. A single Opportunity, scoped to the caller's
+own organisation, regardless of whether it's organisation-level or
+account-level. Flat, not nested — same reasoning as
+`ContactDetailView`. Powers both the board's drag-and-drop (PATCH
+`stage`) and its Edit/Delete card actions. PATCH can't move an
+Opportunity between parents, same as Contact.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoints
+above. **Response `204`** (DELETE) — empty body.
 
 ---
 

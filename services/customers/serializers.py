@@ -3,7 +3,18 @@ from rest_framework import serializers
 from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
 
-from .models import Account, Activity, CalendarEvent, Contact, Customer, Email, Note, Task, Ticket
+from .models import (
+    Account,
+    Activity,
+    CalendarEvent,
+    Contact,
+    Customer,
+    Email,
+    Note,
+    Opportunity,
+    Task,
+    Ticket,
+)
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -265,6 +276,48 @@ class ContactSerializer(serializers.ModelSerializer):
             "status",
             "sentiment",
             "last_contacted_at",
+            "company_id",
+            "company_name",
+            "account_name",
+        ]
+
+    def get_company_id(self, obj):
+        return obj.company.id
+
+    def get_company_name(self, obj):
+        return obj.company.name
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None
+
+
+class OpportunitySerializer(serializers.ModelSerializer):
+    """See Opportunity model's docstring. `company_id`/`company_name`/
+    `account_name` mirror ContactSerializer's own fields exactly, same
+    reasoning (the standalone Pipelines board spans every Customer, so
+    it can't assume which parent FK is set the way a nested
+    Customer/Account-scoped view can). `stage_display`/`priority_display`
+    are the human labels ("Solution Validation", not
+    "solution_validation") the board's own column headers/priority
+    pills render; `stage`/`priority` themselves are included too since
+    the frontend keys drag-and-drop and filtering off the raw value."""
+
+    stage_display = serializers.CharField(source="get_stage_display", read_only=True)
+    priority_display = serializers.CharField(source="get_priority_display", read_only=True)
+    company_id = serializers.SerializerMethodField()
+    company_name = serializers.SerializerMethodField()
+    account_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Opportunity
+        fields = [
+            "id",
+            "title",
+            "mrr",
+            "stage",
+            "stage_display",
+            "priority",
+            "priority_display",
             "company_id",
             "company_name",
             "account_name",

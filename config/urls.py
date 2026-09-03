@@ -17,7 +17,13 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
-from services.customers.views import ContactDetailView, ContactListView, ContactStatsView
+from services.customers.views import (
+    ContactDetailView,
+    ContactListView,
+    ContactStatsView,
+    OpportunityDetailView,
+    OpportunityListView,
+)
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -43,4 +49,12 @@ urlpatterns = [
     path("api/v1/contacts/stats/", ContactStatsView.as_view(), name="contact-stats"),
     path("api/v1/contacts/<int:pk>/", ContactDetailView.as_view(), name="contact-detail"),
     path("api/v1/contacts/", ContactListView.as_view(), name="contact-list"),
+    # Opportunity, same reasoning as Contact above — mounted at its own
+    # top-level /api/v1/opportunities/ prefix since it's the one
+    # Opportunity view spanning every Customer/Account at once, unlike
+    # the nested list-create endpoints under services.customers.urls.
+    path(
+        "api/v1/opportunities/<int:pk>/", OpportunityDetailView.as_view(), name="opportunity-detail"
+    ),
+    path("api/v1/opportunities/", OpportunityListView.as_view(), name="opportunity-list"),
 ]

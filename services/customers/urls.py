@@ -85,5 +85,15 @@ urlpatterns = [
         views.AccountContactListView.as_view(),
         name="account-contacts",
     ),
+    path(
+        "<int:customer_id>/opportunities/",
+        views.CustomerOpportunityListView.as_view(),
+        name="customer-opportunities",
+    ),
+    path(
+        "<int:customer_id>/accounts/<int:account_id>/opportunities/",
+        views.AccountOpportunityListView.as_view(),
+        name="account-opportunities",
+    ),
     path("<int:pk>/", views.CustomerDetailView.as_view(), name="customer-detail"),
 ]

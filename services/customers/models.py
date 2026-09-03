@@ -840,3 +840,91 @@ class Contact(models.Model):
         Customer and so can't assume which FK is set the way the
         nested Customer/Account-scoped list views can."""
         return self.customer or self.account.customer
+
+
+class Opportunity(models.Model):
+    """A sales opportunity moving through the pipeline board's
+    "Opportunities" tab (react-ts-app's src/pages/pipelines/
+    PipelinesPage.tsx) — same "belongs to exactly one of Customer or
+    Account" shape as Contact/Activity/Email/... above (two nullable
+    FKs + a CheckConstraint): there can be an organisation-level
+    opportunity and, separately, an opportunity tied to one specific
+    Account (the mock's own card list already mixed both — "Apple Inc"
+    alongside "Apple EMEA" — before this model existed).
+
+    Mirrors the frontend's mock `PipelineCard`/`Column` shape: `stage`
+    is the closed set of 6 columns the board already has (Kanban
+    columns, not a separate model — there's no per-tenant pipeline
+    customisation asked for, so a fixed enum is enough, same reasoning
+    as Task/Ticket's own status enums). `priority` is a real field —
+    every mock card already had one, same as Task/Ticket. `mrr` mirrors
+    Account's own ARR-family fields' `DecimalField(max_digits=12,
+    decimal_places=2)` shape. The mock's own `orgColor`/`orgInitials`
+    aren't stored — decorative, derived from the company name on the
+    frontend the same way EntityAvatar already derives initials/color
+    for every other entity in this codebase. The mock's own per-column
+    `count` isn't stored either — it never actually matched
+    `cards.length` in the mock (e.g. "Discovery" claimed 12 while only
+    listing 3), a stale hardcoded number rather than real data; the
+    frontend derives a real count from how many Opportunities it
+    actually fetched per stage."""
+
+    class Stage(models.TextChoices):
+        DISCOVERY = "discovery", "Discovery"
+        QUALIFICATION = "qualification", "Qualification"
+        SOLUTION_VALIDATION = "solution_validation", "Solution Validation"
+        PROPOSAL_PRICE_REVIEW = "proposal_price_review", "Proposal / Price Review"
+        NEGOTIATION = "negotiation", "Negotiation"
+        CLOSED_WON = "closed_won", "Closed Won"
+
+    class Priority(models.TextChoices):
+        HIGH = "high", "High"
+        MEDIUM = "medium", "Medium"
+        LOW = "low", "Low"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="opportunities",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level opportunity. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="opportunities",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level opportunity. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    title = models.CharField(max_length=255)
+    mrr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    stage = models.CharField(max_length=32, choices=Stage.choices, default=Stage.DISCOVERY)
+    priority = models.CharField(max_length=8, choices=Priority.choices, default=Priority.MEDIUM)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="opportunity_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.title} — {parent}"
+
+    @property
+    def company(self) -> Customer:
+        """The ultimate parent Customer — same reasoning as Contact's
+        own `company` property, needed by OpportunitySerializer's
+        company_id/company_name for the same reason."""
+        return self.customer or self.account.customer
