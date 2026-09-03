@@ -19,6 +19,7 @@ from drf_spectacular.views import (
 
 from services.customers.views import (
     AccountListView,
+    AccountStatsView,
     ContactDetailView,
     ContactListView,
     ContactStatsView,
@@ -71,5 +72,6 @@ urlpatterns = [
     # only; there's no matching flat detail/create endpoint since "Add"/
     # "Edit" already have somewhere to go (the nested endpoints under
     # services.customers.urls) — see AccountListView's own docstring.
+    path("api/v1/accounts/stats/", AccountStatsView.as_view(), name="account-stats"),
     path("api/v1/accounts/", AccountListView.as_view(), name="account-list"),
 ]

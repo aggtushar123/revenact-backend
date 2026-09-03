@@ -3177,3 +3177,112 @@ class AccountListTests(APITestCase):
 
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["name"], "Someone Else's Account")
+
+
+class AccountStatsTests(APITestCase):
+    """GET /api/v1/accounts/stats/ — aggregate rollups for the standalone
+    Accounts page's own MetricsPanel (Health/NPS/Lifecycle Stages)."""
+
+    url = "/api/v1/accounts/stats/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.client.force_authenticate(self.admin)
+
+    def test_unauthenticated_cannot_access(self):
+        self.client.force_authenticate(None)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_empty_organisation_returns_zeroed_buckets_not_an_error(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["health"]["good"], {"count": 0, "mrr": 0, "arr": 0})
+        self.assertEqual(
+            response.data["nps"], {"promoters": 0, "passives": 0, "detractors": 0, "score": 0}
+        )
+        self.assertEqual(response.data["lifecycle"]["churn"], {"count": 0, "mrr": 0, "arr": 0})
+
+    def test_buckets_by_health_category_and_sums_derived_mrr_and_arr(self):
+        Account.objects.create(
+            customer=self.customer, name="Good Acc", health_score="9.0", arr="12000.00"
+        )
+        Account.objects.create(
+            customer=self.customer, name="Also Good Acc", health_score="7.0", arr="6000.00"
+        )
+        Account.objects.create(
+            customer=self.customer, name="Average Acc", health_score="5.0", arr="2400.00"
+        )
+        Account.objects.create(
+            customer=self.customer, name="Poor Acc", health_score="1.0", arr="1200.00"
+        )
+
+        response = self.client.get(self.url)
+
+        good = response.data["health"]["good"]
+        self.assertEqual(good["count"], 2)
+        self.assertEqual(good["arr"], 18000.0)
+        self.assertEqual(good["mrr"], 1500.0)  # 18000 / 12, derived -- no stored MRR field
+
+        average = response.data["health"]["average"]
+        self.assertEqual(average["count"], 1)
+        self.assertEqual(average["arr"], 2400.0)
+        self.assertEqual(average["mrr"], 200.0)
+
+        poor = response.data["health"]["poor"]
+        self.assertEqual(poor["count"], 1)
+        self.assertEqual(poor["arr"], 1200.0)
+        self.assertEqual(poor["mrr"], 100.0)
+
+    def test_buckets_by_lifecycle_stage_counting_churned_accounts_too(self):
+        Account.objects.create(
+            customer=self.customer, name="Live Acc", lifecycle_stage="live", arr="12000.00"
+        )
+        Account.objects.create(
+            customer=self.customer, name="Churned Acc", lifecycle_stage="churn", arr="6000.00"
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["lifecycle"]["live"]["count"], 1)
+        self.assertEqual(response.data["lifecycle"]["churn"]["count"], 1)
+        self.assertEqual(response.data["lifecycle"]["churn"]["arr"], 6000.0)
+
+    def test_nps_breakdown_excludes_unscored_accounts_from_counts_and_denominator(self):
+        Account.objects.create(customer=self.customer, name="Promoter 1", nps_score=80)
+        Account.objects.create(customer=self.customer, name="Promoter 2", nps_score=40)
+        Account.objects.create(customer=self.customer, name="Passive", nps_score=0)
+        Account.objects.create(customer=self.customer, name="Detractor", nps_score=-60)
+        Account.objects.create(customer=self.customer, name="Not Yet Scored", nps_score=None)
+
+        response = self.client.get(self.url)
+        nps = response.data["nps"]
+        self.assertEqual(nps["promoters"], 2)
+        self.assertEqual(nps["passives"], 1)
+        self.assertEqual(nps["detractors"], 1)
+        # round((2 - 1) / 4 * 100) = 25 -- the unscored account doesn't
+        # count towards the denominator either.
+        self.assertEqual(nps["score"], 25)
+
+    def test_scoped_to_the_callers_organisation(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_customer = Customer.objects.create(organisation=other_org, name="Not Yours Inc")
+        Account.objects.create(
+            customer=other_customer, name="Not Yours", health_score="9.0", arr="99999.00"
+        )
+        Account.objects.create(
+            customer=self.customer, name="Mine", health_score="9.0", arr="100.00"
+        )
+
+        response = self.client.get(self.url)
+        good = response.data["health"]["good"]
+        self.assertEqual(good["count"], 1)
+        self.assertEqual(good["arr"], 100.0)

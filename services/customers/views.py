@@ -287,6 +287,83 @@ class AccountListView(generics.ListAPIView):
         return queryset
 
 
+class AccountStatsView(views.APIView):
+    """GET /api/v1/accounts/stats/ — aggregate rollups for the standalone
+    Accounts page's own MetricsPanel (Health / NPS / Lifecycle Stages
+    sections), scoped to the caller's own organisation. Same shape and
+    same reasoning as CustomerStatsView — see that view's own docstring
+    for the health/lifecycle bucketing and NPS-denominator rules, all
+    identical here.
+
+    Every Account under the caller's org counts here — Account has no
+    `is_archived` field to exclude anything by (see the model's own
+    docstring: there's no "hide this account" concept yet). MRR is
+    `arr / 12`, computed the same way as CustomerStatsView's own (and
+    features/customers/mapToAccountRow.ts's own) — Account doesn't
+    store MRR independently either.
+
+    Aggregates in Python over the caller's own accounts, same reasoning
+    as CustomerStatsView: `health_category` is a derived Python
+    property, not a real column to GROUP BY. Fine at the scale of one
+    tenant's own account list."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        accounts = Account.objects.filter(customer__organisation=request.user.organisation)
+
+        health = {
+            cat: {"count": 0, "mrr": 0.0, "arr": 0.0} for cat in Customer.HealthCategory.values
+        }
+        lifecycle = {
+            stage: {"count": 0, "mrr": 0.0, "arr": 0.0} for stage in Customer.LifecycleStage.values
+        }
+        promoters = passives = detractors = 0
+        scored = 0
+
+        for account in accounts:
+            arr = float(account.arr)
+            mrr = arr / 12
+
+            health_bucket = health[account.health_category]
+            health_bucket["count"] += 1
+            health_bucket["mrr"] += mrr
+            health_bucket["arr"] += arr
+
+            lifecycle_bucket = lifecycle[account.lifecycle_stage]
+            lifecycle_bucket["count"] += 1
+            lifecycle_bucket["mrr"] += mrr
+            lifecycle_bucket["arr"] += arr
+
+            if account.nps_score is not None:
+                scored += 1
+                if account.nps_score > 0:
+                    promoters += 1
+                elif account.nps_score == 0:
+                    passives += 1
+                else:
+                    detractors += 1
+
+        for bucket in (*health.values(), *lifecycle.values()):
+            bucket["mrr"] = round(bucket["mrr"], 2)
+            bucket["arr"] = round(bucket["arr"], 2)
+
+        nps_score = round((promoters - detractors) / scored * 100) if scored else 0
+
+        return Response(
+            {
+                "health": health,
+                "nps": {
+                    "promoters": promoters,
+                    "passives": passives,
+                    "detractors": detractors,
+                    "score": nps_score,
+                },
+                "lifecycle": lifecycle,
+            }
+        )
+
+
 class CustomerActivityListView(generics.ListAPIView):
     """GET /api/v1/customers/<customer_id>/activities/ — every
     organization-level Activity for one Customer, scoped to the
