@@ -115,7 +115,15 @@ class AccountSerializer(serializers.ModelSerializer):
 
     `customer` is read-only here — never client-supplied. AccountListCreateView
     sets it from the URL's customer_id on create; there's no way to move
-    an account to a different customer via this serializer."""
+    an account to a different customer via this serializer.
+
+    `customer_name` is a read-only convenience for the standalone
+    Accounts list page (AccountListView below) — that view spans every
+    Customer in the caller's organisation, so each row needs its own
+    parent's name to render an "Organization" column, same reasoning as
+    Contact/Opportunity/Risk's own `company_name`. Harmless extra field
+    for every other (already-scoped-to-one-Customer) consumer of this
+    serializer."""
 
     health_category = serializers.ChoiceField(
         choices=Customer.HealthCategory.choices, read_only=True
@@ -128,12 +136,14 @@ class AccountSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
 
     class Meta:
         model = Account
         fields = [
             "id",
             "customer",
+            "customer_name",
             "name",
             "domain",
             "address",

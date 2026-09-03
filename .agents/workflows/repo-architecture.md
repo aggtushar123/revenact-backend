@@ -142,6 +142,7 @@ financial fields, even ones the mock data happens to make look additive).
 | `views.py: CustomerStatsView` | `GET /customers/stats/` — Health/NPS/Lifecycle rollups for MetricsPanel |
 | `views.py: AccountListCreateView` | `GET/POST /customers/<customer_id>/accounts/` — 404 (not empty list) for a customer_id outside the caller's org; POST's `customer` always comes from the URL |
 | `views.py: AccountDetailView` | `GET/PATCH /customers/<customer_id>/accounts/<id>/` — same org + customer only, 404 outside it |
+| `views.py: AccountListView` | `GET /api/v1/accounts/` — paginated, `?search=`/`?company=`, spans every Customer the tenant has. GET-only; Add/Edit reuse the nested endpoints above (mounted at top-level in `config/urls.py`, not `services.customers.urls`, same as Contact/Opportunity/Risk's own flat views) |
 | `models.py: Activity` | Belongs to exactly one of `Customer` or `Account` (two nullable FKs + a DB `CheckConstraint`, not a `GenericForeignKey`) — a timeline entry backing `ActivityFeed`'s "Activities" filter. Read-only so far — no create/update endpoint yet. |
 | `views.py: CustomerActivityListView` | `GET /customers/<customer_id>/activities/` — org-level activities for one Customer, 404 (not empty list) outside the caller's org |
 | `views.py: AccountActivityListView` | `GET /customers/<customer_id>/accounts/<account_id>/activities/` — account-level activities for one Account, 404 for either id outside scope |

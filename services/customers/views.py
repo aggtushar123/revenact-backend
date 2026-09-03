@@ -237,6 +237,56 @@ class AccountDetailView(generics.RetrieveUpdateAPIView):
         )
 
 
+class AccountListView(generics.ListAPIView):
+    """GET /api/v1/accounts/ — every Account across every Customer the
+    caller's own organisation owns. Powers the standalone Accounts page
+    (react-ts-app's /accounts/list) — the one place an Account is
+    browsed independent of which Customer it belongs to, same reasoning
+    as ContactListView.
+
+    GET-only — unlike OpportunityListView/RiskListView, there's no
+    matching POST here. Account has only one possible parent (a
+    Customer, not the two-tier Customer-or-Account shape those two
+    have), so "Add Account" from the standalone list already knows
+    exactly which nested endpoint to POST to once a company is picked
+    (/customers/<customer_id>/accounts/, i.e. AccountListCreateView
+    above) — same reasoning ContactListView's own standalone "Add
+    Contact" already follows, no separate flat create endpoint needed.
+
+    Paginated with the shared DEFAULT_PAGINATION_CLASS/PAGE_SIZE, same
+    reasoning as ContactListView (this can span every account the
+    tenant has, unlike the nested per-Customer list above, which stays
+    unpaginated since it's normally small).
+
+    `?search=` matches name (substring, case-insensitive), same
+    convention as CustomerListCreateView/ContactListView's own search.
+    `?company=<customer_id>` filters to one company's own Accounts."""
+
+    serializer_class = AccountSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        queryset = Account.objects.filter(
+            customer__organisation=organisation
+        ).select_related("customer", "owner")
+
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(name__icontains=search)
+
+        company = self.request.query_params.get("company")
+        if company:
+            try:
+                company_id = int(company)
+            except ValueError:
+                company_id = None
+            if company_id is not None:
+                queryset = queryset.filter(customer_id=company_id)
+
+        return queryset
+
+
 class CustomerActivityListView(generics.ListAPIView):
     """GET /api/v1/customers/<customer_id>/activities/ — every
     organization-level Activity for one Customer, scoped to the

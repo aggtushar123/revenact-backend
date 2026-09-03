@@ -18,6 +18,7 @@ from drf_spectacular.views import (
 )
 
 from services.customers.views import (
+    AccountListView,
     ContactDetailView,
     ContactListView,
     ContactStatsView,
@@ -65,4 +66,10 @@ urlpatterns = [
     # list-create endpoints under services.customers.urls.
     path("api/v1/risks/<int:pk>/", RiskDetailView.as_view(), name="risk-detail"),
     path("api/v1/risks/", RiskListView.as_view(), name="risk-list"),
+    # Account, same top-level-prefix reasoning as Contact/Opportunity/Risk
+    # above — the one Account view spanning every Customer at once. GET
+    # only; there's no matching flat detail/create endpoint since "Add"/
+    # "Edit" already have somewhere to go (the nested endpoints under
+    # services.customers.urls) — see AccountListView's own docstring.
+    path("api/v1/accounts/", AccountListView.as_view(), name="account-list"),
 ]

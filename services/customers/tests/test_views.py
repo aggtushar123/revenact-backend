@@ -3092,3 +3092,88 @@ class RiskDetailTests(APITestCase):
         self.client.force_authenticate(self.admin)
         response = self.client.get("/api/v1/risks/999999/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AccountListTests(APITestCase):
+    """/api/v1/accounts/ — the one Account view not nested under a
+    single Customer (see AccountListView's own docstring)."""
+
+    url = "/api/v1/accounts/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_accounts_across_every_customer(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Account.objects.create(customer=self.customer, name="North America")
+        Account.objects.create(customer=other_customer, name="EMEA")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        names = {row["name"] for row in response.data["results"]}
+        self.assertEqual(names, {"North America", "EMEA"})
+
+    def test_response_includes_customer_name(self):
+        Account.objects.create(customer=self.customer, name="North America")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        row = response.data["results"][0]
+        self.assertEqual(row["customer"], self.customer.id)
+        self.assertEqual(row["customer_name"], "Globex")
+
+    def test_search_matches_name(self):
+        Account.objects.create(customer=self.customer, name="North America")
+        Account.objects.create(customer=self.customer, name="EMEA")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url, {"search": "north"})
+
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "North America")
+
+    def test_company_filter_matches_one_customers_accounts(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Account.objects.create(customer=self.customer, name="North America")
+        Account.objects.create(customer=other_customer, name="EMEA")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url, {"company": self.customer.id})
+
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "North America")
+
+    def test_does_not_leak_another_organisations_accounts(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        Account.objects.create(customer=other_customer, name="Someone Else's Account")
+        Account.objects.create(customer=self.customer, name="North America")
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Someone Else's Account")

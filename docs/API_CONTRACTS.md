@@ -58,7 +58,7 @@ expects.
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
-| Accounts (Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. Accounts tab fetches/displays real accounts and Add/Edit Account is wired (`createAccount`/`updateAccount` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. |
+| Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring) plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
 | Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
@@ -554,6 +554,43 @@ endpoint). `owner_id` follows the same same-organisation validation as
 create.
 
 **Response `200`** (both) — the (possibly updated) account.
+
+### `GET /api/v1/accounts/`
+
+Auth: `IsAuthenticated`. Every `Account` across every `Customer` the
+caller's own organisation owns — the one Account view not nested under
+`/customers/<id>/...`, mounted at its own top-level prefix, same
+reasoning as `ContactListView`. Powers the standalone Accounts page
+(`react-ts-app`'s `/accounts/list`).
+
+GET-only — no matching POST here (see this view's own docstring):
+Account has only one possible parent (a Customer), so "Add Account"
+already knows exactly which nested endpoint to POST to once a company
+is picked, same as the standalone Contacts page's own "Add Contact".
+
+Paginated with the shared `DEFAULT_PAGINATION_CLASS`/`PAGE_SIZE`, same
+reasoning as `ContactListView` — unlike the nested per-Customer list
+above, this can span every account the tenant has. `?search=` matches
+name (substring, case-insensitive). `?company=<customer_id>` filters
+to one company's own Accounts.
+
+**Response `200`**
+```json
+{
+  "count": 12,
+  "next": "http://.../api/v1/accounts/?limit=20&offset=20",
+  "previous": null,
+  "results": [
+    {
+      "id": 4,
+      "customer": 6,
+      "customer_name": "Apple Inc",
+      "name": "Apple EMEA",
+      "...": "... same shape as the nested list's own entries, plus customer_name"
+    }
+  ]
+}
+```
 
 ### Models — `Activity`
 
