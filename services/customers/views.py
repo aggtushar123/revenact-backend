@@ -185,10 +185,12 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
 
 class AccountListCreateView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/accounts/ — every Account
-    under one Customer (GET), or adds a new one to it (POST), scoped to
-    the caller's own organisation. `customer` is never client-supplied —
-    taken from the URL and validated against the caller's org before
-    either operation.
+    linked to one Customer (GET, one of possibly several it's linked to
+    — see Account's own docstring), or adds a new one to it (POST),
+    scoped to the caller's own organisation. The URL's own customer_id
+    is never *removed* by a POST/PATCH through this URL — see
+    perform_create below and AccountSerializer's own `customer_ids`
+    field for adding/removing any *other* linked organisations.
 
     404 (not 403) for a customer_id outside the caller's organisation or
     that doesn't exist, same convention as CustomerDetailView — checked
@@ -218,22 +220,34 @@ class AccountListCreateView(generics.ListCreateAPIView):
         return self.get_customer().accounts.all()
 
     def perform_create(self, serializer):
-        serializer.save(customer=self.get_customer())
+        # `customer_ids` (if the client sent it) already set whatever
+        # full membership it asked for via the serializer's own
+        # `source="customers"` — this always additionally links the
+        # URL's own customer, so "Add Account" from this URL never
+        # silently creates an account that isn't actually linked to the
+        # Customer it was added under.
+        customer = self.get_customer()
+        account = serializer.save()
+        account.customers.add(customer)
 
 
 class AccountDetailView(generics.RetrieveUpdateAPIView):
     """GET/PATCH /api/v1/customers/<customer_id>/accounts/<id>/ — scoped
-    to the caller's own organisation and the given customer_id. 404, not
-    403, for either id outside that scope. See AccountListCreateView's
-    docstring for what's actually editable."""
+    to the caller's own organisation and the given customer_id (one of
+    possibly several the Account is linked to). 404, not 403, for either
+    id outside that scope. See AccountListCreateView's docstring for
+    what's actually editable — including AccountSerializer's own
+    `customer_ids`, which a PATCH through this URL can use to add/remove
+    *any* linked organisation, this one included (down to the
+    "at least one" floor validate_customer_ids enforces)."""
 
     serializer_class = AccountSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         return Account.objects.filter(
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
 
 
@@ -267,9 +281,13 @@ class AccountListView(generics.ListAPIView):
 
     def get_queryset(self):
         organisation = self.request.user.organisation
+        # `.distinct()` because `customers__organisation=` fans out one
+        # row per matching linked Customer — an Account linked to two+
+        # Customers in this same organisation would otherwise appear
+        # once per match instead of once overall.
         queryset = Account.objects.filter(
-            customer__organisation=organisation
-        ).select_related("customer", "owner")
+            customers__organisation=organisation
+        ).prefetch_related("customers").select_related("owner").distinct()
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -282,7 +300,7 @@ class AccountListView(generics.ListAPIView):
             except ValueError:
                 company_id = None
             if company_id is not None:
-                queryset = queryset.filter(customer_id=company_id)
+                queryset = queryset.filter(customers__id=company_id)
 
         return queryset
 
@@ -310,7 +328,14 @@ class AccountStatsView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        accounts = Account.objects.filter(customer__organisation=request.user.organisation)
+        # `.distinct()` for the same "an Account linked to two+ Customers
+        # in this organisation would otherwise fan out" reason as
+        # AccountListView's own — critical here, since this loop counts
+        # each row once towards the health/lifecycle/NPS buckets; a
+        # duplicate row would double-count that one Account.
+        accounts = Account.objects.filter(
+            customers__organisation=request.user.organisation
+        ).distinct()
 
         health = {
             cat: {"count": 0, "mrr": 0.0, "arr": 0.0} for cat in Customer.HealthCategory.values
@@ -399,8 +424,8 @@ class AccountActivityListView(generics.ListAPIView):
         account = get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
         return account.activities.all()
 
@@ -438,8 +463,8 @@ class AccountEmailListView(generics.ListAPIView):
         account = get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
         return account.emails.all()
 
@@ -477,8 +502,8 @@ class AccountTaskListView(generics.ListAPIView):
         account = get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
         return account.tasks.all()
 
@@ -516,8 +541,8 @@ class AccountNoteListView(generics.ListAPIView):
         account = get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
         return account.notes.all()
 
@@ -555,8 +580,8 @@ class AccountTicketListView(generics.ListAPIView):
         account = get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
         return account.tickets.all()
 
@@ -594,8 +619,8 @@ class AccountCalendarEventListView(generics.ListAPIView):
         account = get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
         return account.calendar_events.all()
 
@@ -634,7 +659,7 @@ class CustomerContactListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Contact.objects.filter(Q(customer=customer) | Q(account__customer=customer))
+        return Contact.objects.filter(Q(customer=customer) | Q(account__customers=customer))
 
     def perform_create(self, serializer):
         serializer.save(customer=self.get_customer())
@@ -656,8 +681,8 @@ class AccountContactListView(generics.ListCreateAPIView):
         return get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
 
     def get_queryset(self):
@@ -693,9 +718,15 @@ class ContactListView(generics.ListAPIView):
 
     def get_queryset(self):
         organisation = self.request.user.organisation
+        # `.distinct()` because `account__customers__organisation=` fans
+        # out one row per matching linked Customer on the account — an
+        # account-level Contact whose Account is linked to two+
+        # Customers in this same organisation would otherwise appear
+        # more than once.
         queryset = Contact.objects.filter(
-            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
-        ).select_related("customer", "account", "account__customer")
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).select_related("customer", "account").prefetch_related("account__customers").distinct()
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -711,7 +742,7 @@ class ContactListView(generics.ListAPIView):
                 company_id = None
             if company_id is not None:
                 queryset = queryset.filter(
-                    Q(customer_id=company_id) | Q(account__customer_id=company_id)
+                    Q(customer_id=company_id) | Q(account__customers__id=company_id)
                 )
 
         return queryset
@@ -737,9 +768,13 @@ class ContactStatsView(views.APIView):
 
     def get(self, request):
         organisation = request.user.organisation
+        # `.distinct()` — same "an Account linked to two+ Customers in
+        # this organisation would otherwise fan out" reason as
+        # ContactListView's own.
         contacts = Contact.objects.filter(
-            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
-        )
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).distinct()
 
         total = contacts.count()
         active = contacts.filter(status=Contact.Status.ACTIVE).count()
@@ -773,7 +808,7 @@ class ContactStatsView(views.APIView):
 class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/contacts/<id>/ — a single Contact,
     scoped to the caller's own organisation (via either its `customer`
-    or its `account`'s own `customer`, same reasoning as ContactListView's
+    or its `account`'s own `customers`, same reasoning as ContactListView's
     own queryset) regardless of whether it's an organization-level or
     account-level Contact. 404 (not 403) outside that scope.
 
@@ -784,21 +819,22 @@ class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
     parent's, so there's no reason to make the caller thread a
     customer_id/account_id it may not even have on hand (the
     standalone /contacts/list page's own rows don't carry an
-    account_id, only company_id/account_name for display).
+    account_id, only companies/account_name for display).
 
     PATCH can't move a Contact between parents — `customer`/`account`
     aren't in ContactSerializer's own `fields` list at all, so a PATCH
-    body naming either is silently ignored rather than erroring, same
-    effect as AccountSerializer's `read_only_fields = ["customer"]`."""
+    body naming either is silently ignored rather than erroring."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as ContactListView's own.
         return Contact.objects.filter(
-            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
-        )
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).distinct()
 
 
 class CustomerOpportunityListView(generics.ListCreateAPIView):
@@ -821,7 +857,7 @@ class CustomerOpportunityListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Opportunity.objects.filter(Q(customer=customer) | Q(account__customer=customer))
+        return Opportunity.objects.filter(Q(customer=customer) | Q(account__customers=customer))
 
     def perform_create(self, serializer):
         serializer.save(customer=self.get_customer())
@@ -841,8 +877,8 @@ class AccountOpportunityListView(generics.ListCreateAPIView):
         return get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
 
     def get_queryset(self):
@@ -881,17 +917,25 @@ class OpportunityListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as ContactListView's own.
         return Opportunity.objects.filter(
-            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
-        ).select_related("customer", "account", "account__customer")
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).select_related("customer", "account").prefetch_related("account__customers").distinct()
 
     def perform_create(self, serializer):
         organisation = self.request.user.organisation
         account_id = self.request.data.get("account_id")
         customer_id = self.request.data.get("customer_id")
         if account_id:
+            # `.distinct()` before `get_object_or_404` — an Account
+            # linked to two+ Customers in this organisation would
+            # otherwise fan out into more than one row for the *same*
+            # pk, which `.get()` (what get_object_or_404 calls) treats
+            # as MultipleObjectsReturned rather than a single match.
             account = get_object_or_404(
-                Account, pk=account_id, customer__organisation=organisation
+                Account.objects.filter(customers__organisation=organisation).distinct(),
+                pk=account_id,
             )
             serializer.save(account=account)
         elif customer_id:
@@ -913,9 +957,11 @@ class OpportunityDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as ContactDetailView's own.
         return Opportunity.objects.filter(
-            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
-        )
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).distinct()
 
 
 class CustomerRiskListView(generics.ListCreateAPIView):
@@ -938,7 +984,7 @@ class CustomerRiskListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Risk.objects.filter(Q(customer=customer) | Q(account__customer=customer))
+        return Risk.objects.filter(Q(customer=customer) | Q(account__customers=customer))
 
     def perform_create(self, serializer):
         serializer.save(customer=self.get_customer())
@@ -958,8 +1004,8 @@ class AccountRiskListView(generics.ListCreateAPIView):
         return get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
-            customer_id=self.kwargs["customer_id"],
-            customer__organisation=self.request.user.organisation,
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
         )
 
     def get_queryset(self):
@@ -993,17 +1039,22 @@ class RiskListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as ContactListView's own.
         return Risk.objects.filter(
-            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
-        ).select_related("customer", "account", "account__customer")
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).select_related("customer", "account").prefetch_related("account__customers").distinct()
 
     def perform_create(self, serializer):
         organisation = self.request.user.organisation
         account_id = self.request.data.get("account_id")
         customer_id = self.request.data.get("customer_id")
         if account_id:
+            # `.distinct()` before `get_object_or_404` — same
+            # reasoning as OpportunityListView.perform_create's own.
             account = get_object_or_404(
-                Account, pk=account_id, customer__organisation=organisation
+                Account.objects.filter(customers__organisation=organisation).distinct(),
+                pk=account_id,
             )
             serializer.save(account=account)
         elif customer_id:
@@ -1025,6 +1076,8 @@ class RiskDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as ContactDetailView's own.
         return Risk.objects.filter(
-            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
-        )
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).distinct()

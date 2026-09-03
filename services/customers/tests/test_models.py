@@ -19,6 +19,16 @@ from services.customers.models import (
 )
 
 
+def create_account(customer, **kwargs):
+    """Account.customers is a many-to-many now (see that model's own
+    docstring), so `Account.objects.create(customer=...)` no longer
+    works — this is the test-suite's own equivalent, linking `customer`
+    onto the new Account right after creating it."""
+    account = Account.objects.create(**kwargs)
+    account.customers.add(customer)
+    return account
+
+
 class HealthCategoryTests(TestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
@@ -74,8 +84,8 @@ class AccountHealthCategoryTests(TestCase):
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
 
     def _account(self, score):
-        return Account.objects.create(
-            customer=self.customer, name="Some Region", health_score=score
+        return create_account(
+            self.customer, name="Some Region", health_score=score
         )
 
     def test_score_at_or_above_7_is_good(self):
@@ -109,7 +119,7 @@ class ContactInfoDefaultsTests(TestCase):
 
     def test_account_address_email_and_phone_default_to_blank(self):
         customer = Customer.objects.create(organisation=self.org, name="Some Co")
-        account = Account.objects.create(customer=customer, name="Some Region")
+        account = create_account(customer, name="Some Region")
         self.assertEqual(account.address, "")
         self.assertEqual(account.email, "")
         self.assertEqual(account.phone, "")
@@ -124,7 +134,7 @@ class ActivityParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def test_customer_only_is_valid(self):
         activity = Activity.objects.create(
@@ -163,7 +173,7 @@ class EmailParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def _email_kwargs(self):
         return {
@@ -199,7 +209,7 @@ class TaskParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def _task_kwargs(self):
         return {
@@ -238,7 +248,7 @@ class NoteParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def _note_kwargs(self):
         return {
@@ -277,7 +287,7 @@ class TicketParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def _ticket_kwargs(self):
         return {
@@ -318,7 +328,7 @@ class CalendarEventParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def _event_kwargs(self):
         return {
@@ -357,7 +367,7 @@ class ContactParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def _contact_kwargs(self):
         return {
@@ -386,28 +396,29 @@ class ContactParentConstraintTests(TestCase):
 
 
 class ContactCompanyPropertyTests(TestCase):
-    """Contact.company resolves to the ultimate parent Customer whether
-    the contact is org-level or account-level — see ContactSerializer's
-    own docstring for why the standalone /contacts/list page needs it."""
+    """Contact.companies resolves to every ultimate parent Customer
+    whether the contact is org-level or account-level — see
+    ContactSerializer's own docstring for why the standalone
+    /contacts/list page needs it."""
 
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def test_org_level_contact_company_is_its_own_customer(self):
         contact = Contact.objects.create(
             customer=self.customer, name="Jamie Lee", role=Contact.Role.CHAMPION,
             email="jamie.lee@someco.com",
         )
-        self.assertEqual(contact.company, self.customer)
+        self.assertEqual(contact.companies, [self.customer])
 
     def test_account_level_contact_company_is_the_accounts_customer(self):
         contact = Contact.objects.create(
             account=self.account, name="Jamie Lee", role=Contact.Role.CHAMPION,
             email="jamie.lee@someco.com",
         )
-        self.assertEqual(contact.company, self.customer)
+        self.assertEqual(contact.companies, [self.customer])
 
 
 class OpportunityParentConstraintTests(TestCase):
@@ -417,7 +428,7 @@ class OpportunityParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def _opportunity_kwargs(self):
         return {
@@ -449,26 +460,26 @@ class OpportunityParentConstraintTests(TestCase):
 
 
 class OpportunityCompanyPropertyTests(TestCase):
-    """Opportunity.company resolves to the ultimate parent Customer
+    """Opportunity.companies resolves to every ultimate parent Customer
     whether the opportunity is org-level or account-level — same
     reasoning as ContactCompanyPropertyTests above."""
 
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def test_org_level_opportunity_company_is_its_own_customer(self):
         opportunity = Opportunity.objects.create(
             customer=self.customer, title="Upsell", mrr="1000.00",
         )
-        self.assertEqual(opportunity.company, self.customer)
+        self.assertEqual(opportunity.companies, [self.customer])
 
     def test_account_level_opportunity_company_is_the_accounts_customer(self):
         opportunity = Opportunity.objects.create(
             account=self.account, title="Upsell", mrr="1000.00",
         )
-        self.assertEqual(opportunity.company, self.customer)
+        self.assertEqual(opportunity.companies, [self.customer])
 
 
 class RiskParentConstraintTests(TestCase):
@@ -478,7 +489,7 @@ class RiskParentConstraintTests(TestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def _risk_kwargs(self):
         return {
@@ -506,19 +517,19 @@ class RiskParentConstraintTests(TestCase):
 
 
 class RiskCompanyPropertyTests(TestCase):
-    """Risk.company resolves to the ultimate parent Customer whether
+    """Risk.companies resolves to every ultimate parent Customer whether
     the risk is org-level or account-level — same reasoning as
     OpportunityCompanyPropertyTests above."""
 
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
-        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+        self.account = create_account(self.customer, name="Some Region")
 
     def test_org_level_risk_company_is_its_own_customer(self):
         risk = Risk.objects.create(customer=self.customer, title="Downgrade Risk", mrr="1000.00")
-        self.assertEqual(risk.company, self.customer)
+        self.assertEqual(risk.companies, [self.customer])
 
     def test_account_level_risk_company_is_the_accounts_customer(self):
         risk = Risk.objects.create(account=self.account, title="Downgrade Risk", mrr="1000.00")
-        self.assertEqual(risk.company, self.customer)
+        self.assertEqual(risk.companies, [self.customer])

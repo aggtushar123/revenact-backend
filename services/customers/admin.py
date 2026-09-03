@@ -35,16 +35,22 @@ class CustomerAdmin(admin.ModelAdmin):
 class AccountAdmin(admin.ModelAdmin):
     list_display = [
         "name",
-        "customer",
+        "customers_list",
         "health_score",
         "lifecycle_stage",
         "owner",
         "renewal_date",
         "arr",
     ]
-    list_filter = ["customer__organisation", "lifecycle_stage", "ai_pulse_score"]
-    search_fields = ["name", "domain", "customer__name"]
+    list_filter = ["customers__organisation", "lifecycle_stage", "ai_pulse_score"]
+    search_fields = ["name", "domain", "customers__name"]
     readonly_fields = ["created_at", "updated_at"]
+
+    @admin.display(description="Customers")
+    def customers_list(self, obj):
+        # `customers` is a many-to-many now (see the Account model's own
+        # docstring) — list_display can't render an M2M field directly.
+        return ", ".join(obj.customers.values_list("name", flat=True))
 
 
 @admin.register(Activity)

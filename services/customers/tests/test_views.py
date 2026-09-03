@@ -22,6 +22,16 @@ from services.customers.models import (
 )
 
 
+def create_account(customer, **kwargs):
+    """Account.customers is a many-to-many now (see that model's own
+    docstring), so `Account.objects.create(customer=...)` no longer
+    works — this is the test-suite's own equivalent, linking `customer`
+    onto the new Account right after creating it."""
+    account = Account.objects.create(**kwargs)
+    account.customers.add(customer)
+    return account
+
+
 class CustomerListCreateTests(APITestCase):
     url = "/api/v1/customers/"
 
@@ -568,8 +578,8 @@ class AccountListCreateTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_lists_the_customers_accounts(self):
-        Account.objects.create(customer=self.customer, name="North America", health_score=8.5)
-        Account.objects.create(customer=self.customer, name="EMEA", health_score=6.0)
+        create_account(self.customer, name="North America", health_score=8.5)
+        create_account(self.customer, name="EMEA", health_score=6.0)
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url)
@@ -579,15 +589,15 @@ class AccountListCreateTests(APITestCase):
         self.assertEqual(names, {"North America", "EMEA"})
 
     def test_response_is_a_plain_list_not_paginated(self):
-        Account.objects.create(customer=self.customer, name="North America")
+        create_account(self.customer, name="North America")
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url)
         self.assertIsInstance(response.data, list)
 
     def test_includes_derived_health_category_and_nested_owner(self):
-        Account.objects.create(
-            customer=self.customer, name="North America", health_score=8.5, owner=self.admin
+        create_account(
+            self.customer, name="North America", health_score=8.5, owner=self.admin
         )
         self.client.force_authenticate(self.admin)
 
@@ -605,7 +615,7 @@ class AccountListCreateTests(APITestCase):
 
     def test_does_not_leak_another_customers_accounts(self):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
-        Account.objects.create(customer=other_customer, name="Initech HQ")
+        create_account(other_customer, name="Initech HQ")
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url)
@@ -626,7 +636,7 @@ class AccountListCreateTests(APITestCase):
             organisation=other_org,
             role=User.Role.ADMIN,
         )
-        Account.objects.create(customer=self.customer, name="North America")
+        create_account(self.customer, name="North America")
         self.client.force_authenticate(other_admin)
 
         response = self.client.get(self.url)
@@ -649,9 +659,11 @@ class AccountListCreateTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["customer"], self.customer.id)
+        self.assertEqual(
+            response.data["customers"], [{"id": self.customer.id, "name": self.customer.name}]
+        )
         account = Account.objects.get(name="North America")
-        self.assertEqual(account.customer_id, self.customer.id)
+        self.assertEqual(list(account.customers.all()), [self.customer])
         self.assertEqual(account.domain, "na.globex.com")
         self.assertEqual(account.address, "Austin, TX")
         self.assertEqual(account.email, "na@globex.com")
@@ -693,11 +705,12 @@ class AccountListCreateTests(APITestCase):
         self.client.force_authenticate(self.admin)
 
         response = self.client.post(
-            self.url, {"name": "Sneaky", "customer": other_customer.id}, format="json"
+            self.url, {"name": "Sneaky", "customer_ids": [other_customer.id]}, format="json"
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Account.objects.get(name="Sneaky").customer_id, self.customer.id)
+        sneaky = Account.objects.get(name="Sneaky")
+        self.assertIn(self.customer, sneaky.customers.all())
 
     def test_create_for_a_nonexistent_customer_id_is_404(self):
         self.client.force_authenticate(self.admin)
@@ -718,7 +731,7 @@ class AccountDetailTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/"
 
     def test_unauthenticated_cannot_view_or_edit(self):
@@ -742,6 +755,10 @@ class AccountDetailTests(APITestCase):
         self.assertEqual(self.account.lifecycle_stage, "live")
 
     def test_edit_cannot_move_the_account_to_a_different_customer(self):
+        # "customer" (singular) isn't a serializer field at all any more
+        # -- only "customer_ids" (plural, see AccountSerializer's own
+        # docstring) can change the linked set, so this key is silently
+        # ignored rather than doing anything.
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
         self.client.force_authenticate(self.admin)
 
@@ -749,7 +766,7 @@ class AccountDetailTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.account.refresh_from_db()
-        self.assertEqual(self.account.customer_id, self.customer.id)
+        self.assertEqual(list(self.account.customers.all()), [self.customer])
 
     def test_edit_rejects_an_owner_from_another_organisation(self):
         other_org = Organisation.objects.create(name="Other Org")
@@ -829,7 +846,7 @@ class CustomerActivityListTests(APITestCase):
         self.assertEqual(response.data[0]["watchers"], 1)
 
     def test_does_not_include_an_accounts_activities(self):
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         Activity.objects.create(
             account=account, type=Activity.ActivityType.OTHER, occurred_at="2026-03-01"
         )
@@ -881,7 +898,7 @@ class AccountActivityListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/activities/"
 
     def test_unauthenticated_cannot_list(self):
@@ -915,7 +932,7 @@ class AccountActivityListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_activities(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         Activity.objects.create(
             account=other_account, type=Activity.ActivityType.OTHER, occurred_at="2026-03-01"
         )
@@ -995,7 +1012,7 @@ class CustomerEmailListTests(APITestCase):
         self.assertTrue(response.data[0]["is_starred"])
 
     def test_does_not_include_an_accounts_emails(self):
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         Email.objects.create(account=account, **self._email_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1043,7 +1060,7 @@ class AccountEmailListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/emails/"
 
     def _email_kwargs(self, **overrides):
@@ -1083,7 +1100,7 @@ class AccountEmailListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_emails(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         Email.objects.create(account=other_account, **self._email_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1156,7 +1173,7 @@ class CustomerTaskListTests(APITestCase):
         self.assertEqual(response.data[0]["status"], "in-progress")
 
     def test_does_not_include_an_accounts_tasks(self):
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         Task.objects.create(account=account, **self._task_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1204,7 +1221,7 @@ class AccountTaskListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/tasks/"
 
     def _task_kwargs(self, **overrides):
@@ -1240,7 +1257,7 @@ class AccountTaskListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_tasks(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         Task.objects.create(account=other_account, **self._task_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1312,7 +1329,7 @@ class CustomerNoteListTests(APITestCase):
         self.assertEqual(response.data[0]["links"], 2)
 
     def test_does_not_include_an_accounts_notes(self):
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         Note.objects.create(account=account, **self._note_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1360,7 +1377,7 @@ class AccountNoteListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/notes/"
 
     def _note_kwargs(self, **overrides):
@@ -1396,7 +1413,7 @@ class AccountNoteListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_notes(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         Note.objects.create(account=other_account, **self._note_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1471,7 +1488,7 @@ class CustomerTicketListTests(APITestCase):
         self.assertEqual(response.data[0]["links"], 2)
 
     def test_does_not_include_an_accounts_tickets(self):
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         Ticket.objects.create(account=account, **self._ticket_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1519,7 +1536,7 @@ class AccountTicketListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/tickets/"
 
     def _ticket_kwargs(self, **overrides):
@@ -1559,7 +1576,7 @@ class AccountTicketListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_tickets(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         Ticket.objects.create(account=other_account, **self._ticket_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1633,7 +1650,7 @@ class CustomerCalendarEventListTests(APITestCase):
         self.assertEqual(response.data[0]["attendee_count"], 3)
 
     def test_does_not_include_an_accounts_events(self):
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         CalendarEvent.objects.create(account=account, **self._event_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1681,7 +1698,7 @@ class AccountCalendarEventListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = (
             f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/calendar-events/"
         )
@@ -1721,7 +1738,7 @@ class AccountCalendarEventListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_events(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         CalendarEvent.objects.create(account=other_account, **self._event_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1795,7 +1812,7 @@ class CustomerContactListTests(APITestCase):
         # from the Customer's own organisation-level ones — the
         # Organization Details page's own Contacts tab shows both
         # together (see CustomerContactListView's own docstring).
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         Contact.objects.create(
             customer=self.customer, **self._contact_kwargs(name="Org-Level Contact")
         )
@@ -1815,7 +1832,7 @@ class CustomerContactListTests(APITestCase):
 
     def test_does_not_leak_another_customers_accounts_contacts(self):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
-        other_account = Account.objects.create(customer=other_customer, name="Other Region")
+        other_account = create_account(other_customer, name="Other Region")
         Contact.objects.create(account=other_account, **self._contact_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1862,7 +1879,9 @@ class CustomerContactListTests(APITestCase):
         contact = Contact.objects.get(pk=response.data["id"])
         self.assertEqual(contact.customer, self.customer)
         self.assertIsNone(contact.account)
-        self.assertEqual(response.data["company_id"], self.customer.id)
+        self.assertEqual(
+            response.data["companies"], [{"id": self.customer.id, "name": self.customer.name}]
+        )
 
     def test_cannot_add_a_contact_to_another_organisations_customer(self):
         other_org = Organisation.objects.create(name="Other Org")
@@ -1890,7 +1909,7 @@ class AccountContactListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/contacts/"
 
     def _contact_kwargs(self, **overrides):
@@ -1924,7 +1943,7 @@ class AccountContactListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_contacts(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         Contact.objects.create(account=other_account, **self._contact_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -1984,7 +2003,7 @@ class ContactListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
 
     def test_unauthenticated_cannot_list(self):
         response = self.client.get(self.url)
@@ -2024,8 +2043,8 @@ class ContactListTests(APITestCase):
         response = self.client.get(self.url)
 
         row = response.data["results"][0]
-        self.assertEqual(row["company_id"], self.customer.id)
-        self.assertEqual(row["company_name"], "Globex")
+        self.assertEqual(row["companies"], [{"id": self.customer.id, "name": "Globex"}])
+        self.assertEqual(row["account_name"], self.account.name)
         self.assertEqual(row["account_name"], "North America")
 
     def test_org_level_contact_has_no_account_name(self):
@@ -2220,7 +2239,7 @@ class ContactDetailTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.org_contact = Contact.objects.create(
             customer=self.customer,
             name="Sarah Chen",
@@ -2355,7 +2374,7 @@ class CustomerOpportunityListTests(APITestCase):
         self.assertEqual(response.data[0]["mrr"], "2500.00")
 
     def test_rolls_up_this_customers_own_accounts_opportunities_too(self):
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         Opportunity.objects.create(
             customer=self.customer, **self._opportunity_kwargs(title="Org-Level Opp")
         )
@@ -2423,7 +2442,7 @@ class AccountOpportunityListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/opportunities/"
 
     def _opportunity_kwargs(self, **overrides):
@@ -2458,7 +2477,7 @@ class AccountOpportunityListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_opportunities(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         Opportunity.objects.create(account=other_account, **self._opportunity_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -2519,7 +2538,7 @@ class OpportunityListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
 
     def test_unauthenticated_cannot_list(self):
         response = self.client.get(self.url)
@@ -2627,7 +2646,7 @@ class OpportunityDetailTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.org_opportunity = Opportunity.objects.create(
             customer=self.customer,
             title="Org Opp",
@@ -2756,7 +2775,7 @@ class CustomerRiskListTests(APITestCase):
         self.assertEqual(response.data[0]["mrr"], "2500.00")
 
     def test_rolls_up_this_customers_own_accounts_risks_too(self):
-        account = Account.objects.create(customer=self.customer, name="North America")
+        account = create_account(self.customer, name="North America")
         Risk.objects.create(customer=self.customer, **self._risk_kwargs(title="Org-Level Risk"))
         Risk.objects.create(account=account, **self._risk_kwargs(title="Account-Level Risk"))
         self.client.force_authenticate(self.admin)
@@ -2818,7 +2837,7 @@ class AccountRiskListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/risks/"
 
     def _risk_kwargs(self, **overrides):
@@ -2853,7 +2872,7 @@ class AccountRiskListTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_does_not_leak_another_accounts_risks(self):
-        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        other_account = create_account(self.customer, name="EMEA")
         Risk.objects.create(account=other_account, **self._risk_kwargs())
         self.client.force_authenticate(self.admin)
 
@@ -2912,7 +2931,7 @@ class RiskListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
 
     def test_unauthenticated_cannot_list(self):
         response = self.client.get(self.url)
@@ -3016,7 +3035,7 @@ class RiskDetailTests(APITestCase):
             role=User.Role.ADMIN,
         )
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
-        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.account = create_account(self.customer, name="North America")
         self.org_risk = Risk.objects.create(
             customer=self.customer, title="Org Risk", mrr="1000.00", stage=Risk.Stage.OPEN,
         )
@@ -3117,8 +3136,8 @@ class AccountListTests(APITestCase):
 
     def test_lists_accounts_across_every_customer(self):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
-        Account.objects.create(customer=self.customer, name="North America")
-        Account.objects.create(customer=other_customer, name="EMEA")
+        create_account(self.customer, name="North America")
+        create_account(other_customer, name="EMEA")
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url)
@@ -3129,18 +3148,17 @@ class AccountListTests(APITestCase):
         self.assertEqual(names, {"North America", "EMEA"})
 
     def test_response_includes_customer_name(self):
-        Account.objects.create(customer=self.customer, name="North America")
+        create_account(self.customer, name="North America")
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url)
 
         row = response.data["results"][0]
-        self.assertEqual(row["customer"], self.customer.id)
-        self.assertEqual(row["customer_name"], "Globex")
+        self.assertEqual(row["customers"], [{"id": self.customer.id, "name": "Globex"}])
 
     def test_search_matches_name(self):
-        Account.objects.create(customer=self.customer, name="North America")
-        Account.objects.create(customer=self.customer, name="EMEA")
+        create_account(self.customer, name="North America")
+        create_account(self.customer, name="EMEA")
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url, {"search": "north"})
@@ -3150,8 +3168,8 @@ class AccountListTests(APITestCase):
 
     def test_company_filter_matches_one_customers_accounts(self):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
-        Account.objects.create(customer=self.customer, name="North America")
-        Account.objects.create(customer=other_customer, name="EMEA")
+        create_account(self.customer, name="North America")
+        create_account(other_customer, name="EMEA")
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url, {"company": self.customer.id})
@@ -3169,8 +3187,8 @@ class AccountListTests(APITestCase):
             role=User.Role.ADMIN,
         )
         other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
-        Account.objects.create(customer=other_customer, name="Someone Else's Account")
-        Account.objects.create(customer=self.customer, name="North America")
+        create_account(other_customer, name="Someone Else's Account")
+        create_account(self.customer, name="North America")
         self.client.force_authenticate(other_admin)
 
         response = self.client.get(self.url)
@@ -3212,17 +3230,17 @@ class AccountStatsTests(APITestCase):
         self.assertEqual(response.data["lifecycle"]["churn"], {"count": 0, "mrr": 0, "arr": 0})
 
     def test_buckets_by_health_category_and_sums_derived_mrr_and_arr(self):
-        Account.objects.create(
-            customer=self.customer, name="Good Acc", health_score="9.0", arr="12000.00"
+        create_account(
+            self.customer, name="Good Acc", health_score="9.0", arr="12000.00"
         )
-        Account.objects.create(
-            customer=self.customer, name="Also Good Acc", health_score="7.0", arr="6000.00"
+        create_account(
+            self.customer, name="Also Good Acc", health_score="7.0", arr="6000.00"
         )
-        Account.objects.create(
-            customer=self.customer, name="Average Acc", health_score="5.0", arr="2400.00"
+        create_account(
+            self.customer, name="Average Acc", health_score="5.0", arr="2400.00"
         )
-        Account.objects.create(
-            customer=self.customer, name="Poor Acc", health_score="1.0", arr="1200.00"
+        create_account(
+            self.customer, name="Poor Acc", health_score="1.0", arr="1200.00"
         )
 
         response = self.client.get(self.url)
@@ -3243,11 +3261,11 @@ class AccountStatsTests(APITestCase):
         self.assertEqual(poor["mrr"], 100.0)
 
     def test_buckets_by_lifecycle_stage_counting_churned_accounts_too(self):
-        Account.objects.create(
-            customer=self.customer, name="Live Acc", lifecycle_stage="live", arr="12000.00"
+        create_account(
+            self.customer, name="Live Acc", lifecycle_stage="live", arr="12000.00"
         )
-        Account.objects.create(
-            customer=self.customer, name="Churned Acc", lifecycle_stage="churn", arr="6000.00"
+        create_account(
+            self.customer, name="Churned Acc", lifecycle_stage="churn", arr="6000.00"
         )
 
         response = self.client.get(self.url)
@@ -3257,11 +3275,11 @@ class AccountStatsTests(APITestCase):
         self.assertEqual(response.data["lifecycle"]["churn"]["arr"], 6000.0)
 
     def test_nps_breakdown_excludes_unscored_accounts_from_counts_and_denominator(self):
-        Account.objects.create(customer=self.customer, name="Promoter 1", nps_score=80)
-        Account.objects.create(customer=self.customer, name="Promoter 2", nps_score=40)
-        Account.objects.create(customer=self.customer, name="Passive", nps_score=0)
-        Account.objects.create(customer=self.customer, name="Detractor", nps_score=-60)
-        Account.objects.create(customer=self.customer, name="Not Yet Scored", nps_score=None)
+        create_account(self.customer, name="Promoter 1", nps_score=80)
+        create_account(self.customer, name="Promoter 2", nps_score=40)
+        create_account(self.customer, name="Passive", nps_score=0)
+        create_account(self.customer, name="Detractor", nps_score=-60)
+        create_account(self.customer, name="Not Yet Scored", nps_score=None)
 
         response = self.client.get(self.url)
         nps = response.data["nps"]
@@ -3275,11 +3293,11 @@ class AccountStatsTests(APITestCase):
     def test_scoped_to_the_callers_organisation(self):
         other_org = Organisation.objects.create(name="Other Org")
         other_customer = Customer.objects.create(organisation=other_org, name="Not Yours Inc")
-        Account.objects.create(
-            customer=other_customer, name="Not Yours", health_score="9.0", arr="99999.00"
+        create_account(
+            other_customer, name="Not Yours", health_score="9.0", arr="99999.00"
         )
-        Account.objects.create(
-            customer=self.customer, name="Mine", health_score="9.0", arr="100.00"
+        create_account(
+            self.customer, name="Mine", health_score="9.0", arr="100.00"
         )
 
         response = self.client.get(self.url)

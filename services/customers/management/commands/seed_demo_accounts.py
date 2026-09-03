@@ -343,9 +343,20 @@ class Command(BaseCommand):
                         f"no user {owner_email!r} in {org.name}."
                     )
 
-            account, was_created = Account.objects.update_or_create(
-                customer=customer, name=row["name"], defaults=data
-            )
+            # Account.customers is a many-to-many now (see that model's
+            # own docstring), so update_or_create(customer=..., ...)
+            # no longer works -- an M2M field can't be a constructor
+            # kwarg. Matched by (customer, name) same as before, just
+            # via an explicit filter + add() instead.
+            account = Account.objects.filter(customers=customer, name=row["name"]).first()
+            was_created = account is None
+            if was_created:
+                account = Account.objects.create(name=row["name"], **data)
+            else:
+                for field, value in data.items():
+                    setattr(account, field, value)
+                account.save()
+            account.customers.add(customer)
             created += was_created
             updated += not was_created
 

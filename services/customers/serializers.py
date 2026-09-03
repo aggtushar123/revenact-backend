@@ -113,17 +113,19 @@ class AccountSerializer(serializers.ModelSerializer):
     same-organisation-only) since an account's health/lifecycle mean the
     same thing as a customer's, just at a finer grain.
 
-    `customer` is read-only here — never client-supplied. AccountListCreateView
-    sets it from the URL's customer_id on create; there's no way to move
-    an account to a different customer via this serializer.
-
-    `customer_name` is a read-only convenience for the standalone
-    Accounts list page (AccountListView below) — that view spans every
-    Customer in the caller's organisation, so each row needs its own
-    parent's name to render an "Organization" column, same reasoning as
-    Contact/Opportunity/Risk's own `company_name`. Harmless extra field
-    for every other (already-scoped-to-one-Customer) consumer of this
-    serializer."""
+    `customers` (read) is every linked Customer as `{id, name}` — plural
+    now that Account.customers is a many-to-many (see that model's own
+    docstring for why). `customer_ids` (write-only) fully replaces the
+    linked set on save when given at all — every id must belong to the
+    caller's own organisation (validate_customer_ids below), the same
+    invariant AccountListCreateView/AccountDetailView's own views rely
+    on for their `customer_id`-in-the-URL scoping to mean anything.
+    Optional on write: the nested Add-Account endpoints
+    (AccountListCreateView.perform_create) still set the URL's own
+    customer_id programmatically without the client sending
+    `customer_ids` at all; it exists here for adding/removing
+    *additional* linked organisations afterward (the standalone Account
+    page's own Organizations tab)."""
 
     health_category = serializers.ChoiceField(
         choices=Customer.HealthCategory.choices, read_only=True
@@ -136,14 +138,21 @@ class AccountSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
-    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    customers = serializers.SerializerMethodField()
+    customer_ids = serializers.PrimaryKeyRelatedField(
+        source="customers",
+        queryset=Customer.objects.all(),
+        many=True,
+        write_only=True,
+        required=False,
+    )
 
     class Meta:
         model = Account
         fields = [
             "id",
-            "customer",
-            "customer_name",
+            "customers",
+            "customer_ids",
             "name",
             "domain",
             "address",
@@ -164,13 +173,29 @@ class AccountSerializer(serializers.ModelSerializer):
             "renewal_date",
             "arr",
         ]
-        read_only_fields = ["customer", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
+
+    def get_customers(self, obj):
+        return [{"id": c.id, "name": c.name} for c in obj.customers.all()]
 
     def validate_owner_id(self, owner):
         request = self.context["request"]
         if owner is not None and owner.organisation_id != request.user.organisation_id:
             raise serializers.ValidationError("Owner must be a member of your own organisation.")
         return owner
+
+    def validate_customer_ids(self, customers):
+        if not customers:
+            raise serializers.ValidationError(
+                "An account must belong to at least one organization."
+            )
+        request = self.context["request"]
+        outside = [c for c in customers if c.organisation_id != request.user.organisation_id]
+        if outside:
+            raise serializers.ValidationError(
+                "Every linked organization must be in your own organisation."
+            )
+        return customers
 
 
 class ActivitySerializer(serializers.ModelSerializer):
@@ -257,22 +282,24 @@ class CalendarEventSerializer(serializers.ModelSerializer):
 
 
 class ContactSerializer(serializers.ModelSerializer):
-    """Read-only — see Contact model's docstring. `company_id`/
-    `company_name` are the ultimate parent Customer regardless of
-    whether this is an organization- or account-level contact (see
-    Contact.company) — the nested Customer/Account-scoped list views
-    below don't strictly need them (the page already knows its own
-    scope) but get them for free since it's the same serializer; the
-    standalone top-level ContactListView does need them, since it spans
-    every Customer. `account_name` is set only for an account-level
-    contact, so the standalone page can show which account within the
-    company it belongs to (a plain SerializerMethodField rather than
-    `source="account.name"`, since a dotted source would raise on a
-    null `account` rather than reliably falling back)."""
+    """Read-only — see Contact model's docstring. `companies` is every
+    ultimate parent Customer regardless of whether this is an
+    organization- or account-level contact (see Contact.companies) —
+    plural (not the old singular `company_id`/`company_name`) since an
+    account-level contact's own Account can now belong to more than one
+    Customer at once (see Account's own docstring). The nested Customer/
+    Account-scoped list views below don't strictly need this (the page
+    already knows its own scope) but get it for free since it's the
+    same serializer; the standalone top-level ContactListView does need
+    it, since it spans every Customer. `account_name` is set only for
+    an account-level contact, so the standalone page can show which
+    account within the company it belongs to (a plain
+    SerializerMethodField rather than `source="account.name"`, since a
+    dotted source would raise on a null `account` rather than reliably
+    falling back)."""
 
     role_display = serializers.CharField(source="get_role_display", read_only=True)
-    company_id = serializers.SerializerMethodField()
-    company_name = serializers.SerializerMethodField()
+    companies = serializers.SerializerMethodField()
     account_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -287,36 +314,34 @@ class ContactSerializer(serializers.ModelSerializer):
             "status",
             "sentiment",
             "last_contacted_at",
-            "company_id",
-            "company_name",
+            "companies",
             "account_name",
         ]
 
-    def get_company_id(self, obj):
-        return obj.company.id
-
-    def get_company_name(self, obj):
-        return obj.company.name
+    def get_companies(self, obj):
+        return [{"id": c.id, "name": c.name} for c in obj.companies]
 
     def get_account_name(self, obj):
         return obj.account.name if obj.account_id else None
 
 
 class OpportunitySerializer(serializers.ModelSerializer):
-    """See Opportunity model's docstring. `company_id`/`company_name`/
-    `account_name` mirror ContactSerializer's own fields exactly, same
-    reasoning (the standalone Pipelines board spans every Customer, so
-    it can't assume which parent FK is set the way a nested
-    Customer/Account-scoped view can). `stage_display`/`priority_display`
-    are the human labels ("Solution Validation", not
-    "solution_validation") the board's own column headers/priority
-    pills render; `stage`/`priority` themselves are included too since
-    the frontend keys drag-and-drop and filtering off the raw value."""
+    """See Opportunity model's docstring. `companies`/`account_name`
+    mirror ContactSerializer's own fields exactly, same reasoning (the
+    standalone Pipelines board spans every Customer, so it can't assume
+    which parent FK is set the way a nested Customer/Account-scoped
+    view can). Plural `companies` (not the old singular `company_id`/
+    `company_name`) for the same reason as ContactSerializer's own —
+    an account-level Opportunity's own Account can now belong to more
+    than one Customer at once. `stage_display`/`priority_display` are
+    the human labels ("Solution Validation", not "solution_validation")
+    the board's own column headers/priority pills render; `stage`/
+    `priority` themselves are included too since the frontend keys
+    drag-and-drop and filtering off the raw value."""
 
     stage_display = serializers.CharField(source="get_stage_display", read_only=True)
     priority_display = serializers.CharField(source="get_priority_display", read_only=True)
-    company_id = serializers.SerializerMethodField()
-    company_name = serializers.SerializerMethodField()
+    companies = serializers.SerializerMethodField()
     account_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -329,16 +354,12 @@ class OpportunitySerializer(serializers.ModelSerializer):
             "stage_display",
             "priority",
             "priority_display",
-            "company_id",
-            "company_name",
+            "companies",
             "account_name",
         ]
 
-    def get_company_id(self, obj):
-        return obj.company.id
-
-    def get_company_name(self, obj):
-        return obj.company.name
+    def get_companies(self, obj):
+        return [{"id": c.id, "name": c.name} for c in obj.companies]
 
     def get_account_name(self, obj):
         return obj.account.name if obj.account_id else None
@@ -348,12 +369,12 @@ class RiskSerializer(serializers.ModelSerializer):
     """See Risk model's docstring. Field-for-field identical shape to
     OpportunitySerializer, same reasoning — the standalone Pipelines
     board's "Risks" tab spans every Customer/Account the same way its
-    "Opportunities" tab does."""
+    "Opportunities" tab does. Plural `companies` for the same reason as
+    OpportunitySerializer's own."""
 
     stage_display = serializers.CharField(source="get_stage_display", read_only=True)
     priority_display = serializers.CharField(source="get_priority_display", read_only=True)
-    company_id = serializers.SerializerMethodField()
-    company_name = serializers.SerializerMethodField()
+    companies = serializers.SerializerMethodField()
     account_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -366,16 +387,12 @@ class RiskSerializer(serializers.ModelSerializer):
             "stage_display",
             "priority",
             "priority_display",
-            "company_id",
-            "company_name",
+            "companies",
             "account_name",
         ]
 
-    def get_company_id(self, obj):
-        return obj.company.id
-
-    def get_company_name(self, obj):
-        return obj.company.name
+    def get_companies(self, obj):
+        return [{"id": c.id, "name": c.name} for c in obj.companies]
 
     def get_account_name(self, obj):
         return obj.account.name if obj.account_id else None

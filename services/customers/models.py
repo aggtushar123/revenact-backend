@@ -198,9 +198,35 @@ class Account(models.Model):
     tab for the standalone Account page.
 
     Add/Edit Account is wired (AccountListCreateView/AccountDetailView) —
-    see those views' docstrings for exactly which fields the UI sends."""
+    see those views' docstrings for exactly which fields the UI sends.
 
-    customer = models.ForeignKey(Customer, related_name="accounts", on_delete=models.CASCADE)
+    `customers` is a many-to-many, not a single FK — real-world account
+    ownership isn't always a clean tree (a joint venture co-owned by two
+    Customers, a shared subsidiary serviced by both a vendor's and a
+    reseller's own Customer record, a holding-company restructuring that
+    attaches an existing Account to a new parent without detaching the
+    old one). Every `Customer` an Account is linked to must belong to
+    the same `Organisation` as every other one — enforced in
+    AccountSerializer.validate_customer_ids, not at the DB level (a
+    plain M2M can't express a same-tenant constraint on its own) —
+    letting an Account span two different tenants would break every
+    other endpoint's own `request.user.organisation` scoping.
+
+    Every "nested under one Customer" endpoint in this file (Contacts/
+    Opportunities/Risks/Activities/etc. `.../accounts/<id>/...`, and
+    `/customers/<customer_id>/accounts/<id>/` itself) still resolves an
+    Account through *one* `customer_id` from the URL — that URL means
+    "an Account this Customer is one of the (possibly several) owners
+    of", not "the Account's only owner". Any Customer an Account is
+    linked to can reach it that way."""
+
+    customers = models.ManyToManyField(
+        Customer,
+        related_name="accounts",
+        blank=True,
+        help_text="Every Customer this Account belongs to — see this model's own "
+        "docstring for why this is a many-to-many, not a single FK.",
+    )
     name = models.CharField(max_length=255)
     domain = models.CharField(
         max_length=255,
@@ -273,7 +299,8 @@ class Account(models.Model):
         ordering = ["name"]
 
     def __str__(self):
-        return f"{self.name} ({self.customer.name})"
+        names = ", ".join(self.customers.values_list("name", flat=True)) or "no organisation"
+        return f"{self.name} ({names})"
 
 
 class Activity(models.Model):
@@ -832,14 +859,20 @@ class Contact(models.Model):
         return f"{self.name} — {parent}"
 
     @property
-    def company(self) -> Customer:
-        """The ultimate parent Customer: itself if this is an
-        organization-level contact, else its account's own customer.
-        Used by ContactSerializer's company_id/company_name fields —
+    def companies(self) -> list["Customer"]:
+        """Every ultimate parent Customer: itself alone if this is an
+        organization-level contact, else its account's own (possibly
+        several, now that Account.customers is a many-to-many) ones.
+        Used by ContactSerializer's company_ids/company_names fields —
         needed by the standalone /contacts/list page, which spans every
         Customer and so can't assume which FK is set the way the
-        nested Customer/Account-scoped list views can."""
-        return self.customer or self.account.customer
+        nested Customer/Account-scoped list views can. Plural (not the
+        old singular `company`) since an account-level Contact's own
+        Account can now belong to more than one Customer at once — see
+        Account's own docstring."""
+        if self.customer_id:
+            return [self.customer]
+        return list(self.account.customers.all())
 
 
 class Opportunity(models.Model):
@@ -923,11 +956,13 @@ class Opportunity(models.Model):
         return f"{self.title} — {parent}"
 
     @property
-    def company(self) -> Customer:
-        """The ultimate parent Customer — same reasoning as Contact's
-        own `company` property, needed by OpportunitySerializer's
-        company_id/company_name for the same reason."""
-        return self.customer or self.account.customer
+    def companies(self) -> list["Customer"]:
+        """Every ultimate parent Customer — same reasoning as Contact's
+        own `companies` property, needed by OpportunitySerializer's
+        company_ids/company_names for the same reason."""
+        if self.customer_id:
+            return [self.customer]
+        return list(self.account.customers.all())
 
 
 class Risk(models.Model):
@@ -1005,7 +1040,9 @@ class Risk(models.Model):
         return f"{self.title} — {parent}"
 
     @property
-    def company(self) -> Customer:
-        """The ultimate parent Customer — same reasoning as
-        Opportunity's own `company` property."""
-        return self.customer or self.account.customer
+    def companies(self) -> list["Customer"]:
+        """Every ultimate parent Customer — same reasoning as
+        Opportunity's own `companies` property."""
+        if self.customer_id:
+            return [self.customer]
+        return list(self.account.customers.all())

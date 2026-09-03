@@ -163,11 +163,11 @@ class Command(BaseCommand):
 
         for row in DEMO_ACCOUNT_RISKS:
             try:
-                account = Account.objects.get(
-                    customer__organisation=org,
-                    customer__name=row["customer_name"],
+                account = Account.objects.filter(
+                    customers__organisation=org,
+                    customers__name=row["customer_name"],
                     name=row["account_name"],
-                )
+                ).distinct().get()
             except Account.DoesNotExist:
                 self.stderr.write(
                     f"  skipping risk — no account {row['account_name']!r} under "
