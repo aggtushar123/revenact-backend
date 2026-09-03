@@ -17,7 +17,7 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
-from services.customers.views import ContactListView, ContactStatsView
+from services.customers.views import ContactDetailView, ContactListView, ContactStatsView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -41,5 +41,6 @@ urlpatterns = [
     # docstring), unlike every other nested list under
     # services.customers.urls above.
     path("api/v1/contacts/stats/", ContactStatsView.as_view(), name="contact-stats"),
+    path("api/v1/contacts/<int:pk>/", ContactDetailView.as_view(), name="contact-detail"),
     path("api/v1/contacts/", ContactListView.as_view(), name="contact-list"),
 ]

@@ -65,7 +65,7 @@ expects.
 | Notes (`ActivityFeed`'s "Notes" filter) | `customers` (`Note` model) | 🟢 Read-only, API-complete — see below. `NotesTab.tsx` fetches real data through `fetchNotesForCustomer`/`fetchNotesForAccount`; the link line now reflects a real per-note count. No create/update endpoint yet. |
 | Tickets (`ActivityFeed`'s "Tickets" filter) | `customers` (`Ticket` model) | 🟢 Read-only, API-complete — see below. `TicketsTab.tsx` fetches real data through `fetchTicketsForCustomer`/`fetchTicketsForAccount`; the flag icon now reflects real priority and the link line a real per-ticket count. No create/update endpoint yet. |
 | Calendar Events (`ActivityFeed`'s "Calendar Events" filter) | `customers` (`CalendarEvent` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `CALENDAR_EVENTS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
-| Contacts (standalone `/contacts/list` page, Organization/Account Details' Contacts tabs) | `customers` (`Contact` model) | 🟢 Read-only, API-complete — see below. Global paginated+searchable list (`ContactListView`/`ContactStatsView`) plus two scoped list endpoints (per-Customer, per-Account) exist and are seeded; all three frontend surfaces fetch real data. No create/update endpoint yet. |
+| Contacts (standalone `/contacts/list` page, Organization/Account Details' Contacts tabs) | `customers` (`Contact` model) | 🟢 Full CRUD, API-complete — see below. Global paginated+searchable list (`ContactListView`/`ContactStatsView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat `ContactDetailView` (GET/PATCH/DELETE by id, regardless of parent) exist and are seeded; the standalone list page's Add/Edit/Delete are wired to them. |
 | Pipelines | — | ⏳ Not started |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot | — | ⏳ Not started |
@@ -872,27 +872,33 @@ can't assume which FK is set the way the two nested views below can.
 See `seed_demo_contacts` management command for demo data (run after
 `seed_demo_accounts`).
 
-### `GET /api/v1/customers/<customer_id>/contacts/`
+### `GET/POST /api/v1/customers/<customer_id>/contacts/`
 
-Auth: `IsAuthenticated`. Every organization-level `Contact` for one
-`Customer`, scoped to the caller's own organisation — same
-404-not-empty-list convention as the Activity list endpoint. Powers
-the Organization Details page's own Contacts tab.
+Auth: `IsAuthenticated`. GET: every organization-level `Contact` for
+one `Customer`, scoped to the caller's own organisation — same
+404-not-empty-list convention as the Activity list endpoint. POST:
+adds a new organization-level Contact to it; `customer` is taken from
+the URL, never client-supplied, same as `AccountListCreateView`'s own
+`customer`. Powers the Organization Details page's own Contacts tab,
+and — via a customer_id the frontend picks from a dropdown rather than
+a URL param — the standalone `/contacts/list` page's "Add Contact"
+(which only ever creates an organization-level Contact).
 
-**Response `200`** — a plain array, each entry: `id`, `name`, `role`,
+**Response `200`** (GET) — a plain array, each entry: `id`, `name`, `role`,
 `role_display`, `email`, `phone`, `status`, `sentiment`,
 `last_contacted_at`, `company_id`, `company_name`, `account_name`
-(`null` here — org-level).
+(`null` here — org-level). **Response `201`** (POST) — one such entry.
 
-### `GET /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/`
+### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/`
 
-Auth: `IsAuthenticated`. Every account-level `Contact` for one
+Auth: `IsAuthenticated`. GET: every account-level `Contact` for one
 `Account`, scoped to both its `customer_id` and the caller's own
 organisation — same reasoning as the Activity account-level endpoint.
-Powers the standalone Account page's own Contacts tab.
+POST: adds a new account-level Contact to it; `account` taken from the
+URL. Powers the standalone Account page's own Contacts tab.
 
-**Response `200`** — same shape as the Customer-scoped list above,
-`account_name` set to that account's own name.
+**Response `200`**/**`201`** — same shape as the Customer-scoped
+endpoint above, `account_name` set to that account's own name.
 
 ### `GET /api/v1/contacts/`
 
@@ -952,6 +958,28 @@ only "growth" there's real data for; there's no historical daily-
 snapshot table to compare a true count-30-days-ago against anything
 richer. `null` (not `0`) when there were no contacts yet 30 days ago,
 since a percentage change off a zero base is undefined, not zero.
+
+### `GET/PATCH/DELETE /api/v1/contacts/<id>/`
+
+Auth: `IsAuthenticated`. A single Contact, scoped to the caller's own
+organisation via either its `customer` or its `account`'s own
+`customer` — 404 (not 403) outside that scope, regardless of whether
+it's an organization- or account-level Contact.
+
+Deliberately flat, not nested under `/customers/<id>/...` like the two
+list-create endpoints above — Edit/Delete only ever needs the
+Contact's own id, and the standalone `/contacts/list` page's own rows
+don't carry an `account_id` to nest under even if it wanted to (only
+`company_id`/`account_name`, for display). Powers the "Edit"/"Delete"
+row actions on all three Contacts UIs.
+
+PATCH can't move a Contact between parents — `customer`/`account`
+aren't in `ContactSerializer`'s own field list at all, so naming
+either in the request body is silently ignored, not an error, same
+effect as `AccountSerializer`'s `read_only_fields = ["customer"]`.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoints
+above. **Response `204`** (DELETE) — empty body.
 
 **Response `200`**
 ```json

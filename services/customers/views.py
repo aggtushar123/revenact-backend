@@ -470,43 +470,61 @@ class AccountCalendarEventListView(generics.ListAPIView):
         return account.calendar_events.all()
 
 
-class CustomerContactListView(generics.ListAPIView):
-    """GET /api/v1/customers/<customer_id>/contacts/ — every
-    organization-level Contact for one Customer, scoped to the
-    caller's own organisation. Same 404-not-empty-list convention as
-    CustomerActivityListView. Powers the Organization Details page's
-    own Contacts tab."""
+class CustomerContactListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/contacts/ — every
+    organization-level Contact for one Customer (GET), or adds a new
+    one to it (POST), scoped to the caller's own organisation. Same
+    404-not-empty-list convention as CustomerActivityListView. `customer`
+    is never client-supplied — taken from the URL, same as
+    AccountListCreateView's own `customer`.
+
+    Powers the Organization Details page's own Contacts tab, and — via
+    a customer_id the frontend picks from a dropdown rather than a URL
+    param — the standalone /contacts/list page's "Add Contact" (which
+    only ever creates an organization-level Contact; there's no
+    account-picker on that page)."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
-    def get_queryset(self):
-        customer = get_object_or_404(
+    def get_customer(self):
+        return get_object_or_404(
             Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
         )
-        return customer.contacts.all()
+
+    def get_queryset(self):
+        return self.get_customer().contacts.all()
+
+    def perform_create(self, serializer):
+        serializer.save(customer=self.get_customer())
 
 
-class AccountContactListView(generics.ListAPIView):
-    """GET /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/
-    — every account-level Contact for one Account, scoped to both its
-    customer_id and the caller's own organisation. Same reasoning as
-    AccountActivityListView. Powers the standalone Account page's own
+class AccountContactListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/
+    — every account-level Contact for one Account (GET), or adds a new
+    one to it (POST), scoped to both its customer_id and the caller's
+    own organisation. Same reasoning as AccountActivityListView/
+    AccountListCreateView. Powers the standalone Account page's own
     Contacts tab."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
-    def get_queryset(self):
-        account = get_object_or_404(
+    def get_account(self):
+        return get_object_or_404(
             Account,
             pk=self.kwargs["account_id"],
             customer_id=self.kwargs["customer_id"],
             customer__organisation=self.request.user.organisation,
         )
-        return account.contacts.all()
+
+    def get_queryset(self):
+        return self.get_account().contacts.all()
+
+    def perform_create(self, serializer):
+        serializer.save(account=self.get_account())
 
 
 class ContactListView(generics.ListAPIView):
@@ -609,4 +627,35 @@ class ContactStatsView(views.APIView):
                 "sentiment_pct": sentiment_pct,
                 "growth_30d_pct": growth_30d_pct,
             }
+        )
+
+
+class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/contacts/<id>/ — a single Contact,
+    scoped to the caller's own organisation (via either its `customer`
+    or its `account`'s own `customer`, same reasoning as ContactListView's
+    own queryset) regardless of whether it's an organization-level or
+    account-level Contact. 404 (not 403) outside that scope.
+
+    Deliberately flat (not nested under /customers/<id>/... like the
+    two ListCreateAPIViews above) — Edit/Delete on any of the three
+    Contacts UIs (standalone list, Organization Details, standalone
+    Account page) only ever needs the Contact's own id, never its
+    parent's, so there's no reason to make the caller thread a
+    customer_id/account_id it may not even have on hand (the
+    standalone /contacts/list page's own rows don't carry an
+    account_id, only company_id/account_name for display).
+
+    PATCH can't move a Contact between parents — `customer`/`account`
+    aren't in ContactSerializer's own `fields` list at all, so a PATCH
+    body naming either is silently ignored rather than erroring, same
+    effect as AccountSerializer's `read_only_fields = ["customer"]`."""
+
+    serializer_class = ContactSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        return Contact.objects.filter(
+            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
         )

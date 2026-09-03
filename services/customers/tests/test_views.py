@@ -1825,6 +1825,33 @@ class CustomerContactListTests(APITestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_admin_can_add_an_organization_level_contact(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, self._contact_kwargs(name="New Contact"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        contact = Contact.objects.get(pk=response.data["id"])
+        self.assertEqual(contact.customer, self.customer)
+        self.assertIsNone(contact.account)
+        self.assertEqual(response.data["company_id"], self.customer.id)
+
+    def test_cannot_add_a_contact_to_another_organisations_customer(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.post(self.url, self._contact_kwargs(), format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
 
 class AccountContactListTests(APITestCase):
     def setUp(self):
@@ -1900,6 +1927,19 @@ class AccountContactListTests(APITestCase):
 
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_can_add_an_account_level_contact(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, self._contact_kwargs(name="New Contact"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        contact = Contact.objects.get(pk=response.data["id"])
+        self.assertEqual(contact.account, self.account)
+        self.assertIsNone(contact.customer)
+        self.assertEqual(response.data["account_name"], "North America")
 
 
 class ContactListTests(APITestCase):
@@ -2136,3 +2176,113 @@ class ContactStatsTests(APITestCase):
         response = self.client.get(self.url)
 
         self.assertEqual(response.data["total"], 1)
+
+
+class ContactDetailTests(APITestCase):
+    """GET/PATCH/DELETE /api/v1/contacts/<id>/ — flat, not nested under
+    a Customer/Account (see ContactDetailView's own docstring). Covers
+    both an organization-level and an account-level Contact, since the
+    scoping query has to cover both shapes."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.org_contact = Contact.objects.create(
+            customer=self.customer,
+            name="Sarah Chen",
+            role=Contact.Role.EXECUTIVE_SPONSOR,
+            email="sarah.chen@globex.com",
+        )
+        self.account_contact = Contact.objects.create(
+            account=self.account,
+            name="James Wilson",
+            role=Contact.Role.CHAMPION,
+            email="j.wilson@globex.com",
+        )
+
+    def test_unauthenticated_cannot_view(self):
+        response = self.client.get(f"/api/v1/contacts/{self.org_contact.id}/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_can_retrieve_an_organization_level_contact(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(f"/api/v1/contacts/{self.org_contact.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["name"], "Sarah Chen")
+
+    def test_can_retrieve_an_account_level_contact(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(f"/api/v1/contacts/{self.account_contact.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["name"], "James Wilson")
+        self.assertEqual(response.data["account_name"], "North America")
+
+    def test_can_update_an_organization_level_contact(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            f"/api/v1/contacts/{self.org_contact.id}/",
+            {"name": "Sarah Chen-Wu", "status": "inactive"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.org_contact.refresh_from_db()
+        self.assertEqual(self.org_contact.name, "Sarah Chen-Wu")
+        self.assertEqual(self.org_contact.status, Contact.Status.INACTIVE)
+
+    def test_updating_cannot_move_a_contact_between_parents(self):
+        # customer/account aren't in ContactSerializer's own `fields` at
+        # all, so naming either in the PATCH body is silently ignored,
+        # not an error.
+        self.client.force_authenticate(self.admin)
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+
+        response = self.client.patch(
+            f"/api/v1/contacts/{self.org_contact.id}/",
+            {"customer": other_customer.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.org_contact.refresh_from_db()
+        self.assertEqual(self.org_contact.customer, self.customer)
+
+    def test_can_delete_a_contact(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.delete(f"/api/v1/contacts/{self.org_contact.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Contact.objects.filter(pk=self.org_contact.id).exists())
+
+    def test_another_organisations_admin_gets_404_for_view_update_and_delete(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+        url = f"/api/v1/contacts/{self.org_contact.id}/"
+
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            self.client.patch(url, {"name": "Hijacked"}, format="json").status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        self.assertEqual(self.client.delete(url).status_code, status.HTTP_404_NOT_FOUND)
+        # Confirmed nothing actually happened to it.
+        self.org_contact.refresh_from_db()
+        self.assertEqual(self.org_contact.name, "Sarah Chen")
+
+    def test_nonexistent_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/contacts/999999/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
