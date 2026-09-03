@@ -66,7 +66,7 @@ expects.
 | Tickets (`ActivityFeed`'s "Tickets" filter) | `customers` (`Ticket` model) | 🟢 Read-only, API-complete — see below. `TicketsTab.tsx` fetches real data through `fetchTicketsForCustomer`/`fetchTicketsForAccount`; the flag icon now reflects real priority and the link line a real per-ticket count. No create/update endpoint yet. |
 | Calendar Events (`ActivityFeed`'s "Calendar Events" filter) | `customers` (`CalendarEvent` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `CALENDAR_EVENTS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts (standalone `/contacts/list` page, Organization/Account Details' Contacts tabs) | `customers` (`Contact` model) | 🟢 Full CRUD, API-complete — see below. Global paginated+searchable list (`ContactListView`/`ContactStatsView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat `ContactDetailView` (GET/PATCH/DELETE by id, regardless of parent) exist and are seeded; the standalone list page's Add/Edit/Delete are wired to them. |
-| Pipelines (standalone board's own "Opportunities" tab) | `customers` (`Opportunity` model) | 🟢 Full CRUD, API-complete — see below. Global unpaginated list (`OpportunityListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat `OpportunityDetailView` (GET/PATCH/DELETE by id) exist and are seeded; the board's own Add/Edit/Delete/drag-and-drop are wired to them. "Risks" tab is still 100% mock. |
+| Pipelines (standalone board — "Opportunities" and "Risks" tabs) | `customers` (`Opportunity`, `Risk` models) | 🟢 Full CRUD, API-complete — see below. Both tabs have the same shape: a global unpaginated list (`OpportunityListView`/`RiskListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Both are seeded; the board's own Add/Edit/Delete/drag-and-drop are wired to both tabs. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot | — | ⏳ Not started |
 | Scenarios | — | ⏳ Not started |
@@ -1094,6 +1094,94 @@ account-level. Flat, not nested — same reasoning as
 `ContactDetailView`. Powers both the board's drag-and-drop (PATCH
 `stage`) and its Edit/Delete card actions. PATCH can't move an
 Opportunity between parents, same as Contact.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoints
+above. **Response `204`** (DELETE) — empty body.
+
+### Models — `Risk`
+
+Mirrors: `src/pages/pipelines/PipelinesPage.tsx`'s mock `PipelineCard`/
+`Column` shape used for the standalone Pipelines board's "Risks" tab —
+field-for-field identical to `Opportunity` above, same reasoning.
+
+Same "belongs to exactly one of `Customer` or `Account`" shape as
+`Opportunity`. `stage` is the closed set of 4 Kanban columns the
+board's Risks tab already has (`open`/`mitigated`/`realised`/
+`abandoned`) — a fixed enum, same reasoning as Opportunity's own
+`stage`. `priority`/`mrr` are the same shape as Opportunity's.
+
+Unlike Opportunity's mock, none of the Risk mock's own card data named
+real seeded companies — its org names ("Digital Operations", "Culinary
+Innovation Lab (HCIL)", ...) don't exist anywhere in this codebase's
+seed data — so `seed_demo_risks`'s demo rows are new content against
+real seeded Customers/Accounts rather than a carryover of the mock's
+own cards.
+
+See `seed_demo_risks` management command for demo data (run after
+`seed_demo_accounts`).
+
+### `GET/POST /api/v1/customers/<customer_id>/risks/`
+
+Auth: `IsAuthenticated`. GET: every Risk under this Customer, rolled up
+from both levels (organisation-level and account-level), same
+reasoning as the Opportunity customer-scoped endpoint. POST always
+adds an organisation-level Risk; `customer` taken from the URL.
+
+**Response `200`** (GET) — a plain array, each entry: `id`, `title`,
+`mrr`, `stage`, `stage_display`, `priority`, `priority_display`,
+`company_id`, `company_name`, `account_name` (`null` for an
+organisation-level row). **Response `201`** (POST) — one such entry.
+
+### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/risks/`
+
+Auth: `IsAuthenticated`. GET: every account-level Risk for one Account.
+POST: adds a new one to it; `account` taken from the URL.
+
+**Response `200`**/**`201`** — same shape as the Customer-scoped
+endpoint above, `account_name` set to that account's own name.
+
+### `GET/POST /api/v1/risks/`
+
+Auth: `IsAuthenticated`. GET: every Risk across every Customer/Account
+the caller's own organisation owns. The one Risk view not nested under
+`/customers/<id>/...`, mounted at its own top-level prefix, same
+reasoning as `OpportunityListView`. Powers the standalone Pipelines
+board's own "Risks" tab.
+
+Unlike `GET /api/v1/contacts/`, **pagination is off** here, same
+reasoning as `OpportunityListView` — a Kanban board needs every card in
+every column to render/drag-and-drop correctly, not one page of them.
+
+POST takes a `customer_id` or an `account_id` in the request body
+(neither is a real serializer field) and creates the Risk under that
+parent — exactly one of the two must be given (`400` otherwise).
+
+**Response `200`**
+```json
+[
+  {
+    "id": 4,
+    "title": "Renewal Risk — Contract Expiry",
+    "mrr": "8500.00",
+    "stage": "open",
+    "stage_display": "Open",
+    "priority": "high",
+    "priority_display": "High",
+    "company_id": 8,
+    "company_name": "WeWork",
+    "account_name": null
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/risks/<id>/`
+
+Auth: `IsAuthenticated`. A single Risk, scoped to the caller's own
+organisation, regardless of whether it's organisation-level or
+account-level. Flat, not nested — same reasoning as
+`OpportunityDetailView`. Powers both the board's drag-and-drop (PATCH
+`stage`) and its Edit/Delete card actions. PATCH can't move a Risk
+between parents, same as Opportunity.
 
 **Response `200`** (GET/PATCH) — same shape as the list endpoints
 above. **Response `204`** (DELETE) — empty body.

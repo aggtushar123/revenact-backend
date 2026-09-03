@@ -9,6 +9,7 @@ from .models import (
     Email,
     Note,
     Opportunity,
+    Risk,
     Task,
     Ticket,
 )
@@ -137,6 +138,14 @@ class ContactAdmin(admin.ModelAdmin):
 
 @admin.register(Opportunity)
 class OpportunityAdmin(admin.ModelAdmin):
+    list_display = ["title", "stage", "priority", "mrr", "customer", "account"]
+    list_filter = ["stage", "priority"]
+    search_fields = ["title", "customer__name", "account__name"]
+    readonly_fields = ["created_at"]
+
+
+@admin.register(Risk)
+class RiskAdmin(admin.ModelAdmin):
     list_display = ["title", "stage", "priority", "mrr", "customer", "account"]
     list_filter = ["stage", "priority"]
     search_fields = ["title", "customer__name", "account__name"]

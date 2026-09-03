@@ -23,6 +23,8 @@ from services.customers.views import (
     ContactStatsView,
     OpportunityDetailView,
     OpportunityListView,
+    RiskDetailView,
+    RiskListView,
 )
 
 urlpatterns = [
@@ -57,4 +59,10 @@ urlpatterns = [
         "api/v1/opportunities/<int:pk>/", OpportunityDetailView.as_view(), name="opportunity-detail"
     ),
     path("api/v1/opportunities/", OpportunityListView.as_view(), name="opportunity-list"),
+    # Risk, same reasoning as Opportunity above — mounted at its own
+    # top-level /api/v1/risks/ prefix since it's the one Risk view
+    # spanning every Customer/Account at once, unlike the nested
+    # list-create endpoints under services.customers.urls.
+    path("api/v1/risks/<int:pk>/", RiskDetailView.as_view(), name="risk-detail"),
+    path("api/v1/risks/", RiskListView.as_view(), name="risk-list"),
 ]

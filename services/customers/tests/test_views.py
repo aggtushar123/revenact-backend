@@ -16,6 +16,7 @@ from services.customers.models import (
     Email,
     Note,
     Opportunity,
+    Risk,
     Task,
     Ticket,
 )
@@ -2711,4 +2712,383 @@ class OpportunityDetailTests(APITestCase):
     def test_nonexistent_id_is_404(self):
         self.client.force_authenticate(self.admin)
         response = self.client.get("/api/v1/opportunities/999999/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomerRiskListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/risks/"
+
+    def _risk_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Renewal Risk — Contract Expiry",
+            "mrr": "2500.00",
+            "stage": Risk.Stage.OPEN,
+            "priority": Risk.Priority.HIGH,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_customers_risks_as_a_plain_array(self):
+        Risk.objects.create(customer=self.customer, **self._risk_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["title"], "Renewal Risk — Contract Expiry")
+        self.assertEqual(response.data[0]["stage"], "open")
+        self.assertEqual(response.data[0]["stage_display"], "Open")
+        self.assertEqual(response.data[0]["mrr"], "2500.00")
+
+    def test_rolls_up_this_customers_own_accounts_risks_too(self):
+        account = Account.objects.create(customer=self.customer, name="North America")
+        Risk.objects.create(customer=self.customer, **self._risk_kwargs(title="Org-Level Risk"))
+        Risk.objects.create(account=account, **self._risk_kwargs(title="Account-Level Risk"))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        titles = {row["title"] for row in response.data}
+        self.assertEqual(titles, {"Org-Level Risk", "Account-Level Risk"})
+        account_row = next(row for row in response.data if row["title"] == "Account-Level Risk")
+        self.assertEqual(account_row["account_name"], "North America")
+
+    def test_does_not_leak_another_customers_risks(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Risk.objects.create(customer=other_customer, **self._risk_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/risks/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_customer_id_is_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_can_add_an_organization_level_risk(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url, self._risk_kwargs(title="New Risk"), format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        risk = Risk.objects.get(pk=response.data["id"])
+        self.assertEqual(risk.customer, self.customer)
+        self.assertIsNone(risk.account)
+
+
+class AccountRiskListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/risks/"
+
+    def _risk_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Disengagement Risk Q1",
+            "mrr": "1500.00",
+            "stage": Risk.Stage.MITIGATED,
+            "priority": Risk.Priority.MEDIUM,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_accounts_risks(self):
+        Risk.objects.create(account=self.account, **self._risk_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["title"], "Disengagement Risk Q1")
+
+    def test_does_not_include_the_customers_own_risks(self):
+        Risk.objects.create(customer=self.customer, **self._risk_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_accounts_risks(self):
+        other_account = Account.objects.create(customer=self.customer, name="EMEA")
+        Risk.objects.create(account=other_account, **self._risk_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_wrong_customer_id_in_the_url_is_404_even_for_a_valid_account_id(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        url = f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/risks/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_admin_gets_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_can_add_an_account_level_risk(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url, self._risk_kwargs(title="New Risk"), format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        risk = Risk.objects.get(pk=response.data["id"])
+        self.assertEqual(risk.account, self.account)
+        self.assertIsNone(risk.customer)
+        self.assertEqual(response.data["account_name"], "North America")
+
+
+class RiskListTests(APITestCase):
+    """/api/v1/risks/ — the one Risk view not nested under a single
+    Customer/Account (see RiskListView's own docstring). Powers the
+    standalone Pipelines board's "Risks" tab."""
+
+    url = "/api/v1/risks/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_both_org_level_and_account_level_risks_as_a_plain_array(self):
+        Risk.objects.create(customer=self.customer, title="Org Risk", mrr="1000.00")
+        Risk.objects.create(account=self.account, title="Account Risk", mrr="2000.00")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        titles = {row["title"] for row in response.data}
+        self.assertEqual(titles, {"Org Risk", "Account Risk"})
+
+    def test_does_not_leak_another_organisations_risks(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        Risk.objects.create(customer=other_customer, title="Someone Else's Risk", mrr="500.00")
+        Risk.objects.create(customer=self.customer, title="Globex Risk", mrr="500.00")
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["title"], "Someone Else's Risk")
+
+    def test_posting_with_customer_id_creates_an_organization_level_risk(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"title": "New Risk", "mrr": "1000.00", "customer_id": self.customer.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        risk = Risk.objects.get(pk=response.data["id"])
+        self.assertEqual(risk.customer, self.customer)
+        self.assertIsNone(risk.account)
+
+    def test_posting_with_account_id_creates_an_account_level_risk(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"title": "New Risk", "mrr": "1000.00", "account_id": self.account.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        risk = Risk.objects.get(pk=response.data["id"])
+        self.assertEqual(risk.account, self.account)
+        self.assertIsNone(risk.customer)
+
+    def test_posting_with_neither_customer_id_nor_account_id_is_400(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"title": "New Risk", "mrr": "1000.00"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_post_against_another_organisations_customer_id(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"title": "New Risk", "mrr": "1000.00", "customer_id": other_customer.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class RiskDetailTests(APITestCase):
+    """GET/PATCH/DELETE /api/v1/risks/<id>/ — flat, not nested under a
+    Customer/Account (see RiskDetailView's own docstring). Covers both
+    an organization-level and an account-level Risk, since the scoping
+    query has to cover both shapes."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = Account.objects.create(customer=self.customer, name="North America")
+        self.org_risk = Risk.objects.create(
+            customer=self.customer, title="Org Risk", mrr="1000.00", stage=Risk.Stage.OPEN,
+        )
+        self.account_risk = Risk.objects.create(
+            account=self.account, title="Account Risk", mrr="2000.00", stage=Risk.Stage.MITIGATED,
+        )
+
+    def test_unauthenticated_cannot_view(self):
+        response = self.client.get(f"/api/v1/risks/{self.org_risk.id}/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_can_retrieve_an_organization_level_risk(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(f"/api/v1/risks/{self.org_risk.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["title"], "Org Risk")
+
+    def test_can_retrieve_an_account_level_risk(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(f"/api/v1/risks/{self.account_risk.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["account_name"], "North America")
+
+    def test_can_update_the_stage_drag_and_drop(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            f"/api/v1/risks/{self.org_risk.id}/", {"stage": "realised"}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.org_risk.refresh_from_db()
+        self.assertEqual(self.org_risk.stage, Risk.Stage.REALISED)
+
+    def test_updating_cannot_move_a_risk_between_parents(self):
+        self.client.force_authenticate(self.admin)
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+
+        response = self.client.patch(
+            f"/api/v1/risks/{self.org_risk.id}/", {"customer": other_customer.id}, format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.org_risk.refresh_from_db()
+        self.assertEqual(self.org_risk.customer, self.customer)
+
+    def test_can_delete_a_risk(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.delete(f"/api/v1/risks/{self.org_risk.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Risk.objects.filter(pk=self.org_risk.id).exists())
+
+    def test_another_organisations_admin_gets_404_for_view_update_and_delete(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+        url = f"/api/v1/risks/{self.org_risk.id}/"
+
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            self.client.patch(url, {"title": "Hijacked"}, format="json").status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        self.assertEqual(self.client.delete(url).status_code, status.HTTP_404_NOT_FOUND)
+        self.org_risk.refresh_from_db()
+        self.assertEqual(self.org_risk.title, "Org Risk")
+
+    def test_nonexistent_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/risks/999999/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

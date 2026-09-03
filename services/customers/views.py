@@ -9,7 +9,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Account, Contact, Customer, Opportunity
+from .models import Account, Contact, Customer, Opportunity, Risk
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
@@ -19,6 +19,7 @@ from .serializers import (
     EmailSerializer,
     NoteSerializer,
     OpportunitySerializer,
+    RiskSerializer,
     TaskSerializer,
     TicketSerializer,
 )
@@ -786,5 +787,117 @@ class OpportunityDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         organisation = self.request.user.organisation
         return Opportunity.objects.filter(
+            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
+        )
+
+
+class CustomerRiskListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/risks/ — same shape as
+    CustomerOpportunityListView: GET rolls up every Risk under this
+    Customer, both organisation-level (directly on it) and
+    account-level (on any of its Accounts); POST always adds an
+    organisation-level one, `customer` taken from the URL. An
+    account-level Risk is added via AccountRiskListView below instead.
+    Scoped to the caller's own organisation."""
+
+    serializer_class = RiskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_customer(self):
+        return get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+
+    def get_queryset(self):
+        customer = self.get_customer()
+        return Risk.objects.filter(Q(customer=customer) | Q(account__customer=customer))
+
+    def perform_create(self, serializer):
+        serializer.save(customer=self.get_customer())
+
+
+class AccountRiskListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/risks/
+    — every account-level Risk for one Account (GET), or adds a new one
+    to it (POST); `account` taken from the URL. Same reasoning as
+    AccountOpportunityListView."""
+
+    serializer_class = RiskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_account(self):
+        return get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customer_id=self.kwargs["customer_id"],
+            customer__organisation=self.request.user.organisation,
+        )
+
+    def get_queryset(self):
+        return self.get_account().risks.all()
+
+    def perform_create(self, serializer):
+        serializer.save(account=self.get_account())
+
+
+class RiskListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/risks/ — every Risk across every Customer/
+    Account the caller's own organisation owns, organisation-level and
+    account-level alike. Powers the standalone Pipelines board's own
+    "Risks" tab (react-ts-app's src/pages/pipelines/PipelinesPage.tsx)
+    — the one place a Risk is browsed independent of which Customer/
+    Account it belongs to, same reasoning as OpportunityListView.
+
+    Unpaginated for the same reason as OpportunityListView — a Kanban
+    board needs every card in every column to render/drag-and-drop
+    correctly, not one page of them.
+
+    POST takes a `customer_id` or an `account_id` in the request body
+    (neither is a real serializer field — `perform_create` below reads
+    whichever one was sent directly off the raw request) and creates
+    the Risk under that parent. Exactly one of the two must be given,
+    same invariant as the model's own CheckConstraint."""
+
+    serializer_class = RiskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        return Risk.objects.filter(
+            Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
+        ).select_related("customer", "account", "account__customer")
+
+    def perform_create(self, serializer):
+        organisation = self.request.user.organisation
+        account_id = self.request.data.get("account_id")
+        customer_id = self.request.data.get("customer_id")
+        if account_id:
+            account = get_object_or_404(
+                Account, pk=account_id, customer__organisation=organisation
+            )
+            serializer.save(account=account)
+        elif customer_id:
+            customer = get_object_or_404(Customer, pk=customer_id, organisation=organisation)
+            serializer.save(customer=customer)
+        else:
+            raise ValidationError("Provide either customer_id or account_id.")
+
+
+class RiskDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/risks/<id>/ — a single Risk, scoped to
+    the caller's own organisation, regardless of whether it's
+    organisation-level or account-level. Flat, not nested — same
+    reasoning as OpportunityDetailView. Powers both the board's
+    drag-and-drop (PATCH `stage`) and its Edit/Delete card actions."""
+
+    serializer_class = RiskSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        return Risk.objects.filter(
             Q(customer__organisation=organisation) | Q(account__customer__organisation=organisation)
         )

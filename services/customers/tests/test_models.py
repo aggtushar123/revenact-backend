@@ -13,6 +13,7 @@ from services.customers.models import (
     Email,
     Note,
     Opportunity,
+    Risk,
     Task,
     Ticket,
 )
@@ -468,3 +469,56 @@ class OpportunityCompanyPropertyTests(TestCase):
             account=self.account, title="Upsell", mrr="1000.00",
         )
         self.assertEqual(opportunity.company, self.customer)
+
+
+class RiskParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Opportunity/Contact/
+    Activity/Email/Task/Note/Ticket/CalendarEvent."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def _risk_kwargs(self):
+        return {
+            "title": "Renewal Risk — Contract Expiry",
+            "mrr": "2500.00",
+            "stage": Risk.Stage.OPEN,
+            "priority": Risk.Priority.HIGH,
+        }
+
+    def test_customer_only_is_valid(self):
+        risk = Risk.objects.create(customer=self.customer, **self._risk_kwargs())
+        self.assertIsNone(risk.account)
+
+    def test_account_only_is_valid(self):
+        risk = Risk.objects.create(account=self.account, **self._risk_kwargs())
+        self.assertIsNone(risk.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Risk.objects.create(**self._risk_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Risk.objects.create(customer=self.customer, account=self.account, **self._risk_kwargs())
+
+
+class RiskCompanyPropertyTests(TestCase):
+    """Risk.company resolves to the ultimate parent Customer whether
+    the risk is org-level or account-level — same reasoning as
+    OpportunityCompanyPropertyTests above."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = Account.objects.create(customer=self.customer, name="Some Region")
+
+    def test_org_level_risk_company_is_its_own_customer(self):
+        risk = Risk.objects.create(customer=self.customer, title="Downgrade Risk", mrr="1000.00")
+        self.assertEqual(risk.company, self.customer)
+
+    def test_account_level_risk_company_is_the_accounts_customer(self):
+        risk = Risk.objects.create(account=self.account, title="Downgrade Risk", mrr="1000.00")
+        self.assertEqual(risk.company, self.customer)

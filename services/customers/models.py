@@ -928,3 +928,84 @@ class Opportunity(models.Model):
         own `company` property, needed by OpportunitySerializer's
         company_id/company_name for the same reason."""
         return self.customer or self.account.customer
+
+
+class Risk(models.Model):
+    """A customer-health risk tracked on the pipeline board's "Risks"
+    tab (react-ts-app's src/pages/pipelines/PipelinesPage.tsx) — same
+    "belongs to exactly one of Customer or Account" shape as
+    Opportunity above (two nullable FKs + a CheckConstraint): there can
+    be an organisation-level risk and, separately, a risk tied to one
+    specific Account.
+
+    Mirrors the frontend's mock `PipelineCard`/`Column` shape used for
+    Risks: `stage` is the closed set of 4 columns the board already has
+    (Open/Mitigated/Realised/Abandoned — a fixed enum, same reasoning
+    as Opportunity's own `stage`). `priority` and `mrr` are real fields,
+    same shape as Opportunity's. The mock's own Risk cards named
+    placeholder companies ("Digital Operations", "Culinary Innovation
+    Lab (HCIL)", ...) that don't exist as real Customers/Accounts in
+    this codebase's seed data at all (unlike Opportunity's mock, which
+    did name some real ones) — so, per seed_demo_risks.py's own
+    docstring, none of that mock data could be carried over verbatim;
+    the demo rows are new content against real seeded Customers/
+    Accounts instead. `orgColor`/`orgInitials` aren't stored, same
+    reasoning as Opportunity — derived via EntityAvatar on the
+    frontend."""
+
+    class Stage(models.TextChoices):
+        OPEN = "open", "Open"
+        MITIGATED = "mitigated", "Mitigated"
+        REALISED = "realised", "Realised"
+        ABANDONED = "abandoned", "Abandoned"
+
+    class Priority(models.TextChoices):
+        HIGH = "high", "High"
+        MEDIUM = "medium", "Medium"
+        LOW = "low", "Low"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="risks",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level risk. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="risks",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level risk. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    title = models.CharField(max_length=255)
+    mrr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    stage = models.CharField(max_length=16, choices=Stage.choices, default=Stage.OPEN)
+    priority = models.CharField(max_length=8, choices=Priority.choices, default=Priority.MEDIUM)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="risk_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.title} — {parent}"
+
+    @property
+    def company(self) -> Customer:
+        """The ultimate parent Customer — same reasoning as
+        Opportunity's own `company` property."""
+        return self.customer or self.account.customer

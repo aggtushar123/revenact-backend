@@ -12,6 +12,7 @@ from .models import (
     Email,
     Note,
     Opportunity,
+    Risk,
     Task,
     Ticket,
 )
@@ -310,6 +311,43 @@ class OpportunitySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Opportunity
+        fields = [
+            "id",
+            "title",
+            "mrr",
+            "stage",
+            "stage_display",
+            "priority",
+            "priority_display",
+            "company_id",
+            "company_name",
+            "account_name",
+        ]
+
+    def get_company_id(self, obj):
+        return obj.company.id
+
+    def get_company_name(self, obj):
+        return obj.company.name
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None
+
+
+class RiskSerializer(serializers.ModelSerializer):
+    """See Risk model's docstring. Field-for-field identical shape to
+    OpportunitySerializer, same reasoning — the standalone Pipelines
+    board's "Risks" tab spans every Customer/Account the same way its
+    "Opportunities" tab does."""
+
+    stage_display = serializers.CharField(source="get_stage_display", read_only=True)
+    priority_display = serializers.CharField(source="get_priority_display", read_only=True)
+    company_id = serializers.SerializerMethodField()
+    company_name = serializers.SerializerMethodField()
+    account_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Risk
         fields = [
             "id",
             "title",
