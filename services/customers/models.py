@@ -734,16 +734,21 @@ class CalendarEvent(models.Model):
 
 
 class Contact(models.Model):
-    """A person at a Customer or one of its Accounts. Same "belongs to
-    exactly one of Customer or Account" shape as Activity/Email/Task/
-    Note/Ticket/CalendarEvent above — two nullable FKs + a
-    CheckConstraint — but unlike those, which each back one filter
-    *within* ActivityFeed, Contact backs its own sibling tab: the
-    "Contacts" tab on the Organization Details page, the "Contacts" tab
-    on the standalone Account page, and the global /contacts/list page
-    (which lists every Contact across every Customer/Account the
-    caller's organisation owns — see ContactListView below, the one
-    List view here that isn't nested under a single Customer/Account).
+    """A person at a Customer or one of its Accounts — there can be an
+    organisation-level contact (this Customer's own, `customer` set)
+    and, separately, each of its Accounts can have its own individual
+    contacts (`account` set) — same "belongs to exactly one of Customer
+    or Account" shape as Activity/Email/Task/Note/Ticket/CalendarEvent
+    above (two nullable FKs + a CheckConstraint), but unlike those,
+    which each back one filter *within* ActivityFeed, Contact backs its
+    own sibling tab: the "Contacts" tab on the Organization Details
+    page (which rolls both levels up together — see
+    CustomerContactListView below), the "Contacts" tab on the
+    standalone Account page (that one Account's own contacts only), and
+    the global /contacts/list page (which lists every Contact across
+    every Customer/Account the caller's organisation owns — see
+    ContactListView below, the one List view here that isn't nested
+    under a single Customer/Account).
 
     Mirrors the frontend's mock Contact shape
     (react-ts-app/src/components/organizations/contactsData.ts):

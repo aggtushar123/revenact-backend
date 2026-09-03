@@ -874,20 +874,30 @@ See `seed_demo_contacts` management command for demo data (run after
 
 ### `GET/POST /api/v1/customers/<customer_id>/contacts/`
 
-Auth: `IsAuthenticated`. GET: every organization-level `Contact` for
-one `Customer`, scoped to the caller's own organisation — same
-404-not-empty-list convention as the Activity list endpoint. POST:
-adds a new organization-level Contact to it; `customer` is taken from
-the URL, never client-supplied, same as `AccountListCreateView`'s own
-`customer`. Powers the Organization Details page's own Contacts tab,
-and — via a customer_id the frontend picks from a dropdown rather than
-a URL param — the standalone `/contacts/list` page's "Add Contact"
-(which only ever creates an organization-level Contact).
+Auth: `IsAuthenticated`. GET: every `Contact` under this `Customer`,
+rolled up from both levels a Contact can exist at — organisation-level
+(directly on this Customer) *and* account-level (on any of its
+Accounts) — scoped to the caller's own organisation, same
+404-not-empty-list convention as the Activity list endpoint. Which
+level a row is at is `account_name`: `null` for organisation-level,
+that Account's name otherwise. Powers the Organization Details page's
+own Contacts tab, which renders both together.
+
+POST always adds an organisation-level Contact here; `customer` is
+taken from the URL, never client-supplied, same as
+`AccountListCreateView`'s own `customer`. An account-level Contact is
+added via the account-scoped endpoint below instead — including from
+the Organization Details page's own Add Contact form, once the caller
+picks one of this customer's accounts in its own optional Account
+field — and, via a customer_id the frontend picks from a dropdown
+rather than a URL param, the standalone `/contacts/list` page's own
+"Add Contact".
 
 **Response `200`** (GET) — a plain array, each entry: `id`, `name`, `role`,
 `role_display`, `email`, `phone`, `status`, `sentiment`,
 `last_contacted_at`, `company_id`, `company_name`, `account_name`
-(`null` here — org-level). **Response `201`** (POST) — one such entry.
+(`null` for an organisation-level row, that Account's name for an
+account-level one). **Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/`
 

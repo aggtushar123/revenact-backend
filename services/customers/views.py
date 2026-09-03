@@ -471,18 +471,27 @@ class AccountCalendarEventListView(generics.ListAPIView):
 
 
 class CustomerContactListView(generics.ListCreateAPIView):
-    """GET/POST /api/v1/customers/<customer_id>/contacts/ — every
-    organization-level Contact for one Customer (GET), or adds a new
-    one to it (POST), scoped to the caller's own organisation. Same
-    404-not-empty-list convention as CustomerActivityListView. `customer`
-    is never client-supplied — taken from the URL, same as
-    AccountListCreateView's own `customer`.
+    """GET/POST /api/v1/customers/<customer_id>/contacts/ — GET returns
+    every Contact under this Customer, rolled up from both levels a
+    Contact can exist at: organization-level (directly on this
+    Customer) *and* account-level (on any of its Accounts) — see
+    Contact's own docstring on why both shapes exist. Powers the
+    Organization Details page's own Contacts tab, which shows both
+    kinds together (ContactSerializer's `account_name` is how the
+    frontend tells them apart — null for an organization-level row).
 
-    Powers the Organization Details page's own Contacts tab, and — via
+    POST always adds an organization-level Contact here — `customer`
+    is taken from the URL, never client-supplied, same as
+    AccountListCreateView's own `customer`. An account-level Contact is
+    added via AccountContactListView below instead — including from
+    the Organization Details page's own Add Contact form, which POSTs
+    there directly once the caller picks one of this customer's
+    accounts (see ContactFormModal.tsx's own account picker) — and via
     a customer_id the frontend picks from a dropdown rather than a URL
-    param — the standalone /contacts/list page's "Add Contact" (which
-    only ever creates an organization-level Contact; there's no
-    account-picker on that page)."""
+    param, the standalone /contacts/list page's "Add Contact".
+
+    Scoped to the caller's own organisation. Same 404-not-empty-list
+    convention as CustomerActivityListView."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
@@ -494,7 +503,8 @@ class CustomerContactListView(generics.ListCreateAPIView):
         )
 
     def get_queryset(self):
-        return self.get_customer().contacts.all()
+        customer = self.get_customer()
+        return Contact.objects.filter(Q(customer=customer) | Q(account__customer=customer))
 
     def perform_create(self, serializer):
         serializer.save(customer=self.get_customer())

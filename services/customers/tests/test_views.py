@@ -1788,9 +1788,33 @@ class CustomerContactListTests(APITestCase):
         self.assertEqual(response.data[0]["role"], "executive_sponsor")
         self.assertEqual(response.data[0]["role_display"], "Executive Sponsor")
 
-    def test_does_not_include_an_accounts_contacts(self):
+    def test_rolls_up_this_customers_own_accounts_contacts_too(self):
+        # An Account can have its own individual contacts, separate
+        # from the Customer's own organisation-level ones — the
+        # Organization Details page's own Contacts tab shows both
+        # together (see CustomerContactListView's own docstring).
         account = Account.objects.create(customer=self.customer, name="North America")
-        Contact.objects.create(account=account, **self._contact_kwargs())
+        Contact.objects.create(
+            customer=self.customer, **self._contact_kwargs(name="Org-Level Contact")
+        )
+        Contact.objects.create(
+            account=account, **self._contact_kwargs(name="Account-Level Contact")
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        names = {row["name"] for row in response.data}
+        self.assertEqual(names, {"Org-Level Contact", "Account-Level Contact"})
+        account_row = next(row for row in response.data if row["name"] == "Account-Level Contact")
+        self.assertEqual(account_row["account_name"], "North America")
+        org_row = next(row for row in response.data if row["name"] == "Org-Level Contact")
+        self.assertIsNone(org_row["account_name"])
+
+    def test_does_not_leak_another_customers_accounts_contacts(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        other_account = Account.objects.create(customer=other_customer, name="Other Region")
+        Contact.objects.create(account=other_account, **self._contact_kwargs())
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url)
