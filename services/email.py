@@ -41,3 +41,22 @@ def send_password_reset_email(user):
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user.email],
     )
+
+
+def send_scenario_email(customer, subject, body):
+    """Sends a Scenario's "Send Email" action node for real — same
+    send_mail plumbing as send_password_reset_email above, to
+    `customer.email` instead of a User's. Called from
+    scenarios.engine.run_scenario; raises ValueError (caught there and
+    logged as a failed node, not a crashed run) if the Customer has no
+    email on record rather than silently mailing nobody."""
+
+    if not customer.email:
+        raise ValueError(f"{customer.name} has no email on record.")
+
+    send_mail(
+        subject=subject,
+        message=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[customer.email],
+    )

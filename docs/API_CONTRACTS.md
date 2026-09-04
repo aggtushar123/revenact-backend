@@ -69,7 +69,7 @@ expects.
 | Pipelines (standalone board — "Opportunities" and "Risks" tabs) | `customers` (`Opportunity`, `Risk` models) | 🟢 Full CRUD, API-complete — see below. Both tabs have the same shape: a global unpaginated list (`OpportunityListView`/`RiskListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Both are seeded; the board's own Add/Edit/Delete/drag-and-drop are wired to both tabs. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot | — | ⏳ Not started |
-| Scenarios | — | ⏳ Not started |
+| Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Company Brain | — | ⏳ Not started |
 
 ---
@@ -1247,6 +1247,115 @@ between parents, same as Opportunity.
 
 **Response `200`** (GET/PATCH) — same shape as the list endpoints
 above. **Response `204`** (DELETE) — empty body.
+
+---
+
+## `scenarios` — Automation builder (`/scenarios`, `CreateScenario.tsx`)
+
+Mirrors: `src/pages/scenarios/CreateScenario.tsx`, `types.ts`,
+`scenarioApi.ts`. Its own top-level app (not nested under `customers`)
+— a Scenario isn't owned by one Customer/Account, it's a tenant-wide
+automation. See `services/scenarios/engine.py`'s own docstring for the
+full "what's real vs. what's still a frontend mockup" line and why
+(no task queue, no Slack/Teams/Survey/Playbook models in this
+codebase).
+
+### Models
+
+- `Scenario` — `name`, `apply_to` (`organizations`/`accounts`/
+  `contacts`, only `organizations` is runnable in v1), `nodes`/`edges`
+  (JSON, stored exactly as React Flow gives them — see the model's own
+  docstring), `is_active` (gates On Event auto-execution only; default
+  `False`), `created_at`/`updated_at`.
+- `ScenarioRun` — one execution: `scenario`, `customer` (the target),
+  `triggered_by` (`manual`/`event`), `status` (`success`/`failed`),
+  `log` (list of `{node_id, action, status, detail}`, one per node
+  visited, in order), `started_at`/`finished_at`.
+
+### Conventions specific to this app
+
+`apply_to`'s values are lowercase to match every other choice field in
+this codebase (`Customer.lifecycle_stage`, etc.) — the frontend's
+`ApplyToTarget` type uses the same lowercase strings, not the
+Title Case the radio labels display.
+
+A Condition/Filter node's saved clause is intentionally narrower than
+its own fancier-looking canvas UI: one attribute (`lifecycle_stage`/
+`health_score`/`nps_score` — a fixed allowlist, not any model field) +
+one operator (`equals`/`not_equals`/`greater_than`/`less_than`) + one
+value, stored on the node's own `data` as `conditionAttribute`/
+`conditionOperator`/`conditionValue`. Condition branches by which
+outgoing edge has `label: "Yes"`/`"No"` — the same manually-set label
+`CustomEdge.tsx`'s own "Set Label" pill already produces, not a new
+concept.
+
+### `GET/POST /api/v1/scenarios/`
+
+Auth: `IsAuthenticated`. GET: every Scenario the caller's own
+organisation owns. **Pagination is off** — same reasoning as
+`OpportunityListView`/`RiskListView`, a small whole-collection list.
+POST: `organisation` is set from the caller, never client-provided.
+
+**Response `200`/`201`**
+```json
+[
+  {
+    "id": 3,
+    "name": "Low Health Save Play",
+    "apply_to": "organizations",
+    "apply_to_display": "Organizations",
+    "nodes": [ { "id": "entry", "type": "entry", "position": {"x":0,"y":0}, "data": {"action": "Run Now", "label": "Start"} } ],
+    "edges": [],
+    "is_active": false,
+    "created_at": "2026-09-04T10:00:00Z",
+    "updated_at": "2026-09-04T10:00:00Z"
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/scenarios/<id>/`
+
+Auth: `IsAuthenticated`. Scoped to the caller's own organisation (404,
+not 403, otherwise). The builder's Save/Save & Close PATCH `name`/
+`apply_to`/`nodes`/`edges`/`is_active` together on every save — there's
+no partial-field save from the UI today.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoint.
+**Response `204`** (DELETE) — empty body.
+
+### `POST /api/v1/scenarios/<id>/run/`
+
+Auth: `IsAuthenticated`. Body: `{"customer_id": <id>}`. The builder's
+"Run Now" button. Runs synchronously — there's no task queue, so the
+response IS the completed run. `400` if the scenario's `apply_to` isn't
+`"organizations"`; `404` if the scenario or the customer isn't in the
+caller's own organisation.
+
+**Response `201`**
+```json
+{
+  "id": 12,
+  "scenario": 3,
+  "customer": { "id": 9, "name": "Globex" },
+  "triggered_by": "manual",
+  "status": "success",
+  "log": [
+    { "node_id": "n1", "action": "Condition", "status": "ok", "detail": "Condition evaluated to True." },
+    { "node_id": "n2", "action": "Churn Entity", "status": "ok", "detail": "Marked as churned" }
+  ],
+  "started_at": "2026-09-04T10:05:00Z",
+  "finished_at": "2026-09-04T10:05:01Z"
+}
+```
+
+### `GET /api/v1/scenarios/<id>/runs/`
+
+Auth: `IsAuthenticated`. This scenario's own run history, newest first
+— manual runs and On Event auto-runs both appear here, told apart by
+`triggered_by`. **Pagination off**, same reasoning as the list endpoint.
+
+**Response `200`** — an array of the same shape as `POST .../run/`'s
+response.
 
 ---
 
