@@ -71,6 +71,10 @@ expects.
 | Copilot | — | ⏳ Not started |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Company Brain | — | ⏳ Not started |
+| Settings > Currency / Global Presets / AI Agent | `accounts` (`Organisation` model) | 🟢 Real, admin-gated tenant settings via `GET/PATCH /api/v1/auth/organisation/` — see that app's own section. `currency`/`ai_agent_enabled`/`ai_agent_tone` are stored and shown back but not yet consumed elsewhere (no `$`-symbol propagation, no Copilot backend to read the AI Agent prefs); `default_lifecycle_stage` is real end to end — it's what the standalone Add Organization flow actually pre-fills. |
+| Settings > Entity Uploads | — (no new endpoint) | 🟢 CSV bulk-create for Organizations, one real `POST /customers/` per mapped row via the existing `CustomerListCreateView` — see react-ts-app's EntityUploadsPage.tsx. Accounts/Contacts import not built yet. |
+| Settings > Webhooks | `webhooks` | 🟡 Full CRUD + real delivery for one event (`customer.created`) — see below. Admin-only both ways (unlike every other settings tab above, which any authenticated user can view). |
+| Settings > Activities / Connect Widget | — | ⏳ Not started — Activities has no create/update endpoint to configure types *for* (Activity is fully read-only, seed-data only); Connect Widget would be a new public, unauthenticated surface this app doesn't have anywhere else, and needs a product decision on what a submission actually does before it's buildable as more than a generated snippet. |
 
 ---
 
@@ -1398,6 +1402,81 @@ Auth: `IsAuthenticated`. This scenario's own run history, newest first
 
 **Response `200`** — an array of the same shape as `POST .../run/`'s
 response.
+
+---
+
+## `webhooks` — Outbound integrations (Settings > Webhooks, `WebhooksPage.tsx`)
+
+Mirrors: `src/pages/settings/WebhooksPage.tsx`. Its own top-level app,
+same "tenant-wide, not owned by one Customer/Account" reasoning as
+`scenarios`. See `services/webhooks/engine.py`'s own docstring for the
+full SSRF-safety reasoning (URL validated at save time and again
+immediately before every send; redirects are never followed) and why
+only one event exists in v1.
+
+### Models
+
+- `WebhookSubscription` — `url`, `event` (only `customer.created` in
+  v1), `secret` (server-generated, ~256 bits, never client-settable —
+  signs every delivery's own `X-Revenact-Signature` header), `is_active`
+  (default `True` — unlike Scenario's own `is_active`, there's no
+  "silently fires on live data" concern here beyond what creating the
+  webhook already implies), `created_at`.
+- `WebhookDelivery` — one outbound POST attempt: `webhook`, `success`,
+  `status_code` (null if the request never got a response at all —
+  DNS failure, connection refused, timeout), `error`, `sent_at`. Same
+  audit-trail reasoning as `scenarios.ScenarioRun`.
+
+### Conventions specific to this app
+
+Unlike every other Settings tab (Currency/Global Presets/AI Agent,
+Entity Uploads), **both GET and PATCH/POST/DELETE are admin-only**
+(`IsOrgAdmin`, not `IsAuthenticated`) — a webhook's URL/secret is
+credential-adjacent configuration, same reasoning `/auth/csms/` gates
+member management to admins only.
+
+Delivery is synchronous, in the same request that triggered it (there's
+no task queue in this codebase — see `services/scenarios/engine.py`'s
+own docstring for the identical constraint) — a slow or dead receiving
+URL adds real latency to whatever created the Customer, bounded by a
+5-second timeout per webhook.
+
+### `GET/POST /api/v1/webhooks/`
+
+Auth: `IsOrgAdmin`. GET: every WebhookSubscription the caller's own
+organisation owns. **Pagination off** — small collection, same
+reasoning as Scenario's own list. POST: `organisation` set from the
+caller; `url` is validated (rejects non-http(s) schemes and anything
+resolving to a private/loopback/link-local address) — `400` with the
+reason if it fails.
+
+**Response `200`/`201`**
+```json
+[
+  {
+    "id": 2,
+    "url": "https://example.com/hooks/revenact",
+    "event": "customer.created",
+    "event_display": "Organization Created",
+    "secret": "kX8...redacted...",
+    "is_active": true,
+    "created_at": "2026-09-04T10:00:00Z",
+    "recent_deliveries": [
+      { "id": 9, "success": true, "status_code": 200, "error": "", "sent_at": "2026-09-04T10:05:00Z" }
+    ]
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/webhooks/<id>/`
+
+Auth: `IsOrgAdmin`. Scoped to the caller's own organisation (404, not
+403, otherwise). PATCH is mainly for toggling `is_active`; `url`/`event`
+can be changed too (re-validated the same way as on create). `secret`
+is read-only here too — there's no "rotate secret" action yet.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoint's own
+entries. **Response `204`** (DELETE) — empty body.
 
 ---
 

@@ -72,6 +72,9 @@ urlpatterns = [
     # under a Customer/Account the way Task/Note/etc. are: a Scenario
     # isn't owned by one company, it's a tenant-wide automation.
     path("api/v1/scenarios/", include("services.scenarios.urls")),
+    # Webhooks — its own app, same "tenant-wide, not owned by one
+    # Customer/Account" reasoning as Scenarios above.
+    path("api/v1/webhooks/", include("services.webhooks.urls")),
     # Account, same top-level-prefix reasoning as Contact/Opportunity/Risk
     # above — the one Account view spanning every Customer at once. GET
     # only; there's no matching flat detail/create endpoint since "Add"/
