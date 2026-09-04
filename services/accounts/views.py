@@ -110,6 +110,20 @@ class OrganisationSettingsView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         return self.request.user.organisation
 
+    def perform_update(self, serializer):
+        # A stored FxRate row means "X -> the org's *old* currency" —
+        # silently reinterpreting it as "X -> the *new* currency" the
+        # moment this changes would produce a wrong number with no
+        # visible sign anything was wrong. Clearing them forces the
+        # admin to re-enter rates for the new base currency instead
+        # (see services.fx_rates.models.FxRate's own docstring). No
+        # import of FxRate needed — the reverse `fx_rates` accessor
+        # works once services.fx_rates is installed.
+        new_currency = serializer.validated_data.get("currency")
+        if new_currency and new_currency != serializer.instance.currency:
+            serializer.instance.fx_rates.all().delete()
+        serializer.save()
+
 
 class ChangePasswordView(generics.GenericAPIView):
     """POST /api/v1/auth/me/change-password/ — self-service password

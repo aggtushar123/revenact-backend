@@ -71,7 +71,7 @@ expects.
 | Copilot | — | ⏳ Not started |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Company Brain | — | ⏳ Not started |
-| Settings > Currency / Global Presets / AI Agent | `accounts` (`Organisation` model) | 🟢 Real, admin-gated tenant settings via `GET/PATCH /api/v1/auth/organisation/` — see that app's own section. `currency`/`ai_agent_enabled`/`ai_agent_tone` are stored and shown back but not yet consumed elsewhere (no `$`-symbol propagation, no Copilot backend to read the AI Agent prefs); `default_lifecycle_stage` is real end to end — it's what the standalone Add Organization flow actually pre-fills. |
+| Settings > Currency / Global Presets / AI Agent | `accounts` (`Organisation` model), `customers` (`Customer.currency`), `fx_rates` | 🟢 `Organisation.currency` actually controls money formatting everywhere now (every `$` in the frontend is currency-aware) and, since Tier 1, each `Customer` can carry its *own* contract currency independent of the org's, with an admin-maintained `fx_rates` table converting cross-currency rollups (see `GET /api/v1/customers/stats/`'s `unconverted_count`) — see the `fx_rates` app's own section below. `ai_agent_enabled`/`ai_agent_tone` are still stored and shown back but not yet consumed (no Copilot backend to read them); `default_lifecycle_stage` is real end to end — it's what the standalone Add Organization flow actually pre-fills. |
 | Settings > Entity Uploads | — (no new endpoint) | 🟢 CSV bulk-create for Organizations, one real `POST /customers/` per mapped row via the existing `CustomerListCreateView` — see react-ts-app's EntityUploadsPage.tsx. Accounts/Contacts import not built yet. |
 | Settings > Webhooks | `webhooks` | 🟡 Full CRUD + real delivery for one event (`customer.created`) — see below. Admin-only both ways (unlike every other settings tab above, which any authenticated user can view). |
 | Settings > Activities / Connect Widget | — | ⏳ Not started — Activities has no create/update endpoint to configure types *for* (Activity is fully read-only, seed-data only); Connect Widget would be a new public, unauthenticated surface this app doesn't have anywhere else, and needs a product decision on what a submission actually does before it's buildable as more than a generated snippet. |
@@ -398,8 +398,15 @@ system, hence two different names — never call a `Customer` an
   100), `csat_score` (decimal, 0–100).
 - **Dates**: `joined_date`, `renewal_date`, `contract_start_date`,
   `contract_end_date` — all plain nullable dates, no derivation.
-- **Financials** (all independently stored decimals, deliberately *not*
-  derived from each other — see note below): `arr_billed_at_account`,
+- **Financials**: `currency` (choices, same `Organisation.Currency` set —
+  the currency this customer's own financial fields below are
+  denominated in, independent of `Organisation.currency` (the tenant's
+  own reporting currency); defaults to the org's currency at creation
+  unless the client explicitly picks another one, e.g. a US-HQ org
+  billing one particular customer in EUR — see `fx_rates` below for how
+  rollups that sum across customers with different currencies convert),
+  plus five independently stored decimals, deliberately *not* derived
+  from each other — see note below: `arr_billed_at_account`,
   `arr_billed_at_hq`, `implementation_fee`, `total_contract_value`,
   `total_forecasted_renewal_revenue`.
 - **Product/usage**: `primary_product` + `additional_products_count` (the
@@ -482,7 +489,8 @@ Stages sections).
     "churn":      { "count": 1, "mrr": 2000.0, "arr": 24000.0 },
     "expansion":  { "count": 0, "mrr": 0.0, "arr": 0.0 },
     "other":      { "count": 0, "mrr": 0.0, "arr": 0.0 }
-  }
+  },
+  "unconverted_count": 0
 }
 ```
 
@@ -491,6 +499,20 @@ field. `nps.score = round((promoters - detractors) / scored * 100)`; a
 customer with no `nps_score` set is excluded from the breakdown and
 from `scored`, not counted as a passive. An empty organisation returns
 all-zero buckets, not an error.
+
+**`unconverted_count`**: each customer's `arr_billed_at_account` is in
+*its own* `currency`, converted into the org's own currency (via
+`fx_rates`, below) before being added to any bucket's `mrr`/`arr` —
+these buckets are one tenant-wide total and can't meaningfully mix
+currencies. A customer whose currency has no configured `FxRate` is
+still counted in `count`, but excluded from every `mrr`/`arr` sum
+rather than having its unconverted amount silently treated as if it
+were already in the org's currency. `unconverted_count` is how many
+customers that happened to, across the whole response — the frontend
+shows a caveat rather than a silently-too-low total when it's nonzero.
+`GET /api/v1/accounts/stats/` has no equivalent field — `Account` has
+no `currency` of its own (see `fx_rates` below), so its `arr` is always
+treated as already being in the org's own currency.
 
 ### `GET /api/v1/customers/<id>/`, `PATCH /api/v1/customers/<id>/`
 
@@ -1474,6 +1496,75 @@ Auth: `IsOrgAdmin`. Scoped to the caller's own organisation (404, not
 403, otherwise). PATCH is mainly for toggling `is_active`; `url`/`event`
 can be changed too (re-validated the same way as on create). `secret`
 is read-only here too — there's no "rotate secret" action yet.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoint's own
+entries. **Response `204`** (DELETE) — empty body.
+
+---
+
+## `fx_rates` — Exchange rates (Settings > Currency's own Exchange Rates section)
+
+Mirrors: `src/pages/settings/CurrencyPage.tsx`'s Exchange Rates section
+(no separate Settings tab of its own). Its own top-level app, same
+"tenant-wide, admin-only-both-ways" reasoning as `webhooks` — an
+exchange rate is financial config, not everyday customer data. Exists
+to convert a `customers.Customer`'s own `currency` into the org's
+reporting currency wherever money is summed across customers that no
+longer share one currency — see `GET /api/v1/customers/stats/`'s own
+`unconverted_count` field above for the one place this is actually
+used today.
+
+### Models
+
+- `FxRate` — `organisation` (FK, server-set, never client-supplied),
+  `currency` (choices, same `Organisation.Currency` set — the "from"
+  currency; can't be the org's own current currency, and at most one
+  row per currency per organisation), `rate_to_org_currency` (decimal,
+  6 places — how many units of the org's own currency equal 1 unit of
+  `currency`), `created_at`/`updated_at`.
+
+Deliberately manual entry, current rate only — no point-in-time
+history. Nothing in this app renders a real historical ARR-over-time
+trend from live backend data today, so a dated rate history would be
+infrastructure with no consumer yet; a live/current rate is used
+everywhere, a documented simplification, not an oversight.
+
+### Conventions specific to this app
+
+Same admin-gate reasoning as `webhooks`: **both GET and POST/PATCH/
+DELETE are admin-only** (`IsOrgAdmin`).
+
+**Changing `Organisation.currency` clears every `FxRate` row for that
+organisation** (see `OrganisationSettingsView.perform_update`). A
+stored rate means "X → the org's *old* currency" — silently
+reinterpreting it as "X → the *new* currency" the moment the org
+switches would produce a wrong number with no visible sign anything
+was wrong, so the admin has to re-enter rates for the new base
+currency instead.
+
+### `GET/POST /api/v1/fx-rates/`
+
+Auth: `IsOrgAdmin`. GET: every FxRate the caller's own organisation has
+configured. **Pagination off** — small collection, same reasoning as
+Webhook's own list. POST: `organisation` set from the caller; `currency`
+is validated — `400` if it's the org's own current currency, or if a
+rate for that currency already exists for this org (a friendly error;
+the DB's own `unique_together` would otherwise raise a raw 500, since
+`organisation` isn't a client-facing field DRF can build its usual
+`UniqueTogetherValidator` from).
+
+**Response `200`/`201`**
+```json
+[
+  { "id": 3, "currency": "EUR", "currency_display": "Euro (€)", "rate_to_org_currency": "1.080000", "updated_at": "2026-09-04T10:00:00Z" }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/fx-rates/<id>/`
+
+Auth: `IsOrgAdmin`. Scoped to the caller's own organisation (404, not
+403, otherwise). PATCH is mainly for updating `rate_to_org_currency` as
+real-world rates move.
 
 **Response `200`** (GET/PATCH) — same shape as the list endpoint's own
 entries. **Response `204`** (DELETE) — empty body.

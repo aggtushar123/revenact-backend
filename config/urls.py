@@ -75,6 +75,10 @@ urlpatterns = [
     # Webhooks — its own app, same "tenant-wide, not owned by one
     # Customer/Account" reasoning as Scenarios above.
     path("api/v1/webhooks/", include("services.webhooks.urls")),
+    # FX rates — its own app, same "tenant-wide, admin-only-both-ways"
+    # reasoning as Webhooks above (an exchange rate is financial config,
+    # not everyday customer data).
+    path("api/v1/fx-rates/", include("services.fx_rates.urls")),
     # Account, same top-level-prefix reasoning as Contact/Opportunity/Risk
     # above — the one Account view spanning every Customer at once. GET
     # only; there's no matching flat detail/create endpoint since "Add"/

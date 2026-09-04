@@ -49,6 +49,25 @@ class HealthCategoryTests(TestCase):
         self.assertEqual(self._customer(3.9).health_category, Customer.HealthCategory.POOR)
 
 
+class CustomerCurrencyTests(TestCase):
+    """The model-level default (USD) — see CustomerSerializer.create()'s
+    own test coverage in test_views.py for the "defaults to the org's
+    own currency" behavior, which only applies going through the API,
+    not a direct ORM .objects.create() like these."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+
+    def test_defaults_to_usd(self):
+        customer = Customer.objects.create(organisation=self.org, name="Some Co")
+        self.assertEqual(customer.currency, "USD")
+
+    def test_can_be_set_independently_of_the_orgs_own_currency(self):
+        customer = Customer.objects.create(organisation=self.org, name="Some Co", currency="EUR")
+        self.assertEqual(customer.currency, "EUR")
+        self.assertEqual(self.org.currency, "USD")
+
+
 class SeatUtilizationTests(TestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
@@ -84,9 +103,7 @@ class AccountHealthCategoryTests(TestCase):
         self.customer = Customer.objects.create(organisation=org, name="Some Co")
 
     def _account(self, score):
-        return create_account(
-            self.customer, name="Some Region", health_score=score
-        )
+        return create_account(self.customer, name="Some Region", health_score=score)
 
     def test_score_at_or_above_7_is_good(self):
         self.assertEqual(self._account(7.0).health_category, Customer.HealthCategory.GOOD)
@@ -233,9 +250,7 @@ class TaskParentConstraintTests(TestCase):
 
     def test_both_parents_is_rejected(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
-            Task.objects.create(
-                customer=self.customer, account=self.account, **self._task_kwargs()
-            )
+            Task.objects.create(customer=self.customer, account=self.account, **self._task_kwargs())
 
     def test_status_defaults_to_pending(self):
         task = Task.objects.create(customer=self.customer, **self._task_kwargs())
@@ -272,9 +287,7 @@ class NoteParentConstraintTests(TestCase):
 
     def test_both_parents_is_rejected(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
-            Note.objects.create(
-                customer=self.customer, account=self.account, **self._note_kwargs()
-            )
+            Note.objects.create(customer=self.customer, account=self.account, **self._note_kwargs())
 
     def test_links_defaults_to_zero(self):
         note = Note.objects.create(customer=self.customer, **self._note_kwargs())
@@ -408,14 +421,18 @@ class ContactCompanyPropertyTests(TestCase):
 
     def test_org_level_contact_company_is_its_own_customer(self):
         contact = Contact.objects.create(
-            customer=self.customer, name="Jamie Lee", role=Contact.Role.CHAMPION,
+            customer=self.customer,
+            name="Jamie Lee",
+            role=Contact.Role.CHAMPION,
             email="jamie.lee@someco.com",
         )
         self.assertEqual(contact.companies, [self.customer])
 
     def test_account_level_contact_company_is_the_accounts_customer(self):
         contact = Contact.objects.create(
-            account=self.account, name="Jamie Lee", role=Contact.Role.CHAMPION,
+            account=self.account,
+            name="Jamie Lee",
+            role=Contact.Role.CHAMPION,
             email="jamie.lee@someco.com",
         )
         self.assertEqual(contact.companies, [self.customer])
@@ -471,13 +488,17 @@ class OpportunityCompanyPropertyTests(TestCase):
 
     def test_org_level_opportunity_company_is_its_own_customer(self):
         opportunity = Opportunity.objects.create(
-            customer=self.customer, title="Upsell", mrr="1000.00",
+            customer=self.customer,
+            title="Upsell",
+            mrr="1000.00",
         )
         self.assertEqual(opportunity.companies, [self.customer])
 
     def test_account_level_opportunity_company_is_the_accounts_customer(self):
         opportunity = Opportunity.objects.create(
-            account=self.account, title="Upsell", mrr="1000.00",
+            account=self.account,
+            title="Upsell",
+            mrr="1000.00",
         )
         self.assertEqual(opportunity.companies, [self.customer])
 

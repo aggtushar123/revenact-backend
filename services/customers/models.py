@@ -1,6 +1,8 @@
 from django.conf import settings
 from django.db import models
 
+from services.accounts.models import Organisation
+
 
 class Customer(models.Model):
     """One of a tenant Organisation's own customers — the company a CSM is
@@ -119,6 +121,18 @@ class Customer(models.Model):
 
     # --- Financials --------------------------------------------------------------
 
+    currency = models.CharField(
+        max_length=3,
+        choices=Organisation.Currency.choices,
+        default=Organisation.Currency.USD,
+        help_text="The currency this customer's own contract/financial fields "
+        "below are denominated in — independent of Organisation.currency, "
+        "the tenant's own reporting currency. Defaults to the org's currency "
+        "at creation (see CustomerSerializer.create()) but can differ from "
+        "it, e.g. a US-HQ org billing one customer in EUR. Rollups that sum "
+        "across customers with different currencies convert via "
+        "services.fx_rates.conversion.convert_to_org_currency().",
+    )
     arr_billed_at_account = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     arr_billed_at_hq = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     implementation_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -360,9 +374,7 @@ class Activity(models.Model):
     )
     type = models.CharField(max_length=32, choices=ActivityType.choices)
     occurred_at = models.DateField()
-    links = models.PositiveIntegerField(
-        default=0, help_text="Count shown on the card's link icon."
-    )
+    links = models.PositiveIntegerField(default=0, help_text="Count shown on the card's link icon.")
     watchers = models.PositiveIntegerField(
         default=0, help_text="Count shown on the card's eye icon."
     )
@@ -434,9 +446,7 @@ class Email(models.Model):
     recipient_name = models.CharField(max_length=150)
     body = models.TextField(help_text="The summarized preview shown on the card.")
     sent_at = models.DateTimeField()
-    links = models.PositiveIntegerField(
-        default=0, help_text="Count shown on the card's link icon."
-    )
+    links = models.PositiveIntegerField(default=0, help_text="Count shown on the card's link icon.")
     watchers = models.PositiveIntegerField(
         default=0, help_text="Count shown on the card's eye icon (views)."
     )

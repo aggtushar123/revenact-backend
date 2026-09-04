@@ -29,6 +29,7 @@ class CustomerSerializer(serializers.ModelSerializer):
         choices=Customer.HealthCategory.choices, read_only=True
     )
     seat_utilization_percentage = serializers.FloatField(read_only=True)
+    currency_display = serializers.CharField(source="get_currency_display", read_only=True)
 
     owner = UserSerializer(read_only=True)
     owner_id = serializers.PrimaryKeyRelatedField(
@@ -68,6 +69,8 @@ class CustomerSerializer(serializers.ModelSerializer):
             "renewal_date",
             "contract_start_date",
             "contract_end_date",
+            "currency",
+            "currency_display",
             "arr_billed_at_account",
             "arr_billed_at_hq",
             "implementation_fee",
@@ -100,6 +103,11 @@ class CustomerSerializer(serializers.ModelSerializer):
         validated_data["organisation"] = request.user.organisation
         validated_data["created_by"] = request.user
         validated_data["modified_by"] = request.user
+        # A new customer defaults to the org's own currency unless the
+        # caller explicitly picks a different one (e.g. a US-HQ org
+        # billing this particular customer in EUR) — same "real default,
+        # still overridable" shape as Organisation.default_lifecycle_stage.
+        validated_data.setdefault("currency", request.user.organisation.currency)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):

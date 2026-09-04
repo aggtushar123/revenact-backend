@@ -132,6 +132,25 @@ class CustomerListCreateTests(APITestCase):
         response = self.client.post(self.url, {"name": "Initech"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
+    def test_create_defaults_currency_to_the_orgs_own_currency(self):
+        self.org.currency = "GBP"
+        self.org.save()
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(self.url, {"name": "Initech"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["currency"], "GBP")
+        self.assertEqual(response.data["currency_display"], "British Pound (£)")
+
+    def test_create_accepts_an_explicit_currency_different_from_the_orgs_own(self):
+        # A US-HQ org can still bill one particular customer in EUR.
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            self.url, {"name": "Globex EU", "currency": "EUR"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["currency"], "EUR")
+        self.assertEqual(Customer.objects.get(name="Globex EU").currency, "EUR")
+
     def test_does_not_leak_another_organisations_customers(self):
         other_org = Organisation.objects.create(name="Other Org")
         Customer.objects.create(organisation=other_org, name="Not Yours")
@@ -429,6 +448,51 @@ class CustomerStatsTests(APITestCase):
         self.assertEqual(good["count"], 1)
         self.assertEqual(good["arr"], 100.0)
 
+    def test_converts_a_non_base_currency_customer_using_the_configured_rate(self):
+        from services.fx_rates.models import FxRate
+
+        FxRate.objects.create(organisation=self.org, currency="EUR", rate_to_org_currency="2.0")
+        Customer.objects.create(
+            organisation=self.org,
+            name="Euro Co",
+            health_score="9.0",
+            currency="EUR",
+            arr_billed_at_account="1000.00",
+        )
+
+        response = self.client.get(self.url)
+
+        good = response.data["health"]["good"]
+        self.assertEqual(good["count"], 1)
+        self.assertEqual(good["arr"], 2000.0)  # 1000 EUR * 2.0 -> 2000 (org's own currency)
+        self.assertEqual(response.data["unconverted_count"], 0)
+
+    def test_excludes_but_still_counts_a_customer_with_no_configured_rate(self):
+        Customer.objects.create(
+            organisation=self.org,
+            name="Euro Co",
+            health_score="9.0",
+            currency="EUR",
+            arr_billed_at_account="1000.00",
+        )
+        Customer.objects.create(
+            organisation=self.org,
+            name="USD Co",
+            health_score="9.0",
+            arr_billed_at_account="500.00",
+        )
+
+        response = self.client.get(self.url)
+
+        good = response.data["health"]["good"]
+        # Both customers counted...
+        self.assertEqual(good["count"], 2)
+        # ...but only the one whose currency actually converts contributes
+        # to the money totals -- never a silently-wrong number that treats
+        # 1000 EUR as if it were 1000 of the org's own currency.
+        self.assertEqual(good["arr"], 500.0)
+        self.assertEqual(response.data["unconverted_count"], 1)
+
 
 class CustomerArchiveTests(APITestCase):
     """is_archived — soft-hides a customer from the list and stats
@@ -596,9 +660,7 @@ class AccountListCreateTests(APITestCase):
         self.assertIsInstance(response.data, list)
 
     def test_includes_derived_health_category_and_nested_owner(self):
-        create_account(
-            self.customer, name="North America", health_score=8.5, owner=self.admin
-        )
+        create_account(self.customer, name="North America", health_score=8.5, owner=self.admin)
         self.client.force_authenticate(self.admin)
 
         response = self.client.get(self.url)
@@ -1563,9 +1625,7 @@ class AccountTicketListTests(APITestCase):
         response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(
-            response.data[0]["title"], "API rate limit exceeded during batch import"
-        )
+        self.assertEqual(response.data[0]["title"], "API rate limit exceeded during batch import")
 
     def test_does_not_include_the_customers_own_tickets(self):
         Ticket.objects.create(customer=self.customer, **self._ticket_kwargs())
@@ -2151,16 +2211,28 @@ class ContactStatsTests(APITestCase):
 
     def test_totals_active_and_sentiment_breakdown(self):
         Contact.objects.create(
-            customer=self.customer, name="A", role=Contact.Role.CHAMPION, email="a@globex.com",
-            status=Contact.Status.ACTIVE, sentiment=Contact.Sentiment.POSITIVE,
+            customer=self.customer,
+            name="A",
+            role=Contact.Role.CHAMPION,
+            email="a@globex.com",
+            status=Contact.Status.ACTIVE,
+            sentiment=Contact.Sentiment.POSITIVE,
         )
         Contact.objects.create(
-            customer=self.customer, name="B", role=Contact.Role.CHAMPION, email="b@globex.com",
-            status=Contact.Status.ACTIVE, sentiment=Contact.Sentiment.NEGATIVE,
+            customer=self.customer,
+            name="B",
+            role=Contact.Role.CHAMPION,
+            email="b@globex.com",
+            status=Contact.Status.ACTIVE,
+            sentiment=Contact.Sentiment.NEGATIVE,
         )
         Contact.objects.create(
-            customer=self.customer, name="C", role=Contact.Role.CHAMPION, email="c@globex.com",
-            status=Contact.Status.INACTIVE, sentiment=Contact.Sentiment.NEUTRAL,
+            customer=self.customer,
+            name="C",
+            role=Contact.Role.CHAMPION,
+            email="c@globex.com",
+            status=Contact.Status.INACTIVE,
+            sentiment=Contact.Sentiment.NEUTRAL,
         )
         self.client.force_authenticate(self.admin)
 
@@ -2175,7 +2247,10 @@ class ContactStatsTests(APITestCase):
 
     def test_growth_is_none_when_nothing_existed_30_days_ago(self):
         Contact.objects.create(
-            customer=self.customer, name="A", role=Contact.Role.CHAMPION, email="a@globex.com",
+            customer=self.customer,
+            name="A",
+            role=Contact.Role.CHAMPION,
+            email="a@globex.com",
         )
         self.client.force_authenticate(self.admin)
 
@@ -2185,13 +2260,17 @@ class ContactStatsTests(APITestCase):
 
     def test_growth_compares_against_the_30_day_old_total(self):
         old = Contact.objects.create(
-            customer=self.customer, name="A", role=Contact.Role.CHAMPION, email="a@globex.com",
+            customer=self.customer,
+            name="A",
+            role=Contact.Role.CHAMPION,
+            email="a@globex.com",
         )
-        Contact.objects.filter(pk=old.pk).update(
-            created_at=timezone.now() - timedelta(days=45)
-        )
+        Contact.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=45))
         Contact.objects.create(
-            customer=self.customer, name="B", role=Contact.Role.CHAMPION, email="b@globex.com",
+            customer=self.customer,
+            name="B",
+            role=Contact.Role.CHAMPION,
+            email="b@globex.com",
         )
         self.client.force_authenticate(self.admin)
 
@@ -2546,10 +2625,14 @@ class OpportunityListTests(APITestCase):
 
     def test_lists_both_org_level_and_account_level_opportunities_as_a_plain_array(self):
         Opportunity.objects.create(
-            customer=self.customer, title="Org Opp", mrr="1000.00",
+            customer=self.customer,
+            title="Org Opp",
+            mrr="1000.00",
         )
         Opportunity.objects.create(
-            account=self.account, title="Account Opp", mrr="2000.00",
+            account=self.account,
+            title="Account Opp",
+            mrr="2000.00",
         )
         self.client.force_authenticate(self.admin)
 
@@ -3037,10 +3120,16 @@ class RiskDetailTests(APITestCase):
         self.customer = Customer.objects.create(organisation=self.org, name="Globex")
         self.account = create_account(self.customer, name="North America")
         self.org_risk = Risk.objects.create(
-            customer=self.customer, title="Org Risk", mrr="1000.00", stage=Risk.Stage.OPEN,
+            customer=self.customer,
+            title="Org Risk",
+            mrr="1000.00",
+            stage=Risk.Stage.OPEN,
         )
         self.account_risk = Risk.objects.create(
-            account=self.account, title="Account Risk", mrr="2000.00", stage=Risk.Stage.MITIGATED,
+            account=self.account,
+            title="Account Risk",
+            mrr="2000.00",
+            stage=Risk.Stage.MITIGATED,
         )
 
     def test_unauthenticated_cannot_view(self):
@@ -3062,7 +3151,9 @@ class RiskDetailTests(APITestCase):
     def test_can_update_the_stage_drag_and_drop(self):
         self.client.force_authenticate(self.admin)
         response = self.client.patch(
-            f"/api/v1/risks/{self.org_risk.id}/", {"stage": "realised"}, format="json",
+            f"/api/v1/risks/{self.org_risk.id}/",
+            {"stage": "realised"},
+            format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.org_risk.refresh_from_db()
@@ -3073,7 +3164,9 @@ class RiskDetailTests(APITestCase):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
 
         response = self.client.patch(
-            f"/api/v1/risks/{self.org_risk.id}/", {"customer": other_customer.id}, format="json",
+            f"/api/v1/risks/{self.org_risk.id}/",
+            {"customer": other_customer.id},
+            format="json",
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -3230,18 +3323,10 @@ class AccountStatsTests(APITestCase):
         self.assertEqual(response.data["lifecycle"]["churn"], {"count": 0, "mrr": 0, "arr": 0})
 
     def test_buckets_by_health_category_and_sums_derived_mrr_and_arr(self):
-        create_account(
-            self.customer, name="Good Acc", health_score="9.0", arr="12000.00"
-        )
-        create_account(
-            self.customer, name="Also Good Acc", health_score="7.0", arr="6000.00"
-        )
-        create_account(
-            self.customer, name="Average Acc", health_score="5.0", arr="2400.00"
-        )
-        create_account(
-            self.customer, name="Poor Acc", health_score="1.0", arr="1200.00"
-        )
+        create_account(self.customer, name="Good Acc", health_score="9.0", arr="12000.00")
+        create_account(self.customer, name="Also Good Acc", health_score="7.0", arr="6000.00")
+        create_account(self.customer, name="Average Acc", health_score="5.0", arr="2400.00")
+        create_account(self.customer, name="Poor Acc", health_score="1.0", arr="1200.00")
 
         response = self.client.get(self.url)
 
@@ -3261,12 +3346,8 @@ class AccountStatsTests(APITestCase):
         self.assertEqual(poor["mrr"], 100.0)
 
     def test_buckets_by_lifecycle_stage_counting_churned_accounts_too(self):
-        create_account(
-            self.customer, name="Live Acc", lifecycle_stage="live", arr="12000.00"
-        )
-        create_account(
-            self.customer, name="Churned Acc", lifecycle_stage="churn", arr="6000.00"
-        )
+        create_account(self.customer, name="Live Acc", lifecycle_stage="live", arr="12000.00")
+        create_account(self.customer, name="Churned Acc", lifecycle_stage="churn", arr="6000.00")
 
         response = self.client.get(self.url)
 
@@ -3293,12 +3374,8 @@ class AccountStatsTests(APITestCase):
     def test_scoped_to_the_callers_organisation(self):
         other_org = Organisation.objects.create(name="Other Org")
         other_customer = Customer.objects.create(organisation=other_org, name="Not Yours Inc")
-        create_account(
-            other_customer, name="Not Yours", health_score="9.0", arr="99999.00"
-        )
-        create_account(
-            self.customer, name="Mine", health_score="9.0", arr="100.00"
-        )
+        create_account(other_customer, name="Not Yours", health_score="9.0", arr="99999.00")
+        create_account(self.customer, name="Mine", health_score="9.0", arr="100.00")
 
         response = self.client.get(self.url)
         good = response.data["health"]["good"]

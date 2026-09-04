@@ -9,6 +9,8 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from services.fx_rates.conversion import convert_to_org_currency
+
 from .models import Account, Contact, Customer, Opportunity, Risk
 from .serializers import (
     AccountSerializer,
@@ -100,6 +102,19 @@ class CustomerStatsView(views.APIView):
     `arr_billed_at_account / 12`) — computed the same way here as the
     frontend already does it elsewhere (features/customers/mapToOrgRow.ts).
 
+    Each customer's own `arr_billed_at_account` is in *its own*
+    `currency` (see that model's own docstring — independent of
+    Organisation.currency), so it's converted into the org's own
+    currency (via services.fx_rates.conversion.convert_to_org_currency)
+    before being added to any bucket sum — these buckets are one
+    tenant-wide total and can't meaningfully mix currencies. A customer
+    whose currency has no configured FxRate is still counted (`count`),
+    but excluded from every `mrr`/`arr` sum rather than having its
+    unconverted amount silently treated as if it were already in the
+    org's currency — `unconverted_count` in the response is exactly how
+    many customers that happened to, so the frontend can show a caveat
+    instead of a silently-too-low total.
+
     NPS: a customer with no `nps_score` set is excluded from the
     promoters/passives/detractors breakdown and the score's denominator
     (there's nothing to bucket it as) rather than silently counted as a
@@ -116,9 +131,8 @@ class CustomerStatsView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        customers = Customer.objects.filter(
-            organisation=request.user.organisation, is_archived=False
-        )
+        organisation = request.user.organisation
+        customers = Customer.objects.filter(organisation=organisation, is_archived=False)
 
         health = {
             cat: {"count": 0, "mrr": 0.0, "arr": 0.0} for cat in Customer.HealthCategory.values
@@ -128,20 +142,26 @@ class CustomerStatsView(views.APIView):
         }
         promoters = passives = detractors = 0
         scored = 0
+        unconverted_count = 0
 
         for customer in customers:
-            arr = float(customer.arr_billed_at_account)
-            mrr = arr / 12
-
             health_bucket = health[customer.health_category]
             health_bucket["count"] += 1
-            health_bucket["mrr"] += mrr
-            health_bucket["arr"] += arr
-
             lifecycle_bucket = lifecycle[customer.lifecycle_stage]
             lifecycle_bucket["count"] += 1
-            lifecycle_bucket["mrr"] += mrr
-            lifecycle_bucket["arr"] += arr
+
+            converted = convert_to_org_currency(
+                customer.arr_billed_at_account, customer.currency, organisation
+            )
+            if converted is None:
+                unconverted_count += 1
+            else:
+                arr = float(converted)
+                mrr = arr / 12
+                health_bucket["mrr"] += mrr
+                health_bucket["arr"] += arr
+                lifecycle_bucket["mrr"] += mrr
+                lifecycle_bucket["arr"] += arr
 
             if customer.nps_score is not None:
                 scored += 1
@@ -168,6 +188,7 @@ class CustomerStatsView(views.APIView):
                     "score": nps_score,
                 },
                 "lifecycle": lifecycle,
+                "unconverted_count": unconverted_count,
             }
         )
 
@@ -285,9 +306,12 @@ class AccountListView(generics.ListAPIView):
         # row per matching linked Customer — an Account linked to two+
         # Customers in this same organisation would otherwise appear
         # once per match instead of once overall.
-        queryset = Account.objects.filter(
-            customers__organisation=organisation
-        ).prefetch_related("customers").select_related("owner").distinct()
+        queryset = (
+            Account.objects.filter(customers__organisation=organisation)
+            .prefetch_related("customers")
+            .select_related("owner")
+            .distinct()
+        )
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -312,6 +336,14 @@ class AccountStatsView(views.APIView):
     same reasoning as CustomerStatsView — see that view's own docstring
     for the health/lifecycle bucketing and NPS-denominator rules, all
     identical here.
+
+    Unlike CustomerStatsView, `account.arr` is used as-is, with no FX
+    conversion step — Account has no `currency` field of its own (see
+    that model's docstring: it can belong to more than one Customer, so
+    an independent per-Account currency has no clean meaning). Every
+    Account's `arr` is always treated as already being in the org's own
+    currency. This is a real, explicit scope boundary of the per-
+    Customer-currency feature, not an oversight.
 
     Every Account under the caller's org counts here — Account has no
     `is_archived` field to exclude anything by (see the model's own
@@ -723,10 +755,15 @@ class ContactListView(generics.ListAPIView):
         # account-level Contact whose Account is linked to two+
         # Customers in this same organisation would otherwise appear
         # more than once.
-        queryset = Contact.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).select_related("customer", "account").prefetch_related("account__customers").distinct()
+        queryset = (
+            Contact.objects.filter(
+                Q(customer__organisation=organisation)
+                | Q(account__customers__organisation=organisation)
+            )
+            .select_related("customer", "account")
+            .prefetch_related("account__customers")
+            .distinct()
+        )
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -918,10 +955,15 @@ class OpportunityListView(generics.ListCreateAPIView):
     def get_queryset(self):
         organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
-        return Opportunity.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).select_related("customer", "account").prefetch_related("account__customers").distinct()
+        return (
+            Opportunity.objects.filter(
+                Q(customer__organisation=organisation)
+                | Q(account__customers__organisation=organisation)
+            )
+            .select_related("customer", "account")
+            .prefetch_related("account__customers")
+            .distinct()
+        )
 
     def perform_create(self, serializer):
         organisation = self.request.user.organisation
@@ -1040,10 +1082,15 @@ class RiskListView(generics.ListCreateAPIView):
     def get_queryset(self):
         organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
-        return Risk.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).select_related("customer", "account").prefetch_related("account__customers").distinct()
+        return (
+            Risk.objects.filter(
+                Q(customer__organisation=organisation)
+                | Q(account__customers__organisation=organisation)
+            )
+            .select_related("customer", "account")
+            .prefetch_related("account__customers")
+            .distinct()
+        )
 
     def perform_create(self, serializer):
         organisation = self.request.user.organisation

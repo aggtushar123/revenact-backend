@@ -14,11 +14,15 @@ class Organisation(models.Model):
     for the endpoint. Both are tenant-wide, admin-only-to-change settings;
     everything else about this model stays as it was.
 
-    `currency` is display-only for now — it's stored and shown back, but
-    nothing in the app yet renders a `$` sign conditionally on it (every
-    money value across the app is still hardcoded to a literal "$" prefix).
-    Wiring that up everywhere is real work of its own, deliberately out of
-    scope for adding the setting itself.
+    `currency` is this tenant's own reporting currency — every money
+    value the frontend renders is formatted with it (see
+    react-ts-app's src/features/customers/formatters.ts). Individual
+    `customers.Customer` rows can carry their own, different contract
+    currency (see that model's own docstring); cross-currency rollups
+    convert into *this* field's value via the admin-maintained
+    `services.fx_rates` table. Changing this clears every existing
+    `FxRate` for this org (see OrganisationSettingsView.perform_update)
+    — a stored rate's meaning doesn't carry over to a new base currency.
 
     `default_lifecycle_stage` isn't a hard FK/enum tie to
     `customers.Customer.LifecycleStage` — duplicating that small, stable

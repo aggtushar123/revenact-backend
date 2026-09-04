@@ -342,6 +342,42 @@ class OrganisationSettingsTests(APITestCase):
         self.assertEqual(self.org.currency, "EUR")
         self.assertEqual(self.org.default_lifecycle_stage, "adoption")
 
+    def test_changing_currency_clears_existing_fx_rates(self):
+        from services.fx_rates.models import FxRate
+
+        FxRate.objects.create(organisation=self.org, currency="EUR", rate_to_org_currency="1.08")
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/v1/auth/organisation/", {"currency": "GBP"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # A rate stored as "EUR -> USD" has no valid meaning once the org's
+        # own currency is GBP -- silently reinterpreting it would be a real,
+        # invisible bug, so it's cleared rather than carried over.
+        self.assertEqual(self.org.fx_rates.count(), 0)
+
+    def test_changing_an_unrelated_field_does_not_clear_fx_rates(self):
+        from services.fx_rates.models import FxRate
+
+        FxRate.objects.create(organisation=self.org, currency="EUR", rate_to_org_currency="1.08")
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/v1/auth/organisation/", {"ai_agent_tone": "friendly"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.org.fx_rates.count(), 1)
+
+    def test_patching_currency_to_its_own_current_value_does_not_clear_fx_rates(self):
+        from services.fx_rates.models import FxRate
+
+        FxRate.objects.create(organisation=self.org, currency="EUR", rate_to_org_currency="1.08")
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/v1/auth/organisation/", {"currency": "USD"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.org.fx_rates.count(), 1)
+
     def test_cannot_rename_organisation_through_this_endpoint(self):
         self.client.force_authenticate(self.admin)
         response = self.client.patch(
