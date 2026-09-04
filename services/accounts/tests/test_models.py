@@ -20,6 +20,11 @@ class OrganisationSlugTests(TestCase):
         self.assertEqual(org.currency, Organisation.Currency.USD)
         self.assertEqual(org.default_lifecycle_stage, "")
 
+    def test_ai_agent_defaults(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.assertTrue(org.ai_agent_enabled)
+        self.assertEqual(org.ai_agent_tone, Organisation.AgentTone.PROFESSIONAL)
+
 
 class UserManagerTests(TestCase):
     def test_create_user_hashes_password_and_normalizes_email(self):

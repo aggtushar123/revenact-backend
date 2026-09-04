@@ -297,6 +297,21 @@ class OrganisationSettingsTests(APITestCase):
         self.assertEqual(response.data["currency"], "USD")
         self.assertEqual(response.data["currency_display"], "US Dollar ($)")
         self.assertEqual(response.data["default_lifecycle_stage"], "")
+        self.assertTrue(response.data["ai_agent_enabled"])
+        self.assertEqual(response.data["ai_agent_tone"], "professional")
+        self.assertEqual(response.data["ai_agent_tone_display"], "Professional")
+
+    def test_admin_can_change_ai_agent_settings(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/v1/auth/organisation/",
+            {"ai_agent_enabled": False, "ai_agent_tone": "friendly"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.ai_agent_enabled)
+        self.assertEqual(self.org.ai_agent_tone, "friendly")
 
     def test_unauthenticated_cannot_view(self):
         response = self.client.get("/api/v1/auth/organisation/")

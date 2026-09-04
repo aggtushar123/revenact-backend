@@ -27,7 +27,15 @@ class Organisation(models.Model):
     already depends on Organisation, not the other way around). Blank
     means "no override" — the standalone Add Organization flow (see
     OrganizationFormModal.tsx) falls back to its own hardcoded "onboarding"
-    when this is unset, same as before this field existed."""
+    when this is unset, same as before this field existed.
+
+    `ai_agent_enabled`/`ai_agent_tone` back Settings > AI Agent
+    (AIAgentPage.tsx) — same real-but-not-yet-consumed pattern as
+    `currency`: genuinely stored and shown back, but Copilot
+    (react-ts-app's src/pages/copilot/) has no backend of its own at all
+    yet (see docs/API_CONTRACTS.md's Status table), so nothing reads
+    these two back out. Wiring them into actual Copilot behavior is
+    real work of its own, same deliberate boundary as currency's own."""
 
     class Currency(models.TextChoices):
         USD = "USD", "US Dollar ($)"
@@ -38,6 +46,11 @@ class Organisation(models.Model):
         AUD = "AUD", "Australian Dollar (A$)"
         JPY = "JPY", "Japanese Yen (¥)"
 
+    class AgentTone(models.TextChoices):
+        PROFESSIONAL = "professional", "Professional"
+        FRIENDLY = "friendly", "Friendly"
+        CONCISE = "concise", "Concise"
+
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True)
     currency = models.CharField(max_length=3, choices=Currency.choices, default=Currency.USD)
@@ -47,6 +60,10 @@ class Organisation(models.Model):
         default="",
         help_text="One of Customer.LifecycleStage's own values, or blank "
         "for no tenant-wide default (see this model's own docstring).",
+    )
+    ai_agent_enabled = models.BooleanField(default=True)
+    ai_agent_tone = models.CharField(
+        max_length=16, choices=AgentTone.choices, default=AgentTone.PROFESSIONAL
     )
     created_at = models.DateTimeField(auto_now_add=True)
 

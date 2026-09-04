@@ -204,17 +204,23 @@ them is silently ignored (not an error), not written.
 
 ### `GET /api/v1/auth/organisation/`, `PATCH /api/v1/auth/organisation/`
 
-Backs Settings > Currency and Settings > Global Presets (react-ts-app's
-`src/pages/settings/CurrencyPage.tsx`/`GlobalPresetsPage.tsx`).
+Backs Settings > Currency, Global Presets, and AI Agent (react-ts-app's
+`src/pages/settings/CurrencyPage.tsx`/`GlobalPresetsPage.tsx`/
+`AIAgentPage.tsx`).
 
-Auth: GET — `IsAuthenticated` (any user, admin or CSM — both settings
-pages show a read-only view to a CSM). PATCH — `IsOrgAdmin` on top
-(`403` for a CSM), same gate as `/auth/csms/`'s own.
+Auth: GET — `IsAuthenticated` (any user, admin or CSM — all three
+settings pages show a read-only view to a CSM). PATCH — `IsOrgAdmin` on
+top (`403` for a CSM), same gate as `/auth/csms/`'s own.
 
-PATCH accepts `{ "currency": "EUR", "default_lifecycle_stage": "adoption" }`
-(either key alone is fine too) — `name`/`slug` are read-only here; sending
-them is silently ignored, not written (same "can't smuggle an edit to a
-read-only field through" convention as `/auth/me/`'s own).
+PATCH accepts any of `{ "currency": "EUR", "default_lifecycle_stage":
+"adoption", "ai_agent_enabled": false, "ai_agent_tone": "friendly" }`
+(any subset — each settings page only ever sends its own field(s)) —
+`name`/`slug` are read-only here; sending them is silently ignored, not
+written (same "can't smuggle an edit to a read-only field through"
+convention as `/auth/me/`'s own). `ai_agent_enabled`/`ai_agent_tone` are
+genuinely stored and shown back, same as `currency`, but nothing reads
+them yet — Copilot has no backend of its own (see this doc's own
+Status table).
 
 **Response `200`** (both)
 ```json
@@ -224,7 +230,10 @@ read-only field through" convention as `/auth/me/`'s own).
   "slug": "acme-inc",
   "currency": "EUR",
   "currency_display": "Euro (€)",
-  "default_lifecycle_stage": "adoption"
+  "default_lifecycle_stage": "adoption",
+  "ai_agent_enabled": true,
+  "ai_agent_tone": "friendly",
+  "ai_agent_tone_display": "Friendly"
 }
 ```
 

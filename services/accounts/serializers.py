@@ -13,15 +13,29 @@ from .models import Organisation, User
 class OrganisationSerializer(serializers.ModelSerializer):
     """Read: nested as-is in UserSerializer/login/signup responses, and
     standalone from OrganisationSettingsView. Write: only via that same
-    view (PATCH `currency`/`default_lifecycle_stage`) — `name`/`slug`
-    have no edit UI anywhere and stay read-only here so a settings PATCH
-    can never accidentally rename the tenant."""
+    view (PATCH `currency`/`default_lifecycle_stage`/`ai_agent_enabled`/
+    `ai_agent_tone`) — `name`/`slug` have no edit UI anywhere and stay
+    read-only here so a settings PATCH can never accidentally rename the
+    tenant."""
 
     currency_display = serializers.CharField(source="get_currency_display", read_only=True)
+    ai_agent_tone_display = serializers.CharField(
+        source="get_ai_agent_tone_display", read_only=True
+    )
 
     class Meta:
         model = Organisation
-        fields = ["id", "name", "slug", "currency", "currency_display", "default_lifecycle_stage"]
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "currency",
+            "currency_display",
+            "default_lifecycle_stage",
+            "ai_agent_enabled",
+            "ai_agent_tone",
+            "ai_agent_tone_display",
+        ]
         read_only_fields = ["id", "name", "slug"]
 
 
