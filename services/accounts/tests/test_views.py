@@ -271,6 +271,78 @@ class MeViewTests(APITestCase):
         self.assertEqual(self.user.role, User.Role.ADMIN)
 
 
+class OrganisationSettingsTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.other_org = Organisation.objects.create(name="Other Inc", currency="EUR")
+
+    def test_defaults(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/auth/organisation/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["currency"], "USD")
+        self.assertEqual(response.data["currency_display"], "US Dollar ($)")
+        self.assertEqual(response.data["default_lifecycle_stage"], "")
+
+    def test_unauthenticated_cannot_view(self):
+        response = self.client.get("/api/v1/auth/organisation/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_csm_can_view_but_not_change(self):
+        self.client.force_authenticate(self.csm)
+        get_response = self.client.get("/api/v1/auth/organisation/")
+        self.assertEqual(get_response.status_code, status.HTTP_200_OK)
+
+        patch_response = self.client.patch(
+            "/api/v1/auth/organisation/", {"currency": "GBP"}, format="json"
+        )
+        self.assertEqual(patch_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.currency, "USD")
+
+    def test_admin_can_change_currency_and_default_lifecycle_stage(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/v1/auth/organisation/",
+            {"currency": "EUR", "default_lifecycle_stage": "adoption"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["currency"], "EUR")
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.currency, "EUR")
+        self.assertEqual(self.org.default_lifecycle_stage, "adoption")
+
+    def test_cannot_rename_organisation_through_this_endpoint(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/v1/auth/organisation/", {"name": "Hacked"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.name, "Acme Inc")
+
+    def test_scoped_to_callers_own_organisation(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/auth/organisation/")
+        self.assertEqual(response.data["id"], self.org.id)
+        self.assertNotEqual(response.data["currency"], "EUR")
+
+
 class ChangePasswordTests(APITestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
@@ -464,8 +536,11 @@ class ForgotPasswordTests(APITestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.user = User.objects.create_user(
-            email="alice@acme.io", password="oldpassword1", name="Alice Admin",
-            organisation=org, role=User.Role.ADMIN,
+            email="alice@acme.io",
+            password="oldpassword1",
+            name="Alice Admin",
+            organisation=org,
+            role=User.Role.ADMIN,
         )
 
     def test_known_email_gets_a_reset_email(self):
@@ -499,8 +574,11 @@ class ResetPasswordTests(APITestCase):
     def setUp(self):
         org = Organisation.objects.create(name="Acme Inc")
         self.user = User.objects.create_user(
-            email="alice@acme.io", password="oldpassword1", name="Alice Admin",
-            organisation=org, role=User.Role.ADMIN,
+            email="alice@acme.io",
+            password="oldpassword1",
+            name="Alice Admin",
+            organisation=org,
+            role=User.Role.ADMIN,
         )
         self.uid = urlsafe_base64_encode(force_bytes(self.user.pk))
         self.token = default_token_generator.make_token(self.user)

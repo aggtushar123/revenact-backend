@@ -105,7 +105,14 @@ frontend's `features/auth/` domain. See the `flow-docs` skill's
 ### Models
 
 - `Organisation` — `name`, `slug` (auto-generated from `name`, unique),
-  `created_at`. The tenant. Created only via signup.
+  `currency` (`USD`/`EUR`/`GBP`/`INR`/`CAD`/`AUD`/`JPY`, default `USD` —
+  display-only for now, see this model's own docstring on why nothing
+  renders a symbol off it yet), `default_lifecycle_stage` (blank, or one
+  of `customers.Customer.LifecycleStage`'s own values — the standalone
+  Add Organization flow's own tenant-wide default, see
+  `OrganisationSettingsView`), `created_at`. The tenant. Created only via
+  signup; `currency`/`default_lifecycle_stage` are the only two fields
+  ever changed after that (via `OrganisationSettingsView` below).
 - `User` (custom `AUTH_USER_MODEL`, replaces Django's default) — `email`
   (unique, `USERNAME_FIELD`), `name`, `organisation` (FK, **null only for
   platform-staff superusers** — every org admin/CSM has one), `role`
@@ -194,6 +201,32 @@ accepts `{ "name": "..." }` — `email` and `role` are read-only here; sending
 them is silently ignored (not an error), not written.
 
 **Response `200`** (both) — the (possibly updated) profile.
+
+### `GET /api/v1/auth/organisation/`, `PATCH /api/v1/auth/organisation/`
+
+Backs Settings > Currency and Settings > Global Presets (react-ts-app's
+`src/pages/settings/CurrencyPage.tsx`/`GlobalPresetsPage.tsx`).
+
+Auth: GET — `IsAuthenticated` (any user, admin or CSM — both settings
+pages show a read-only view to a CSM). PATCH — `IsOrgAdmin` on top
+(`403` for a CSM), same gate as `/auth/csms/`'s own.
+
+PATCH accepts `{ "currency": "EUR", "default_lifecycle_stage": "adoption" }`
+(either key alone is fine too) — `name`/`slug` are read-only here; sending
+them is silently ignored, not written (same "can't smuggle an edit to a
+read-only field through" convention as `/auth/me/`'s own).
+
+**Response `200`** (both)
+```json
+{
+  "id": 3,
+  "name": "Acme Inc",
+  "slug": "acme-inc",
+  "currency": "EUR",
+  "currency_display": "Euro (€)",
+  "default_lifecycle_stage": "adoption"
+}
+```
 
 ### `POST /api/v1/auth/me/change-password/`
 

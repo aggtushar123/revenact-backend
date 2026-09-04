@@ -13,6 +13,7 @@ urlpatterns = [
         "password-reset/confirm/", views.ResetPasswordView.as_view(), name="password-reset-confirm"
     ),
     path("me/", views.MeView.as_view(), name="me"),
+    path("organisation/", views.OrganisationSettingsView.as_view(), name="organisation-settings"),
     path("me/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
     path("members/", views.MembersListView.as_view(), name="members-list"),
     path("csms/", views.CSMListCreateView.as_view(), name="csm-list-create"),

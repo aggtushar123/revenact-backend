@@ -15,6 +15,11 @@ class OrganisationSlugTests(TestCase):
         second = Organisation.objects.create(name="Acme Inc")
         self.assertEqual(second.slug, "acme-inc-2")
 
+    def test_currency_defaults_to_usd_and_no_default_lifecycle_stage(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.assertEqual(org.currency, Organisation.Currency.USD)
+        self.assertEqual(org.default_lifecycle_stage, "")
+
 
 class UserManagerTests(TestCase):
     def test_create_user_hashes_password_and_normalizes_email(self):

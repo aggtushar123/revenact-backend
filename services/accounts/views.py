@@ -16,6 +16,7 @@ from .serializers import (
     LoginSerializer,
     LogoutSerializer,
     MeSerializer,
+    OrganisationSerializer,
     ResetPasswordSerializer,
     SignupSerializer,
     UserSerializer,
@@ -88,6 +89,26 @@ class MeView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class OrganisationSettingsView(generics.RetrieveUpdateAPIView):
+    """GET/PATCH /api/v1/auth/organisation/ — the caller's own tenant.
+    Backs Settings > Currency and Settings > Global Presets
+    (react-ts-app's src/pages/settings/CurrencyPage.tsx/
+    GlobalPresetsPage.tsx). Any authenticated user can view it (both
+    pages show a read-only view to a CSM); only the org's own admin can
+    change it — same `IsOrgAdmin` gate as CSMListCreateView's own, method-
+    gated here since GET stays open to everyone."""
+
+    serializer_class = OrganisationSerializer
+
+    def get_permissions(self):
+        if self.request.method in ("PATCH", "PUT"):
+            return [IsAuthenticated(), IsOrgAdmin()]
+        return [IsAuthenticated()]
+
+    def get_object(self):
+        return self.request.user.organisation
 
 
 class ChangePasswordView(generics.GenericAPIView):

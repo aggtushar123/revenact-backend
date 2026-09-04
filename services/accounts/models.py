@@ -6,10 +6,48 @@ from django.utils.text import slugify
 
 class Organisation(models.Model):
     """A tenant. Every non-superuser User belongs to exactly one of these —
-    the org that signed up and everything it does is scoped underneath it."""
+    the org that signed up and everything it does is scoped underneath it.
+
+    `currency`/`default_lifecycle_stage` back the frontend's Settings >
+    Currency / Global Presets tabs (react-ts-app's src/pages/settings/
+    CurrencyPage.tsx / GlobalPresetsPage.tsx) — see OrganisationSettingsView
+    for the endpoint. Both are tenant-wide, admin-only-to-change settings;
+    everything else about this model stays as it was.
+
+    `currency` is display-only for now — it's stored and shown back, but
+    nothing in the app yet renders a `$` sign conditionally on it (every
+    money value across the app is still hardcoded to a literal "$" prefix).
+    Wiring that up everywhere is real work of its own, deliberately out of
+    scope for adding the setting itself.
+
+    `default_lifecycle_stage` isn't a hard FK/enum tie to
+    `customers.Customer.LifecycleStage` — duplicating that small, stable
+    set of string values here avoids making this lower-level tenant model
+    depend on a business-domain model layered on top of it (Customer
+    already depends on Organisation, not the other way around). Blank
+    means "no override" — the standalone Add Organization flow (see
+    OrganizationFormModal.tsx) falls back to its own hardcoded "onboarding"
+    when this is unset, same as before this field existed."""
+
+    class Currency(models.TextChoices):
+        USD = "USD", "US Dollar ($)"
+        EUR = "EUR", "Euro (€)"
+        GBP = "GBP", "British Pound (£)"
+        INR = "INR", "Indian Rupee (₹)"
+        CAD = "CAD", "Canadian Dollar (C$)"
+        AUD = "AUD", "Australian Dollar (A$)"
+        JPY = "JPY", "Japanese Yen (¥)"
 
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True)
+    currency = models.CharField(max_length=3, choices=Currency.choices, default=Currency.USD)
+    default_lifecycle_stage = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="One of Customer.LifecycleStage's own values, or blank "
+        "for no tenant-wide default (see this model's own docstring).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
