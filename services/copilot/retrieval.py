@@ -6,17 +6,26 @@ Two passes for "which company is this about": an exact, free,
 case-insensitive substring match first (find_mentioned_company), then a
 real semantic fallback (find_relevant_company_semantic — see
 embeddings.py) for a question that describes a company without naming
-it, e.g. "that food delivery account struggling" finding Pizza Hut.
-That fallback embeds only the company's own *name* against a small
-local model — verified live to work well for strong, well-known brand
-associations (Spotify/Uber both score >0.45 against an on-the-nose
-description) but weaker for company names that are also common words
-(Zoom scored only 0.12 against "video conferencing account" in that
-same check) — a real, honest limitation of name-only matching with a
-small general-purpose model, not a guarantee every real reference gets
-caught. Embedding a fuller company profile (industry, past
-communications) instead of just the bare name is the natural next step
-once this matters enough to invest in.
+it, e.g. "that video conferencing account struggling" finding Zoom.
+
+That fallback embeds `_company_profile_text` for each of the caller's
+own companies — the name alone, unless a real `industry` has been
+hand-entered (Customer.industry / Account.industry, see those models'
+own help_text), in which case the industry is folded in too:
+"Zoom. Industry: Video conferencing software." Real communications
+content (Notes/Emails/etc.) is deliberately NOT part of this profile —
+live testing found this app's own seeded CS-ops content (onboarding
+notes, usage reviews) is generic and templated across every company,
+carrying no real company-identity signal to embed. Name-only matching
+verified live to work well for strong, well-known brand associations
+(Spotify/Uber both score >0.45 against an on-the-nose description) but
+weaker for company names that are also common words (Zoom scored only
+0.12 against "video conferencing account" with no industry set) — a
+real, honest limitation, not a guarantee every real reference gets
+caught, and one that stays in force for any company whose `industry`
+is still blank. Filling in `industry` is a real, optional per-company
+action (Add/Edit Organization or Account form), not automatic — a
+blank one costs nothing beyond the pre-existing name-only limitation.
 
 Once a company is identified, retrieve_recent_communications pulls a
 real, wider pool of its own content — Email (subject+body), Note
@@ -27,7 +36,7 @@ overall most *relevant* items across every source together, not a fixed
 per-source quota of the most recent. Nothing here is itself new data:
 every row already exists for the Activity Feed's own tabs."""
 
-from services.customers.models import Activity, Customer, Email, Note, Ticket
+from services.customers.models import Account, Activity, Customer, Email, Note, Ticket
 
 from .embeddings import rank_by_similarity
 
@@ -51,6 +60,31 @@ def _snippet(text: str) -> str:
 
 def _scope_kwargs(company) -> dict:
     return {"customer": company} if isinstance(company, Customer) else {"account": company}
+
+
+def _effective_industry(company) -> str:
+    """The real industry text for `company` — its own when set, else (for
+    an Account) the first linked Customer's, the same fallback
+    convention as domain/address/email/phone (see Account's own
+    docstring) — just resolved here in Python rather than in the
+    frontend's mapAccountToAccountRow.ts, since this runs server-side."""
+
+    if company.industry:
+        return company.industry
+    if isinstance(company, Account):
+        parent = company.customers.first()
+        if parent is not None:
+            return parent.industry
+    return ""
+
+
+def _company_profile_text(company) -> str:
+    """What actually gets embedded for company-identification — see this
+    module's own docstring for why the name alone is often not enough,
+    and why real communications content isn't folded in here too."""
+
+    industry = _effective_industry(company)
+    return f"{company.name}. Industry: {industry}." if industry else company.name
 
 
 def find_mentioned_company(query: str, customers, accounts):
@@ -84,7 +118,7 @@ def find_relevant_company_semantic(
     companies = [*customers, *accounts]
     if not companies or not query:
         return None
-    ranked = rank_by_similarity(query, [c.name for c in companies])
+    ranked = rank_by_similarity(query, [_company_profile_text(c) for c in companies])
     best_index, best_score = ranked[0]
     return companies[best_index] if best_score >= threshold else None
 

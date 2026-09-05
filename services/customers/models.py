@@ -64,6 +64,18 @@ class Customer(models.Model):
     name = models.CharField(max_length=255)
     address = models.CharField(max_length=255, blank=True, help_text='"Name / Address" column.')
     domain = models.CharField(max_length=255, blank=True)
+    industry = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Free-text, hand-entered (e.g. 'Video conferencing software'). "
+        "Shown on Overview, and — the reason it exists — folded into what "
+        "services/copilot/embeddings.py embeds for semantic company "
+        "matching, so a company described but not named by its own name "
+        "(e.g. 'that video conferencing account') can still be recognized "
+        "once a CSM has actually filled this in; blank falls back to "
+        "matching on the bare name alone, same as before this field "
+        "existed.",
+    )
     email = models.EmailField(blank=True, help_text="Primary contact email, shown on Overview.")
     phone = models.CharField(
         max_length=32, blank=True, help_text="Primary contact phone, shown on Overview."
@@ -202,14 +214,17 @@ class Account(models.Model):
     lifecycle stage and health mean exactly the same thing as a
     customer's, just at a finer grain.
 
-    `domain`/`address`/`email`/`phone` all fall back to the parent
-    Customer's own value when blank — the frontend's own
-    mapAccountToAccountRow.ts does the falling back (same as it
-    already did for `domain` alone before `address`/`email`/`phone`
+    `domain`/`industry`/`address`/`email`/`phone` all fall back to the
+    parent Customer's own value when blank — the frontend's own
+    mapAccountToAccountRow.ts does the falling back for display (same as
+    it already did for `domain` alone before `address`/`email`/`phone`
     existed here), not this model or its serializer; a sub-account
     with no info of its own is assumed to share its parent's contact
     details rather than have none, matching ActivityFeed's Overview
-    tab for the standalone Account page.
+    tab for the standalone Account page. `industry` gets a second, real
+    fallback resolution server-side too — see
+    services/copilot/retrieval.py's own `_effective_industry` — since
+    Copilot's semantic company matching runs in Python, not the browser.
 
     Add/Edit Account is wired (AccountListCreateView/AccountDetailView) —
     see those views' docstrings for exactly which fields the UI sends.
@@ -246,6 +261,13 @@ class Account(models.Model):
         max_length=255,
         blank=True,
         help_text="Falls back to the parent customer's domain (for the logo) when blank.",
+    )
+    industry = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Falls back to the parent customer's industry when blank — same "
+        "convention as domain/address/email/phone below. See Customer.industry's "
+        "own help_text for what this is actually for.",
     )
     address = models.CharField(
         max_length=255,

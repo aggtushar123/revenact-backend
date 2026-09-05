@@ -11,6 +11,8 @@ from django.test import TestCase
 
 from services.accounts.models import Organisation
 from services.copilot.retrieval import (
+    _company_profile_text,
+    _effective_industry,
     find_mentioned_company,
     find_relevant_company_semantic,
     retrieve_recent_communications,
@@ -207,6 +209,54 @@ class RetrieveRecentCommunicationsTests(TestCase):
         mock_rank.assert_not_called()
 
 
+class CompanyProfileTextTests(TestCase):
+    """The text find_relevant_company_semantic actually embeds — see
+    retrieval.py's own docstring for why industry (when set) is folded
+    in and real communications content deliberately isn't."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+
+    def test_name_only_when_industry_is_blank(self):
+        zoom = Customer.objects.create(organisation=self.org, name="Zoom")
+        self.assertEqual(_effective_industry(zoom), "")
+        self.assertEqual(_company_profile_text(zoom), "Zoom")
+
+    def test_folds_in_a_real_hand_entered_industry(self):
+        zoom = Customer.objects.create(
+            organisation=self.org, name="Zoom", industry="Video conferencing software"
+        )
+        self.assertEqual(_effective_industry(zoom), "Video conferencing software")
+        self.assertEqual(
+            _company_profile_text(zoom), "Zoom. Industry: Video conferencing software."
+        )
+
+    def test_account_falls_back_to_its_first_linked_customers_industry_when_its_own_is_blank(self):
+        zoom = Customer.objects.create(
+            organisation=self.org, name="Zoom", industry="Video conferencing software"
+        )
+        emea = Account.objects.create(name="Zoom EMEA")
+        emea.customers.add(zoom)
+
+        self.assertEqual(_effective_industry(emea), "Video conferencing software")
+        self.assertEqual(
+            _company_profile_text(emea), "Zoom EMEA. Industry: Video conferencing software."
+        )
+
+    def test_accounts_own_industry_wins_over_its_parents(self):
+        zoom = Customer.objects.create(
+            organisation=self.org, name="Zoom", industry="Video conferencing software"
+        )
+        emea = Account.objects.create(name="Zoom EMEA", industry="EMEA regional sales")
+        emea.customers.add(zoom)
+
+        self.assertEqual(_effective_industry(emea), "EMEA regional sales")
+
+    def test_an_account_with_no_linked_customer_and_no_own_industry_is_just_the_name(self):
+        orphan = Account.objects.create(name="Orphan Account")
+        self.assertEqual(_company_profile_text(orphan), "Orphan Account")
+
+
 class FindRelevantCompanySemanticTests(TestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
@@ -234,6 +284,17 @@ class FindRelevantCompanySemanticTests(TestCase):
     def test_returns_none_with_no_companies_or_no_query(self):
         self.assertIsNone(find_relevant_company_semantic("anything", [], []))
         self.assertIsNone(find_relevant_company_semantic("", [self.pizza_hut], []))
+
+    def test_ranks_against_the_full_profile_text_not_just_bare_names(self):
+        zoom = Customer.objects.create(
+            organisation=self.org, name="Zoom", industry="Video conferencing software"
+        )
+        with patch("services.copilot.retrieval.rank_by_similarity") as mock_rank:
+            mock_rank.return_value = [(0, 0.9)]
+            find_relevant_company_semantic("video calls", [zoom], [])
+        mock_rank.assert_called_once_with(
+            "video calls", ["Zoom. Industry: Video conferencing software."]
+        )
 
     def test_never_calls_the_real_embedding_model_once_an_exact_match_already_won(self):
         # Documents the real intent (see retrieval.py's own docstring):

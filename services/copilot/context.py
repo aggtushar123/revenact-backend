@@ -28,13 +28,16 @@ excluded from the ARR total.
 Past the aggregate numbers, this also pulls real retrieved content — see
 retrieval.py's own docstring for exactly what "real retrieval" means
 here (an exact name match first, a real local-embeddings semantic
-fallback second — e.g. "that food delivery account" still finding
-Pizza Hut — no vector DB, a documented real limitation for company
-names that are also common words). Once identified, that company's own
-recent real Emails/Notes/open Tickets/Activities are retrieved,
-relevance-ranked against the question; otherwise a smaller slice for
-each of the top few at-risk companies keeps the digest from being pure
-numbers even with none identified."""
+fallback second, embedding each company's name plus its real
+hand-entered `industry` when one has been set — e.g. "that video
+conferencing account" still finding Zoom once its industry is filled
+in — no vector DB, a documented real limitation for a company whose
+industry is still blank and whose name is also a common word). Once
+identified, that company's own recent real Emails/Notes/open
+Tickets/Activities are retrieved, relevance-ranked against the
+question; otherwise a smaller slice for each of the top few at-risk
+companies keeps the digest from being pure numbers even with none
+identified."""
 
 from django.db.models import Q
 
