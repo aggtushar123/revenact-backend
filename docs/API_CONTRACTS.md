@@ -1354,6 +1354,13 @@ infrastructure in this codebase to send a real survey link with yet;
 "send" means "log that it was sent," same honest framing as this app's
 own Webhooks delivery being real but bounded).
 
+See `seed_demo_surveys` management command for demo data (run after
+`seed_demo_accounts`) — backfills one RESPONDED Survey per existing
+non-null `nps_score`/`csat_score`/`ces_percentage` on every seeded
+Customer/Account (same score, spread across the last several months so
+the trend chart has real shape), plus a small hand-picked set of still-
+`sent`/`expired` rows so every status shows up somewhere real too.
+
 ### `GET/POST /api/v1/customers/<customer_id>/surveys/`
 
 Auth: `IsAuthenticated`. GET: every Survey under this Customer, rolled
