@@ -461,6 +461,21 @@ class SurveySerializer(serializers.ModelSerializer):
         survey_type = attrs.get("survey_type", getattr(self.instance, "survey_type", None))
         score = attrs.get("score", getattr(self.instance, "score", None))
 
+        # SurveyDetailView.perform_update re-syncs the parent's score
+        # field on every update while already RESPONDED, keyed off the
+        # survey's *current* survey_type — letting an edit change that
+        # type post-response would sync the score onto the new field
+        # while leaving the old one stale. Simplest fix: don't allow it.
+        if (
+            self.instance
+            and self.instance.status == Survey.Status.RESPONDED
+            and "survey_type" in attrs
+            and attrs["survey_type"] != self.instance.survey_type
+        ):
+            raise serializers.ValidationError(
+                {"survey_type": "Can't change a survey's type after it's been responded to."}
+            )
+
         if status == Survey.Status.RESPONDED:
             if score is None:
                 raise serializers.ValidationError(

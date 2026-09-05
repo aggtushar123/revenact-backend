@@ -3533,6 +3533,59 @@ class SurveyDetailTests(APITestCase):
         survey.refresh_from_db()
         self.assertEqual(str(survey.responded_at), "2026-08-15")
 
+    def test_cannot_change_survey_type_after_responding(self):
+        survey = Survey.objects.create(
+            customer=self.customer,
+            survey_type=Survey.SurveyType.NPS,
+            sent_at="2026-09-01",
+            status=Survey.Status.RESPONDED,
+            score=70,
+            responded_at="2026-09-05",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(self._url(survey), {"survey_type": "csat"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("survey_type", response.data)
+        survey.refresh_from_db()
+        self.assertEqual(survey.survey_type, Survey.SurveyType.NPS)
+
+    def test_can_edit_sent_at_and_correct_a_responded_score(self):
+        survey = Survey.objects.create(
+            customer=self.customer,
+            survey_type=Survey.SurveyType.NPS,
+            sent_at="2026-09-01",
+            status=Survey.Status.RESPONDED,
+            score=70,
+            responded_at="2026-09-05",
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            self._url(survey), {"sent_at": "2026-08-30", "score": 90}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        survey.refresh_from_db()
+        self.assertEqual(str(survey.sent_at), "2026-08-30")
+        self.assertEqual(survey.score, 90)
+        # Correcting an already-responded score re-syncs the parent too.
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.nps_score, 90)
+
+    def test_can_mark_a_sent_survey_expired(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(self._url(survey), {"status": "expired"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        survey.refresh_from_db()
+        self.assertEqual(survey.status, Survey.Status.EXPIRED)
+
     def test_can_delete_a_survey(self):
         survey = Survey.objects.create(
             customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
