@@ -1,4 +1,8 @@
-"""Real WebSocket authentication for Multiplayer Copilot Phase 2b.
+"""Real WebSocket authentication, shared by every real-time feature in
+this app (Multiplayer Copilot's services/copilot/consumers.py, this
+app's own services/notifications/consumers.py) — moved here from
+services/copilot/ once a second app needed the exact same thing, since
+it was never really copilot-specific.
 
 This app's REST API authenticates via SimpleJWT bearer tokens (an
 `Authorization: Bearer <token>` header), not Django's session/cookie
@@ -7,12 +11,13 @@ session-cookie auth) doesn't apply here. A browser also can't attach
 custom headers to a WebSocket handshake request at all, so the token
 travels as `?token=<access_token>` in the connection URL instead — the
 exact same access token the REST client already holds (see
-features/copilotSessions/sessionSocket.ts on the frontend), just passed
-a different way because the transport is different.
+features/copilotSessions/sessionSocket.ts / features/notifications/
+notificationSocket.ts on the frontend), just passed a different way
+because the transport is different.
 
 Real, not a stub: an invalid, expired, or missing token resolves to a
-genuine `AnonymousUser`, and SessionConsumer.connect() rejects that the
-same way it rejects anyone conversations_visible_to() doesn't cover."""
+genuine `AnonymousUser`, and each consumer's own connect() rejects that
+the same way it rejects anyone else it shouldn't let in."""
 
 from urllib.parse import parse_qs
 

@@ -22,6 +22,7 @@ from services.customers.models import (
     Task,
     Ticket,
 )
+from services.notifications.models import Notification
 
 
 def create_account(customer, **kwargs):
@@ -74,6 +75,17 @@ class CustomerListCreateTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["health_category"], "poor")
         self.assertEqual(Customer.objects.get(name="Initech").organisation_id, self.org.id)
+
+    def test_creating_with_a_real_owner_sends_them_a_real_notification(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            self.url, {"name": "Initech", "owner_id": self.csm.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        notification = Notification.objects.get(recipient=self.csm)
+        self.assertEqual(notification.kind, Notification.Kind.CUSTOMER_ASSIGNED)
+        self.assertIn("Initech", notification.message)
 
     def test_create_sets_created_by_and_modified_by_from_the_caller(self):
         self.client.force_authenticate(self.admin)
@@ -589,6 +601,27 @@ class CustomerDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["owner"]["email"], "carl@acme.io")
 
+        notification = Notification.objects.get(recipient=self.csm)
+        self.assertEqual(notification.kind, Notification.Kind.CUSTOMER_ASSIGNED)
+        self.assertEqual(notification.actor, self.admin)
+        self.assertIn("Globex", notification.message)
+        self.assertEqual(notification.link, f"/organizations/{self.customer.id}")
+
+    def test_reassigning_to_the_same_owner_sends_no_duplicate_notification(self):
+        self.customer.owner = self.csm
+        self.customer.save()
+        self.client.force_authenticate(self.admin)
+
+        self.client.patch(self.url, {"owner_id": self.csm.id}, format="json")
+
+        self.assertEqual(Notification.objects.filter(recipient=self.csm).count(), 0)
+
+    def test_assigning_a_customer_to_yourself_sends_no_notification(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(self.url, {"owner_id": self.admin.id}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Notification.objects.filter(recipient=self.admin).count(), 0)
+
     def test_cannot_assign_an_owner_from_another_organisation(self):
         other_org = Organisation.objects.create(name="Other Org")
         outsider = User.objects.create_user(
@@ -745,6 +778,27 @@ class AccountListCreateTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["owner"]["email"], "alice@acme.io")
+        # Self-assignment — the admin owning their own new account — sends
+        # no notification (see _notify_owner_assigned's own docstring).
+        self.assertEqual(Notification.objects.filter(recipient=self.admin).count(), 0)
+
+    def test_creating_an_account_with_a_real_owner_sends_them_a_real_notification(self):
+        csm = User.objects.create_user(
+            email="carl@acme.io", password="supersecret1", name="Carl", organisation=self.org
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"name": "North America", "owner_id": csm.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        notification = Notification.objects.get(recipient=csm)
+        self.assertEqual(notification.kind, Notification.Kind.ACCOUNT_ASSIGNED)
+        self.assertEqual(notification.actor, self.admin)
+        self.assertIn("North America", notification.message)
+        account = Account.objects.get(name="North America")
+        self.assertEqual(notification.link, f"/accounts/{account.id}")
 
     def test_create_rejects_an_owner_from_another_organisation(self):
         other_org = Organisation.objects.create(name="Other Org")
@@ -831,6 +885,21 @@ class AccountDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.account.refresh_from_db()
         self.assertEqual(list(self.account.customers.all()), [self.customer])
+
+    def test_assigning_a_real_new_owner_sends_them_a_real_notification(self):
+        csm = User.objects.create_user(
+            email="carl@acme.io", password="supersecret1", name="Carl", organisation=self.org
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(self.url, {"owner_id": csm.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        notification = Notification.objects.get(recipient=csm)
+        self.assertEqual(notification.kind, Notification.Kind.ACCOUNT_ASSIGNED)
+        self.assertEqual(notification.actor, self.admin)
+        self.assertIn("North America", notification.message)
+        self.assertEqual(notification.link, f"/accounts/{self.account.id}")
 
     def test_edit_rejects_an_owner_from_another_organisation(self):
         other_org = Organisation.objects.create(name="Other Org")

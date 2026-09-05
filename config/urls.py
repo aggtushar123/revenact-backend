@@ -103,6 +103,11 @@ urlpatterns = [
     # Customer/Account" reasoning as Scenarios/Campaigns above; a
     # conversation is scoped to one User, not a Customer/Account.
     path("api/v1/copilot/", include("services.copilot.urls")),
+    # Notifications — its own app, same "tenant-wide, not owned by one
+    # Customer/Account" reasoning as Scenarios/Campaigns/Copilot above;
+    # a notification is scoped to one User (its own recipient), not a
+    # Customer/Account. Powers the Navbar's own real bell dropdown.
+    path("api/v1/notifications/", include("services.notifications.urls")),
     # FX rates — its own app, same "tenant-wide, admin-only-both-ways"
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).

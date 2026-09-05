@@ -10,6 +10,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from services.fx_rates.conversion import convert_to_org_currency
+from services.notifications.models import Notification
+from services.notifications.realtime import notify as send_notification
 
 from .models import Account, Canvas, Contact, Customer, Opportunity, Risk, Survey, Task
 from .serializers import (
@@ -28,6 +30,28 @@ from .serializers import (
     TaskSerializer,
     TicketSerializer,
 )
+
+
+def _notify_owner_assigned(*, instance, actor, kind, noun, link):
+    """Real ownership-assignment notification — the caller is
+    responsible for only calling this when `instance.owner` really is a
+    *new* assignment (on create: any real owner; on update: only when
+    it actually changed — see CustomerDetailView/AccountDetailView's
+    own perform_update below). No-ops when there's no real owner, or
+    when the owner is assigning it to themselves (no self-notifications).
+    Shared by all four real call sites below (Customer/Account,
+    create/update) rather than duplicated per view."""
+
+    owner = instance.owner
+    if owner is None or owner.id == actor.id:
+        return
+    send_notification(
+        recipient=owner,
+        actor=actor,
+        kind=kind,
+        message=f'{actor.name} assigned you {noun} "{instance.name}"',
+        link=link,
+    )
 
 
 class CustomerListCreateView(generics.ListCreateAPIView):
@@ -87,6 +111,16 @@ class CustomerListCreateView(generics.ListCreateAPIView):
                 )
 
         return queryset
+
+    def perform_create(self, serializer):
+        customer = serializer.save()
+        _notify_owner_assigned(
+            instance=customer,
+            actor=self.request.user,
+            kind=Notification.Kind.CUSTOMER_ASSIGNED,
+            noun="the organization",
+            link=f"/organizations/{customer.id}",
+        )
 
 
 class CustomerStatsView(views.APIView):
@@ -206,6 +240,18 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
     def get_queryset(self):
         return Customer.objects.filter(organisation=self.request.user.organisation)
 
+    def perform_update(self, serializer):
+        previous_owner_id = serializer.instance.owner_id
+        customer = serializer.save()
+        if customer.owner_id != previous_owner_id:
+            _notify_owner_assigned(
+                instance=customer,
+                actor=self.request.user,
+                kind=Notification.Kind.CUSTOMER_ASSIGNED,
+                noun="the organization",
+                link=f"/organizations/{customer.id}",
+            )
+
 
 class AccountListCreateView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/accounts/ — every Account
@@ -253,6 +299,13 @@ class AccountListCreateView(generics.ListCreateAPIView):
         customer = self.get_customer()
         account = serializer.save()
         account.customers.add(customer)
+        _notify_owner_assigned(
+            instance=account,
+            actor=self.request.user,
+            kind=Notification.Kind.ACCOUNT_ASSIGNED,
+            noun="the account",
+            link=f"/accounts/{account.id}",
+        )
 
 
 class AccountDetailView(generics.RetrieveUpdateAPIView):
@@ -273,6 +326,18 @@ class AccountDetailView(generics.RetrieveUpdateAPIView):
             customers=self.kwargs["customer_id"],
             customers__organisation=self.request.user.organisation,
         )
+
+    def perform_update(self, serializer):
+        previous_owner_id = serializer.instance.owner_id
+        account = serializer.save()
+        if account.owner_id != previous_owner_id:
+            _notify_owner_assigned(
+                instance=account,
+                actor=self.request.user,
+                kind=Notification.Kind.ACCOUNT_ASSIGNED,
+                noun="the account",
+                link=f"/accounts/{account.id}",
+            )
 
 
 class AccountListView(generics.ListAPIView):

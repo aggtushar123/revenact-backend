@@ -8,6 +8,8 @@ from rest_framework.views import APIView
 
 from services.accounts.models import Organisation, User
 from services.customers.models import Account, Customer
+from services.notifications.models import Notification
+from services.notifications.realtime import notify as send_notification
 
 from .anthropic_client import CopilotNotConfigured, CopilotRequestFailed, get_completion
 from .context import build_org_context_summary
@@ -222,6 +224,19 @@ class SendMessageView(APIView):
         return Response(ConversationDetailSerializer(conversation).data)
 
 
+def _session_subject_label(session):
+    """A real, human "about X" fragment for a session's own real
+    customer/account context — used only for real notification text
+    (see the two call sites below); None when the session has no
+    company context at all (a plain New Chat session)."""
+
+    if session.customer_id:
+        return session.customer.name
+    if session.account_id:
+        return session.account.name
+    return None
+
+
 def _same_org_member(organisation, user_id):
     """Real, same-tenant-only lookup for a target user id — same
     discipline as CustomerSerializer.validate_owner_id. None on any
@@ -380,6 +395,17 @@ class SessionInviteCreateView(APIView):
                 "responded_at": None,
             },
         )
+        subject = _session_subject_label(session)
+        message = f"{request.user.name} invited you to a live Copilot session" + (
+            f" about {subject}" if subject else ""
+        )
+        send_notification(
+            recipient=target,
+            actor=request.user,
+            kind=Notification.Kind.COPILOT_INVITE,
+            message=message,
+            link=f"/copilot?session={conversation.id}",
+        )
         return Response(SessionInviteSerializer(invite).data, status=status.HTTP_201_CREATED)
 
 
@@ -442,6 +468,19 @@ class SessionHandoffView(APIView):
             payload={"to_user_id": target.id, "to_user_name": target.name, "note": note},
         )
         broadcast_session_update(session)
+        subject = _session_subject_label(session)
+        message = f"{request.user.name} handed off a Copilot session to you" + (
+            f" — {subject}" if subject else ""
+        )
+        if note:
+            message += f': "{note}"'
+        send_notification(
+            recipient=target,
+            actor=request.user,
+            kind=Notification.Kind.COPILOT_HANDOFF,
+            message=message,
+            link=f"/copilot?session={conversation.id}",
+        )
 
         session._events_page = session.events.all()
         return Response(CopilotSessionSerializer(session).data)

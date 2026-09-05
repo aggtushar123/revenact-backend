@@ -21,6 +21,7 @@ from services.copilot.models import (
     SessionParticipant,
 )
 from services.customers.models import Customer
+from services.notifications.models import Notification
 
 
 class SessionViewTests(APITestCase):
@@ -180,6 +181,19 @@ class SessionViewTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_inviting_someone_sends_them_a_real_notification(self):
+        customer = Customer.objects.create(organisation=self.org, name="Pizza Hut")
+        self.client.force_authenticate(self.owner)
+        self.client.post(self._url(), {"customer_id": customer.id}, format="json")
+
+        self.client.post(self._url("invite/"), {"user_id": self.teammate.id}, format="json")
+
+        notification = Notification.objects.get(recipient=self.teammate)
+        self.assertEqual(notification.kind, Notification.Kind.COPILOT_INVITE)
+        self.assertEqual(notification.actor, self.owner)
+        self.assertIn("Pizza Hut", notification.message)
+        self.assertEqual(notification.link, f"/copilot?session={self.conversation.id}")
+
     def test_reinviting_a_declined_user_resets_them_to_pending(self):
         self.client.force_authenticate(self.owner)
         self.client.post(self._url())
@@ -229,6 +243,10 @@ class SessionViewTests(APITestCase):
                 session=session, invited_user=self.stranger, status=SessionInvite.Status.PENDING
             ).exists()
         )
+        notification = Notification.objects.get(recipient=self.stranger)
+        self.assertEqual(notification.kind, Notification.Kind.COPILOT_HANDOFF)
+        self.assertEqual(notification.actor, self.teammate)
+        self.assertIn("Own the recovery call.", notification.message)
 
     def test_handoff_creates_the_session_directly_without_make_live_first(self):
         # Real UX fix: hand-off is its own independent way to start a

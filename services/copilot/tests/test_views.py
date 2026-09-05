@@ -107,7 +107,14 @@ class SendMessageViewTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    @override_settings(ANTHROPIC_API_KEY="")
+    # Pins the provider explicitly, not just clearing ANTHROPIC_API_KEY —
+    # since Copilot: support AWS Bedrock (see anthropic_client.py), a
+    # real ambient .env with COPILOT_LLM_PROVIDER=bedrock (and real AWS
+    # credentials) would otherwise make this test silently pass through
+    # to a real, live Bedrock call instead of hitting the "not
+    # configured" short-circuit it's actually testing — caught live when
+    # this exact thing happened after Bedrock was configured for real.
+    @override_settings(COPILOT_LLM_PROVIDER="anthropic", ANTHROPIC_API_KEY="")
     def test_not_configured_returns_503_and_leaves_no_trace(self):
         response = self.client.post(self.url, {"content": "Hello"}, format="json")
 

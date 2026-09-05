@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     "services.fx_rates",
     "services.campaigns",
     "services.copilot",
+    "services.notifications",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
