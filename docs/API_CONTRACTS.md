@@ -72,6 +72,7 @@ expects.
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot | — | ⏳ Not started |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
+| Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
 | Company Brain | — | ⏳ Not started |
 | Settings > Currency / Global Presets / AI Agent | `accounts` (`Organisation` model), `customers` (`Customer.currency`), `fx_rates` | 🟢 `Organisation.currency` actually controls money formatting everywhere now (every `$` in the frontend is currency-aware) and, since Tier 1, each `Customer` can carry its *own* contract currency independent of the org's, with an admin-maintained `fx_rates` table converting cross-currency rollups (see `GET /api/v1/customers/stats/`'s `unconverted_count`) — see the `fx_rates` app's own section below. `ai_agent_enabled`/`ai_agent_tone` are still stored and shown back but not yet consumed (no Copilot backend to read them); `default_lifecycle_stage` is real end to end — it's what the standalone Add Organization flow actually pre-fills. |
 | Settings > Entity Uploads | — (no new endpoint) | 🟢 CSV bulk-create for Organizations, one real `POST /customers/` per mapped row via the existing `CustomerListCreateView` — see react-ts-app's EntityUploadsPage.tsx. Accounts/Contacts import not built yet. |
@@ -1639,6 +1640,100 @@ Auth: `IsAuthenticated`. This scenario's own run history, newest first
 
 **Response `200`** — an array of the same shape as `POST .../run/`'s
 response.
+
+---
+
+## `campaigns` — Bulk email send (`/campaigns`, `CampaignEditor.tsx`)
+
+Mirrors: `src/pages/campaigns/CampaignEditor.tsx`, `types.ts`,
+`campaignApi.ts`. Its own top-level app, same "tenant-wide, not owned
+by one Customer/Account" reasoning as `scenarios` — a Campaign's
+audience naturally spans many Customers/Accounts at once. A real send,
+not a mockup: `services/email.py`'s `send_campaign_email` is the same
+`send_mail` plumbing already used for password-reset emails and the
+Scenario builder's own "Send Email" action, generalized to one
+recipient at a time from a real list. No task queue exists in this
+codebase, so a send runs synchronously, in-request — the same limit
+`scenarios/engine.py`'s own docstring states outright.
+
+### Models
+
+- `Campaign` — `name`, `subject`, `body`, `status` (`draft`/`sent` — no
+  `scheduled` state, no task queue to honor a future send time),
+  `recipients` (a real ManyToManyField to `customers.Contact` — no new
+  audience-builder, the same real Contacts already on `/contacts/list`),
+  `send_log` (list of `{contact_id, contact_name, status: "sent"|"skipped",
+  detail}`, one per recipient, written once by `POST .../send/` and
+  never touched again — `sent_count`/`skipped_count` are derived from
+  this in the serializer, not stored separately), `sent_at`,
+  `created_at`/`updated_at`.
+- `customers.Email` gained one new nullable field, `campaign` — set
+  only on a row `CampaignSendView` itself created as a byproduct of a
+  real send, so that send shows up for real in the recipient's own
+  parent Customer/Account's Activity Feed, not just in the campaign's
+  own send report. Every Email row logged any other way simply has it
+  as `None`.
+
+### Conventions specific to this app
+
+A sent Campaign is locked — `PATCH` 400s once `status == "sent"` rather
+than silently accepting an edit nobody could act on (you can't unsend a
+real email). `recipient_ids` (a list of Contact ids) is never a real
+serializer field — read straight off raw request data in
+`perform_create`/`perform_update` and resolved against the caller's own
+organisation, same "not a real serializer field" convention Survey/
+Canvas's own flat create views already use for `customer_id`/
+`account_id`, generalized here to a list.
+
+### `GET/POST /api/v1/campaigns/`
+
+Auth: `IsAuthenticated`. GET: every Campaign the caller's own
+organisation owns. **Pagination is off** — same reasoning as
+`ScenarioListCreateView`, a small whole-collection list. POST accepts
+an optional `recipient_ids` array alongside `name`/`subject`/`body`.
+
+**Response `200`/`201`**
+```json
+[
+  {
+    "id": 4,
+    "name": "Renewal Reminder",
+    "subject": "Your renewal is coming up",
+    "body": "Hi there, ...",
+    "status": "sent",
+    "status_display": "Sent",
+    "recipients": [ { "id": 12, "name": "Sarah Chen", "email": "sarah@apple.example" } ],
+    "send_log": [ { "contact_id": 12, "contact_name": "Sarah Chen", "status": "sent", "detail": "Emailed sarah@apple.example" } ],
+    "sent_count": 1,
+    "skipped_count": 0,
+    "sent_at": "2026-09-05T10:05:00Z",
+    "created_at": "2026-09-01T10:00:00Z",
+    "updated_at": "2026-09-05T10:05:00Z"
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/campaigns/<id>/`
+
+Auth: `IsAuthenticated`. Scoped to the caller's own organisation (404,
+not 403, otherwise). PATCH accepts `name`/`subject`/`body`/
+`recipient_ids`; `400` if the campaign has already been sent.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoint.
+**Response `204`** (DELETE) — empty body.
+
+### `POST /api/v1/campaigns/<id>/send/`
+
+Auth: `IsAuthenticated`. Body: none. The real send. `400` if already
+sent, if `subject`/`body` is blank, or if there are no recipients.
+Runs synchronously — there's no task queue, so the response IS the
+completed send, `send_log` and all. A recipient with no email on file
+(or any other per-recipient send failure) is logged as `"skipped"`,
+never aborts the rest of the send.
+
+**Response `200`** — the updated Campaign, same shape as the list
+endpoint, with `status: "sent"`, a populated `send_log`, and real
+`sent_count`/`skipped_count`.
 
 ---
 

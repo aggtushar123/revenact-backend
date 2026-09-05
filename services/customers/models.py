@@ -421,7 +421,13 @@ class Email(models.Model):
     team rather than a person (e.g. "Support Team", "Product Team").
     `sender_avatar` isn't stored either — the frontend derives a
     placeholder avatar straight from sender_name today, no different
-    from before this model existed."""
+    from before this model existed.
+
+    `campaign` is nullable — set only for a row CampaignSendView itself
+    created as a byproduct of a real send (see that view's own
+    docstring), never client-writable. Every Email row created before
+    Campaigns existed, and every one logged some other way, simply has
+    it as None."""
 
     customer = models.ForeignKey(
         Customer,
@@ -440,6 +446,14 @@ class Email(models.Model):
         blank=True,
         help_text="Set for an account-level email. Exactly one of "
         "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    campaign = models.ForeignKey(
+        "campaigns.Campaign",
+        related_name="emails",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Set only when this row was created by a real Campaign send.",
     )
     subject = models.CharField(max_length=255)
     sender_name = models.CharField(max_length=150)

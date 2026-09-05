@@ -60,3 +60,22 @@ def send_scenario_email(customer, subject, body):
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[customer.email],
     )
+
+
+def send_campaign_email(contact, subject, body):
+    """Sends one recipient of a real Campaign — same send_mail plumbing
+    as send_scenario_email above, to `contact.email` instead of a
+    Customer's. Called from campaigns.views.CampaignSendView, once per
+    recipient; raises ValueError (caught there and logged as a skipped
+    recipient, not a crashed send) if the Contact has no email on
+    record rather than silently mailing nobody."""
+
+    if not contact.email:
+        raise ValueError(f"{contact.name} has no email on record.")
+
+    send_mail(
+        subject=subject,
+        message=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[contact.email],
+    )

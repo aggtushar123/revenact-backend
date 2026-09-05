@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "services.scenarios",
     "services.webhooks",
     "services.fx_rates",
+    "services.campaigns",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
