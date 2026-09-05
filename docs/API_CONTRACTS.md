@@ -1828,8 +1828,15 @@ with real AWS credentials (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
 `AWS_REGION`) and a real `BEDROCK_MODEL_ID` from your own AWS console (a
 different id format than `ANTHROPIC_MODEL`) — that model must already have
 real Bedrock model access approved in your own account/region first, a
-one-time AWS Console step this app can't do for you. With the selected
-provider's own credentials unset, every send returns a `503` rather than a
+one-time AWS Console step this app can't do for you. Live-verified against
+real AWS Bedrock in `ap-south-1`; hit and fixed a real regional gotcha
+along the way — the plain model id was rejected ("on-demand throughput
+isn't supported... use an inference profile"), fixed by using the
+region-group-prefixed cross-region inference profile id instead
+(`apac.anthropic.claude-3-5-sonnet-20240620-v1:0`, not the bare
+`anthropic.claude-3-5-sonnet-20240620-v1:0` — see `.env.example`'s own
+note on `BEDROCK_MODEL_ID`). With the selected provider's own credentials
+unset, every send returns a `503` rather than a
 fake answer.
 
 Its own top-level app, same "tenant-wide, not owned by one Customer/
