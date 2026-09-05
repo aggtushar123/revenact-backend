@@ -4,6 +4,7 @@ Django settings for the Revenact backend.
 Docs: https://docs.djangoproject.com/en/5.2/topics/settings/
 """
 
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -28,6 +29,14 @@ ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 # --- Applications -------------------------------------------------------------
 
 INSTALLED_APPS = [
+    # Multiplayer Copilot Phase 2b's own real-time push (see
+    # services/copilot/consumers.py) — "daphne" first is required by
+    # Channels itself: it auto-patches `manage.py runserver` to serve
+    # ASGI (HTTP + WebSocket both) instead of plain WSGI, so the exact
+    # same dev command already in use keeps working, no new process to
+    # start by hand.
+    "daphne",
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -90,6 +99,45 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+
+# Multiplayer Copilot Phase 2b's own real-time push — config.asgi routes
+# WebSocket connections through Channels (HTTP still goes through the
+# exact same Django app WSGI_APPLICATION above does; nothing about REST
+# changed). See services/copilot/consumers.py's own docstring.
+ASGI_APPLICATION = "config.asgi.application"
+
+# Real Redis-backed channel layer — required once more than one server
+# process exists (a single `manage.py runserver` would work fine with
+# the in-memory layer too, but that silently stops working the moment a
+# second process joins, with no error — see services/copilot/realtime.py's
+# own docstring). Runs via Docker locally (`docker compose up -d redis`,
+# see docker-compose.yml), not installed on this machine directly — the
+# user's own explicit choice.
+#
+# `manage.py test` swaps this for the in-memory backend instead — same
+# "don't make the real test suite depend on a real external service"
+# discipline as mocking the real Anthropic API call (see
+# anthropic_client.py) or the real embedding model in most copilot
+# tests: real Redis reachability isn't what these tests are about, and
+# a broken/unreachable Redis would otherwise fail unrelated tests all
+# over the suite (any view that calls
+# services.copilot.realtime.broadcast_session_update), not just the
+# ones actually exercising real-time push (see test_consumers.py, which
+# re-overrides this to the exact same in-memory backend deliberately,
+# self-documenting the choice for its own module rather than relying on
+# this one).
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": (
+            "channels.layers.InMemoryChannelLayer"
+            if "test" in sys.argv
+            else "channels_redis.core.RedisChannelLayer"
+        ),
+        "CONFIG": {}
+        if "test" in sys.argv
+        else {"hosts": [env("REDIS_URL", default="redis://localhost:6379/0")]},
+    },
+}
 
 # --- Database -----------------------------------------------------------------
 # Defaults to the docker-compose Postgres instance; override via DATABASE_URL.

@@ -16,15 +16,31 @@ services:
       timeout: 5s
       retries: 5
 
+  # Multiplayer Copilot Phase 2b's own real-time push (see
+  # services/copilot/consumers.py) — the channel layer Django Channels
+  # uses to fan a push out to every real connected participant, real
+  # since more than one server process needs to share it (see
+  # config/settings.py's own CHANNEL_LAYERS docstring). Run standalone
+  # for local dev — `docker compose up -d redis` — the user's own
+  # explicit choice over installing Redis on the machine directly (via
+  # Homebrew) or skipping it for an in-memory-only channel layer.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
   web:
     build: .
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      # Overrides .env's localhost DATABASE_URL — inside the compose
-      # network the DB is reachable at the `db` service name, not localhost.
+      # Overrides .env's localhost DATABASE_URL/REDIS_URL — inside the
+      # compose network these are reachable at the service names, not
+      # localhost.
       DATABASE_URL: postgres://revenact:revenact@db:5432/revenact
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     volumes:
@@ -32,6 +48,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     command: >
       sh -c "python manage.py migrate --noinput &&
              python manage.py runserver 0.0.0.0:8000"

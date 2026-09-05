@@ -19,6 +19,7 @@ from .models import (
     SessionInvite,
     SessionParticipant,
 )
+from .realtime import broadcast_session_update
 from .serializers import (
     ConversationDetailSerializer,
     ConversationListSerializer,
@@ -216,6 +217,7 @@ class SendMessageView(APIView):
                 actor=request.user,
                 message=user_message,
             )
+            broadcast_session_update(session)
 
         return Response(ConversationDetailSerializer(conversation).data)
 
@@ -337,6 +339,7 @@ class SessionView(APIView):
         SessionEvent.objects.create(
             session=session, kind=SessionEvent.Kind.MADE_LIVE, actor=request.user
         )
+        broadcast_session_update(session)
 
         session._events_page = session.events.all()
         return Response(CopilotSessionSerializer(session).data)
@@ -438,6 +441,7 @@ class SessionHandoffView(APIView):
             actor=request.user,
             payload={"to_user_id": target.id, "to_user_name": target.name, "note": note},
         )
+        broadcast_session_update(session)
 
         session._events_page = session.events.all()
         return Response(CopilotSessionSerializer(session).data)
@@ -466,6 +470,7 @@ class SessionCloseView(APIView):
         SessionEvent.objects.create(
             session=session, kind=SessionEvent.Kind.CLOSED, actor=request.user
         )
+        broadcast_session_update(session)
 
         session._events_page = session.events.all()
         return Response(CopilotSessionSerializer(session).data)
@@ -522,5 +527,6 @@ class RespondToInviteView(APIView):
                 kind=SessionEvent.Kind.JOINED,
                 actor=request.user,
             )
+            broadcast_session_update(invite.session)
 
         return Response(SessionInviteSerializer(invite).data)
