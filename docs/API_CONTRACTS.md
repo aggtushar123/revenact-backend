@@ -70,7 +70,7 @@ expects.
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
-| Copilot (`/copilot`) | `copilot` | 🟡 Real Anthropic Claude chat, grounded in real data — see below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the caller's own organisation (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts). Conversations are private per-user. Requires `ANTHROPIC_API_KEY`; returns a clear `503` without one rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. |
+| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the caller's own organisation (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts). Conversations are private per-user. Requires `ANTHROPIC_API_KEY`; returns a clear `503` without one rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
 | Company Brain | — | ⏳ Not started |
@@ -688,6 +688,43 @@ Account to exclude anything by). MRR is `arr / 12`, same derivation as
 }
 ```
 
+### `GET /api/v1/cockpit/summary/`
+
+Auth: `IsAuthenticated`. Real numbers for Cockpit's own "My Portfolio
+Summary"/"Renewals" tiles (react-ts-app's
+`src/pages/copilot/CockpitView.tsx`), which used to show fixed literal
+counts/values unrelated to any real Customer/Account. Scoped to the
+caller's own *owned* book of business — `owner=request.user` on
+Customer/Account, not the whole tenant's, same "My" framing as
+`/tasks/?mine=true`.
+
+`customers`/`accounts` mirror `CustomerStatsView`/`AccountStatsView`'s
+own health-bucketing and FX-conversion rules exactly (`Customer`'s own
+`arr_billed_at_hq` converted via `convert_to_org_currency`, excluded
+rather than mis-summed when unconvertible — see `unconverted_count`;
+`Account`'s own `arr` used as-is, no FX step). `renewals_next_30_days`
+reuses `CustomerListCreateView`'s own `?renewal_within=` window/
+exclusion rules (today through +30 days inclusive, already-churned
+excluded, no `renewal_date` excluded).
+
+**Response `200`**
+```json
+{
+  "customers": {
+    "count": 4, "value": 63500.0, "unconverted_count": 0,
+    "health": { "good": 3, "average": 1, "poor": 0 }
+  },
+  "accounts": {
+    "count": 2, "value": 30000.0,
+    "health": { "good": 2, "average": 0, "poor": 0 }
+  },
+  "renewals_next_30_days": {
+    "customers": { "count": 1, "value": 12000.0 },
+    "accounts": { "count": 0, "value": 0.0 }
+  }
+}
+```
+
 ### Models — `Activity`
 
 Mirrors: `src/components/shared/ActivityFeed.tsx`'s "Activities" filter,
@@ -830,6 +867,32 @@ same reasoning as the Activity account-level endpoint. Powers
 ActivityFeed's "Tasks" filter on the standalone Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
+
+### `GET /api/v1/tasks/`
+
+Auth: `IsAuthenticated`. Every `Task` across every Customer/Account the
+caller's own organisation owns, organisation-level and account-level
+alike — the one Task view spanning every company at once, same
+top-level reasoning as `/opportunities/`/`/risks/`. **Pagination is
+off** — a small, whole-collection list.
+
+Powers Cockpit's own "My Tasks" panel (react-ts-app's
+`src/pages/copilot/CockpitView.tsx`), which used to read from an
+entirely separate, purely local mock Redux list
+(`features/tasks/tasksSlice.ts`) with no relation to this real model —
+that mock list is untouched (`CallSenseTab.tsx`'s own, unrelated
+"Create Tasks from Actions" mockup still uses it).
+
+`?mine=true` additionally filters to Task rows whose parent
+Customer/Account's own `owner` is the caller — one CSM's own assigned
+book, not the whole tenant's. Without it, this is a plain tenant-wide
+list.
+
+**Response `200`** — a plain array, each entry adds `priority_display`,
+`status_display`, `parent_name`, and `parent_type`
+(`"customer"`/`"account"`) to the nested shape above — a flat list
+spanning every company needs to say which one each row belongs to,
+same reasoning as `OpportunitySerializer`'s own `account_name`.
 
 ### Models — `Note`
 

@@ -11,7 +11,7 @@ from rest_framework.response import Response
 
 from services.fx_rates.conversion import convert_to_org_currency
 
-from .models import Account, Canvas, Contact, Customer, Opportunity, Risk, Survey
+from .models import Account, Canvas, Contact, Customer, Opportunity, Risk, Survey, Task
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
@@ -24,6 +24,7 @@ from .serializers import (
     OpportunitySerializer,
     RiskSerializer,
     SurveySerializer,
+    TaskListSerializer,
     TaskSerializer,
     TicketSerializer,
 )
@@ -540,6 +541,50 @@ class AccountTaskListView(generics.ListAPIView):
             customers__organisation=self.request.user.organisation,
         )
         return account.tasks.all()
+
+
+class TaskListView(generics.ListAPIView):
+    """GET /api/v1/tasks/ — every Task across every Customer/Account the
+    caller's own organisation owns, organisation-level and account-level
+    alike. Same top-level, cross-company reasoning as OpportunityListView/
+    RiskListView above — the one place a Task is browsed independent of
+    which Customer/Account it belongs to. Powers Cockpit's own "My Tasks"
+    panel (react-ts-app's src/pages/copilot/CockpitView.tsx), which used
+    to read from an entirely separate, purely local mock Redux list
+    (features/tasks/tasksSlice.ts) with no relation to this real model at
+    all — that mock list is untouched here (still used by CallSenseTab's
+    own, unrelated "Create Tasks from Actions" mockup).
+
+    `?mine=true` additionally filters to Task rows whose parent Customer/
+    Account's own `owner` is the caller — Cockpit's own "My Tasks" is
+    exactly that, one CSM's own assigned book, not the whole tenant's.
+    Without it, this behaves like a plain tenant-wide list (available for
+    any future non-Cockpit consumer).
+
+    Unpaginated, same reasoning as OpportunityListView/RiskListView — a
+    small, whole-collection list, not one meant to be paged through."""
+
+    serializer_class = TaskListSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as OpportunityListView's own.
+        queryset = (
+            Task.objects.filter(
+                Q(customer__organisation=organisation)
+                | Q(account__customers__organisation=organisation)
+            )
+            .select_related("customer", "account")
+            .distinct()
+        )
+
+        if self.request.query_params.get("mine") == "true":
+            user = self.request.user
+            queryset = queryset.filter(Q(customer__owner=user) | Q(account__owner=user))
+
+        return queryset
 
 
 class CustomerNoteListView(generics.ListAPIView):
@@ -1424,3 +1469,102 @@ class CanvasDetailView(generics.RetrieveUpdateDestroyAPIView):
             Q(customer__organisation=organisation)
             | Q(account__customers__organisation=organisation)
         ).distinct()
+
+
+class CockpitSummaryView(views.APIView):
+    """GET /api/v1/cockpit/summary/ — real numbers for Cockpit's own
+    "My Portfolio Summary"/"Renewals" tiles (react-ts-app's
+    src/pages/copilot/CockpitView.tsx), which used to show fixed literal
+    counts/values unrelated to any real Customer/Account. Scoped to the
+    caller's own *owned* book of business — `owner=request.user` on
+    Customer/Account — not the whole tenant's, same "My" framing as the
+    panel's own heading and as TaskListView's own `?mine=true`.
+
+    `customers`/`accounts` mirror CustomerStatsView/AccountStatsView's
+    own health-bucketing and FX-conversion rules exactly (Customer's own
+    `arr_billed_at_hq` converted via convert_to_org_currency, excluded
+    rather than mis-summed when unconvertible; Account's own `arr` used
+    as-is, no FX step — see AccountStatsView's own docstring for why).
+    `renewals_next_30_days` reuses CustomerListCreateView's own
+    `?renewal_within=` window/exclusion rules (today through +30 days
+    inclusive, already-churned excluded, no `renewal_date` excluded) —
+    same real numbers a CSM would get by checking each list by hand.
+
+    Aggregates in Python over the caller's own rows, same reasoning as
+    CustomerStatsView/AccountStatsView: health_category is a derived
+    property, not a real column to GROUP BY, and this is fine at the
+    scale of one CSM's own book."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        organisation = request.user.organisation
+        user = request.user
+        renewal_deadline = timezone.localdate() + timedelta(days=30)
+
+        customers = Customer.objects.filter(
+            organisation=organisation, owner=user, is_archived=False
+        )
+        customer_summary = {"count": 0, "value": 0.0, "unconverted_count": 0, "health": {}}
+        for cat in Customer.HealthCategory.values:
+            customer_summary["health"][cat] = 0
+        for customer in customers:
+            customer_summary["count"] += 1
+            customer_summary["health"][customer.health_category] += 1
+            converted = convert_to_org_currency(
+                customer.arr_billed_at_hq, customer.currency, organisation
+            )
+            if converted is None:
+                customer_summary["unconverted_count"] += 1
+            else:
+                customer_summary["value"] += float(converted)
+        customer_summary["value"] = round(customer_summary["value"], 2)
+
+        # `.distinct()` — same fan-out reasoning as AccountListView's own.
+        accounts = Account.objects.filter(
+            customers__organisation=organisation, owner=user
+        ).distinct()
+        account_summary = {"count": 0, "value": 0.0, "health": {}}
+        for cat in Customer.HealthCategory.values:
+            account_summary["health"][cat] = 0
+        for account in accounts:
+            account_summary["count"] += 1
+            account_summary["health"][account.health_category] += 1
+            account_summary["value"] += float(account.arr)
+        account_summary["value"] = round(account_summary["value"], 2)
+
+        renewing_customers = customers.exclude(
+            lifecycle_stage=Customer.LifecycleStage.CHURN
+        ).filter(renewal_date__isnull=False, renewal_date__lte=renewal_deadline)
+        renewing_accounts = accounts.exclude(lifecycle_stage=Customer.LifecycleStage.CHURN).filter(
+            renewal_date__isnull=False, renewal_date__lte=renewal_deadline
+        )
+
+        def renewal_value(entities, is_customer):
+            total = 0.0
+            for entity in entities:
+                if is_customer:
+                    converted = convert_to_org_currency(
+                        entity.arr_billed_at_hq, entity.currency, organisation
+                    )
+                    total += float(converted) if converted is not None else 0.0
+                else:
+                    total += float(entity.arr)
+            return round(total, 2)
+
+        return Response(
+            {
+                "customers": customer_summary,
+                "accounts": account_summary,
+                "renewals_next_30_days": {
+                    "customers": {
+                        "count": renewing_customers.count(),
+                        "value": renewal_value(renewing_customers, is_customer=True),
+                    },
+                    "accounts": {
+                        "count": renewing_accounts.count(),
+                        "value": renewal_value(renewing_accounts, is_customer=False),
+                    },
+                },
+            }
+        )

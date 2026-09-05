@@ -250,6 +250,46 @@ class TaskSerializer(serializers.ModelSerializer):
         fields = ["id", "title", "assignee_name", "due_date", "priority", "status"]
 
 
+class TaskListSerializer(serializers.ModelSerializer):
+    """Powers the standalone, cross-company `GET /api/v1/tasks/`
+    (TaskListView) — unlike TaskSerializer above (used by the nested
+    per-Customer/per-Account endpoints, where the parent is already
+    known from the URL), a flat list spanning every Customer/Account
+    needs to say *which* company each row belongs to, same reasoning
+    as OpportunitySerializer/RiskSerializer's own `account_name`.
+    `parent_name`/`parent_type` are a simpler pair than those two's own
+    plural `companies` — a Task's own parent is always exactly one
+    Customer or one Account (never an Account shared across several
+    Customers the way Opportunity/Risk's own `companies` accounts for),
+    so there's nothing to pluralize here."""
+
+    priority_display = serializers.CharField(source="get_priority_display", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    parent_name = serializers.SerializerMethodField()
+    parent_type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Task
+        fields = [
+            "id",
+            "title",
+            "assignee_name",
+            "due_date",
+            "priority",
+            "priority_display",
+            "status",
+            "status_display",
+            "parent_name",
+            "parent_type",
+        ]
+
+    def get_parent_name(self, obj):
+        return obj.customer.name if obj.customer_id else obj.account.name
+
+    def get_parent_type(self, obj):
+        return "customer" if obj.customer_id else "account"
+
+
 class NoteSerializer(serializers.ModelSerializer):
     """Read-only — see Note model's docstring."""
 

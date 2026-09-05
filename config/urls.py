@@ -22,6 +22,7 @@ from services.customers.views import (
     AccountStatsView,
     CanvasDetailView,
     CanvasListView,
+    CockpitSummaryView,
     ContactDetailView,
     ContactListView,
     ContactStatsView,
@@ -31,6 +32,7 @@ from services.customers.views import (
     RiskListView,
     SurveyDetailView,
     SurveyListView,
+    TaskListView,
 )
 
 urlpatterns = [
@@ -112,4 +114,12 @@ urlpatterns = [
     # services.customers.urls) — see AccountListView's own docstring.
     path("api/v1/accounts/stats/", AccountStatsView.as_view(), name="account-stats"),
     path("api/v1/accounts/", AccountListView.as_view(), name="account-list"),
+    # Task, same top-level-prefix reasoning as Contact/Opportunity/Risk
+    # above — the one Task view spanning every Customer/Account at once.
+    path("api/v1/tasks/", TaskListView.as_view(), name="task-list"),
+    # Cockpit — its own top-level endpoint, not nested under any one app:
+    # a real-data rollup spanning both Customer and Account, scoped to
+    # the caller's own owned book of business. Powers Cockpit's own
+    # "My Portfolio Summary"/"Renewals" tiles.
+    path("api/v1/cockpit/summary/", CockpitSummaryView.as_view(), name="cockpit-summary"),
 ]

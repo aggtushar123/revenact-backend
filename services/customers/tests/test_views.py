@@ -4002,3 +4002,242 @@ class AccountStatsTests(APITestCase):
         good = response.data["health"]["good"]
         self.assertEqual(good["count"], 1)
         self.assertEqual(good["arr"], 100.0)
+
+
+class TaskListTests(APITestCase):
+    """/api/v1/tasks/ — the one Task view not nested under a single
+    Customer/Account (see TaskListView's own docstring). Powers
+    Cockpit's own "My Tasks" panel."""
+
+    url = "/api/v1/tasks/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.owner = User.objects.create_user(
+            email="carl@acme.io", password="supersecret1", name="Carl", organisation=self.org
+        )
+        self.other_user = User.objects.create_user(
+            email="dana@acme.io", password="supersecret1", name="Dana", organisation=self.org
+        )
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.owner
+        )
+        self.account = create_account(self.customer, name="North America", owner=self.other_user)
+
+    def _task_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Prepare QBR deck",
+            "assignee_name": "Edgar Holmes",
+            "due_date": "2026-03-15",
+            "priority": Task.Priority.HIGH,
+            "status": Task.Status.IN_PROGRESS,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_both_customer_and_account_level_tasks(self):
+        Task.objects.create(customer=self.customer, **self._task_kwargs(title="Org Task"))
+        Task.objects.create(account=self.account, **self._task_kwargs(title="Account Task"))
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = {row["title"] for row in response.data}
+        self.assertEqual(titles, {"Org Task", "Account Task"})
+
+    def test_exposes_parent_name_and_type(self):
+        Task.objects.create(customer=self.customer, **self._task_kwargs(title="Org Task"))
+        Task.objects.create(account=self.account, **self._task_kwargs(title="Account Task"))
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(self.url)
+
+        by_title = {row["title"]: row for row in response.data}
+        self.assertEqual(by_title["Org Task"]["parent_name"], "Globex")
+        self.assertEqual(by_title["Org Task"]["parent_type"], "customer")
+        self.assertEqual(by_title["Account Task"]["parent_name"], "North America")
+        self.assertEqual(by_title["Account Task"]["parent_type"], "account")
+        self.assertEqual(by_title["Org Task"]["priority_display"], "High")
+        self.assertEqual(by_title["Org Task"]["status_display"], "In Progress")
+
+    def test_does_not_leak_another_organisations_tasks(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_org_user = User.objects.create_user(
+            email="other@other.io", password="supersecret1", name="Other", organisation=other_org
+        )
+        Task.objects.create(customer=self.customer, **self._task_kwargs())
+        self.client.force_authenticate(other_org_user)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_mine_filters_to_the_callers_own_owned_customers_and_accounts(self):
+        Task.objects.create(customer=self.customer, **self._task_kwargs(title="Carl's Org Task"))
+        Task.objects.create(account=self.account, **self._task_kwargs(title="Dana's Account Task"))
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(self.url, {"mine": "true"})
+
+        titles = {row["title"] for row in response.data}
+        self.assertEqual(titles, {"Carl's Org Task"})
+
+    def test_without_mine_returns_every_task_in_the_organisation(self):
+        Task.objects.create(customer=self.customer, **self._task_kwargs(title="Carl's Org Task"))
+        Task.objects.create(account=self.account, **self._task_kwargs(title="Dana's Account Task"))
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(self.url)
+
+        titles = {row["title"] for row in response.data}
+        self.assertEqual(titles, {"Carl's Org Task", "Dana's Account Task"})
+
+
+class CockpitSummaryTests(APITestCase):
+    """GET /api/v1/cockpit/summary/ — real numbers for Cockpit's own
+    "My Portfolio Summary"/"Renewals" tiles, scoped to the caller's own
+    owned book of business."""
+
+    url = "/api/v1/cockpit/summary/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.owner = User.objects.create_user(
+            email="carl@acme.io", password="supersecret1", name="Carl", organisation=self.org
+        )
+        self.other_user = User.objects.create_user(
+            email="dana@acme.io", password="supersecret1", name="Dana", organisation=self.org
+        )
+        self.client.force_authenticate(self.owner)
+
+    def test_unauthenticated_cannot_access(self):
+        self.client.force_authenticate(None)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_empty_book_returns_zeroed_summary_not_an_error(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["customers"]["count"], 0)
+        self.assertEqual(response.data["customers"]["value"], 0)
+        self.assertEqual(response.data["accounts"]["count"], 0)
+        self.assertEqual(response.data["renewals_next_30_days"]["customers"]["count"], 0)
+
+    def test_only_counts_customers_and_accounts_the_caller_owns(self):
+        Customer.objects.create(
+            organisation=self.org, name="Mine", owner=self.owner, arr_billed_at_hq="1000.00"
+        )
+        Customer.objects.create(
+            organisation=self.org,
+            name="Not Mine",
+            owner=self.other_user,
+            arr_billed_at_hq="9999.00",
+        )
+        # An Account's own ownership is independent of its parent
+        # Customer's — "my account" under someone else's own customer
+        # still counts towards my own book, same as CockpitSummaryView's
+        # own separate owner= filters on each queryset.
+        other_customer = Customer.objects.create(
+            organisation=self.org, name="Parent", owner=self.other_user
+        )
+        create_account(other_customer, name="My Account", owner=self.owner, arr="500.00")
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["customers"]["count"], 1)
+        self.assertEqual(response.data["customers"]["value"], 1000.0)
+        self.assertEqual(response.data["accounts"]["count"], 1)
+        self.assertEqual(response.data["accounts"]["value"], 500.0)
+
+    def test_health_distribution_reflects_real_health_scores(self):
+        Customer.objects.create(
+            organisation=self.org, name="Good", owner=self.owner, health_score="9.0"
+        )
+        Customer.objects.create(
+            organisation=self.org, name="Poor", owner=self.owner, health_score="1.0"
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["customers"]["health"]["good"], 1)
+        self.assertEqual(response.data["customers"]["health"]["poor"], 1)
+
+    def test_renewals_next_30_days_includes_only_customers_renewing_soon(self):
+        today = timezone.localdate()
+        Customer.objects.create(
+            organisation=self.org,
+            name="Renewing Soon",
+            owner=self.owner,
+            arr_billed_at_hq="1200.00",
+            renewal_date=today + timedelta(days=10),
+        )
+        Customer.objects.create(
+            organisation=self.org,
+            name="Renewing Later",
+            owner=self.owner,
+            arr_billed_at_hq="2400.00",
+            renewal_date=today + timedelta(days=90),
+        )
+        Customer.objects.create(
+            organisation=self.org,
+            name="No Renewal Date",
+            owner=self.owner,
+            arr_billed_at_hq="500.00",
+        )
+
+        response = self.client.get(self.url)
+
+        renewals = response.data["renewals_next_30_days"]["customers"]
+        self.assertEqual(renewals["count"], 1)
+        self.assertEqual(renewals["value"], 1200.0)
+
+    def test_renewals_excludes_already_churned_customers(self):
+        today = timezone.localdate()
+        Customer.objects.create(
+            organisation=self.org,
+            name="Churned",
+            owner=self.owner,
+            lifecycle_stage=Customer.LifecycleStage.CHURN,
+            renewal_date=today + timedelta(days=5),
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["renewals_next_30_days"]["customers"]["count"], 0)
+
+    def test_converts_customer_arr_to_org_currency(self):
+        from services.fx_rates.models import FxRate
+
+        FxRate.objects.create(organisation=self.org, currency="EUR", rate_to_org_currency="2.0")
+        Customer.objects.create(
+            organisation=self.org,
+            name="Euro Customer",
+            owner=self.owner,
+            currency="EUR",
+            arr_billed_at_hq="1000.00",
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["customers"]["value"], 2000.0)
+        self.assertEqual(response.data["customers"]["unconverted_count"], 0)
+
+    def test_unconvertible_currency_excluded_from_value_but_still_counted(self):
+        Customer.objects.create(
+            organisation=self.org,
+            name="No Rate Configured",
+            owner=self.owner,
+            currency="GBP",
+            arr_billed_at_hq="1000.00",
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data["customers"]["count"], 1)
+        self.assertEqual(response.data["customers"]["value"], 0)
+        self.assertEqual(response.data["customers"]["unconverted_count"], 1)
