@@ -4126,7 +4126,9 @@ class CockpitSummaryTests(APITestCase):
         self.assertEqual(response.data["customers"]["count"], 0)
         self.assertEqual(response.data["customers"]["value"], 0)
         self.assertEqual(response.data["accounts"]["count"], 0)
-        self.assertEqual(response.data["renewals_next_30_days"]["customers"]["count"], 0)
+        self.assertEqual(response.data["renewals"]["customers"]["count"], 0)
+        self.assertEqual(response.data["renewals"]["items"], [])
+        self.assertEqual(response.data["renewals"]["window_days"], 30)
 
     def test_only_counts_customers_and_accounts_the_caller_owns(self):
         Customer.objects.create(
@@ -4167,7 +4169,7 @@ class CockpitSummaryTests(APITestCase):
         self.assertEqual(response.data["customers"]["health"]["good"], 1)
         self.assertEqual(response.data["customers"]["health"]["poor"], 1)
 
-    def test_renewals_next_30_days_includes_only_customers_renewing_soon(self):
+    def test_renewals_includes_only_customers_renewing_within_the_window(self):
         today = timezone.localdate()
         Customer.objects.create(
             organisation=self.org,
@@ -4192,9 +4194,11 @@ class CockpitSummaryTests(APITestCase):
 
         response = self.client.get(self.url)
 
-        renewals = response.data["renewals_next_30_days"]["customers"]
+        renewals = response.data["renewals"]["customers"]
         self.assertEqual(renewals["count"], 1)
         self.assertEqual(renewals["value"], 1200.0)
+        self.assertEqual(len(response.data["renewals"]["items"]), 1)
+        self.assertEqual(response.data["renewals"]["items"][0]["name"], "Renewing Soon")
 
     def test_renewals_excludes_already_churned_customers(self):
         today = timezone.localdate()
@@ -4208,7 +4212,57 @@ class CockpitSummaryTests(APITestCase):
 
         response = self.client.get(self.url)
 
-        self.assertEqual(response.data["renewals_next_30_days"]["customers"]["count"], 0)
+        self.assertEqual(response.data["renewals"]["customers"]["count"], 0)
+
+    def test_days_query_param_controls_the_renewal_window(self):
+        today = timezone.localdate()
+        Customer.objects.create(
+            organisation=self.org,
+            name="Renewing in 45 days",
+            owner=self.owner,
+            arr_billed_at_hq="1000.00",
+            renewal_date=today + timedelta(days=45),
+        )
+
+        response_30 = self.client.get(self.url, {"days": "30"})
+        self.assertEqual(response_30.data["renewals"]["customers"]["count"], 0)
+        self.assertEqual(response_30.data["renewals"]["window_days"], 30)
+
+        response_60 = self.client.get(self.url, {"days": "60"})
+        self.assertEqual(response_60.data["renewals"]["customers"]["count"], 1)
+        self.assertEqual(response_60.data["renewals"]["window_days"], 60)
+
+    def test_invalid_days_falls_back_to_30_instead_of_erroring(self):
+        response = self.client.get(self.url, {"days": "not-a-number"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["renewals"]["window_days"], 30)
+
+    def test_renewal_items_merge_customers_and_accounts_sorted_soonest_first(self):
+        today = timezone.localdate()
+        Customer.objects.create(
+            organisation=self.org,
+            name="Later Customer",
+            owner=self.owner,
+            arr_billed_at_hq="1000.00",
+            renewal_date=today + timedelta(days=20),
+        )
+        account_parent = Customer.objects.create(
+            organisation=self.org, name="Account Parent", owner=self.owner
+        )
+        create_account(
+            account_parent,
+            name="Sooner Account",
+            owner=self.owner,
+            arr="500.00",
+            renewal_date=today + timedelta(days=5),
+        )
+
+        response = self.client.get(self.url)
+
+        items = response.data["renewals"]["items"]
+        self.assertEqual([item["name"] for item in items], ["Sooner Account", "Later Customer"])
+        self.assertEqual(items[0]["type"], "account")
+        self.assertEqual(items[1]["type"], "customer")
 
     def test_converts_customer_arr_to_org_currency(self):
         from services.fx_rates.models import FxRate

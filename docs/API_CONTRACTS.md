@@ -70,7 +70,7 @@ expects.
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
-| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the caller's own organisation (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts). Conversations are private per-user. Requires `ANTHROPIC_API_KEY`; returns a clear `503` without one rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
+| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts) — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires `ANTHROPIC_API_KEY`; returns a clear `503` without one rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
 | Company Brain | — | ⏳ Not started |
@@ -702,10 +702,15 @@ Customer/Account, not the whole tenant's, same "My" framing as
 own health-bucketing and FX-conversion rules exactly (`Customer`'s own
 `arr_billed_at_hq` converted via `convert_to_org_currency`, excluded
 rather than mis-summed when unconvertible — see `unconverted_count`;
-`Account`'s own `arr` used as-is, no FX step). `renewals_next_30_days`
-reuses `CustomerListCreateView`'s own `?renewal_within=` window/
-exclusion rules (today through +30 days inclusive, already-churned
-excluded, no `renewal_date` excluded).
+`Account`'s own `arr` used as-is, no FX step). `renewals` reuses
+`CustomerListCreateView`'s own `?renewal_within=` window/exclusion
+rules (today through +`?days=` days inclusive, already-churned
+excluded, no `renewal_date` excluded) — `?days=` defaults to `30`, any
+positive int (an invalid value silently falls back to 30, same
+"ignore, don't 400" convention as `?renewal_within=`'s own). `items`
+is every renewing Customer/Account merged into one list and sorted
+soonest-first — a real drill-down, not just a count/value pair, same
+"give the real list" reasoning as `TaskListView`.
 
 **Response `200`**
 ```json
@@ -718,9 +723,13 @@ excluded, no `renewal_date` excluded).
     "count": 2, "value": 30000.0,
     "health": { "good": 2, "average": 0, "poor": 0 }
   },
-  "renewals_next_30_days": {
+  "renewals": {
+    "window_days": 30,
     "customers": { "count": 1, "value": 12000.0 },
-    "accounts": { "count": 0, "value": 0.0 }
+    "accounts": { "count": 0, "value": 0.0 },
+    "items": [
+      { "id": 12, "name": "Acme Co", "type": "customer", "value": 12000.0, "renewal_date": "2026-09-12" }
+    ]
   }
 }
 ```
@@ -1818,11 +1827,14 @@ No task queue or streaming exists in this codebase, so a send runs
 synchronously, in-request, one blocking API call per message — same
 limit `scenarios/engine.py`'s own docstring states outright. Each
 request is grounded in a compact, real-data digest of the caller's own
-organisation (`services/copilot/context.py` — customer health/NPS/
-lifecycle breakdown, top at-risk customers, open opportunity/risk/ticket
-counts), injected into the system prompt; this is grounding, not
-tool-calling — the model can read this digest and converse, but can't
-run its own queries or take real actions.
+*owned* book of business (`services/copilot/context.py` — the
+Customers/Accounts they own, not the whole tenant's, same "My" framing
+as Cockpit's own `CockpitSummaryView`/`TaskListView`'s `?mine=true`:
+health/NPS/lifecycle breakdown, top at-risk customers, open
+opportunity/risk/ticket counts scoped to those same owned companies),
+injected into the system prompt; this is grounding, not tool-calling —
+the model can read this digest and converse, but can't run its own
+queries or take real actions.
 
 First real backend consumer of `Organisation.ai_agent_enabled`/
 `ai_agent_tone` (see the `accounts` app's own section) — `ai_agent_enabled

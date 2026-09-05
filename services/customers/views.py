@@ -1485,10 +1485,18 @@ class CockpitSummaryView(views.APIView):
     `arr_billed_at_hq` converted via convert_to_org_currency, excluded
     rather than mis-summed when unconvertible; Account's own `arr` used
     as-is, no FX step — see AccountStatsView's own docstring for why).
-    `renewals_next_30_days` reuses CustomerListCreateView's own
-    `?renewal_within=` window/exclusion rules (today through +30 days
-    inclusive, already-churned excluded, no `renewal_date` excluded) —
-    same real numbers a CSM would get by checking each list by hand.
+
+    `renewals` reuses CustomerListCreateView's own `?renewal_within=`
+    window/exclusion rules (today through +`?days=` days inclusive,
+    already-churned excluded, no `renewal_date` excluded) — same real
+    numbers a CSM would get by checking each list by hand. `?days=`
+    defaults to 30 (any positive int; a bad value falls back to 30
+    rather than erroring, same "ignore, don't 400" convention as
+    `?renewal_within=`'s own). Unlike the first Tier 0 pass, this is a
+    real drill-down, not just a count/value pair — `items` is every
+    renewing Customer/Account, merged and sorted soonest-first, so
+    Cockpit can actually show *which* ones (same "give me the real
+    list, not just a stat" reasoning as `TaskListView`).
 
     Aggregates in Python over the caller's own rows, same reasoning as
     CustomerStatsView/AccountStatsView: health_category is a derived
@@ -1500,7 +1508,15 @@ class CockpitSummaryView(views.APIView):
     def get(self, request):
         organisation = request.user.organisation
         user = request.user
-        renewal_deadline = timezone.localdate() + timedelta(days=30)
+
+        days_param = request.query_params.get("days")
+        try:
+            window_days = int(days_param) if days_param is not None else 30
+        except ValueError:
+            window_days = 30
+        if window_days <= 0:
+            window_days = 30
+        renewal_deadline = timezone.localdate() + timedelta(days=window_days)
 
         customers = Customer.objects.filter(
             organisation=organisation, owner=user, is_archived=False
@@ -1540,31 +1556,53 @@ class CockpitSummaryView(views.APIView):
             renewal_date__isnull=False, renewal_date__lte=renewal_deadline
         )
 
-        def renewal_value(entities, is_customer):
-            total = 0.0
-            for entity in entities:
-                if is_customer:
-                    converted = convert_to_org_currency(
-                        entity.arr_billed_at_hq, entity.currency, organisation
-                    )
-                    total += float(converted) if converted is not None else 0.0
-                else:
-                    total += float(entity.arr)
-            return round(total, 2)
+        items = []
+        customer_renewals = {"count": 0, "value": 0.0}
+        for customer in renewing_customers:
+            converted = convert_to_org_currency(
+                customer.arr_billed_at_hq, customer.currency, organisation
+            )
+            value = float(converted) if converted is not None else 0.0
+            customer_renewals["count"] += 1
+            customer_renewals["value"] += value
+            items.append(
+                {
+                    "id": customer.id,
+                    "name": customer.name,
+                    "type": "customer",
+                    "value": round(value, 2),
+                    "renewal_date": customer.renewal_date,
+                }
+            )
+        customer_renewals["value"] = round(customer_renewals["value"], 2)
+
+        account_renewals = {"count": 0, "value": 0.0}
+        for account in renewing_accounts:
+            value = float(account.arr)
+            account_renewals["count"] += 1
+            account_renewals["value"] += value
+            items.append(
+                {
+                    "id": account.id,
+                    "name": account.name,
+                    "type": "account",
+                    "value": round(value, 2),
+                    "renewal_date": account.renewal_date,
+                }
+            )
+        account_renewals["value"] = round(account_renewals["value"], 2)
+
+        items.sort(key=lambda item: item["renewal_date"])
 
         return Response(
             {
                 "customers": customer_summary,
                 "accounts": account_summary,
-                "renewals_next_30_days": {
-                    "customers": {
-                        "count": renewing_customers.count(),
-                        "value": renewal_value(renewing_customers, is_customer=True),
-                    },
-                    "accounts": {
-                        "count": renewing_accounts.count(),
-                        "value": renewal_value(renewing_accounts, is_customer=False),
-                    },
+                "renewals": {
+                    "window_days": window_days,
+                    "customers": customer_renewals,
+                    "accounts": account_renewals,
+                    "items": items,
                 },
             }
         )

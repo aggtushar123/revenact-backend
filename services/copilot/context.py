@@ -6,76 +6,106 @@ fabricate, now genuinely queried. The model can read this and talk about
 it; it can't run its own queries or take real actions — that's a
 meaningfully bigger scope (real tool-calling), deliberately deferred.
 
-Aggregates in Python over the caller's own Customer rows, same reasoning
-as CustomerStatsView's own docstring: health_category is a derived Python
+Scoped to the caller's own *owned* book of business — `owner=user` on
+Customer/Account — not the whole tenant's. Copilot is a personal
+assistant for whoever is logged in: their own organisation, the
+Customers/Accounts *they* manage, and those companies' own open
+pipeline/tickets — same "My" framing as Cockpit's own summary/task
+panels (CockpitSummaryView/TaskListView's own `?mine=true`), not a
+tenant-wide report a CSM would have no reason to ask their own Copilot
+about.
+
+Aggregates in Python over the caller's own rows, same reasoning as
+CustomerStatsView's own docstring: health_category is a derived Python
 property, not a real column to GROUP BY, and this is fine at the scale of
-one tenant's own customer list. Money is converted into the org's own
-currency via services.fx_rates.conversion.convert_to_org_currency before
-being summed, same "don't silently mix currencies" discipline as
-CustomerStatsView; a customer whose currency has no configured rate is
-still counted but excluded from the ARR total."""
+one CSM's own book. Money is converted into the org's own currency via
+services.fx_rates.conversion.convert_to_org_currency before being summed,
+same "don't silently mix currencies" discipline as CustomerStatsView; a
+customer whose currency has no configured rate is still counted but
+excluded from the ARR total."""
 
 from django.db.models import Q
 
-from services.customers.models import Customer, Opportunity, Risk, Ticket
+from services.customers.models import Account, Customer, Opportunity, Risk, Ticket
 from services.fx_rates.conversion import convert_to_org_currency
 
 
-def build_org_context_summary(organisation) -> str:
-    customers = Customer.objects.filter(organisation=organisation, is_archived=False)
+def build_org_context_summary(organisation, user) -> str:
+    customers = Customer.objects.filter(organisation=organisation, owner=user, is_archived=False)
+    # `.distinct()` — same fan-out reasoning as AccountListView's own.
+    accounts = Account.objects.filter(customers__organisation=organisation, owner=user).distinct()
 
-    total = customers.count()
-    if total == 0:
-        return "This organisation has no customers on record yet."
+    customer_total = customers.count()
+    account_total = accounts.count()
+    if customer_total == 0 and account_total == 0:
+        return "You don't own any customers or accounts yet — nothing to summarize."
 
-    arr_total = 0
-    lifecycle_counts: dict[str, int] = {}
-    at_risk = []
-    for customer in customers:
-        lifecycle_counts[customer.lifecycle_stage] = (
-            lifecycle_counts.get(customer.lifecycle_stage, 0) + 1
+    lines = []
+
+    if customer_total:
+        arr_total = 0
+        lifecycle_counts: dict[str, int] = {}
+        at_risk = []
+        for customer in customers:
+            lifecycle_counts[customer.lifecycle_stage] = (
+                lifecycle_counts.get(customer.lifecycle_stage, 0) + 1
+            )
+            converted = convert_to_org_currency(
+                customer.arr_billed_at_hq, customer.currency, organisation
+            )
+            if converted is not None:
+                arr_total += converted
+            at_risk.append(customer)
+
+        at_risk.sort(key=lambda c: c.health_score)
+        top_at_risk = at_risk[:5]
+
+        avg_health = sum(c.health_score for c in customers) / customer_total
+        scored = [c.nps_score for c in customers if c.nps_score is not None]
+        avg_nps = sum(scored) / len(scored) if scored else None
+
+        lines.append(
+            f"Your customers: {customer_total} total, average health score {avg_health:.1f}/10"
+            + (
+                f", average NPS {avg_nps:.0f}"
+                if avg_nps is not None
+                else ", no NPS scores recorded"
+            )
         )
-        converted = convert_to_org_currency(
-            customer.arr_billed_at_hq, customer.currency, organisation
+        lines.append(
+            "Lifecycle stages: "
+            + ", ".join(f"{stage} ({count})" for stage, count in sorted(lifecycle_counts.items()))
         )
-        if converted is not None:
-            arr_total += converted
-        at_risk.append(customer)
+        lines.append(f"Total ARR (in {organisation.currency}): {arr_total:,.2f}")
+        lines.append("Top at-risk customers (lowest health score first):")
+        for c in top_at_risk:
+            nps = c.nps_score if c.nps_score is not None else "n/a"
+            lines.append(
+                f"  - {c.name}: health {c.health_score}/10, NPS {nps}, stage {c.lifecycle_stage}"
+            )
+    else:
+        lines.append("You don't own any customers directly — only sub-accounts (see below).")
 
-    at_risk.sort(key=lambda c: c.health_score)
-    top_at_risk = at_risk[:5]
+    if account_total:
+        avg_account_health = sum(a.health_score for a in accounts) / account_total
+        lines.append(
+            f"Your accounts: {account_total} total, "
+            f"average health score {avg_account_health:.1f}/10"
+        )
 
-    avg_health = sum(c.health_score for c in customers) / total
-    scored = [c.nps_score for c in customers if c.nps_score is not None]
-    avg_nps = sum(scored) / len(scored) if scored else None
-
-    org_scope = Q(customer__organisation=organisation) | Q(
-        account__customers__organisation=organisation
+    my_scope = Q(customer__organisation=organisation, customer__owner=user) | Q(
+        account__customers__organisation=organisation, account__owner=user
     )
-    open_opportunities = Opportunity.objects.filter(org_scope).exclude(
+    open_opportunities = Opportunity.objects.filter(my_scope).exclude(
         stage=Opportunity.Stage.CLOSED_WON
     )
-    open_risks = Risk.objects.filter(org_scope).exclude(stage=Risk.Stage.ABANDONED)
-    open_tickets = Ticket.objects.filter(org_scope).exclude(
+    open_risks = Risk.objects.filter(my_scope).exclude(stage=Risk.Stage.ABANDONED)
+    open_tickets = Ticket.objects.filter(my_scope).exclude(
         status__in=[Ticket.Status.RESOLVED, Ticket.Status.CLOSED]
     )
 
-    lines = [
-        f"Customers: {total} total, average health score {avg_health:.1f}/10"
-        + (f", average NPS {avg_nps:.0f}" if avg_nps is not None else ", no NPS scores recorded"),
-        "Lifecycle stages: "
-        + ", ".join(f"{stage} ({count})" for stage, count in sorted(lifecycle_counts.items())),
-        f"Total ARR (in {organisation.currency}): {arr_total:,.2f}",
-        "Top at-risk customers (lowest health score first):",
-    ]
-    for c in top_at_risk:
-        nps = c.nps_score if c.nps_score is not None else "n/a"
-        lines.append(
-            f"  - {c.name}: health {c.health_score}/10, NPS {nps}, stage {c.lifecycle_stage}"
-        )
-
     lines.append(
-        f"Pipeline: {open_opportunities.count()} open opportunities, "
+        f"Your pipeline: {open_opportunities.count()} open opportunities, "
         f"{open_risks.count()} open risks, {open_tickets.count()} open tickets."
     )
 
