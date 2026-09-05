@@ -4,7 +4,7 @@ from django.test import TestCase
 
 from services.accounts.models import Organisation, User
 from services.copilot.context import build_org_context_summary
-from services.customers.models import Account, Customer, Opportunity, Risk, Ticket
+from services.customers.models import Account, Customer, Note, Opportunity, Risk, Ticket
 
 
 class BuildOrgContextSummaryTests(TestCase):
@@ -103,3 +103,58 @@ class BuildOrgContextSummaryTests(TestCase):
         self.assertIn("Your pipeline: 1 open opportunities", summary)
         self.assertIn("1 open risks", summary)
         self.assertIn("1 open tickets", summary)
+
+    def test_a_company_named_in_the_query_gets_its_own_real_retrieval(self):
+        Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
+        Note.objects.create(
+            customer=Customer.objects.get(name="Globex"),
+            title="Champion left",
+            author_name="Carl",
+            body="No replacement identified yet.",
+            logged_at="2026-09-01",
+        )
+
+        summary = build_org_context_summary(self.org, self.user, query="Why is Globex at risk?")
+
+        self.assertIn("Recent real communications for Globex (named in the question)", summary)
+        self.assertIn("Champion left", summary)
+
+    def test_no_company_named_falls_back_to_a_slice_per_top_at_risk_customer(self):
+        risky = Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.user, health_score="1.0"
+        )
+        Note.objects.create(
+            customer=risky,
+            title="Champion left",
+            author_name="Carl",
+            body="x",
+            logged_at="2026-09-01",
+        )
+
+        summary = build_org_context_summary(
+            self.org, self.user, query="How is my book doing overall?"
+        )
+
+        self.assertIn("Recent real communications for Globex:", summary)
+        self.assertNotIn("named in the question", summary)
+
+    def test_no_query_at_all_still_falls_back_to_the_per_at_risk_slice(self):
+        # `query` defaults to "" (no other real caller omits it — see
+        # SendMessageView, which always has a validated non-empty
+        # content) — an empty query behaves exactly like one that
+        # doesn't name a company, not like a special "skip retrieval"
+        # mode.
+        risky = Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.user, health_score="1.0"
+        )
+        Note.objects.create(
+            customer=risky,
+            title="Champion left",
+            author_name="Carl",
+            body="x",
+            logged_at="2026-09-01",
+        )
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Recent real communications for Globex:", summary)

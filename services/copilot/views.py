@@ -113,10 +113,9 @@ class SendMessageView(APIView):
 
         default_tone = TONE_INSTRUCTIONS[Organisation.AgentTone.PROFESSIONAL]
         tone_instruction = TONE_INSTRUCTIONS.get(organisation.ai_agent_tone, default_tone)
+        book_summary = build_org_context_summary(organisation, request.user, content)
         system = (
-            f"{SYSTEM_PERSONA}\n\n"
-            f"{tone_instruction}\n\n"
-            f"Your own book of business:\n{build_org_context_summary(organisation, request.user)}"
+            f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nYour own book of business:\n{book_summary}"
         )
         prior_history = (
             [
