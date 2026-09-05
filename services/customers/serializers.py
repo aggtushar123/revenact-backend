@@ -8,6 +8,7 @@ from .models import (
     Account,
     Activity,
     CalendarEvent,
+    Canvas,
     Contact,
     Customer,
     Email,
@@ -498,3 +499,35 @@ class SurveySerializer(serializers.ModelSerializer):
         ):
             validated_data["responded_at"] = timezone.localdate()
         return super().update(instance, validated_data)
+
+
+class CanvasSerializer(serializers.ModelSerializer):
+    """`companies`/`account_name` mirror Opportunity/Risk/SurveySerializer's
+    own fields exactly — the standalone Canvas gallery spans every
+    Customer/Account the same way. `nodes`/`edges` round-trip as raw
+    JSON, same as ScenarioSerializer's own — the backend never inspects
+    them, see the Canvas model's own docstring."""
+
+    companies = serializers.SerializerMethodField()
+    account_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Canvas
+        fields = [
+            "id",
+            "name",
+            "nodes",
+            "edges",
+            "companies",
+            "account_id",
+            "account_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at", "account_id"]
+
+    def get_companies(self, obj):
+        return [{"id": c.id, "name": c.name} for c in obj.companies]
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None

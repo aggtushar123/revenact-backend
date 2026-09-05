@@ -8,6 +8,7 @@ from services.customers.models import (
     Account,
     Activity,
     CalendarEvent,
+    Canvas,
     Contact,
     Customer,
     Email,
@@ -609,3 +610,72 @@ class SurveyCompanyPropertyTests(TestCase):
             account=self.account, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
         )
         self.assertEqual(survey.companies, [self.customer])
+
+
+class CanvasParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Opportunity/Risk/
+    Survey/Contact/Activity/Email/Task/Note/Ticket/CalendarEvent."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = create_account(self.customer, name="Some Region")
+
+    def test_customer_only_is_valid(self):
+        canvas = Canvas.objects.create(customer=self.customer)
+        self.assertIsNone(canvas.account)
+
+    def test_account_only_is_valid(self):
+        canvas = Canvas.objects.create(account=self.account)
+        self.assertIsNone(canvas.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Canvas.objects.create()
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Canvas.objects.create(customer=self.customer, account=self.account)
+
+
+class CanvasCompanyPropertyTests(TestCase):
+    """Canvas.companies resolves to every ultimate parent Customer
+    whether the canvas is org-level or account-level — same reasoning
+    as OpportunityCompanyPropertyTests above."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = create_account(self.customer, name="Some Region")
+
+    def test_org_level_canvas_company_is_its_own_customer(self):
+        canvas = Canvas.objects.create(customer=self.customer)
+        self.assertEqual(canvas.companies, [self.customer])
+
+    def test_account_level_canvas_company_is_the_accounts_customer(self):
+        canvas = Canvas.objects.create(account=self.account)
+        self.assertEqual(canvas.companies, [self.customer])
+
+
+class CanvasNodesEdgesRoundTripTests(TestCase):
+    """nodes/edges are stored verbatim — same "the graph shape is the
+    frontend's concern" contract as scenarios.Scenario's own."""
+
+    def test_nodes_and_edges_round_trip_verbatim(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        customer = Customer.objects.create(organisation=org, name="Some Co")
+        nodes = [
+            {
+                "id": "n1",
+                "type": "contact",
+                "position": {"x": 10, "y": 20},
+                "data": {"contact_id": 5},
+            }
+        ]
+        edges = [{"id": "n1-n2", "source": "n1", "target": "n2", "label": "Reports to"}]
+
+        canvas = Canvas.objects.create(customer=customer, nodes=nodes, edges=edges)
+        canvas.refresh_from_db()
+
+        self.assertEqual(canvas.nodes, nodes)
+        self.assertEqual(canvas.edges, edges)

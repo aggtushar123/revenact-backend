@@ -4,6 +4,7 @@ from .models import (
     Account,
     Activity,
     CalendarEvent,
+    Canvas,
     Contact,
     Customer,
     Email,
@@ -165,3 +166,10 @@ class SurveyAdmin(admin.ModelAdmin):
     list_filter = ["survey_type", "status"]
     search_fields = ["customer__name", "account__name"]
     readonly_fields = ["created_at"]
+
+
+@admin.register(Canvas)
+class CanvasAdmin(admin.ModelAdmin):
+    list_display = ["name", "customer", "account", "updated_at"]
+    search_fields = ["name", "customer__name", "account__name"]
+    readonly_fields = ["created_at", "updated_at"]

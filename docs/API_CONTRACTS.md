@@ -68,6 +68,7 @@ expects.
 | Contacts (standalone `/contacts/list` page, Organization/Account Details' Contacts tabs) | `customers` (`Contact` model) | 🟢 Full CRUD, API-complete — see below. Global paginated+searchable list (`ContactListView`/`ContactStatsView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat `ContactDetailView` (GET/PATCH/DELETE by id, regardless of parent) exist and are seeded; the standalone list page's Add/Edit/Delete are wired to them. |
 | Pipelines (standalone board — "Opportunities" and "Risks" tabs) | `customers` (`Opportunity`, `Risk` models) | 🟢 Full CRUD, API-complete — see below. Both tabs have the same shape: a global unpaginated list (`OpportunityListView`/`RiskListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Both are seeded; the board's own Add/Edit/Delete/drag-and-drop are wired to both tabs. |
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
+| Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot | — | ⏳ Not started |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
@@ -1434,6 +1435,98 @@ account-level. Flat, not nested — same reasoning as
 `OpportunityDetailView`. PATCH is "Log Response" (`status`/`score`) as
 well as any other edit — this is the one place a responded Survey's
 score gets synced onto its parent, see the model's own note above.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoints
+above. **Response `204`** (DELETE) — empty body.
+
+---
+
+### Models — `Canvas`
+
+Mirrors: the sidebar's own "Canvas" gallery (`src/pages/canvas/
+CanvasPage.tsx`) and the "Canvas List" tab on both Details pages
+(previously two labels with nothing behind either). Same "belongs to
+exactly one of `Customer` or `Account`" shape as Opportunity/Risk/
+Survey above (`customer`/`account` nullable FKs +
+`canvas_belongs_to_exactly_one_parent` CheckConstraint).
+
+A Canvas is a stakeholder/relationship-map board: `nodes`/`edges` are
+stored verbatim exactly as React Flow gives them — same "the graph
+shape is the frontend's concern" philosophy as `scenarios.Scenario`'s
+own `nodes`/`edges`. A node's own `data` holds only a `contact_id`
+reference, never a name/role/sentiment snapshot — `Contact` already
+carries real `role`/`sentiment` fields, so editing a Contact anywhere
+is reflected on every Canvas it appears on. A Customer/Account can have
+several Canvases (a list, not a one-per-company singleton).
+
+`name` (default `"Untitled Canvas"`), `nodes`/`edges` (JSON, default
+`[]`), `created_at`/`updated_at`.
+
+See `seed_demo_canvases` management command for demo data (run after
+`seed_demo_accounts`) — a handful of real seeded Customers each get a
+Canvas with 2-4 of that company's own real seeded Contacts as nodes and
+a couple of labeled relationship edges between them.
+
+### `GET/POST /api/v1/customers/<customer_id>/canvases/`
+
+Auth: `IsAuthenticated`. GET: every Canvas under this Customer, rolled
+up across both organisation-level (directly on it) and account-level
+(any of its Accounts' own) — same rollup as `CustomerSurveyListView`.
+POST always creates an organisation-level Canvas; `customer` taken
+from the URL. Powers the "Canvas List" tab on the Organization Details
+page.
+
+### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/canvases/`
+
+Auth: `IsAuthenticated`. GET: every account-level Canvas for one
+Account. POST creates a new one under it; `account` taken from the
+URL. Powers the "Canvas List" tab on the standalone Account page.
+`account_id` is a real field on the response (unlike Opportunity/Risk),
+same reasoning as Survey's own — a gallery row needs it to link.
+
+### `GET/POST /api/v1/canvases/`
+
+Auth: `IsAuthenticated`. GET: every Canvas across every Customer/
+Account the caller's own organisation owns. The one Canvas view not
+nested under `/customers/<id>/...`, mounted at its own top-level
+prefix, same reasoning as `SurveyListView`. Powers the standalone
+Canvas gallery.
+
+**Pagination is off** here, same reasoning as `SurveyListView` — the
+gallery needs every record, not one page of them.
+
+POST takes a `customer_id` or an `account_id` in the request body
+(neither is a real serializer field) and creates the Canvas under that
+parent — exactly one of the two must be given (`400` otherwise).
+
+**Response `200`**
+```json
+[
+  {
+    "id": 4,
+    "name": "Renewal Strategy Q3",
+    "nodes": [
+      { "id": "n1", "type": "contact", "position": { "x": 40, "y": 60 }, "data": { "contact_id": 12 } }
+    ],
+    "edges": [
+      { "id": "n1-n2", "source": "n1", "target": "n2", "label": "Reports to" }
+    ],
+    "companies": [{ "id": 6, "name": "Apple Inc" }],
+    "account_id": null,
+    "account_name": null,
+    "created_at": "2026-09-01T10:00:00Z",
+    "updated_at": "2026-09-05T10:00:00Z"
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/canvases/<id>/`
+
+Auth: `IsAuthenticated`. A single Canvas, scoped to the caller's own
+organisation, regardless of whether it's organisation-level or
+account-level. Flat, not nested — same reasoning as
+`SurveyDetailView`. PATCH is a plain save (`name`/`nodes`/`edges`) —
+unlike Survey, there's no parent field this needs to sync on update.
 
 **Response `200`** (GET/PATCH) — same shape as the list endpoints
 above. **Response `204`** (DELETE) — empty body.

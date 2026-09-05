@@ -11,11 +11,12 @@ from rest_framework.response import Response
 
 from services.fx_rates.conversion import convert_to_org_currency
 
-from .models import Account, Contact, Customer, Opportunity, Risk, Survey
+from .models import Account, Canvas, Contact, Customer, Opportunity, Risk, Survey
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
     CalendarEventSerializer,
+    CanvasSerializer,
     ContactSerializer,
     CustomerSerializer,
     EmailSerializer,
@@ -1304,3 +1305,122 @@ class SurveyDetailView(generics.RetrieveUpdateDestroyAPIView):
             field = _SURVEY_SCORE_FIELD[survey.survey_type]
             setattr(parent, field, survey.score)
             parent.save(update_fields=[field])
+
+
+class CustomerCanvasListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/canvases/ — same shape as
+    CustomerSurveyListView: GET rolls up every Canvas under this
+    Customer, both organisation-level and account-level (any of its
+    Accounts' own); POST always adds an organisation-level one,
+    `customer` taken from the URL. Powers the "Canvas List" tab on the
+    Organization Details page. Scoped to the caller's own organisation."""
+
+    serializer_class = CanvasSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_customer(self):
+        return get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+
+    def get_queryset(self):
+        customer = self.get_customer()
+        return Canvas.objects.filter(Q(customer=customer) | Q(account__customers=customer))
+
+    def perform_create(self, serializer):
+        serializer.save(customer=self.get_customer())
+
+
+class AccountCanvasListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/canvases/
+    — every account-level Canvas for one Account (GET), or adds a new
+    one to it (POST); `account` taken from the URL. Powers the "Canvas
+    List" tab on the standalone Account page."""
+
+    serializer_class = CanvasSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_account(self):
+        return get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
+        )
+
+    def get_queryset(self):
+        return self.get_account().canvases.all()
+
+    def perform_create(self, serializer):
+        serializer.save(account=self.get_account())
+
+
+class CanvasListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/canvases/ — every Canvas across every Customer/
+    Account the caller's own organisation owns. Powers the standalone
+    Canvas gallery (react-ts-app's src/pages/canvas/CanvasPage.tsx) —
+    the one place a Canvas is browsed independent of which Customer/
+    Account it belongs to, same reasoning as SurveyListView. Unpaginated
+    for the same reason — the gallery needs every record, not one page.
+
+    POST takes a `customer_id` or an `account_id` in the request body
+    (neither is a real serializer field — `perform_create` below reads
+    whichever one was sent directly off the raw request) and creates
+    the Canvas under that parent. Exactly one of the two must be given,
+    same invariant as the model's own CheckConstraint."""
+
+    serializer_class = CanvasSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as SurveyListView's own.
+        return (
+            Canvas.objects.filter(
+                Q(customer__organisation=organisation)
+                | Q(account__customers__organisation=organisation)
+            )
+            .select_related("customer", "account")
+            .prefetch_related("account__customers")
+            .distinct()
+        )
+
+    def perform_create(self, serializer):
+        organisation = self.request.user.organisation
+        account_id = self.request.data.get("account_id")
+        customer_id = self.request.data.get("customer_id")
+        if account_id:
+            # `.distinct()` before `get_object_or_404` — same reasoning
+            # as SurveyListView.perform_create's own.
+            account = get_object_or_404(
+                Account.objects.filter(customers__organisation=organisation).distinct(),
+                pk=account_id,
+            )
+            serializer.save(account=account)
+        elif customer_id:
+            customer = get_object_or_404(Customer, pk=customer_id, organisation=organisation)
+            serializer.save(customer=customer)
+        else:
+            raise ValidationError("Provide either customer_id or account_id.")
+
+
+class CanvasDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/canvases/<id>/ — a single Canvas, scoped
+    to the caller's own organisation, regardless of whether it's
+    organisation-level or account-level. Flat, not nested — same
+    reasoning as SurveyDetailView. PATCH is a plain save (name/nodes/
+    edges) — unlike Survey, there's no parent field to sync on update."""
+
+    serializer_class = CanvasSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as SurveyDetailView's own.
+        return Canvas.objects.filter(
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).distinct()

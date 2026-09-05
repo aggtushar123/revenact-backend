@@ -11,6 +11,7 @@ from services.customers.models import (
     Account,
     Activity,
     CalendarEvent,
+    Canvas,
     Contact,
     Customer,
     Email,
@@ -3612,6 +3613,218 @@ class SurveyDetailTests(APITestCase):
         self.client.force_authenticate(other_admin)
 
         self.assertEqual(self.client.get(self._url(survey)).status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomerCanvasListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/canvases/"
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_admin_can_add_an_organization_level_canvas(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url, {"name": "Renewal Strategy Q3"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        canvas = Canvas.objects.get(pk=response.data["id"])
+        self.assertEqual(canvas.customer, self.customer)
+        self.assertIsNone(canvas.account)
+        self.assertEqual(canvas.name, "Renewal Strategy Q3")
+
+    def test_rolls_up_this_customers_own_accounts_canvases_too(self):
+        account = create_account(self.customer, name="North America")
+        Canvas.objects.create(customer=self.customer, name="Org Canvas")
+        Canvas.objects.create(account=account, name="Account Canvas")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        names = {row["name"] for row in response.data}
+        self.assertEqual(names, {"Org Canvas", "Account Canvas"})
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/canvases/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AccountCanvasListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = create_account(self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/canvases/"
+
+    def test_admin_can_add_an_account_level_canvas(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url, {"name": "Stakeholder Map"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        canvas = Canvas.objects.get(pk=response.data["id"])
+        self.assertEqual(canvas.account, self.account)
+        self.assertIsNone(canvas.customer)
+        self.assertEqual(response.data["account_id"], self.account.id)
+
+
+class CanvasListTests(APITestCase):
+    """/api/v1/canvases/ — the one Canvas view not nested under a single
+    Customer/Account (see CanvasListView's own docstring). Powers the
+    standalone Canvas gallery."""
+
+    url = "/api/v1/canvases/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = create_account(self.customer, name="North America")
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_both_org_level_and_account_level_canvases_as_a_plain_array(self):
+        Canvas.objects.create(customer=self.customer, name="Org Canvas")
+        Canvas.objects.create(account=self.account, name="Account Canvas")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        names = {row["name"] for row in response.data}
+        self.assertEqual(names, {"Org Canvas", "Account Canvas"})
+
+    def test_does_not_leak_another_organisations_canvases(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        Canvas.objects.create(customer=other_customer, name="Other Org's Canvas")
+        Canvas.objects.create(customer=self.customer, name="My Canvas")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "My Canvas")
+
+    def test_posting_with_customer_id_creates_an_organization_level_canvas(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"name": "New Canvas", "customer_id": self.customer.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        canvas = Canvas.objects.get(pk=response.data["id"])
+        self.assertEqual(canvas.customer, self.customer)
+        self.assertIsNone(canvas.account)
+
+    def test_posting_with_account_id_creates_an_account_level_canvas(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"name": "New Canvas", "account_id": self.account.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        canvas = Canvas.objects.get(pk=response.data["id"])
+        self.assertEqual(canvas.account, self.account)
+        self.assertIsNone(canvas.customer)
+
+    def test_posting_with_neither_customer_id_nor_account_id_is_400(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(self.url, {"name": "New Canvas"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class CanvasDetailTests(APITestCase):
+    """GET/PATCH/DELETE /api/v1/canvases/<id>/ — flat, not nested."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+
+    def _url(self, canvas):
+        return f"/api/v1/canvases/{canvas.id}/"
+
+    def test_unauthenticated_cannot_view(self):
+        canvas = Canvas.objects.create(customer=self.customer)
+        response = self.client.get(self._url(canvas))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_can_patch_name_nodes_and_edges(self):
+        canvas = Canvas.objects.create(customer=self.customer)
+        self.client.force_authenticate(self.admin)
+        nodes = [
+            {"id": "n1", "type": "contact", "position": {"x": 0, "y": 0}, "data": {"contact_id": 1}}
+        ]
+        edges = [{"id": "e1", "source": "n1", "target": "n2", "label": "Reports to"}]
+
+        response = self.client.patch(
+            self._url(canvas), {"name": "Renamed", "nodes": nodes, "edges": edges}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        canvas.refresh_from_db()
+        self.assertEqual(canvas.name, "Renamed")
+        self.assertEqual(canvas.nodes, nodes)
+        self.assertEqual(canvas.edges, edges)
+
+    def test_can_delete_a_canvas(self):
+        canvas = Canvas.objects.create(customer=self.customer)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(self._url(canvas))
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Canvas.objects.filter(pk=canvas.id).exists())
+
+    def test_another_organisations_admin_gets_404(self):
+        canvas = Canvas.objects.create(customer=self.customer)
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        self.assertEqual(self.client.get(self._url(canvas)).status_code, status.HTTP_404_NOT_FOUND)
 
 
 class AccountListTests(APITestCase):

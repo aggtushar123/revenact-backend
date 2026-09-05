@@ -1151,3 +1151,71 @@ class Survey(models.Model):
         if self.customer_id:
             return [self.customer]
         return list(self.account.customers.all())
+
+
+class Canvas(models.Model):
+    """A stakeholder/relationship-map board for a Customer or Account —
+    same "belongs to exactly one of Customer or Account" shape as
+    Opportunity/Risk/Survey above. Backs the sidebar's "Canvas" gallery
+    (react-ts-app's src/pages/canvas/CanvasPage.tsx) and the "Canvas
+    List" tab on both Details pages (previously two labels with nothing
+    behind either).
+
+    `nodes`/`edges` are stored verbatim exactly as React Flow gives
+    them, same "the graph shape is the frontend's concern" philosophy
+    as `scenarios.Scenario.nodes`/`edges` — the backend never inspects
+    them. A node's own `data` holds only a `contact_id` reference, never
+    a name/role/sentiment snapshot: `Contact` already carries real
+    `role`/`sentiment` fields, so editing a Contact anywhere in the app
+    is reflected on every Canvas it appears on, without a sync step.
+    A Customer/Account can have several Canvases (e.g. "Renewal
+    Strategy Q3," "Post-Reorg Map") — this is deliberately a list, not
+    a one-per-company singleton."""
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="canvases",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level canvas. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="canvases",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level canvas. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    name = models.CharField(max_length=255, default="Untitled Canvas")
+    nodes = models.JSONField(default=list, blank=True)
+    edges = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="canvas_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.name} — {parent}"
+
+    @property
+    def companies(self) -> list["Customer"]:
+        """Every ultimate parent Customer — same reasoning as
+        Opportunity/Risk/Survey's own `companies` property."""
+        if self.customer_id:
+            return [self.customer]
+        return list(self.account.customers.all())

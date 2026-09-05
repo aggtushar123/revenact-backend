@@ -20,6 +20,8 @@ from drf_spectacular.views import (
 from services.customers.views import (
     AccountListView,
     AccountStatsView,
+    CanvasDetailView,
+    CanvasListView,
     ContactDetailView,
     ContactListView,
     ContactStatsView,
@@ -76,6 +78,13 @@ urlpatterns = [
     # services.customers.urls (the Activity Feed's own Surveys filter).
     path("api/v1/surveys/<int:pk>/", SurveyDetailView.as_view(), name="survey-detail"),
     path("api/v1/surveys/", SurveyListView.as_view(), name="survey-list"),
+    # Canvas, same reasoning as Survey above — mounted at its own
+    # top-level /api/v1/canvases/ prefix since it's the one Canvas view
+    # spanning every Customer/Account at once (the standalone Canvas
+    # gallery), unlike the nested list-create endpoints under
+    # services.customers.urls (the "Canvas List" Details-page tab).
+    path("api/v1/canvases/<int:pk>/", CanvasDetailView.as_view(), name="canvas-detail"),
+    path("api/v1/canvases/", CanvasListView.as_view(), name="canvas-list"),
     # Scenarios — its own app (services/scenarios/), unlike everything
     # above which lives in services.customers. Nothing here is nested
     # under a Customer/Account the way Task/Note/etc. are: a Scenario
