@@ -70,11 +70,11 @@ expects.
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
-| Copilot | — | ⏳ Not started |
+| Copilot (`/copilot`) | `copilot` | 🟡 Real Anthropic Claude chat, grounded in real data — see below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the caller's own organisation (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts). Conversations are private per-user. Requires `ANTHROPIC_API_KEY`; returns a clear `503` without one rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
 | Company Brain | — | ⏳ Not started |
-| Settings > Currency / Global Presets / AI Agent | `accounts` (`Organisation` model), `customers` (`Customer.currency`), `fx_rates` | 🟢 `Organisation.currency` actually controls money formatting everywhere now (every `$` in the frontend is currency-aware) and, since Tier 1, each `Customer` can carry its *own* contract currency independent of the org's, with an admin-maintained `fx_rates` table converting cross-currency rollups (see `GET /api/v1/customers/stats/`'s `unconverted_count`) — see the `fx_rates` app's own section below. `ai_agent_enabled`/`ai_agent_tone` are still stored and shown back but not yet consumed (no Copilot backend to read them); `default_lifecycle_stage` is real end to end — it's what the standalone Add Organization flow actually pre-fills. |
+| Settings > Currency / Global Presets / AI Agent | `accounts` (`Organisation` model), `customers` (`Customer.currency`), `fx_rates` | 🟢 `Organisation.currency` actually controls money formatting everywhere now (every `$` in the frontend is currency-aware) and, since Tier 1, each `Customer` can carry its *own* contract currency independent of the org's, with an admin-maintained `fx_rates` table converting cross-currency rollups (see `GET /api/v1/customers/stats/`'s `unconverted_count`) — see the `fx_rates` app's own section below. `ai_agent_enabled`/`ai_agent_tone` are now genuinely read by the `copilot` app's own `SendMessageView` (see that app's own section below) — disabling AI Agent really blocks Copilot sends, and tone really changes the system prompt; `default_lifecycle_stage` is real end to end — it's what the standalone Add Organization flow actually pre-fills. |
 | Settings > Entity Uploads | — (no new endpoint) | 🟢 CSV bulk-create for Organizations, one real `POST /customers/` per mapped row via the existing `CustomerListCreateView` — see react-ts-app's EntityUploadsPage.tsx. Accounts/Contacts import not built yet. |
 | Settings > Webhooks | `webhooks` | 🟡 Full CRUD + real delivery for one event (`customer.created`) — see below. Admin-only both ways (unlike every other settings tab above, which any authenticated user can view). |
 | Settings > Activities / Connect Widget | — | ⏳ Not started — Activities has no create/update endpoint to configure types *for* (Activity is fully read-only, seed-data only); Connect Widget would be a new public, unauthenticated surface this app doesn't have anywhere else, and needs a product decision on what a submission actually does before it's buildable as more than a generated snippet. |
@@ -225,9 +225,9 @@ PATCH accepts any of `{ "currency": "EUR", "default_lifecycle_stage":
 `name`/`slug` are read-only here; sending them is silently ignored, not
 written (same "can't smuggle an edit to a read-only field through"
 convention as `/auth/me/`'s own). `ai_agent_enabled`/`ai_agent_tone` are
-genuinely stored and shown back, same as `currency`, but nothing reads
-them yet — Copilot has no backend of its own (see this doc's own
-Status table).
+genuinely stored and shown back, same as `currency`, and are now
+genuinely read by the `copilot` app's own `SendMessageView` — see that
+app's own section below.
 
 **Response `200`** (both)
 ```json
@@ -1734,6 +1734,98 @@ never aborts the rest of the send.
 **Response `200`** — the updated Campaign, same shape as the list
 endpoint, with `status: "sent"`, a populated `send_log`, and real
 `sent_count`/`skipped_count`.
+
+---
+
+## `copilot` — AI chat (`/copilot`, `Index.tsx`/`ChatView.tsx`)
+
+Mirrors: `src/pages/copilot/Index.tsx`, `ChatView.tsx`,
+`CopilotSidebar.tsx`, `types.ts`, `copilotApi.ts`. The first real AI/LLM
+integration in this codebase — a real call to Anthropic's Claude API
+(`services/copilot/anthropic_client.py`), not a mock. **Requires
+`ANTHROPIC_API_KEY`** in your own local `.env` (see `.env.example`); with
+none set, every send returns a `503` rather than a fake answer.
+
+Its own top-level app, same "tenant-wide, not owned by one Customer/
+Account" reasoning as `scenarios`/`campaigns` — except a Conversation is
+scoped to one `User`, not the whole organisation: each CSM's own Copilot
+history is private to them.
+
+No task queue or streaming exists in this codebase, so a send runs
+synchronously, in-request, one blocking API call per message — same
+limit `scenarios/engine.py`'s own docstring states outright. Each
+request is grounded in a compact, real-data digest of the caller's own
+organisation (`services/copilot/context.py` — customer health/NPS/
+lifecycle breakdown, top at-risk customers, open opportunity/risk/ticket
+counts), injected into the system prompt; this is grounding, not
+tool-calling — the model can read this digest and converse, but can't
+run its own queries or take real actions.
+
+First real backend consumer of `Organisation.ai_agent_enabled`/
+`ai_agent_tone` (see the `accounts` app's own section) — `ai_agent_enabled
+= false` makes every send `403`, and `ai_agent_tone` picks one of three
+real system-prompt tone instructions (`professional`/`friendly`/
+`concise`).
+
+### Models
+
+- `Conversation` — `organisation`, `user` (private per-user, not shared
+  org-wide), `title` (derived from the first message's own text — no
+  rename UI), `created_at`/`updated_at`. Lazily created on the first
+  message actually sent, same "no ghost rows" convention as Canvas/
+  Campaign's own editors (POST on first Save).
+- `Message` — `conversation`, `role` (`user`/`assistant` — mirrors the
+  Anthropic Messages API's own two-role shape exactly), `content`,
+  `created_at`.
+
+### Conventions specific to this app
+
+`content` is capped at 8000 characters (`400` if blank or over).
+Replayed history to the model is capped to the conversation's own last
+20 messages (Anthropic's Messages API is stateless — the full history
+must be resent every turn; unbounded replay would grow cost/latency
+without limit).
+
+### `GET /api/v1/copilot/conversations/`
+
+Auth: `IsAuthenticated`. Every Conversation the caller has started —
+scoped to `request.user`, not the whole organisation. **Pagination is
+off**, same reasoning as `CampaignListCreateView`. Powers the sidebar's
+own "Chat history" list.
+
+**Response `200`**
+```json
+[
+  { "id": 5, "title": "What's my churn risk?", "created_at": "2026-09-05T10:00:00Z", "updated_at": "2026-09-05T10:01:00Z" }
+]
+```
+
+### `GET/DELETE /api/v1/copilot/conversations/<id>/`
+
+Auth: `IsAuthenticated`. Scoped to the caller's own conversations (404,
+not 403, otherwise). No `PATCH` — a conversation's title/messages are
+only ever set by `POST .../messages/`.
+
+**Response `200`** (GET) — adds nested `messages` (each `{id, role,
+content, created_at}`) to the list shape above.
+**Response `204`** (DELETE) — empty body.
+
+### `POST /api/v1/copilot/messages/`
+
+Auth: `IsAuthenticated`. Body: `{"conversation_id": <id>?, "content":
+"..."}`. Omit `conversation_id` to start a new Conversation (titled from
+this message); pass an existing one (must be the caller's own, `404`
+otherwise) to continue it. The real send — runs synchronously, no task
+queue.
+
+`400` if `content` is blank or over 8000 characters. `403` if
+`Organisation.ai_agent_enabled` is `false`. `503` if `ANTHROPIC_API_KEY`
+isn't configured. `502` if the Anthropic API call itself fails (bad key,
+rate limit, network error).
+
+**Response `200`** — the (possibly newly created) Conversation, same
+nested shape as the detail endpoint's GET, now including this turn's
+user message and the model's real assistant reply.
 
 ---
 

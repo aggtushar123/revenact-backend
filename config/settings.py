@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "services.webhooks",
     "services.fx_rates",
     "services.campaigns",
+    "services.copilot",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
@@ -181,6 +182,15 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default=EMAIL_HOST_USER or "norep
 
 # Origin the emailed reset link points at (a frontend route, not this API).
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")
+
+# --- Copilot (Anthropic Claude) ----------------------------------------------
+# The first real LLM integration in this codebase (services.copilot). No key
+# means no fake fallback — SendMessageView returns a clear 503 instead of
+# pretending to work. Get a key at https://console.anthropic.com/ and set it
+# in your own local .env — see .env.example. Never set this to a real value
+# here or commit one.
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+ANTHROPIC_MODEL = env("ANTHROPIC_MODEL", default="claude-sonnet-5")
 
 # How long a password-reset link stays valid. Consumed by
 # django.contrib.auth.tokens.default_token_generator, which accounts/serializers.py

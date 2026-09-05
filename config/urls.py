@@ -97,6 +97,10 @@ urlpatterns = [
     # Webhooks — its own app, same "tenant-wide, not owned by one
     # Customer/Account" reasoning as Scenarios above.
     path("api/v1/webhooks/", include("services.webhooks.urls")),
+    # Copilot — its own app, same "tenant-wide, not owned by one
+    # Customer/Account" reasoning as Scenarios/Campaigns above; a
+    # conversation is scoped to one User, not a Customer/Account.
+    path("api/v1/copilot/", include("services.copilot.urls")),
     # FX rates — its own app, same "tenant-wide, admin-only-both-ways"
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).
