@@ -1,4 +1,10 @@
-"""Unit tier: build_org_context_summary, no HTTP."""
+"""Unit tier: build_org_context_summary, no HTTP. The real embedding
+model that backs the semantic company-match fallback (see
+test_embeddings.py's own real coverage, test_retrieval.py's own mocked
+logic coverage) is mocked here too — these tests are about this
+module's own aggregation/formatting logic, not embedding quality."""
+
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -119,7 +125,9 @@ class BuildOrgContextSummaryTests(TestCase):
         self.assertIn("Recent real communications for Globex (named in the question)", summary)
         self.assertIn("Champion left", summary)
 
-    def test_no_company_named_falls_back_to_a_slice_per_top_at_risk_customer(self):
+    def test_no_company_named_or_semantically_matched_falls_back_to_a_slice_per_at_risk_customer(
+        self,
+    ):
         risky = Customer.objects.create(
             organisation=self.org, name="Globex", owner=self.user, health_score="1.0"
         )
@@ -131,19 +139,47 @@ class BuildOrgContextSummaryTests(TestCase):
             logged_at="2026-09-01",
         )
 
-        summary = build_org_context_summary(
-            self.org, self.user, query="How is my book doing overall?"
-        )
+        with patch("services.copilot.context.find_relevant_company_semantic", return_value=None):
+            summary = build_org_context_summary(
+                self.org, self.user, query="How is my book doing overall?"
+            )
 
         self.assertIn("Recent real communications for Globex:", summary)
         self.assertNotIn("named in the question", summary)
+
+    def test_a_semantic_match_gets_its_own_retrieval_with_a_distinct_label(self):
+        # e.g. "that food delivery account struggling" finding Pizza Hut
+        # without naming it — see retrieval.py's own real, verified
+        # example. The semantic call itself is mocked here (see
+        # test_retrieval.py's own coverage of the real threshold logic).
+        globex = Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
+        Note.objects.create(
+            customer=globex,
+            title="Champion left",
+            author_name="Carl",
+            body="x",
+            logged_at="2026-09-01",
+        )
+
+        with patch("services.copilot.context.find_relevant_company_semantic", return_value=globex):
+            summary = build_org_context_summary(
+                self.org, self.user, query="that account without a champion"
+            )
+
+        self.assertIn(
+            "Recent real communications for Globex (the account your question seems to be about):",
+            summary,
+        )
+        self.assertIn("Champion left", summary)
 
     def test_no_query_at_all_still_falls_back_to_the_per_at_risk_slice(self):
         # `query` defaults to "" (no other real caller omits it — see
         # SendMessageView, which always has a validated non-empty
         # content) — an empty query behaves exactly like one that
         # doesn't name a company, not like a special "skip retrieval"
-        # mode.
+        # mode. No query also means find_relevant_company_semantic is
+        # never even called (see its own early-return on empty query),
+        # so nothing needs mocking here.
         risky = Customer.objects.create(
             organisation=self.org, name="Globex", owner=self.user, health_score="1.0"
         )

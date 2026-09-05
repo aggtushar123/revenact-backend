@@ -70,7 +70,7 @@ expects.
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
-| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company named in the question gets its own recent real Emails/Notes/open Tickets/Activities pulled in full (`services/copilot/retrieval.py`); no vector DB/semantic search yet, "relevant" means "named in the question" or "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires `ANTHROPIC_API_KEY`; returns a clear `503` without one rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
+| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — e.g. "that food delivery account" finding Pizza Hut, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation for names that are also common words) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires `ANTHROPIC_API_KEY`; returns a clear `503` without one rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
 | Company Brain | — | ⏳ Not started |
@@ -1837,17 +1837,35 @@ the model can read this digest and converse, but can't run its own
 queries or take real actions.
 
 Past the aggregate numbers, `services/copilot/retrieval.py` pulls real
-retrieved content — not RAG in the embeddings/semantic-search sense, no
-vector DB yet: `find_mentioned_company` is a plain case-insensitive
-substring match of the question against the caller's own company names;
-a match gets its own recent real Emails (subject+body)/Notes
-(title+body)/open Tickets (title only — the model has no body
-field)/Activities (a categorical type label, no free text) pulled in
-full via `retrieve_recent_communications`. No company named falls back
-to a smaller slice for each of the digest's own top-3 at-risk customers,
-so the digest isn't pure numbers even then. Every source here is real
-data that already backs the Activity Feed's own Emails/Notes/Tickets/
-Activities tabs — nothing new is captured, just retrieved differently.
+retrieved content. Two passes identify "which company is this about":
+`find_mentioned_company` is a plain, free, case-insensitive substring
+match of the question against the caller's own company names, tried
+first; if that fails, `find_relevant_company_semantic` (see
+`services/copilot/embeddings.py`) embeds the question and each
+company's own *name* with a local `sentence-transformers` model
+(`all-MiniLM-L6-v2`, no API key, no per-request cost, no pgvector — this
+Postgres instance doesn't have the `vector` extension available, so
+ranking is plain Python cosine similarity over in-memory vectors, fine
+at this system's real scale) and returns the best match above a
+calibrated `0.3` threshold — e.g. "that food delivery account
+struggling" still finding Pizza Hut without naming it. This is a real,
+honest limitation, not full RAG: only the bare company name is embedded
+(not its communications), so it works well for strong, distinctive
+brand names (Spotify/Uber both score well against on-the-nose
+descriptions) and worse for names that are also common words (Zoom
+scored too low against "video conferencing account" to win, in real
+testing). Once a company is identified — by either pass — it gets its
+own recent real Emails (subject+body)/Notes (title+body)/open Tickets
+(title only — the model has no body field)/Activities (a categorical
+type label, no free text), and when there's a query, the same real
+embeddings re-rank the overall most *relevant* items across every
+source together (not a fixed per-source quota of the most recent) via
+`retrieve_recent_communications`. No company identified either way
+falls back to a smaller slice for each of the digest's own top-3
+at-risk customers, so the digest isn't pure numbers even then. Every
+source here is real data that already backs the Activity Feed's own
+Emails/Notes/Tickets/Activities tabs — nothing new is captured, just
+retrieved differently.
 
 First real backend consumer of `Organisation.ai_agent_enabled`/
 `ai_agent_tone` (see the `accounts` app's own section) — `ai_agent_enabled

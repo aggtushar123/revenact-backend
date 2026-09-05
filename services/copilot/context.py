@@ -26,19 +26,26 @@ customer whose currency has no configured rate is still counted but
 excluded from the ARR total.
 
 Past the aggregate numbers, this also pulls real retrieved content — see
-retrieval.py's own docstring for exactly what "real retrieval, no vector
-DB yet" means here. If the question names one of the caller's own
-companies, that company's own recent real Emails/Notes/open
-Tickets/Activities are retrieved in full; otherwise a smaller slice for
+retrieval.py's own docstring for exactly what "real retrieval" means
+here (an exact name match first, a real local-embeddings semantic
+fallback second — e.g. "that food delivery account" still finding
+Pizza Hut — no vector DB, a documented real limitation for company
+names that are also common words). Once identified, that company's own
+recent real Emails/Notes/open Tickets/Activities are retrieved,
+relevance-ranked against the question; otherwise a smaller slice for
 each of the top few at-risk companies keeps the digest from being pure
-numbers even with no company named."""
+numbers even with none identified."""
 
 from django.db.models import Q
 
 from services.customers.models import Account, Customer, Opportunity, Risk, Ticket
 from services.fx_rates.conversion import convert_to_org_currency
 
-from .retrieval import find_mentioned_company, retrieve_recent_communications
+from .retrieval import (
+    find_mentioned_company,
+    find_relevant_company_semantic,
+    retrieve_recent_communications,
+)
 
 
 def build_org_context_summary(organisation, user, query: str = "") -> str:
@@ -122,20 +129,25 @@ def build_org_context_summary(organisation, user, query: str = "") -> str:
     )
 
     # Real retrieved content, not just aggregate numbers — see
-    # retrieval.py's own docstring. A company named in the question gets
-    # its own full retrieval; otherwise a smaller slice per top-at-risk
-    # company keeps this from being pure stats even with none named.
+    # retrieval.py's own docstring. A company identified from the
+    # question (exact name match first, a real semantic fallback
+    # second) gets its own fuller, relevance-ranked retrieval;
+    # otherwise a smaller slice per top-at-risk company keeps the
+    # digest from being pure stats even with none identified.
     mentioned = find_mentioned_company(query, customers, accounts) if query else None
+    match_label = "named in the question"
+    if mentioned is None and query:
+        mentioned = find_relevant_company_semantic(query, customers, accounts)
+        match_label = "the account your question seems to be about"
+
     if mentioned is not None:
-        comms = retrieve_recent_communications(mentioned, limit=3)
+        comms = retrieve_recent_communications(mentioned, limit=6, query=query)
         if comms:
-            lines.append(
-                f"Recent real communications for {mentioned.name} (named in the question):"
-            )
+            lines.append(f"Recent real communications for {mentioned.name} ({match_label}):")
             lines.extend(f"  - {line}" for line in comms)
     else:
         for company in top_at_risk[:3]:
-            comms = retrieve_recent_communications(company, limit=1)
+            comms = retrieve_recent_communications(company, limit=2, query=query)
             if comms:
                 lines.append(f"Recent real communications for {company.name}:")
                 lines.extend(f"  - {line}" for line in comms)
