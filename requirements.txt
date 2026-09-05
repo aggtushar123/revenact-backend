@@ -1,6 +1,7 @@
 anthropic==1.4.0
 asgiref==3.12.1
 attrs==26.1.0
+boto3==1.43.89
 channels==4.3.2
 channels-redis==4.3.0
 daphne==4.2.3

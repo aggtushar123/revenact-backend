@@ -70,7 +70,7 @@ expects.
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
-| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires `ANTHROPIC_API_KEY`; returns a clear `503` without one rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
+| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
 | Company Brain | — | ⏳ Not started |
@@ -1819,10 +1819,18 @@ endpoint, with `status: "sent"`, a populated `send_log`, and real
 
 Mirrors: `src/pages/copilot/Index.tsx`, `ChatView.tsx`,
 `CopilotSidebar.tsx`, `types.ts`, `copilotApi.ts`. The first real AI/LLM
-integration in this codebase — a real call to Anthropic's Claude API
-(`services/copilot/anthropic_client.py`), not a mock. **Requires
-`ANTHROPIC_API_KEY`** in your own local `.env` (see `.env.example`); with
-none set, every send returns a `503` rather than a fake answer.
+integration in this codebase — a real call to a real Claude model
+(`services/copilot/anthropic_client.py`), not a mock. Two interchangeable
+providers behind `COPILOT_LLM_PROVIDER` (see `.env.example`): `anthropic`
+(default) calls Anthropic's own API directly with **`ANTHROPIC_API_KEY`**;
+`bedrock` calls the identical Claude model through AWS Bedrock instead,
+with real AWS credentials (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
+`AWS_REGION`) and a real `BEDROCK_MODEL_ID` from your own AWS console (a
+different id format than `ANTHROPIC_MODEL`) — that model must already have
+real Bedrock model access approved in your own account/region first, a
+one-time AWS Console step this app can't do for you. With the selected
+provider's own credentials unset, every send returns a `503` rather than a
+fake answer.
 
 Its own top-level app, same "tenant-wide, not owned by one Customer/
 Account" reasoning as `scenarios`/`campaigns` — except a Conversation is
@@ -1939,9 +1947,11 @@ otherwise) to continue it. The real send — runs synchronously, no task
 queue.
 
 `400` if `content` is blank or over 8000 characters. `403` if
-`Organisation.ai_agent_enabled` is `false`. `503` if `ANTHROPIC_API_KEY`
-isn't configured. `502` if the Anthropic API call itself fails (bad key,
-rate limit, network error).
+`Organisation.ai_agent_enabled` is `false`. `503` if the selected
+provider's own real credentials aren't configured (`ANTHROPIC_API_KEY`,
+or the AWS/Bedrock ones — see the `copilot` app's own section above).
+`502` if the real API call itself fails (bad credentials, no Bedrock
+model access granted, rate limit, network error).
 
 **Response `200`** — the (possibly newly created) Conversation, same
 nested shape as the detail endpoint's GET, now including this turn's

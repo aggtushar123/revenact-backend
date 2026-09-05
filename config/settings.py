@@ -231,14 +231,28 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default=EMAIL_HOST_USER or "norep
 # Origin the emailed reset link points at (a frontend route, not this API).
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")
 
-# --- Copilot (Anthropic Claude) ----------------------------------------------
-# The first real LLM integration in this codebase (services.copilot). No key
-# means no fake fallback — SendMessageView returns a clear 503 instead of
-# pretending to work. Get a key at https://console.anthropic.com/ and set it
-# in your own local .env — see .env.example. Never set this to a real value
-# here or commit one.
+# --- Copilot (Anthropic Claude, direct or via AWS Bedrock) --------------------
+# The first real LLM integration in this codebase (services.copilot). No real
+# credentials for whichever provider is selected means no fake fallback —
+# SendMessageView returns a clear 503 instead of pretending to work. Never set
+# any of these to a real value here or commit one — see .env.example.
+#
+# COPILOT_LLM_PROVIDER picks which real backend services.copilot.anthropic_client
+# calls: "anthropic" (default) hits Anthropic's own API directly with
+# ANTHROPIC_API_KEY (get one at https://console.anthropic.com/); "bedrock" calls
+# the exact same Claude model through AWS Bedrock instead, using real AWS
+# credentials — requires Bedrock model access to have already been requested/
+# approved for that model in your own AWS account and region (a one-time
+# AWS Console step this app can't do for you) and BEDROCK_MODEL_ID to be the
+# real model id from that same console, not the "anthropic"-provider one above
+# (they use different id formats).
+COPILOT_LLM_PROVIDER = env("COPILOT_LLM_PROVIDER", default="anthropic")
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 ANTHROPIC_MODEL = env("ANTHROPIC_MODEL", default="claude-sonnet-5")
+AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default="")
+AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default="")
+AWS_REGION = env("AWS_REGION", default="")
+BEDROCK_MODEL_ID = env("BEDROCK_MODEL_ID", default="")
 
 # How long a password-reset link stays valid. Consumed by
 # django.contrib.auth.tokens.default_token_generator, which accounts/serializers.py
