@@ -1366,8 +1366,11 @@ Activity Feed's own Surveys filter.
 `survey_type`, `survey_type_display`, `status`, `status_display`,
 `score`, `sent_at`, `responded_at`, `companies` (every ultimate parent
 Customer, plural since an account-level Survey's own Account can belong
-to more than one), `account_name` (`null` for an organisation-level
-row), `created_at`. **Response `201`** (POST) — one such entry.
+to more than one), `account_id`/`account_name` (both `null` for an
+organisation-level row — unlike Opportunity/Risk, `account_id` is a
+real field here, not just `account_name`, since the standalone Surveys
+page's own row-click needs it to navigate to that Account's Details
+page), `created_at`. **Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/surveys/`
 
@@ -1409,6 +1412,7 @@ if `survey_type` is `ces` and `account_id` was given.
     "sent_at": "2026-09-01",
     "responded_at": "2026-09-04",
     "companies": [{ "id": 6, "name": "Apple Inc" }],
+    "account_id": null,
     "account_name": null,
     "created_at": "2026-09-01T10:00:00Z"
   }

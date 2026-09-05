@@ -412,7 +412,12 @@ class SurveySerializer(serializers.ModelSerializer):
     """See Survey model's docstring. `companies`/`account_name` mirror
     Opportunity/RiskSerializer's own fields exactly, same reasoning —
     the standalone Surveys page spans every Customer/Account the same
-    way the Pipelines board does.
+    way the Pipelines board does. Unlike Opportunity/Risk, this also
+    exposes `account_id` (a plain passthrough of the FK, not a
+    SerializerMethodField) — Opportunity/Risk rows never navigate
+    anywhere on click, but the standalone Surveys page's own row-click
+    does (into that Account's own Details page), and `account_name`
+    alone isn't enough to build that link.
 
     `score` is required, and range-checked against `survey_type`, the
     moment `status` becomes RESPONDED — not enforced at any other time,
@@ -435,10 +440,11 @@ class SurveySerializer(serializers.ModelSerializer):
             "sent_at",
             "responded_at",
             "companies",
+            "account_id",
             "account_name",
             "created_at",
         ]
-        read_only_fields = ["created_at"]
+        read_only_fields = ["created_at", "account_id"]
 
     def get_companies(self, obj):
         return [{"id": c.id, "name": c.name} for c in obj.companies]

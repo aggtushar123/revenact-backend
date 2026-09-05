@@ -3283,6 +3283,9 @@ class AccountSurveyListTests(APITestCase):
         survey = Survey.objects.get(pk=response.data["id"])
         self.assertEqual(survey.account, self.account)
         self.assertIsNone(survey.customer)
+        # Unlike Opportunity/Risk, account_id is a real field here — the
+        # standalone Surveys page's own row-click navigation needs it.
+        self.assertEqual(response.data["account_id"], self.account.id)
 
     def test_ces_is_rejected_for_an_account(self):
         # Account has no ces_percentage field to sync a response onto —
