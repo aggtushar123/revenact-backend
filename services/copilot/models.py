@@ -62,3 +62,171 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.role}: {self.content[:40]}"
+
+
+class CopilotSession(models.Model):
+    """Multiplayer Copilot, Phase 2a — the real, shared, persistent
+    counterpart to what the frontend's M0 build (see
+    features/copilotSessions/ in react-ts-app) kept entirely in one
+    browser's own `localStorage`. A `Conversation`'s query/thinking/
+    answer content stays exactly as real as it always was (this table
+    adds nothing there); what's new is a real place for "who else can
+    see and act in this conversation" to live, so two *different* real
+    logins can actually share one — M0's own real, documented limit
+    (one shared `localStorage` login token) meant that could never work
+    before this.
+
+    `customer`/`account` are a real, if redundant-with-the-frontend-URL,
+    snapshot of which company this session is about — same "belongs to
+    exactly one of Customer or Account" nullable-pair pattern used
+    throughout services.customers (never GenericForeignKey, per this
+    codebase's own established convention) — captured at "make this
+    live" time from whatever the frontend's own entry point already
+    knew, so an invite (see SessionInviteSerializer) can show real
+    context before the invitee has ever opened the conversation itself.
+    Both may be null: a session started from a plain New Chat has no
+    company context, same as the Conversation it wraps.
+
+    No separate "owner" field: `conversation.user` is the permanent
+    creator and never changes, including through a hand-off — see this
+    app's own `conversations_visible_to` for what hand-off actually
+    grants (an invite + participancy), not a literal ownership swap."""
+
+    class Status(models.TextChoices):
+        PRIVATE = "private", "Private"
+        LIVE = "live", "Live"
+        AWAITING_HANDOFF = "awaiting_handoff", "Awaiting hand-off"
+        CLOSED = "closed", "Closed"
+
+    conversation = models.OneToOneField(
+        Conversation, related_name="session", on_delete=models.CASCADE
+    )
+    customer = models.ForeignKey(
+        "customers.Customer",
+        related_name="copilot_sessions",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    account = models.ForeignKey(
+        "customers.Account",
+        related_name="copilot_sessions",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PRIVATE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Session for {self.conversation_id} ({self.status})"
+
+
+class SessionInvite(models.Model):
+    """Grants a real user real eligibility to join a live session —
+    invite-only means this row, not a generic "any org member" check,
+    is what actually gates access (see conversations_visible_to). A
+    hand-off (SessionEvent.kind='handed_off') creates or reuses one of
+    these for its target rather than a separate access path — handing
+    off to someone real-implies inviting them."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        ACCEPTED = "accepted", "Accepted"
+        DECLINED = "declined", "Declined"
+
+    session = models.ForeignKey(CopilotSession, related_name="invites", on_delete=models.CASCADE)
+    invited_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="copilot_session_invites", on_delete=models.CASCADE
+    )
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="+", on_delete=models.SET_NULL, null=True
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["session", "invited_user"], name="one_invite_per_user_per_session"
+            )
+        ]
+
+    def __str__(self):
+        return f"Invite for {self.invited_user_id} to session {self.session_id} ({self.status})"
+
+
+class SessionParticipant(models.Model):
+    """Currently-present, not just eligible — distinct from
+    SessionInvite: an accepted invite grants the *right* to join, this
+    row means the user actually has (`left_at` null) or once did.
+    Re-joining after leaving reactivates the same row rather than
+    creating a second one (see RespondToInviteView)."""
+
+    session = models.ForeignKey(
+        CopilotSession, related_name="participants", on_delete=models.CASCADE
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="copilot_session_participations",
+        on_delete=models.CASCADE,
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["session", "user"], name="one_participant_row_per_user_per_session"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} in session {self.session_id}"
+
+
+class SessionEvent(models.Model):
+    """A real, durable presence/lifecycle log for a session's own
+    transcript — deliberately NOT a duplicate of chat content
+    (query/redirect/answer text already lives in `Message`; a
+    `redirected` event just points at the real Message it tags, via
+    `message`, rather than re-storing its text). What's genuinely new
+    here — who joined when, who handed off to whom — has no other real
+    home. Polled via `?since_id=` (see SessionDetailView) rather than
+    pushed live — see this app's own Phase 2a/2b split for why."""
+
+    class Kind(models.TextChoices):
+        JOINED = "joined", "Joined"
+        LEFT = "left", "Left"
+        REDIRECTED = "redirected", "Redirected"
+        HANDED_OFF = "handed_off", "Handed off"
+        MADE_LIVE = "made_live", "Made live"
+        CLOSED = "closed", "Closed"
+
+    session = models.ForeignKey(CopilotSession, related_name="events", on_delete=models.CASCADE)
+    kind = models.CharField(max_length=20, choices=Kind.choices)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="+", on_delete=models.SET_NULL, null=True, blank=True
+    )
+    message = models.ForeignKey(
+        Message,
+        related_name="session_events",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Set only for kind=redirected — which real Message this event tags.",
+    )
+    payload = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="kind=handed_off: {to_user_id, to_user_name, note}. Empty for every other kind.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.kind} on session {self.session_id}"
