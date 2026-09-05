@@ -14,6 +14,7 @@ from services.customers.models import (
     Note,
     Opportunity,
     Risk,
+    Survey,
     Task,
     Ticket,
 )
@@ -554,3 +555,57 @@ class RiskCompanyPropertyTests(TestCase):
     def test_account_level_risk_company_is_the_accounts_customer(self):
         risk = Risk.objects.create(account=self.account, title="Downgrade Risk", mrr="1000.00")
         self.assertEqual(risk.companies, [self.customer])
+
+
+class SurveyParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Opportunity/Risk/
+    Contact/Activity/Email/Task/Note/Ticket/CalendarEvent."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = create_account(self.customer, name="Some Region")
+
+    def _survey_kwargs(self):
+        return {"survey_type": Survey.SurveyType.NPS, "sent_at": "2026-09-01"}
+
+    def test_customer_only_is_valid(self):
+        survey = Survey.objects.create(customer=self.customer, **self._survey_kwargs())
+        self.assertIsNone(survey.account)
+
+    def test_account_only_is_valid(self):
+        survey = Survey.objects.create(account=self.account, **self._survey_kwargs())
+        self.assertIsNone(survey.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Survey.objects.create(**self._survey_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Survey.objects.create(
+                customer=self.customer, account=self.account, **self._survey_kwargs()
+            )
+
+
+class SurveyCompanyPropertyTests(TestCase):
+    """Survey.companies resolves to every ultimate parent Customer
+    whether the survey is org-level or account-level — same reasoning
+    as OpportunityCompanyPropertyTests above."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = create_account(self.customer, name="Some Region")
+
+    def test_org_level_survey_company_is_its_own_customer(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.assertEqual(survey.companies, [self.customer])
+
+    def test_account_level_survey_company_is_the_accounts_customer(self):
+        survey = Survey.objects.create(
+            account=self.account, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.assertEqual(survey.companies, [self.customer])

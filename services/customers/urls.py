@@ -105,5 +105,15 @@ urlpatterns = [
         views.AccountRiskListView.as_view(),
         name="account-risks",
     ),
+    path(
+        "<int:customer_id>/surveys/",
+        views.CustomerSurveyListView.as_view(),
+        name="customer-surveys",
+    ),
+    path(
+        "<int:customer_id>/accounts/<int:account_id>/surveys/",
+        views.AccountSurveyListView.as_view(),
+        name="account-surveys",
+    ),
     path("<int:pk>/", views.CustomerDetailView.as_view(), name="customer-detail"),
 ]

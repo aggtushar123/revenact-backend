@@ -11,7 +11,7 @@ from rest_framework.response import Response
 
 from services.fx_rates.conversion import convert_to_org_currency
 
-from .models import Account, Contact, Customer, Opportunity, Risk
+from .models import Account, Contact, Customer, Opportunity, Risk, Survey
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
@@ -22,6 +22,7 @@ from .serializers import (
     NoteSerializer,
     OpportunitySerializer,
     RiskSerializer,
+    SurveySerializer,
     TaskSerializer,
     TicketSerializer,
 )
@@ -1128,3 +1129,178 @@ class RiskDetailView(generics.RetrieveUpdateDestroyAPIView):
             Q(customer__organisation=organisation)
             | Q(account__customers__organisation=organisation)
         ).distinct()
+
+
+# Maps a Survey's own `survey_type` to the Customer/Account field its score
+# syncs onto once responded — see SurveyDetailView.perform_update below,
+# the one place this whole feature's real behavior lives.
+_SURVEY_SCORE_FIELD = {
+    Survey.SurveyType.NPS: "nps_score",
+    Survey.SurveyType.CSAT: "csat_score",
+    Survey.SurveyType.CES: "ces_percentage",
+}
+
+
+def _reject_ces_for_account(serializer):
+    # Account has no ces_percentage field (see Survey model's own
+    # docstring on this real, pre-existing asymmetry) — a CES survey
+    # would have nowhere to sync its score once responded, so it's
+    # rejected at creation rather than silently accepted and later
+    # having its response go nowhere.
+    if serializer.validated_data.get("survey_type") == Survey.SurveyType.CES:
+        raise ValidationError(
+            {
+                "survey_type": "CES surveys aren't supported for Accounts — "
+                "log this against the parent Organization instead."
+            }
+        )
+
+
+class CustomerSurveyListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/surveys/ — same shape as
+    CustomerOpportunityListView: GET rolls up every Survey under this
+    Customer, both organisation-level (directly on it) and
+    account-level (on any of its Accounts); POST always adds an
+    organisation-level one, `customer` taken from the URL. An
+    account-level Survey is added via AccountSurveyListView below
+    instead. Powers the Activity Feed's own "Surveys" filter. Scoped to
+    the caller's own organisation."""
+
+    serializer_class = SurveySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_customer(self):
+        return get_object_or_404(
+            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
+        )
+
+    def get_queryset(self):
+        customer = self.get_customer()
+        return Survey.objects.filter(Q(customer=customer) | Q(account__customers=customer))
+
+    def perform_create(self, serializer):
+        serializer.save(customer=self.get_customer())
+
+
+class AccountSurveyListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/surveys/
+    — every account-level Survey for one Account (GET), or adds a new
+    one to it (POST); `account` taken from the URL. Same reasoning as
+    AccountOpportunityListView. Rejects survey_type=CES — see
+    _reject_ces_for_account's own docstring."""
+
+    serializer_class = SurveySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_account(self):
+        return get_object_or_404(
+            Account,
+            pk=self.kwargs["account_id"],
+            customers=self.kwargs["customer_id"],
+            customers__organisation=self.request.user.organisation,
+        )
+
+    def get_queryset(self):
+        return self.get_account().surveys.all()
+
+    def perform_create(self, serializer):
+        _reject_ces_for_account(serializer)
+        serializer.save(account=self.get_account())
+
+
+class SurveyListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/surveys/ — every Survey across every Customer/
+    Account the caller's own organisation owns, organisation-level and
+    account-level alike. Powers the standalone Surveys page
+    (react-ts-app's src/pages/surveys/SurveysPage.tsx) — the one place
+    a Survey is browsed independent of which Customer/Account it
+    belongs to, same reasoning as OpportunityListView. Its own rollup
+    cards (response rate / average score per type) are computed
+    client-side from this same unpaginated list, same approach
+    PipelinesPage.tsx's own "Pipelines Overview" banner already uses —
+    no separate stats endpoint.
+
+    Unpaginated for the same reason as OpportunityListView — the
+    rollup page needs every record to compute real totals from, not
+    one page of them.
+
+    POST takes a `customer_id` or an `account_id` in the request body
+    (neither is a real serializer field — `perform_create` below reads
+    whichever one was sent directly off the raw request) and creates
+    the Survey under that parent. Exactly one of the two must be
+    given, same invariant as the model's own CheckConstraint. Rejects
+    survey_type=CES for an account_id — see _reject_ces_for_account's
+    own docstring."""
+
+    serializer_class = SurveySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as ContactListView's own.
+        return (
+            Survey.objects.filter(
+                Q(customer__organisation=organisation)
+                | Q(account__customers__organisation=organisation)
+            )
+            .select_related("customer", "account")
+            .prefetch_related("account__customers")
+            .distinct()
+        )
+
+    def perform_create(self, serializer):
+        organisation = self.request.user.organisation
+        account_id = self.request.data.get("account_id")
+        customer_id = self.request.data.get("customer_id")
+        if account_id:
+            _reject_ces_for_account(serializer)
+            # `.distinct()` before `get_object_or_404` — same
+            # reasoning as OpportunityListView.perform_create's own.
+            account = get_object_or_404(
+                Account.objects.filter(customers__organisation=organisation).distinct(),
+                pk=account_id,
+            )
+            serializer.save(account=account)
+        elif customer_id:
+            customer = get_object_or_404(Customer, pk=customer_id, organisation=organisation)
+            serializer.save(customer=customer)
+        else:
+            raise ValidationError("Provide either customer_id or account_id.")
+
+
+class SurveyDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/surveys/<id>/ — a single Survey, scoped
+    to the caller's own organisation, regardless of whether it's
+    organisation-level or account-level. Flat, not nested — same
+    reasoning as OpportunityDetailView. PATCH is "Log Response"
+    (`status`/`score`) as well as any other edit; DELETE removes it
+    outright (no soft-delete concept here, unlike Customer's own
+    is_archived).
+
+    perform_update is the one place in this whole feature that syncs a
+    responded Survey's score onto its parent Customer/Account's own
+    nps_score/csat_score/ces_percentage field — see _SURVEY_SCORE_FIELD
+    and the Survey model's own docstring for why that's deliberately
+    centralized here rather than duplicated at every write path."""
+
+    serializer_class = SurveySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        organisation = self.request.user.organisation
+        # `.distinct()` — same fan-out reasoning as ContactDetailView's own.
+        return Survey.objects.filter(
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).distinct()
+
+    def perform_update(self, serializer):
+        survey = serializer.save()
+        if survey.status == Survey.Status.RESPONDED and survey.score is not None:
+            parent = survey.customer or survey.account
+            field = _SURVEY_SCORE_FIELD[survey.survey_type]
+            setattr(parent, field, survey.score)
+            parent.save(update_fields=[field])

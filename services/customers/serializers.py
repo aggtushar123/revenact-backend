@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import serializers
 
 from services.accounts.models import User
@@ -13,6 +14,7 @@ from .models import (
     Note,
     Opportunity,
     Risk,
+    Survey,
     Task,
     Ticket,
 )
@@ -404,3 +406,74 @@ class RiskSerializer(serializers.ModelSerializer):
 
     def get_account_name(self, obj):
         return obj.account.name if obj.account_id else None
+
+
+class SurveySerializer(serializers.ModelSerializer):
+    """See Survey model's docstring. `companies`/`account_name` mirror
+    Opportunity/RiskSerializer's own fields exactly, same reasoning —
+    the standalone Surveys page spans every Customer/Account the same
+    way the Pipelines board does.
+
+    `score` is required, and range-checked against `survey_type`, the
+    moment `status` becomes RESPONDED — not enforced at any other time,
+    so a `sent` survey can be created (and stay) with no score at all."""
+
+    survey_type_display = serializers.CharField(source="get_survey_type_display", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    companies = serializers.SerializerMethodField()
+    account_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Survey
+        fields = [
+            "id",
+            "survey_type",
+            "survey_type_display",
+            "status",
+            "status_display",
+            "score",
+            "sent_at",
+            "responded_at",
+            "companies",
+            "account_name",
+            "created_at",
+        ]
+        read_only_fields = ["created_at"]
+
+    def get_companies(self, obj):
+        return [{"id": c.id, "name": c.name} for c in obj.companies]
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None
+
+    def validate(self, attrs):
+        # `status`/`survey_type` may come from `attrs` (this call) or
+        # already be on `self.instance` (a PATCH that only sends
+        # `score`, e.g.) — same "fall back to the existing instance"
+        # reasoning any partial-update validator needs.
+        status = attrs.get("status", getattr(self.instance, "status", None))
+        survey_type = attrs.get("survey_type", getattr(self.instance, "survey_type", None))
+        score = attrs.get("score", getattr(self.instance, "score", None))
+
+        if status == Survey.Status.RESPONDED:
+            if score is None:
+                raise serializers.ValidationError(
+                    {"score": "A score is required once a survey is marked responded."}
+                )
+            lo, hi = (-100, 100) if survey_type == Survey.SurveyType.NPS else (0, 100)
+            if not (lo <= score <= hi):
+                raise serializers.ValidationError(
+                    {"score": f"Must be between {lo} and {hi} for {survey_type.upper()}."}
+                )
+        return attrs
+
+    def update(self, instance, validated_data):
+        # One less date for a CSM to pick — "I got a response today" is
+        # the overwhelmingly common case; still overridable by sending
+        # responded_at explicitly (e.g. logging a response that came in
+        # yesterday).
+        if validated_data.get("status") == Survey.Status.RESPONDED and not validated_data.get(
+            "responded_at"
+        ):
+            validated_data["responded_at"] = timezone.localdate()
+        return super().update(instance, validated_data)

@@ -27,6 +27,8 @@ from services.customers.views import (
     OpportunityListView,
     RiskDetailView,
     RiskListView,
+    SurveyDetailView,
+    SurveyListView,
 )
 
 urlpatterns = [
@@ -67,6 +69,13 @@ urlpatterns = [
     # list-create endpoints under services.customers.urls.
     path("api/v1/risks/<int:pk>/", RiskDetailView.as_view(), name="risk-detail"),
     path("api/v1/risks/", RiskListView.as_view(), name="risk-list"),
+    # Survey, same reasoning as Opportunity/Risk above — mounted at its
+    # own top-level /api/v1/surveys/ prefix since it's the one Survey
+    # view spanning every Customer/Account at once (the standalone
+    # Surveys page), unlike the nested list-create endpoints under
+    # services.customers.urls (the Activity Feed's own Surveys filter).
+    path("api/v1/surveys/<int:pk>/", SurveyDetailView.as_view(), name="survey-detail"),
+    path("api/v1/surveys/", SurveyListView.as_view(), name="survey-list"),
     # Scenarios — its own app (services/scenarios/), unlike everything
     # above which lives in services.customers. Nothing here is nested
     # under a Customer/Account the way Task/Note/etc. are: a Scenario

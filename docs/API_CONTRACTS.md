@@ -67,6 +67,7 @@ expects.
 | Calendar Events (`ActivityFeed`'s "Calendar Events" filter) | `customers` (`CalendarEvent` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `CALENDAR_EVENTS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts (standalone `/contacts/list` page, Organization/Account Details' Contacts tabs) | `customers` (`Contact` model) | 🟢 Full CRUD, API-complete — see below. Global paginated+searchable list (`ContactListView`/`ContactStatsView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat `ContactDetailView` (GET/PATCH/DELETE by id, regardless of parent) exist and are seeded; the standalone list page's Add/Edit/Delete are wired to them. |
 | Pipelines (standalone board — "Opportunities" and "Risks" tabs) | `customers` (`Opportunity`, `Risk` models) | 🟢 Full CRUD, API-complete — see below. Both tabs have the same shape: a global unpaginated list (`OpportunityListView`/`RiskListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Both are seeded; the board's own Add/Edit/Delete/drag-and-drop are wired to both tabs. |
+| Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot | — | ⏳ Not started |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
@@ -1312,6 +1313,116 @@ account-level. Flat, not nested — same reasoning as
 `OpportunityDetailView`. Powers both the board's drag-and-drop (PATCH
 `stage`) and its Edit/Delete card actions. PATCH can't move a Risk
 between parents, same as Opportunity.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoints
+above. **Response `204`** (DELETE) — empty body.
+
+### Models — `Survey`
+
+Mirrors: the Activity Feed's own "Surveys" filter (react-ts-app's
+`ActivityFeed.tsx` — previously an unimplemented chip with no data
+behind it) and the standalone Surveys page (`src/pages/surveys/
+SurveysPage.tsx`). Same "belongs to exactly one of `Customer` or
+`Account`" shape as `Opportunity`/`Risk` above.
+
+One sent instance of asking a Customer or Account for an NPS/CSAT/CES
+score — `survey_type` (`nps`/`csat`/`ces`), `status`
+(`sent`/`responded`/`expired`, default `sent`), `score` (one
+`IntegerField` for all three types — -100..100 for NPS, 0..100 for
+CSAT/CES, the same ranges `Customer.nps_score`/`csat_score`/
+`ces_percentage` already use; required and range-checked, in the
+serializer, only once `status` becomes `responded`), `sent_at`
+(required), `responded_at` (set automatically to today on responding
+if not given explicitly).
+
+**Responding syncs the score onto the parent** — marking a Survey
+`responded` with a `score` writes that value onto the parent Customer's
+or Account's own `nps_score`/`csat_score`/`ces_percentage` field (see
+`SurveyDetailView.perform_update`). Those fields go from "a number with
+no provenance" to "the latest completed survey's result."
+
+**CES is Customer-only** — `Account` has no `ces_percentage` field (a
+real, pre-existing asymmetry with Customer), so a CES survey has
+nowhere to sync a response on an Account. Creating one against an
+Account (nested `AccountSurveyListView`, or the flat endpoint with
+`account_id`) is a `400`.
+
+Deliberately not a multi-question survey engine — no response-level
+granularity beyond one score per Survey, no question builder, no
+actual email delivery (there's no outbound customer-facing email
+infrastructure in this codebase to send a real survey link with yet;
+"send" means "log that it was sent," same honest framing as this app's
+own Webhooks delivery being real but bounded).
+
+### `GET/POST /api/v1/customers/<customer_id>/surveys/`
+
+Auth: `IsAuthenticated`. GET: every Survey under this Customer, rolled
+up from both levels (organisation-level and account-level), same
+reasoning as the Opportunity customer-scoped endpoint. POST always adds
+an organisation-level Survey; `customer` taken from the URL. Powers the
+Activity Feed's own Surveys filter.
+
+**Response `200`** (GET) — a plain array, each entry: `id`,
+`survey_type`, `survey_type_display`, `status`, `status_display`,
+`score`, `sent_at`, `responded_at`, `companies` (every ultimate parent
+Customer, plural since an account-level Survey's own Account can belong
+to more than one), `account_name` (`null` for an organisation-level
+row), `created_at`. **Response `201`** (POST) — one such entry.
+
+### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/surveys/`
+
+Auth: `IsAuthenticated`. GET: every account-level Survey for one
+Account. POST: adds a new one to it; `account` taken from the URL.
+`400` if `survey_type` is `ces` — see the model's own note above.
+
+**Response `200`**/**`201`** — same shape as the Customer-scoped
+endpoint above, `account_name` set to that account's own name.
+
+### `GET/POST /api/v1/surveys/`
+
+Auth: `IsAuthenticated`. GET: every Survey across every Customer/
+Account the caller's own organisation owns. The one Survey view not
+nested under `/customers/<id>/...`, mounted at its own top-level
+prefix, same reasoning as `OpportunityListView`. Powers the standalone
+Surveys page — its own response-rate/average-score rollup cards are
+computed client-side from this same list, not a separate stats
+endpoint.
+
+**Pagination is off** here, same reasoning as `OpportunityListView` — a
+rollup page needs every record to total correctly, not one page of them.
+
+POST takes a `customer_id` or an `account_id` in the request body
+(neither is a real serializer field) and creates the Survey under that
+parent — exactly one of the two must be given (`400` otherwise). `400`
+if `survey_type` is `ces` and `account_id` was given.
+
+**Response `200`**
+```json
+[
+  {
+    "id": 4,
+    "survey_type": "nps",
+    "survey_type_display": "NPS",
+    "status": "responded",
+    "status_display": "Responded",
+    "score": 80,
+    "sent_at": "2026-09-01",
+    "responded_at": "2026-09-04",
+    "companies": [{ "id": 6, "name": "Apple Inc" }],
+    "account_name": null,
+    "created_at": "2026-09-01T10:00:00Z"
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/surveys/<id>/`
+
+Auth: `IsAuthenticated`. A single Survey, scoped to the caller's own
+organisation, regardless of whether it's organisation-level or
+account-level. Flat, not nested — same reasoning as
+`OpportunityDetailView`. PATCH is "Log Response" (`status`/`score`) as
+well as any other edit — this is the one place a responded Survey's
+score gets synced onto its parent, see the model's own note above.
 
 **Response `200`** (GET/PATCH) — same shape as the list endpoints
 above. **Response `204`** (DELETE) — empty body.

@@ -10,6 +10,7 @@ from .models import (
     Note,
     Opportunity,
     Risk,
+    Survey,
     Task,
     Ticket,
 )
@@ -155,4 +156,12 @@ class RiskAdmin(admin.ModelAdmin):
     list_display = ["title", "stage", "priority", "mrr", "customer", "account"]
     list_filter = ["stage", "priority"]
     search_fields = ["title", "customer__name", "account__name"]
+    readonly_fields = ["created_at"]
+
+
+@admin.register(Survey)
+class SurveyAdmin(admin.ModelAdmin):
+    list_display = ["survey_type", "status", "score", "sent_at", "customer", "account"]
+    list_filter = ["survey_type", "status"]
+    search_fields = ["customer__name", "account__name"]
     readonly_fields = ["created_at"]

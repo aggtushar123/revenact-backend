@@ -1056,3 +1056,98 @@ class Risk(models.Model):
         if self.customer_id:
             return [self.customer]
         return list(self.account.customers.all())
+
+
+class Survey(models.Model):
+    """One sent instance of asking a Customer or Account for an NPS/CSAT/
+    CES score — same "belongs to exactly one of Customer or Account"
+    shape as Opportunity/Risk above. Backs the Activity Feed's own
+    "Surveys" filter (react-ts-app's ActivityFeed.tsx — previously an
+    unimplemented chip with no data behind it at all) and the standalone
+    Surveys page (src/pages/surveys/SurveysPage.tsx).
+
+    `score` is one field for all three types rather than three separate
+    columns — NPS is -100..100, CSAT/CES are 0..100, the exact same
+    ranges `Customer.nps_score`/`csat_score`/`ces_percentage` already
+    use (validated per-type in the serializer, not here). Responding to
+    a Survey (`status` -> RESPONDED with a `score`) writes that score
+    onto the parent's own matching field — see
+    SurveyDetailView.perform_update on the view side — so those
+    previously-provenance-free fields become "the latest completed
+    survey's result" going forward, without a full response-history
+    table this doesn't need yet (no multi-question surveys, no per-
+    respondent records — see this app's own design notes in
+    docs/API_CONTRACTS.md).
+
+    CES has nowhere to sync on an Account — `Account` has no
+    `ces_percentage` field (a real, pre-existing asymmetry with
+    Customer, not new here) — so a CES Survey is only ever valid at the
+    Customer level; enforced in the views that could set `account`
+    (AccountSurveyListView, SurveyListView.perform_create when
+    account_id is given), not here, since neither FK is required at the
+    model layer the way a plain field constraint could check."""
+
+    class SurveyType(models.TextChoices):
+        NPS = "nps", "NPS"
+        CSAT = "csat", "CSAT"
+        CES = "ces", "CES"
+
+    class Status(models.TextChoices):
+        SENT = "sent", "Sent"
+        RESPONDED = "responded", "Responded"
+        EXPIRED = "expired", "Expired"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="surveys",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level survey. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="surveys",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level survey. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint. "
+        "Never set together with survey_type=CES — see the model's own docstring.",
+    )
+    survey_type = models.CharField(max_length=8, choices=SurveyType.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.SENT)
+    score = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="-100..100 for NPS, 0..100 for CSAT/CES. Required once status=RESPONDED "
+        "(validated in the serializer, which also range-checks it against survey_type).",
+    )
+    sent_at = models.DateField()
+    responded_at = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-sent_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="survey_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.get_survey_type_display()} survey — {parent}"
+
+    @property
+    def companies(self) -> list["Customer"]:
+        """Every ultimate parent Customer — same reasoning as
+        Opportunity's own `companies` property."""
+        if self.customer_id:
+            return [self.customer]
+        return list(self.account.customers.all())

@@ -17,6 +17,7 @@ from services.customers.models import (
     Note,
     Opportunity,
     Risk,
+    Survey,
     Task,
     Ticket,
 )
@@ -3204,6 +3205,357 @@ class RiskDetailTests(APITestCase):
         self.client.force_authenticate(self.admin)
         response = self.client.get("/api/v1/risks/999999/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomerSurveyListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/surveys/"
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_admin_can_add_an_organization_level_survey(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"survey_type": "nps", "sent_at": "2026-09-01"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        survey = Survey.objects.get(pk=response.data["id"])
+        self.assertEqual(survey.customer, self.customer)
+        self.assertIsNone(survey.account)
+        self.assertEqual(survey.status, Survey.Status.SENT)
+
+    def test_rolls_up_this_customers_own_accounts_surveys_too(self):
+        account = create_account(self.customer, name="North America")
+        Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        Survey.objects.create(
+            account=account, survey_type=Survey.SurveyType.CSAT, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        types = {row["survey_type"] for row in response.data}
+        self.assertEqual(types, {"nps", "csat"})
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/surveys/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AccountSurveyListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = create_account(self.customer, name="North America")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/surveys/"
+
+    def test_admin_can_add_an_account_level_survey(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"survey_type": "csat", "sent_at": "2026-09-01"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        survey = Survey.objects.get(pk=response.data["id"])
+        self.assertEqual(survey.account, self.account)
+        self.assertIsNone(survey.customer)
+
+    def test_ces_is_rejected_for_an_account(self):
+        # Account has no ces_percentage field to sync a response onto —
+        # see Survey model's own docstring.
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"survey_type": "ces", "sent_at": "2026-09-01"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Survey.objects.count(), 0)
+
+
+class SurveyListTests(APITestCase):
+    """/api/v1/surveys/ — the one Survey view not nested under a single
+    Customer/Account (see SurveyListView's own docstring). Powers the
+    standalone Surveys page."""
+
+    url = "/api/v1/surveys/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = create_account(self.customer, name="North America")
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_both_org_level_and_account_level_surveys_as_a_plain_array(self):
+        Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        Survey.objects.create(
+            account=self.account, survey_type=Survey.SurveyType.CSAT, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        types = {row["survey_type"] for row in response.data}
+        self.assertEqual(types, {"nps", "csat"})
+
+    def test_does_not_leak_another_organisations_surveys(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        Survey.objects.create(
+            customer=other_customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.CSAT, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["survey_type"], "csat")
+
+    def test_posting_with_customer_id_creates_an_organization_level_survey(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"survey_type": "nps", "sent_at": "2026-09-01", "customer_id": self.customer.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        survey = Survey.objects.get(pk=response.data["id"])
+        self.assertEqual(survey.customer, self.customer)
+        self.assertIsNone(survey.account)
+
+    def test_posting_with_account_id_creates_an_account_level_survey(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"survey_type": "csat", "sent_at": "2026-09-01", "account_id": self.account.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        survey = Survey.objects.get(pk=response.data["id"])
+        self.assertEqual(survey.account, self.account)
+        self.assertIsNone(survey.customer)
+
+    def test_ces_is_rejected_when_posting_with_account_id(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            {"survey_type": "ces", "sent_at": "2026-09-01", "account_id": self.account.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Survey.objects.count(), 0)
+
+    def test_posting_with_neither_customer_id_nor_account_id_is_400(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            self.url, {"survey_type": "nps", "sent_at": "2026-09-01"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class SurveyDetailTests(APITestCase):
+    """GET/PATCH/DELETE /api/v1/surveys/<id>/ — flat, not nested.
+    Covers "Log Response" (PATCH status/score) and the score-sync onto
+    the parent Customer/Account, the one real behavior this whole
+    feature is for."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = create_account(self.customer, name="North America")
+
+    def _url(self, survey):
+        return f"/api/v1/surveys/{survey.id}/"
+
+    def test_unauthenticated_cannot_view(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        response = self.client.get(self._url(survey))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_score_is_required_to_mark_responded(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(self._url(survey), {"status": "responded"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_score_out_of_range_for_nps_is_rejected(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            self._url(survey), {"status": "responded", "score": 150}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_score_out_of_range_for_csat_is_rejected(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.CSAT, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            self._url(survey), {"status": "responded", "score": -5}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_responding_to_a_customer_nps_survey_syncs_customer_nps_score(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            self._url(survey), {"status": "responded", "score": 80}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        survey.refresh_from_db()
+        self.customer.refresh_from_db()
+        self.assertEqual(survey.status, Survey.Status.RESPONDED)
+        self.assertEqual(survey.score, 80)
+        self.assertIsNotNone(survey.responded_at)
+        self.assertEqual(self.customer.nps_score, 80)
+
+    def test_responding_to_a_customer_csat_survey_syncs_customer_csat_score(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.CSAT, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        self.client.patch(self._url(survey), {"status": "responded", "score": 90}, format="json")
+
+        self.customer.refresh_from_db()
+        self.assertEqual(str(self.customer.csat_score), "90.00")
+
+    def test_responding_to_a_customer_ces_survey_syncs_customer_ces_percentage(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.CES, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        self.client.patch(self._url(survey), {"status": "responded", "score": 75}, format="json")
+
+        self.customer.refresh_from_db()
+        self.assertEqual(str(self.customer.ces_percentage), "75.00")
+
+    def test_responding_to_an_account_survey_syncs_the_account_not_the_customer(self):
+        survey = Survey.objects.create(
+            account=self.account, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        self.client.patch(self._url(survey), {"status": "responded", "score": -20}, format="json")
+
+        self.account.refresh_from_db()
+        self.customer.refresh_from_db()
+        self.assertEqual(self.account.nps_score, -20)
+        self.assertIsNone(self.customer.nps_score)
+
+    def test_explicit_responded_at_is_not_overridden(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        self.client.patch(
+            self._url(survey),
+            {"status": "responded", "score": 50, "responded_at": "2026-08-15"},
+            format="json",
+        )
+
+        survey.refresh_from_db()
+        self.assertEqual(str(survey.responded_at), "2026-08-15")
+
+    def test_can_delete_a_survey(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(self._url(survey))
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Survey.objects.filter(pk=survey.id).exists())
+
+    def test_another_organisations_admin_gets_404(self):
+        survey = Survey.objects.create(
+            customer=self.customer, survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01"
+        )
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        self.assertEqual(self.client.get(self._url(survey)).status_code, status.HTTP_404_NOT_FOUND)
 
 
 class AccountListTests(APITestCase):
