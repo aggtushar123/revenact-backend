@@ -244,10 +244,50 @@ class CustomObjectRecordListCreateViewTests(APITestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_requires_definition_and_a_parent_query_param(self):
+    def test_requires_a_definition_query_param(self):
         self.client.force_authenticate(self.csm)
-        response = self.client.get(self.url, {"definition": self.account_object.id})
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_definition_alone_lists_every_record_across_the_org_paginated_with_parent_info(self):
+        CustomObjectRecord.objects.create(
+            object_definition=self.account_object, account=self.account, data={"product": "A"}
+        )
+        other_account = Account.objects.create(name="EMEA")
+        other_account.customers.add(self.customer)
+        CustomObjectRecord.objects.create(
+            object_definition=self.account_object, account=other_account, data={"product": "B"}
+        )
+        self.client.force_authenticate(self.csm)
+
+        response = self.client.get(self.url, {"definition": self.account_object.id})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        names = {r["parent_name"] for r in response.data["results"]}
+        self.assertEqual(names, {"North America", "EMEA"})
+        self.assertTrue(all(r["parent_type"] == "account" for r in response.data["results"]))
+
+    def test_definition_alone_never_leaks_another_organisations_records(self):
+        CustomObjectRecord.objects.create(
+            object_definition=self.account_object, account=self.account, data={"product": "Mine"}
+        )
+        other_org = Organisation.objects.create(name="Globex")
+        other_customer = Customer.objects.create(organisation=other_org, name="Other Co")
+        other_account = Account.objects.create(name="Other Account")
+        other_account.customers.add(other_customer)
+        other_definition = CustomObjectDefinition.objects.create(
+            organisation=other_org, name="Line Item", api_name="line_item", applies_to_account=True
+        )
+        CustomObjectRecord.objects.create(
+            object_definition=other_definition, account=other_account, data={}
+        )
+        self.client.force_authenticate(self.csm)
+
+        response = self.client.get(self.url, {"definition": self.account_object.id})
+
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["data"], {"product": "Mine"})
 
     def test_a_csm_can_create_a_record_not_just_an_admin(self):
         self.client.force_authenticate(self.csm)

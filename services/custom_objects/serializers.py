@@ -132,13 +132,24 @@ class CustomObjectDefinitionSerializer(serializers.ModelSerializer):
 
 
 class CustomObjectRecordSerializer(serializers.ModelSerializer):
-    """Read: real object_definition/customer/account ids plus `data`.
-    Write: same three ids (object_definition fixed at create, never
-    changed on update — see validate()) plus `data`, validated field by
-    field against the definition's own real CustomFieldDefinitions —
-    every `is_required` field present, every value type-correct for its
-    `field_type`, no unmapped keys. See `_validate_data`/`_coerce_value`
-    for exactly what "type-correct" means per field_type."""
+    """Read: real object_definition/customer/account ids plus `data`,
+    plus `parent_name`/`parent_type` — same pair as TaskListSerializer's
+    own, needed here for the same reason: the org-wide per-object page
+    (pages/customObjects/CustomObjectRecordsPage.tsx, via
+    CustomObjectRecordListCreateView with no `?customer=`/`?account=`)
+    spans every parent at once, so each row needs to say *which*
+    Organization/Account it belongs to. Harmless on the parent-scoped
+    responses too (CustomObjectsTab.tsx's own calls, where the parent
+    is already known) — not worth a second serializer for two extra
+    strings, unlike Task's own TaskSerializer/TaskListSerializer split.
+
+    Write: object_definition_id + exactly one of customer_id/account_id
+    (object_definition fixed at create, never changed on update — see
+    validate()) plus `data`, validated field by field against the
+    definition's own real CustomFieldDefinitions — every `is_required`
+    field present, every value type-correct for its `field_type`, no
+    unmapped keys. See `_validate_data`/`_coerce_value` for exactly what
+    "type-correct" means per field_type."""
 
     object_definition_id = serializers.PrimaryKeyRelatedField(
         source="object_definition", queryset=CustomObjectDefinition.objects.all()
@@ -149,6 +160,8 @@ class CustomObjectRecordSerializer(serializers.ModelSerializer):
     account_id = serializers.PrimaryKeyRelatedField(
         source="account", queryset=Account.objects.all(), required=False, allow_null=True
     )
+    parent_name = serializers.SerializerMethodField()
+    parent_type = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomObjectRecord
@@ -157,11 +170,19 @@ class CustomObjectRecordSerializer(serializers.ModelSerializer):
             "object_definition_id",
             "customer_id",
             "account_id",
+            "parent_name",
+            "parent_type",
             "data",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
+
+    def get_parent_name(self, obj) -> str:
+        return obj.customer.name if obj.customer_id else obj.account.name
+
+    def get_parent_type(self, obj) -> str:
+        return "customer" if obj.customer_id else "account"
 
     def validate(self, attrs):
         request = self.context["request"]

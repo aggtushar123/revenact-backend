@@ -2194,18 +2194,29 @@ Auth: `IsOrgAdmin`. `name` + `field_type` (+ `is_required`,
 Auth: `IsOrgAdmin`. Scoped to that definition within the caller's own
 organisation.
 
-### `GET/POST /api/v1/custom-objects/records/?definition=<id>&customer=<id>|&account=<id>`
+### `GET/POST /api/v1/custom-objects/records/?definition=<id>[&customer=<id>|&account=<id>]`
 
-Auth: `IsAuthenticated`. GET requires both `?definition=` and exactly
-one of `?customer=`/`?account=` — every record of that object type for
-that one specific parent. **Pagination off**. POST: `object_definition_id`
-+ exactly one of `customer_id`/`account_id` + `data`; `400` with a
-real reason for a missing required field, a wrong-typed value, an
-unmapped `data` key, a picklist value outside its own real options, a
-parent type the definition doesn't `applies_to_*`, or a parent outside
-the caller's own organisation.
+Auth: `IsAuthenticated`. GET always requires `?definition=`; adding
+`&customer=<id>` or `&account=<id>` scopes the list to that one
+specific parent's own records (**pagination off** — what
+`CustomObjectsTab.tsx` calls on a Customer/Account's own page) —
+omitting both instead returns every record of that object type across
+the caller's whole organisation, any parent, **paginated** with the
+shared `PageNumberPagination`/`PAGE_SIZE` (what the org-wide per-object
+page, `CustomObjectRecordsPage.tsx`, calls from the sidebar's own
+"Custom Objects" section). Every record — parent-scoped or org-wide —
+carries `parent_name`/`parent_type` (same pair as `TaskListSerializer`'s
+own), so a cross-parent list can say which Organization/Account each
+row belongs to.
 
-**Response `200`/`201`**
+POST always requires a real parent: `object_definition_id` + exactly
+one of `customer_id`/`account_id` + `data`; `400` with a real reason
+for a missing required field, a wrong-typed value, an unmapped `data`
+key, a picklist value outside its own real options, a parent type the
+definition doesn't `applies_to_*`, or a parent outside the caller's own
+organisation.
+
+**Response `200`/`201`, parent-scoped (plain array)**
 ```json
 [
   {
@@ -2213,11 +2224,23 @@ the caller's own organisation.
     "object_definition_id": 4,
     "customer_id": null,
     "account_id": 17,
+    "parent_name": "North America",
+    "parent_type": "account",
     "data": { "product": "Seat License", "qty": 50 },
     "created_at": "2026-09-06T10:05:00Z",
     "updated_at": "2026-09-06T10:05:00Z"
   }
 ]
+```
+
+**Response `200`, org-wide (`?definition=` only, paginated)**
+```json
+{
+  "count": 42,
+  "next": "http://.../api/v1/custom-objects/records/?definition=4&page=2",
+  "previous": null,
+  "results": [ /* same shape as above, spanning every parent */ ]
+}
 ```
 
 ### `GET/PATCH/DELETE /api/v1/custom-objects/records/<id>/`

@@ -2,6 +2,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics
 from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 
 from services.accounts.permissions import IsOrgAdmin
@@ -107,14 +108,22 @@ class CustomFieldDefinitionDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class CustomObjectRecordListCreateView(generics.ListCreateAPIView):
-    """GET/POST /api/v1/custom-objects/records/?definition=<id>&customer=<id>
-    (or &account=<id>) — every record of one object type for one specific
-    Customer/Account (GET), or adds a new one (POST). Both query params
-    are required on GET too — unlike most list endpoints in this
-    codebase, there's no "every record across the org" view asked for,
-    so this always needs the same two-part scope
-    (object_definition + parent) the frontend's own CustomObjectsTab
-    already knows before it ever calls this.
+    """GET/POST /api/v1/custom-objects/records/?definition=<id>[&customer=<id>|&account=<id>]
+    — `?definition=` is always required; adding `&customer=<id>` or
+    `&account=<id>` scopes the GET to one specific parent's own records
+    (what CustomObjectsTab.tsx calls, on a Customer/Account's own
+    page) — omitting both instead lists every record of that object
+    type across the caller's whole organisation, any parent (what the
+    org-wide per-object page, pages/customObjects/
+    CustomObjectRecordsPage.tsx, calls from the sidebar's own real
+    "Custom Objects" section). POST always requires a real parent
+    (exactly one of `customer_id`/`account_id` in the body — see
+    CustomObjectRecordSerializer's own validation); there's no
+    "create without a parent" concept.
+
+    Paginated only for the org-wide case (a Customer/Account's own
+    handful of records stays unpaginated, same reasoning as the
+    per-object-definition views above) — see `pagination_class`.
 
     Not admin-gated — adding/viewing a custom object *record* is like
     adding a Task or a Note, open to any org member (see this app's own
@@ -123,16 +132,23 @@ class CustomObjectRecordListCreateView(generics.ListCreateAPIView):
 
     serializer_class = CustomObjectRecordSerializer
     permission_classes = [IsAuthenticated]
-    pagination_class = None  # one object's own records for one parent — always a handful.
+
+    @property
+    def pagination_class(self):
+        has_parent = self.request.query_params.get("customer") or self.request.query_params.get(
+            "account"
+        )
+        # PageNumberPagination alone (no page_size override) picks up the
+        # real global REST_FRAMEWORK["PAGE_SIZE"] — same default every
+        # other paginated list in this codebase already uses.
+        return None if has_parent else PageNumberPagination
 
     def get_queryset(self):
         definition_id = self.request.query_params.get("definition")
         customer_id = self.request.query_params.get("customer")
         account_id = self.request.query_params.get("account")
-        if not definition_id or not (customer_id or account_id):
-            raise ValidationError(
-                "?definition=<id> and one of ?customer=<id>/?account=<id> are required."
-            )
+        if not definition_id:
+            raise ValidationError("?definition=<id> is required.")
 
         queryset = CustomObjectRecord.objects.filter(
             object_definition_id=definition_id,
@@ -142,11 +158,16 @@ class CustomObjectRecordListCreateView(generics.ListCreateAPIView):
             queryset = queryset.filter(
                 customer_id=customer_id, customer__organisation=self.request.user.organisation
             )
-        else:
+        elif account_id:
             queryset = queryset.filter(
                 account_id=account_id,
                 account__customers__organisation=self.request.user.organisation,
             )
+        else:
+            org = self.request.user.organisation
+            queryset = queryset.filter(
+                Q(customer__organisation=org) | Q(account__customers__organisation=org)
+            ).distinct()
         return queryset
 
 
