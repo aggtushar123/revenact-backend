@@ -108,6 +108,12 @@ urlpatterns = [
     # a notification is scoped to one User (its own recipient), not a
     # Customer/Account. Powers the Navbar's own real bell dropdown.
     path("api/v1/notifications/", include("services.notifications.urls")),
+    # Custom Objects — its own app, same "tenant-wide, not owned by one
+    # Customer/Account" reasoning as the above; unlike those, a custom
+    # object *definition* is org-wide config (see IsOrgAdmin gating in
+    # its own views.py) while its *records* each belong to exactly one
+    # Customer or Account, same shape as Opportunity/Risk/etc.
+    path("api/v1/custom-objects/", include("services.custom_objects.urls")),
     # FX rates — its own app, same "tenant-wide, admin-only-both-ways"
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).

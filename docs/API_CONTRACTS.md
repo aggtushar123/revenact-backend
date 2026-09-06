@@ -2110,6 +2110,125 @@ entries. **Response `204`** (DELETE) — empty body.
 
 ---
 
+## `custom_objects` — Custom objects (Settings > Custom Objects, `CustomObjectsPage.tsx`; Organization/Account Details' own "Custom Objects" tab, `CustomObjectsTab.tsx`)
+
+Its own top-level app, same "tenant-wide config, not owned by one
+Customer/Account" reasoning as `webhooks`/`fx_rates` for *definitions* —
+but unlike those, this app's *records* each belong to exactly one
+Customer or Account, same shape as `Opportunity`/`Risk`. The SFDC
+"custom object" pattern: an org admin declares a brand-new object type
+with its own fields, with no code change or migration needed to add
+another one later — see `CustomObjectDefinition`'s own docstring.
+
+### Models
+
+- `CustomObjectDefinition` — `organisation`, `name`, `api_name` (slug,
+  server-derived from `name`, unique per organisation), 
+  `applies_to_customer`/`applies_to_account` (at least one `True`),
+  `created_by`, `created_at`.
+- `CustomFieldDefinition` — `object_definition`, `name`, `api_name`
+  (slug, server-derived, unique per object), `field_type` (`text` |
+  `number` | `currency` | `date` | `boolean` | `picklist`),
+  `is_required`, `picklist_options` (list of strings; only meaningful
+  for `picklist`), `order` (server-assigned, append-only), `created_at`.
+- `CustomObjectRecord` — `object_definition`, `customer`/`account`
+  (exactly one set, same `CheckConstraint` shape as `Opportunity`),
+  `data` (JSON object keyed by each field's own `api_name`), 
+  `created_by`, `created_at`, `updated_at`.
+
+### Conventions specific to this app
+
+**Defining** object/field types is admin-only (`IsOrgAdmin` on every
+POST/PATCH/DELETE under `/definitions/`); **reading** definitions and
+**all record CRUD** is open to any authenticated org member — adding a
+custom-object record is like adding a Task, not like changing webhook
+config. `data` is validated field-by-field against the definition's own
+real `CustomFieldDefinition`s on every write (required fields present,
+values type-correct per `field_type`, no unmapped keys) — see
+`CustomObjectRecordSerializer._validate_data`/`_coerce_value`.
+
+### `GET/POST /api/v1/custom-objects/definitions/`
+
+Auth: `IsAuthenticated` (GET) / `IsOrgAdmin` (POST). GET: every
+definition in the caller's own organisation, `fields` nested,
+`records_count` real (across every parent this definition applies to).
+**Pagination off**. POST: `name` + `applies_to_customer`/
+`applies_to_account`; `api_name`/`organisation`/`created_by` are always
+server-derived, never client-set. `400` if neither `applies_to_*` flag
+is set.
+
+**Response `200`/`201`**
+```json
+[
+  {
+    "id": 4,
+    "name": "Opportunity Line Item",
+    "api_name": "opportunity_line_item",
+    "applies_to_customer": false,
+    "applies_to_account": true,
+    "fields": [
+      { "id": 9, "name": "Product", "api_name": "product", "field_type": "text", "field_type_display": "Text", "is_required": true, "picklist_options": [], "order": 1, "created_at": "2026-09-06T10:00:00Z" },
+      { "id": 10, "name": "Quantity", "api_name": "qty", "field_type": "number", "field_type_display": "Number", "is_required": false, "picklist_options": [], "order": 2, "created_at": "2026-09-06T10:00:00Z" }
+    ],
+    "records_count": 3,
+    "created_at": "2026-09-06T10:00:00Z"
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/custom-objects/definitions/<id>/`
+
+Auth: `IsAuthenticated` (GET) / `IsOrgAdmin` (PATCH/DELETE). Scoped to
+the caller's own organisation (404, not 403, otherwise). DELETE
+cascades to that definition's own fields and every record ever created
+against it.
+
+### `POST /api/v1/custom-objects/definitions/<definition_id>/fields/`
+
+Auth: `IsOrgAdmin`. `name` + `field_type` (+ `is_required`,
+`picklist_options` — required non-empty when `field_type` is
+`picklist`); `api_name`/`order` are always server-derived.
+
+### `PATCH/DELETE /api/v1/custom-objects/definitions/<definition_id>/fields/<id>/`
+
+Auth: `IsOrgAdmin`. Scoped to that definition within the caller's own
+organisation.
+
+### `GET/POST /api/v1/custom-objects/records/?definition=<id>&customer=<id>|&account=<id>`
+
+Auth: `IsAuthenticated`. GET requires both `?definition=` and exactly
+one of `?customer=`/`?account=` — every record of that object type for
+that one specific parent. **Pagination off**. POST: `object_definition_id`
++ exactly one of `customer_id`/`account_id` + `data`; `400` with a
+real reason for a missing required field, a wrong-typed value, an
+unmapped `data` key, a picklist value outside its own real options, a
+parent type the definition doesn't `applies_to_*`, or a parent outside
+the caller's own organisation.
+
+**Response `200`/`201`**
+```json
+[
+  {
+    "id": 21,
+    "object_definition_id": 4,
+    "customer_id": null,
+    "account_id": 17,
+    "data": { "product": "Seat License", "qty": 50 },
+    "created_at": "2026-09-06T10:05:00Z",
+    "updated_at": "2026-09-06T10:05:00Z"
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/custom-objects/records/<id>/`
+
+Auth: `IsAuthenticated`. Scoped to the caller's own organisation via
+whichever of `customer`/`account` is set (404, not 403, otherwise).
+PATCHing `data` re-validates it in full against the (unchanged)
+definition's own fields.
+
+---
+
 <!--
 Template for each new feature section below:
 
