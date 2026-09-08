@@ -17,6 +17,13 @@ from services.notifications.realtime import notify as send_notification
 
 from .headline_generation import NothingToSummarise, generate_headlines
 from .models import Account, Canvas, Contact, Customer, Headline, Opportunity, Risk, Survey, Task
+from .scoping import (
+    get_visible_account,
+    get_visible_customer,
+    visible_accounts,
+    visible_children_q,
+    visible_customers,
+)
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
@@ -90,9 +97,7 @@ class CustomerListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = Customer.objects.filter(
-            organisation=self.request.user.organisation, is_archived=False
-        )
+        queryset = visible_customers(self.request.user).filter(is_archived=False)
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -173,7 +178,7 @@ class CustomerStatsView(views.APIView):
 
     def get(self, request):
         organisation = request.user.organisation
-        customers = Customer.objects.filter(organisation=organisation, is_archived=False)
+        customers = visible_customers(request.user).filter(is_archived=False)
 
         health = {
             cat: {"count": 0, "mrr": 0.0, "arr": 0.0} for cat in Customer.HealthCategory.values
@@ -242,7 +247,7 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Customer.objects.filter(organisation=self.request.user.organisation)
+        return visible_customers(self.request.user)
 
     def perform_update(self, serializer):
         previous_owner_id = serializer.instance.owner_id
@@ -286,9 +291,7 @@ class AccountListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_customer(self):
-        return get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
         return self.get_customer().accounts.all()
@@ -301,7 +304,13 @@ class AccountListCreateView(generics.ListCreateAPIView):
         # silently creates an account that isn't actually linked to the
         # Customer it was added under.
         customer = self.get_customer()
-        account = serializer.save()
+        # Owner defaults to the creator unless they named someone —
+        # same reasoning as CustomerSerializer.create's own, and done
+        # here rather than in AccountSerializer because that serializer
+        # has no create() of its own to hang it off.
+        account = serializer.save(
+            **({} if serializer.validated_data.get("owner") else {"owner": self.request.user})
+        )
         account.customers.add(customer)
         _notify_owner_assigned(
             instance=account,
@@ -326,10 +335,7 @@ class AccountDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Account.objects.filter(
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
-        )
+        return visible_accounts(self.request.user).filter(customers=self.kwargs["customer_id"])
 
     def perform_update(self, serializer):
         previous_owner_id = serializer.instance.owner_id
@@ -373,16 +379,14 @@ class AccountListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` because `customers__organisation=` fans out one
         # row per matching linked Customer — an Account linked to two+
         # Customers in this same organisation would otherwise appear
         # once per match instead of once overall.
         queryset = (
-            Account.objects.filter(customers__organisation=organisation)
+            visible_accounts(self.request.user)
             .prefetch_related("customers")
             .select_related("owner")
-            .distinct()
         )
 
         search = self.request.query_params.get("search", "").strip()
@@ -437,9 +441,7 @@ class AccountStatsView(views.APIView):
         # AccountListView's own — critical here, since this loop counts
         # each row once towards the health/lifecycle/NPS buckets; a
         # duplicate row would double-count that one Account.
-        accounts = Account.objects.filter(
-            customers__organisation=request.user.organisation
-        ).distinct()
+        accounts = visible_accounts(request.user)
 
         health = {
             cat: {"count": 0, "mrr": 0.0, "arr": 0.0} for cat in Customer.HealthCategory.values
@@ -506,9 +508,7 @@ class CustomerActivityListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        customer = get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        customer = get_visible_customer(self.request, self.kwargs["customer_id"])
         return customer.activities.all()
 
 
@@ -525,11 +525,8 @@ class AccountActivityListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        account = get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        account = get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
         return account.activities.all()
 
@@ -546,9 +543,7 @@ class CustomerEmailListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        customer = get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        customer = get_visible_customer(self.request, self.kwargs["customer_id"])
         return customer.emails.all()
 
 
@@ -564,11 +559,8 @@ class AccountEmailListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        account = get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        account = get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
         return account.emails.all()
 
@@ -585,9 +577,7 @@ class CustomerTaskListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        customer = get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        customer = get_visible_customer(self.request, self.kwargs["customer_id"])
         return customer.tasks.all()
 
 
@@ -603,11 +593,8 @@ class AccountTaskListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        account = get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        account = get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
         return account.tasks.all()
 
@@ -638,13 +625,9 @@ class TaskListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as OpportunityListView's own.
         queryset = (
-            Task.objects.filter(
-                Q(customer__organisation=organisation)
-                | Q(account__customers__organisation=organisation)
-            )
+            Task.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .distinct()
         )
@@ -668,9 +651,7 @@ class CustomerNoteListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        customer = get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        customer = get_visible_customer(self.request, self.kwargs["customer_id"])
         return customer.notes.all()
 
 
@@ -686,11 +667,8 @@ class AccountNoteListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        account = get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        account = get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
         return account.notes.all()
 
@@ -707,9 +685,7 @@ class CustomerTicketListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        customer = get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        customer = get_visible_customer(self.request, self.kwargs["customer_id"])
         return customer.tickets.all()
 
 
@@ -725,11 +701,8 @@ class AccountTicketListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        account = get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        account = get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
         return account.tickets.all()
 
@@ -746,9 +719,7 @@ class CustomerCalendarEventListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        customer = get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        customer = get_visible_customer(self.request, self.kwargs["customer_id"])
         return customer.calendar_events.all()
 
 
@@ -764,11 +735,8 @@ class AccountCalendarEventListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        account = get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        account = get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
         return account.calendar_events.all()
 
@@ -801,9 +769,7 @@ class CustomerContactListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_customer(self):
-        return get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
         customer = self.get_customer()
@@ -826,11 +792,8 @@ class AccountContactListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_account(self):
-        return get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        return get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
 
     def get_queryset(self):
@@ -865,17 +828,13 @@ class ContactListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` because `account__customers__organisation=` fans
         # out one row per matching linked Customer on the account — an
         # account-level Contact whose Account is linked to two+
         # Customers in this same organisation would otherwise appear
         # more than once.
         queryset = (
-            Contact.objects.filter(
-                Q(customer__organisation=organisation)
-                | Q(account__customers__organisation=organisation)
-            )
+            Contact.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
@@ -920,14 +879,10 @@ class ContactStatsView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        organisation = request.user.organisation
         # `.distinct()` — same "an Account linked to two+ Customers in
         # this organisation would otherwise fan out" reason as
         # ContactListView's own.
-        contacts = Contact.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).distinct()
+        contacts = Contact.objects.filter(visible_children_q(self.request.user)).distinct()
 
         total = contacts.count()
         active = contacts.filter(status=Contact.Status.ACTIVE).count()
@@ -982,12 +937,8 @@ class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
-        return Contact.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).distinct()
+        return Contact.objects.filter(visible_children_q(self.request.user)).distinct()
 
 
 class CustomerOpportunityListView(generics.ListCreateAPIView):
@@ -1004,9 +955,7 @@ class CustomerOpportunityListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_customer(self):
-        return get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
         customer = self.get_customer()
@@ -1027,11 +976,8 @@ class AccountOpportunityListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_account(self):
-        return get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        return get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
 
     def get_queryset(self):
@@ -1069,20 +1015,15 @@ class OpportunityListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
         return (
-            Opportunity.objects.filter(
-                Q(customer__organisation=organisation)
-                | Q(account__customers__organisation=organisation)
-            )
+            Opportunity.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
         )
 
     def perform_create(self, serializer):
-        organisation = self.request.user.organisation
         account_id = self.request.data.get("account_id")
         customer_id = self.request.data.get("customer_id")
         if account_id:
@@ -1091,13 +1032,10 @@ class OpportunityListView(generics.ListCreateAPIView):
             # otherwise fan out into more than one row for the *same*
             # pk, which `.get()` (what get_object_or_404 calls) treats
             # as MultipleObjectsReturned rather than a single match.
-            account = get_object_or_404(
-                Account.objects.filter(customers__organisation=organisation).distinct(),
-                pk=account_id,
-            )
+            account = get_object_or_404(visible_accounts(self.request.user), pk=account_id)
             serializer.save(account=account)
         elif customer_id:
-            customer = get_object_or_404(Customer, pk=customer_id, organisation=organisation)
+            customer = get_object_or_404(visible_customers(self.request.user), pk=customer_id)
             serializer.save(customer=customer)
         else:
             raise ValidationError("Provide either customer_id or account_id.")
@@ -1114,12 +1052,8 @@ class OpportunityDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactDetailView's own.
-        return Opportunity.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).distinct()
+        return Opportunity.objects.filter(visible_children_q(self.request.user)).distinct()
 
 
 class CustomerRiskListView(generics.ListCreateAPIView):
@@ -1136,9 +1070,7 @@ class CustomerRiskListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_customer(self):
-        return get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
         customer = self.get_customer()
@@ -1159,11 +1091,8 @@ class AccountRiskListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_account(self):
-        return get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        return get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
 
     def get_queryset(self):
@@ -1196,32 +1125,24 @@ class RiskListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
         return (
-            Risk.objects.filter(
-                Q(customer__organisation=organisation)
-                | Q(account__customers__organisation=organisation)
-            )
+            Risk.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
         )
 
     def perform_create(self, serializer):
-        organisation = self.request.user.organisation
         account_id = self.request.data.get("account_id")
         customer_id = self.request.data.get("customer_id")
         if account_id:
             # `.distinct()` before `get_object_or_404` — same
             # reasoning as OpportunityListView.perform_create's own.
-            account = get_object_or_404(
-                Account.objects.filter(customers__organisation=organisation).distinct(),
-                pk=account_id,
-            )
+            account = get_object_or_404(visible_accounts(self.request.user), pk=account_id)
             serializer.save(account=account)
         elif customer_id:
-            customer = get_object_or_404(Customer, pk=customer_id, organisation=organisation)
+            customer = get_object_or_404(visible_customers(self.request.user), pk=customer_id)
             serializer.save(customer=customer)
         else:
             raise ValidationError("Provide either customer_id or account_id.")
@@ -1238,12 +1159,8 @@ class RiskDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactDetailView's own.
-        return Risk.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).distinct()
+        return Risk.objects.filter(visible_children_q(self.request.user)).distinct()
 
 
 # Maps a Survey's own `survey_type` to the Customer/Account field its score
@@ -1286,9 +1203,7 @@ class CustomerSurveyListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_customer(self):
-        return get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
         customer = self.get_customer()
@@ -1310,11 +1225,8 @@ class AccountSurveyListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_account(self):
-        return get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        return get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
 
     def get_queryset(self):
@@ -1354,33 +1266,25 @@ class SurveyListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
         return (
-            Survey.objects.filter(
-                Q(customer__organisation=organisation)
-                | Q(account__customers__organisation=organisation)
-            )
+            Survey.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
         )
 
     def perform_create(self, serializer):
-        organisation = self.request.user.organisation
         account_id = self.request.data.get("account_id")
         customer_id = self.request.data.get("customer_id")
         if account_id:
             _reject_ces_for_account(serializer)
             # `.distinct()` before `get_object_or_404` — same
             # reasoning as OpportunityListView.perform_create's own.
-            account = get_object_or_404(
-                Account.objects.filter(customers__organisation=organisation).distinct(),
-                pk=account_id,
-            )
+            account = get_object_or_404(visible_accounts(self.request.user), pk=account_id)
             serializer.save(account=account)
         elif customer_id:
-            customer = get_object_or_404(Customer, pk=customer_id, organisation=organisation)
+            customer = get_object_or_404(visible_customers(self.request.user), pk=customer_id)
             serializer.save(customer=customer)
         else:
             raise ValidationError("Provide either customer_id or account_id.")
@@ -1405,12 +1309,8 @@ class SurveyDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as ContactDetailView's own.
-        return Survey.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).distinct()
+        return Survey.objects.filter(visible_children_q(self.request.user)).distinct()
 
     def perform_update(self, serializer):
         survey = serializer.save()
@@ -1434,9 +1334,7 @@ class CustomerCanvasListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_customer(self):
-        return get_object_or_404(
-            Customer, pk=self.kwargs["customer_id"], organisation=self.request.user.organisation
-        )
+        return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
         customer = self.get_customer()
@@ -1457,11 +1355,8 @@ class AccountCanvasListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_account(self):
-        return get_object_or_404(
-            Account,
-            pk=self.kwargs["account_id"],
-            customers=self.kwargs["customer_id"],
-            customers__organisation=self.request.user.organisation,
+        return get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
 
     def get_queryset(self):
@@ -1490,32 +1385,24 @@ class CanvasListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as SurveyListView's own.
         return (
-            Canvas.objects.filter(
-                Q(customer__organisation=organisation)
-                | Q(account__customers__organisation=organisation)
-            )
+            Canvas.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
         )
 
     def perform_create(self, serializer):
-        organisation = self.request.user.organisation
         account_id = self.request.data.get("account_id")
         customer_id = self.request.data.get("customer_id")
         if account_id:
             # `.distinct()` before `get_object_or_404` — same reasoning
             # as SurveyListView.perform_create's own.
-            account = get_object_or_404(
-                Account.objects.filter(customers__organisation=organisation).distinct(),
-                pk=account_id,
-            )
+            account = get_object_or_404(visible_accounts(self.request.user), pk=account_id)
             serializer.save(account=account)
         elif customer_id:
-            customer = get_object_or_404(Customer, pk=customer_id, organisation=organisation)
+            customer = get_object_or_404(visible_customers(self.request.user), pk=customer_id)
             serializer.save(customer=customer)
         else:
             raise ValidationError("Provide either customer_id or account_id.")
@@ -1532,12 +1419,8 @@ class CanvasDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        organisation = self.request.user.organisation
         # `.distinct()` — same fan-out reasoning as SurveyDetailView's own.
-        return Canvas.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).distinct()
+        return Canvas.objects.filter(visible_children_q(self.request.user)).distinct()
 
 
 class CockpitSummaryView(views.APIView):
@@ -1677,27 +1560,6 @@ class CockpitSummaryView(views.APIView):
         )
 
 
-def _headline_customer(request, customer_id):
-    """The one place Customer-scoped Headline views resolve their
-    parent — same get_object_or_404-on-the-parent scoping every other
-    nested list in this module uses, so an out-of-scope id is a 404,
-    never an empty list."""
-    return get_object_or_404(Customer, pk=customer_id, organisation=request.user.organisation)
-
-
-def _headline_account(request, customer_id, account_id):
-    """Account-scoped equivalent of _headline_customer. Filters the M2M
-    twice — `customers=<id>` pins it under the URL's Customer, and
-    `customers__organisation` pins that Customer to the caller's own
-    tenant."""
-    return get_object_or_404(
-        Account,
-        pk=account_id,
-        customers=customer_id,
-        customers__organisation=request.user.organisation,
-    )
-
-
 class CustomerHeadlineListCreateView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/headlines/ — every
     organization-level Headline for one Customer (GET), or writes one
@@ -1715,10 +1577,10 @@ class CustomerHeadlineListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return _headline_customer(self.request, self.kwargs["customer_id"]).headlines.all()
+        return get_visible_customer(self.request, self.kwargs["customer_id"]).headlines.all()
 
     def perform_create(self, serializer):
-        serializer.save(customer=_headline_customer(self.request, self.kwargs["customer_id"]))
+        serializer.save(customer=get_visible_customer(self.request, self.kwargs["customer_id"]))
 
 
 class AccountHeadlineListCreateView(generics.ListCreateAPIView):
@@ -1733,13 +1595,13 @@ class AccountHeadlineListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return _headline_account(
+        return get_visible_account(
             self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         ).headlines.all()
 
     def perform_create(self, serializer):
         serializer.save(
-            account=_headline_account(
+            account=get_visible_account(
                 self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
             )
         )
@@ -1761,10 +1623,7 @@ class HeadlineDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        org = self.request.user.organisation
-        return Headline.objects.filter(
-            Q(customer__organisation=org) | Q(account__customers__organisation=org)
-        ).distinct()
+        return Headline.objects.filter(visible_children_q(self.request.user)).distinct()
 
 
 class HeadlineGenerateView(views.APIView):
@@ -1789,9 +1648,9 @@ class HeadlineGenerateView(views.APIView):
 
     def post(self, request, customer_id, account_id=None):
         if account_id is None:
-            parent = _headline_customer(request, customer_id)
+            parent = get_visible_customer(request, customer_id)
         else:
-            parent = _headline_account(request, customer_id, account_id)
+            parent = get_visible_account(request, customer_id, account_id)
 
         window_days = request.data.get("window_days")
         kwargs = {}

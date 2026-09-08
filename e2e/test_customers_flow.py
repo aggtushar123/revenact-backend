@@ -72,17 +72,38 @@ class CustomersFlowTests(LiveServerTestCase):
         self.assertEqual(body["health"]["good"]["count"], 1)
         self.assertEqual(body["lifecycle"]["live"]["count"], 1)
 
-        # 4. The CSM (not just the admin) can see it and edit it — customer
-        #    records aren't admin-gated the way User Management is.
+        # 4. The CSM can't see it yet. Creating a customer makes you its
+        #    owner, so Globex is Alice's, and records are visible by
+        #    ownership now — not admin-gated (the CSM's own customers are
+        #    fully theirs to edit), just not everyone's by default.
+        status, body = http_get(self.customers_api(), token=csm_access)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["count"], 0)
+
+        # ...and it's a 404, not a 403 — a 403 would confirm the record
+        # exists to someone who can't see it.
+        status, body = http_patch(
+            self.customers_api(f"{customer_id}/"), {"name": "Nope"}, token=csm_access
+        )
+        self.assertEqual(status, 404)
+
+        # 4b. The admin hands it over, and now it's the CSM's to see and
+        #     edit — the whole point of the capability.
+        status, body = http_patch(
+            self.customers_api(f"{customer_id}/"), {"owner_id": csm_id}, token=admin_access
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["owner"]["email"], "carl@acme.io")
+
         status, body = http_get(self.customers_api(), token=csm_access)
         self.assertEqual(status, 200)
         self.assertEqual(body["count"], 1)
 
         status, body = http_patch(
-            self.customers_api(f"{customer_id}/"), {"owner_id": csm_id}, token=csm_access
+            self.customers_api(f"{customer_id}/"), {"health_score": "7.5"}, token=csm_access
         )
         self.assertEqual(status, 200)
-        self.assertEqual(body["owner"]["email"], "carl@acme.io")
+        self.assertEqual(body["modified_by"]["email"], "carl@acme.io")
 
         # 5. A second organisation signs up independently.
         status, body = http_post(

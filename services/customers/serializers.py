@@ -113,6 +113,14 @@ class CustomerSerializer(serializers.ModelSerializer):
         # billing this particular customer in EUR) — same "real default,
         # still overridable" shape as Organisation.default_lifecycle_stage.
         validated_data.setdefault("currency", request.user.organisation.currency)
+        # And to the person creating it, unless they named someone else.
+        # Records are visible by ownership now (see
+        # services/customers/scoping.py), so without this a CSM would
+        # add a customer and immediately have it drop into the unowned
+        # pool — technically still visible, but listed as nobody's.
+        # "Whoever added it owns it until told otherwise" is also just
+        # the right default.
+        validated_data.setdefault("owner", request.user)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):

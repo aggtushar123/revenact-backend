@@ -326,9 +326,16 @@ static vocabulary, not org data.
   { "key": "manage_org_settings", "label": "Manage organisation settings" },
   { "key": "manage_custom_objects", "label": "Manage custom objects" },
   { "key": "manage_integrations", "label": "Manage integrations & webhooks" },
-  { "key": "manage_fx_rates", "label": "Manage exchange rates" }
+  { "key": "manage_fx_rates", "label": "Manage exchange rates" },
+  { "key": "view_all_accounts", "label": "View all customers & accounts" }
 ]
 ```
+
+`view_all_accounts` is the odd one out: the other five open an endpoint,
+this one widens what an endpoint returns. Every customer/account view
+stays reachable by everyone; what changes is how many rows come back.
+See the `customers` app's own visibility section below for the rule it
+switches off.
 
 ### `GET /api/v1/auth/roles/`, `POST /api/v1/auth/roles/`
 
@@ -349,7 +356,7 @@ otherwise `manage_users` would silently be full admin).
     "id": 1,
     "name": "Admin",
     "slug": "admin",
-    "permissions": ["manage_users", "manage_org_settings", "manage_custom_objects", "manage_integrations", "manage_fx_rates"],
+    "permissions": ["manage_users", "manage_org_settings", "manage_custom_objects", "manage_integrations", "manage_fx_rates", "view_all_accounts"],
     "is_system": true,
     "users_count": 1,
     "created_at": "2026-09-07T10:00:00Z"
@@ -499,12 +506,82 @@ fields are independently stored and settable.
 
 - **No admin gate** — unlike User Management, any authenticated user in the
   tenant (admin or CSM) can list, create, and edit customers.
+- **Record visibility is ownership-based** — see the section immediately
+  below. Not an admin gate: it narrows *which rows* you get, not which
+  endpoints you may call.
 - **Owner must be same-tenant** — assigning `owner_id` to a user from a
   different organisation is a `400`, not silently ignored or allowed.
 - **`organisation`, `created_by`, `modified_by` are never client-supplied** —
   `organisation` and `created_by` are set from `request.user` on create;
   `modified_by` is reset to `request.user` on *every* update. Sending any
   of the three in a request body has no effect.
+
+### Record visibility (`view_all_accounts`)
+
+Implemented in `services/customers/scoping.py`, which is the single
+definition and the one place to change it. For a caller **without** the
+`view_all_accounts` capability:
+
+- A **Customer** is visible if they own it, if they own one of its
+  Accounts, or if it has no owner.
+- An **Account** is visible if they own it, if they own one of its
+  parent Customers, or if it has no owner.
+
+Everything hanging off a Customer/Account — Activities, Emails, Tasks,
+Notes, Tickets, Calendar Events, Contacts, Opportunities, Risks,
+Surveys, Canvases, Headlines, custom-object records — follows its
+parent. There is no per-type rule; gating one tab while leaving the
+others open would be theatre, since a Note is as sensitive as an Email.
+
+Holding `view_all_accounts` replaces the ownership predicate with the
+organisation one. It never widens past the tenant.
+
+**Out-of-scope records are `404`, not `403`.** A 403 would confirm to
+someone that a record exists. This extends the "404, not an empty list"
+convention these endpoints already used for another organisation's ids.
+
+**Creating a Customer or Account makes you its owner** unless you send
+an explicit `owner_id`.
+
+**Reaching in both directions is deliberate.** Owning "Apple Inc" gives
+you its divisions; owning "Apple EMEA" gives you the company it belongs
+to, but *not* its sibling divisions. The upward leg isn't generosity —
+the account page header names its parent org and its Organizations tab
+lists it, so a strictly-own rule would 404 inside a page you are
+allowed to open.
+
+**Unowned records stay visible to everyone.** An unowned record is
+nobody's secret, and hiding it would make the unassigned queue
+invisible to the people meant to work it.
+
+#### Not the same thing as "my book"
+
+`GET /api/v1/cockpit/summary/` and Copilot's context builder filter
+`owner=user` *strictly*, and deliberately still do. Those answer "what
+am I responsible for", not "what am I allowed to open", and the answers
+differ: a customer you can see through an account you own should not
+count toward your own ARR.
+
+#### Known consequences (accepted, not oversights)
+
+1. **A shared Account is visible to both owners.** `Account.customers`
+   is a many-to-many; an Account linked to two Customers with different
+   owners is reachable by both, and its children appear in both
+   Customers' rollups. That is the data model saying they share it.
+2. **Parent names surface through rows you are allowed to see.** An
+   Account you own returns every linked Customer's `{id, name}`, and
+   Contact/Opportunity/Risk/Survey/Canvas rows carry a `companies`
+   list. A name and an id, with no ARR/health/notes attached; filtering
+   them would blank the account page header for account-only owners.
+3. **Still organisation-wide, deliberately out of this change's scope:**
+   scenario runs can target and mutate any customer
+   (`services/scenarios/views.py` writes `lifecycle_stage`/`churn_date`);
+   campaign recipients resolve org-wide and send real email
+   (`services/campaigns/views.py`); Copilot session invites disclose an
+   account name before acceptance. Separately, `Notification.message`
+   and Copilot `Message.content` are denormalised free text written
+   once at creation — no queryset gate can retroactively scrub what
+   they already say.
 
 ### `GET /api/v1/customers/`, `POST /api/v1/customers/`
 

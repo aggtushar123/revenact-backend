@@ -4952,3 +4952,214 @@ class HeadlineGenerateTests(APITestCase):
 
         prompt = get_completion.call_args.kwargs["messages"][0]["content"]
         self.assertNotIn("Ancient history", prompt)
+
+
+class OwnershipVisibilityTests(APITestCase):
+    """One test per endpoint *family*, not per endpoint.
+
+    The rule itself is covered in test_scoping.py; what these check is
+    that each shape of endpoint actually routes through it — nested
+    list, flat list, flat detail, stats, and the body-supplied parent
+    pick. A failure here means an endpoint forgot to apply the policy,
+    rather than the policy being wrong.
+
+    Every fixture sets an explicit owner. That matters: unowned records
+    stay visible to everyone by design, so a test that omits `owner=`
+    proves nothing about gating.
+    """
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.other = User.objects.create_user(
+            email="dana@acme.io",
+            password="supersecret1",
+            name="Dana",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.mine = Customer.objects.create(
+            organisation=self.org, name="Mine", owner=self.csm, arr_billed_at_account="100.00"
+        )
+        self.theirs = Customer.objects.create(
+            organisation=self.org, name="Theirs", owner=self.other, arr_billed_at_account="900.00"
+        )
+        self.their_account = create_account(
+            self.theirs, name="Theirs EMEA", owner=self.other, arr="900.00"
+        )
+        self.client.force_authenticate(self.csm)
+
+    # ── flat lists ───────────────────────────────────────────────────
+
+    def test_the_customer_list_shows_only_what_you_can_see(self):
+        response = self.client.get("/api/v1/customers/")
+        self.assertEqual([row["name"] for row in response.data["results"]], ["Mine"])
+
+    def test_the_account_list_shows_only_what_you_can_see(self):
+        create_account(self.mine, name="Mine EMEA", owner=self.csm)
+        response = self.client.get("/api/v1/accounts/")
+        self.assertEqual([row["name"] for row in response.data["results"]], ["Mine EMEA"])
+
+    def test_a_capability_holder_still_sees_everything(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/")
+        self.assertEqual(
+            sorted(row["name"] for row in response.data["results"]), ["Mine", "Theirs"]
+        )
+
+    # ── flat detail ──────────────────────────────────────────────────
+
+    def test_someone_elses_customer_is_a_404_not_a_403(self):
+        """404 rather than 403 on purpose — a 403 would confirm the
+        record exists to someone who can't see it."""
+        response = self.client.get(f"/api/v1/customers/{self.theirs.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_you_cannot_edit_someone_elses_customer(self):
+        response = self.client.patch(
+            f"/api/v1/customers/{self.theirs.id}/", {"name": "Renamed"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.theirs.refresh_from_db()
+        self.assertEqual(self.theirs.name, "Theirs")
+
+    # ── nested lists (the 26-endpoint family, via its two seams) ─────
+
+    def test_a_nested_list_under_someone_elses_customer_is_a_404(self):
+        Note.objects.create(
+            customer=self.theirs,
+            title="Commercial Negotiation Summary",
+            author_name="Edgar Holmes",
+            body="Customer requested 15% discount.",
+            logged_at="2026-03-15",
+        )
+        response = self.client.get(f"/api/v1/customers/{self.theirs.id}/notes/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_nested_list_under_someone_elses_account_is_a_404(self):
+        response = self.client.get(
+            f"/api/v1/customers/{self.theirs.id}/accounts/{self.their_account.id}/emails/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_your_own_nested_list_still_works(self):
+        """The over-application guard: gating must not empty the pages
+        of the person who does own the record."""
+        Note.objects.create(
+            customer=self.mine,
+            title="Mine",
+            author_name="Carl",
+            body="B",
+            logged_at="2026-03-15",
+        )
+        response = self.client.get(f"/api/v1/customers/{self.mine.id}/notes/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_owning_only_the_account_still_opens_its_nested_lists(self):
+        """The upward reach, end to end: the parent Customer belongs to
+        someone else, and the nested URL goes through it."""
+        my_account = create_account(self.theirs, name="Mine EMEA", owner=self.csm)
+        Note.objects.create(
+            account=my_account, title="Mine", author_name="Carl", body="B", logged_at="2026-03-15"
+        )
+
+        response = self.client.get(
+            f"/api/v1/customers/{self.theirs.id}/accounts/{my_account.id}/notes/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    # ── child rollups on flat lists ──────────────────────────────────
+
+    def test_a_flat_child_list_excludes_other_peoples_records(self):
+        Task.objects.create(
+            customer=self.mine, title="Mine", assignee_name="Carl", due_date="2026-04-01"
+        )
+        Task.objects.create(
+            customer=self.theirs, title="Theirs", assignee_name="Dana", due_date="2026-04-01"
+        )
+
+        # /api/v1/tasks/ is unpaginated — a plain array, see
+        # TaskListView's own docstring.
+        response = self.client.get("/api/v1/tasks/")
+
+        self.assertEqual([row["title"] for row in response.data], ["Mine"])
+
+    # ── body-supplied parent picks ───────────────────────────────────
+
+    def test_you_cannot_attach_a_new_record_to_a_customer_you_cannot_see(self):
+        response = self.client.post(
+            "/api/v1/opportunities/",
+            {
+                "customer_id": self.theirs.id,
+                "title": "Sneaky",
+                "mrr": "1000.00",
+                "stage": "discovery",
+                "priority": "high",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    # ── stats ────────────────────────────────────────────────────────
+
+    def test_stats_count_only_what_you_can_see(self):
+        """A total computed from records you can't open is still a
+        leak — 900 of the 1000 here belongs to someone else."""
+        response = self.client.get("/api/v1/customers/stats/")
+
+        totals = sum(bucket["arr"] for bucket in response.data["health"].values())
+        self.assertEqual(totals, 100.0)
+
+    def test_stats_are_org_wide_for_a_capability_holder(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/stats/")
+
+        totals = sum(bucket["arr"] for bucket in response.data["health"].values())
+        self.assertEqual(totals, 1000.0)
+
+    # ── unowned stays reachable ──────────────────────────────────────
+
+    def test_an_unowned_customer_is_still_listed(self):
+        Customer.objects.create(organisation=self.org, name="Unassigned")
+        response = self.client.get("/api/v1/customers/")
+        self.assertIn("Unassigned", [row["name"] for row in response.data["results"]])
+
+    # ── create-time ownership ────────────────────────────────────────
+
+    def test_creating_a_customer_makes_you_its_owner(self):
+        response = self.client.post("/api/v1/customers/", {"name": "Initech"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Customer.objects.get(name="Initech").owner, self.csm)
+
+    def test_creating_a_customer_still_honours_an_explicit_owner(self):
+        response = self.client.post(
+            "/api/v1/customers/", {"name": "Initech", "owner_id": self.other.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Customer.objects.get(name="Initech").owner, self.other)
+
+    def test_creating_an_account_makes_you_its_owner(self):
+        response = self.client.post(
+            f"/api/v1/customers/{self.mine.id}/accounts/", {"name": "Mine EMEA"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Account.objects.get(name="Mine EMEA").owner, self.csm)
