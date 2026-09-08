@@ -1,4 +1,3 @@
-from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics
 from rest_framework.exceptions import ValidationError
@@ -6,6 +5,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 
 from services.accounts.permissions import CanManageCustomObjects
+from services.customers.scoping import visible_children_q
 
 from .models import CustomFieldDefinition, CustomObjectDefinition, CustomObjectRecord
 from .serializers import (
@@ -155,34 +155,28 @@ class CustomObjectRecordListCreateView(generics.ListCreateAPIView):
             object_definition_id=definition_id,
             object_definition__organisation=self.request.user.organisation,
         )
+        # Visibility first in every branch, then the requested parent
+        # narrows it further. Doing it the other way round — trusting a
+        # raw `?customer=` id and only checking its organisation — is
+        # what let any member read another owner's records by guessing
+        # an id.
+        queryset = queryset.filter(visible_children_q(self.request.user))
         if customer_id:
-            queryset = queryset.filter(
-                customer_id=customer_id, customer__organisation=self.request.user.organisation
-            )
+            queryset = queryset.filter(customer_id=customer_id)
         elif account_id:
-            queryset = queryset.filter(
-                account_id=account_id,
-                account__customers__organisation=self.request.user.organisation,
-            )
-        else:
-            org = self.request.user.organisation
-            queryset = queryset.filter(
-                Q(customer__organisation=org) | Q(account__customers__organisation=org)
-            ).distinct()
-        return queryset
+            queryset = queryset.filter(account_id=account_id)
+        return queryset.distinct()
 
 
 class CustomObjectRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/custom-objects/records/<id>/ — scoped to
-    the caller's own organisation via either parent, same "match on
-    customer OR account, whichever is set" shape the model itself
-    uses."""
+    the records the caller can see via either parent, same "match on
+    customer OR account, whichever is set" shape the model itself uses.
+    PATCH and DELETE inherit that scoping from the queryset, so you
+    can't edit or delete a record on an account you can't open."""
 
     serializer_class = CustomObjectRecordSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        org = self.request.user.organisation
-        return CustomObjectRecord.objects.filter(
-            Q(customer__organisation=org) | Q(account__customers__organisation=org)
-        ).distinct()
+        return CustomObjectRecord.objects.filter(visible_children_q(self.request.user)).distinct()

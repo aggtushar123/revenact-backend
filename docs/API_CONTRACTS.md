@@ -574,10 +574,10 @@ count toward your own ARR.
    list. A name and an id, with no ARR/health/notes attached; filtering
    them would blank the account page header for account-only owners.
 3. **Still organisation-wide:** Copilot session invites disclose an
-   account name before acceptance; custom-object records list org-wide
-   when no `?customer=`/`?account=` is given; `GET /api/v1/tasks/`
-   defaults to the whole tenant unless the client passes `?mine=true`.
-   Separately, `Notification.message` and Copilot `Message.content` are
+   account name before acceptance — deliberate, since being invited to
+   collaborate on an account is itself a decision to share it, and an
+   invite you can't read the subject of is useless. Separately,
+   `Notification.message` and Copilot `Message.content` are
    denormalised free text written once at creation — no queryset gate
    can retroactively scrub what they already say.
 4. **A Campaign and a Scenario are themselves tenant-wide**, visible to
@@ -1042,8 +1042,10 @@ that mock list is untouched (`CallSenseTab.tsx`'s own, unrelated
 
 `?mine=true` additionally filters to Task rows whose parent
 Customer/Account's own `owner` is the caller — one CSM's own assigned
-book, not the whole tenant's. Without it, this is a plain tenant-wide
-list.
+book. Without it, this lists every Task the caller can *see*, which is
+wider than "mine": it also covers unowned parents and ones reached
+through the other side of the Customer/Account relationship. It is no
+longer a plain tenant-wide list.
 
 **Response `200`** — a plain array, each entry adds `priority_display`,
 `status_display`, `parent_name`, and `parent_type`

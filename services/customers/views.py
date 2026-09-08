@@ -613,9 +613,11 @@ class TaskListView(generics.ListAPIView):
 
     `?mine=true` additionally filters to Task rows whose parent Customer/
     Account's own `owner` is the caller — Cockpit's own "My Tasks" is
-    exactly that, one CSM's own assigned book, not the whole tenant's.
-    Without it, this behaves like a plain tenant-wide list (available for
-    any future non-Cockpit consumer).
+    exactly that, one CSM's own assigned book. Without it, this lists
+    every Task the caller can *see*, which is a wider set than "mine":
+    it also covers unowned parents and ones reached through the other
+    side of the Customer/Account relationship (see
+    services/customers/scoping.py).
 
     Unpaginated, same reasoning as OpportunityListView/RiskListView — a
     small, whole-collection list, not one meant to be paged through."""

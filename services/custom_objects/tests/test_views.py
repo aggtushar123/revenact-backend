@@ -467,3 +467,122 @@ class CustomObjectRecordDetailViewTests(APITestCase):
         self.client.force_authenticate(other_csm)
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomObjectRecordOwnershipScopingTests(APITestCase):
+    """Records follow their parent Customer/Account's visibility, same
+    as Notes and Tasks do — see services/customers/scoping.py. Defining
+    object *types* stays capability-gated separately; this is about
+    which rows of an existing type you can read and edit."""
+
+    url = "/api/v1/custom-objects/records/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.csm = _csm(self.org, email="carl@acme.io")
+        self.other = _csm(self.org, email="dana@acme.io")
+        self.admin = _admin(self.org, email="alice@acme.io")
+
+        self.definition = CustomObjectDefinition.objects.create(
+            organisation=self.org, name="Opportunity Line", api_name="opportunity_line"
+        )
+        # A real field, so a PATCH through the serializer has something
+        # valid to write — records made straight through the ORM below
+        # skip that validation, PATCH doesn't.
+        CustomFieldDefinition.objects.create(
+            object_definition=self.definition,
+            name="Amount",
+            api_name="amount",
+            field_type=CustomFieldDefinition.FieldType.NUMBER,
+        )
+        self.mine = Customer.objects.create(organisation=self.org, name="Mine", owner=self.csm)
+        self.theirs = Customer.objects.create(
+            organisation=self.org, name="Theirs", owner=self.other
+        )
+        self.my_record = CustomObjectRecord.objects.create(
+            object_definition=self.definition, customer=self.mine, data={"amount": 100}
+        )
+        self.their_record = CustomObjectRecord.objects.create(
+            object_definition=self.definition, customer=self.theirs, data={"amount": 900}
+        )
+        self.client.force_authenticate(self.csm)
+
+    def test_the_org_wide_list_shows_only_records_you_can_see(self):
+        response = self.client.get(f"{self.url}?definition={self.definition.id}")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([r["id"] for r in response.data["results"]], [self.my_record.id])
+
+    def test_a_capability_holder_sees_every_record(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(f"{self.url}?definition={self.definition.id}")
+
+        self.assertEqual(response.data["count"], 2)
+
+    def test_a_guessed_customer_id_returns_nothing(self):
+        """The branch that made this worth changing: `?customer=` used
+        to be trusted after only an organisation check, so naming
+        someone else's id read their records straight out."""
+        response = self.client.get(
+            f"{self.url}?definition={self.definition.id}&customer={self.theirs.id}"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_your_own_parent_filter_still_works(self):
+        response = self.client.get(
+            f"{self.url}?definition={self.definition.id}&customer={self.mine.id}"
+        )
+
+        self.assertEqual([r["id"] for r in response.data], [self.my_record.id])
+
+    def test_cannot_read_someone_elses_record_by_id(self):
+        response = self.client.get(f"{self.url}{self.their_record.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_cannot_edit_someone_elses_record(self):
+        response = self.client.patch(
+            f"{self.url}{self.their_record.id}/", {"data": {"amount": 1}}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.their_record.refresh_from_db()
+        self.assertEqual(self.their_record.data, {"amount": 900})
+
+    def test_cannot_delete_someone_elses_record(self):
+        response = self.client.delete(f"{self.url}{self.their_record.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(CustomObjectRecord.objects.filter(pk=self.their_record.pk).exists())
+
+    def test_your_own_record_is_still_fully_editable(self):
+        response = self.client.patch(
+            f"{self.url}{self.my_record.id}/", {"data": {"amount": 250}}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.my_record.refresh_from_db()
+        self.assertEqual(self.my_record.data, {"amount": 250})
+
+    def test_an_unowned_parents_records_stay_visible(self):
+        unowned = Customer.objects.create(organisation=self.org, name="Unassigned")
+        record = CustomObjectRecord.objects.create(
+            object_definition=self.definition, customer=unowned, data={"amount": 5}
+        )
+
+        response = self.client.get(f"{self.url}?definition={self.definition.id}")
+
+        self.assertIn(record.id, [r["id"] for r in response.data["results"]])
+
+    def test_records_on_an_account_you_own_are_visible_under_someone_elses_customer(self):
+        account = Account.objects.create(name="Mine EMEA", owner=self.csm)
+        account.customers.add(self.theirs)
+        record = CustomObjectRecord.objects.create(
+            object_definition=self.definition, account=account, data={"amount": 7}
+        )
+
+        response = self.client.get(f"{self.url}?definition={self.definition.id}")
+
+        self.assertIn(record.id, [r["id"] for r in response.data["results"]])
