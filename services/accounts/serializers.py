@@ -242,20 +242,28 @@ class CreateOrgUserSerializer(serializers.Serializer):
         )
 
 
-class MeSerializer(serializers.ModelSerializer):
-    """Your own profile. Read: full profile. Write: `name` only — email and
-    role aren't self-editable. See ChangePasswordSerializer for passwords."""
+class MeSerializer(UserSerializer):
+    """Your own profile. Read: full profile. Write: `name` only — email
+    and role aren't self-editable. See ChangePasswordSerializer for
+    passwords.
 
-    avatar = serializers.SerializerMethodField()
-    organisation = OrganisationSerializer(read_only=True)
+    Subclasses UserSerializer rather than redeclaring its fields so the
+    two can't drift: the frontend hydrates the logged-in user from
+    whichever of them answered last (login/signup use UserSerializer,
+    the Profile page's own refetch uses this one), and a field missing
+    here would silently wipe it from that cached user — `permissions`
+    especially, which every capability gate reads."""
 
-    class Meta:
-        model = User
-        fields = ["id", "email", "name", "avatar", "role", "organisation"]
-        read_only_fields = ["id", "email", "role"]
-
-    def get_avatar(self, obj):
-        return f"https://i.pravatar.cc/150?u={obj.email}"
+    class Meta(UserSerializer.Meta):
+        read_only_fields = [
+            "id",
+            "email",
+            "role",
+            "role_id",
+            "role_name",
+            "permissions",
+            "is_active",
+        ]
 
 
 class ChangePasswordSerializer(serializers.Serializer):

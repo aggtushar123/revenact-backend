@@ -263,6 +263,24 @@ class MeViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["email"], "alice@acme.io")
 
+    def test_me_returns_the_same_user_shape_as_login(self):
+        """The frontend caches whichever of these answered last, so a
+        field here that login has (or vice versa) would silently wipe it
+        from the cached user — `permissions` especially, which every
+        capability gate reads. This caught a real regression once."""
+
+        me = self.client.get("/api/v1/auth/me/")
+        login = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "alice@acme.io", "password": "supersecret1"},
+            format="json",
+        )
+
+        self.assertEqual(set(me.data), set(login.data["user"]))
+        self.assertEqual(me.data["role"], User.Role.ADMIN)
+        self.assertEqual(me.data["role_name"], "Admin")
+        self.assertIn(Capability.MANAGE_USERS, me.data["permissions"])
+
     def test_unauthenticated_cannot_get_profile(self):
         self.client.force_authenticate(None)
         response = self.client.get("/api/v1/auth/me/")
