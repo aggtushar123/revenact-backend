@@ -8,6 +8,7 @@ from .models import (
     Contact,
     Customer,
     Email,
+    Headline,
     Note,
     Opportunity,
     Risk,
@@ -173,3 +174,11 @@ class CanvasAdmin(admin.ModelAdmin):
     list_display = ["name", "customer", "account", "updated_at"]
     search_fields = ["name", "customer__name", "account__name"]
     readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(Headline)
+class HeadlineAdmin(admin.ModelAdmin):
+    list_display = ["title", "kind", "status", "customer", "account", "period_end", "generated_at"]
+    list_filter = ["kind", "status"]
+    search_fields = ["title", "content", "customer__name", "account__name"]
+    readonly_fields = ["created_at"]

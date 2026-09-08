@@ -69,6 +69,7 @@ expects.
 | Pipelines (standalone board — "Opportunities" and "Risks" tabs) | `customers` (`Opportunity`, `Risk` models) | 🟢 Full CRUD, API-complete — see below. Both tabs have the same shape: a global unpaginated list (`OpportunityListView`/`RiskListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Both are seeded; the board's own Add/Edit/Delete/drag-and-drop are wired to both tabs. |
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
+| Headlines (`ActivityFeed`'s "Headlines" sub-tab on both Details pages) | `customers` (`Headline` model) | 🟡 Backend built — see below. Model + two scoped list-create endpoints (per-Customer, per-Account), a flat detail view (GET/PATCH/DELETE by id), and a real generation endpoint that summarises the parent's own Notes/Emails/Tickets/Activities through `services.copilot`'s Anthropic client. Seeded. Frontend still reads the local `HEADLINES_DATA` array in `HeadlinesTab.tsx`, not yet wired to these endpoints. |
 | Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
@@ -1668,6 +1669,125 @@ unlike Survey, there's no parent field this needs to sync on update.
 
 **Response `200`** (GET/PATCH) — same shape as the list endpoints
 above. **Response `204`** (DELETE) — empty body.
+
+### Models — `Headline`
+
+Mirrors: the "Headlines" sub-tab of `ActivityFeed` on both the
+Organization Details page and the standalone Account page
+(`src/components/organizations/activity/HeadlinesTab.tsx`). Same
+"belongs to exactly one of `Customer` or `Account`" shape as
+Note/Survey/Canvas above (`customer`/`account` nullable FKs +
+`headline_belongs_to_exactly_one_parent` CheckConstraint).
+
+Two card shapes, distinguished by `kind` rather than the mock's
+`isSummary` boolean — the two genuinely differ in which fields apply:
+
+* `summary` — the pinned TL;DR at the top of the tab. Carries
+  `time_period_label` ("Last 3 months") and `data_sources`, which the
+  card renders in its footer. Never carries a `status`; there is
+  nothing open or closed about a rolling summary, enforced by a second
+  CheckConstraint (`headline_summary_has_no_status`), not just in the
+  serializer.
+* `headline` — one themed storyline in the feed, with a `status`
+  (`open`/`in_progress`/`closed`) and a `period_start`/`period_end`
+  span shown on the card.
+
+Fields: `kind`, `title`, `content`, `status`, `period_start`,
+`period_end`, `time_period_label`, `data_sources`, `generated_at`.
+
+`data_sources` is a list of closed-set keys (`notes`, `emails`,
+`call_transcripts`, `tickets`, `activities`), not the mock's free-text
+"Notes, Emails, Call Transcripts and Tickets" string. That string was
+decorative — nothing computed it — whereas the generator knows which
+records it actually read, so this records that honestly and
+`data_sources_display` renders the prose list from it. Validated in
+the serializer: a JSONField would otherwise accept any string at all
+and the card would claim a source nobody read.
+
+No `group` field, though the mock carried one (`'January'`): the
+card's group pill is the read-only, derived `group` field, computed
+from `period_end` — same as Note/Activity/Email/Task's own date-group
+headers. Empty for a `summary` and for a `headline` with no
+`period_end`. The mock's `orgId` is likewise gone; the parent is the
+FK, and its absence is what made every account render the same two
+hardcoded Apple cards.
+
+`generated_at` is set only on cards written by the model, so
+regeneration can replace its own previous output without touching
+anything a CSM wrote or corrected by hand.
+
+Read-only extras on every response: `kind_display`, `status_display`,
+`data_sources_display`, `group`.
+
+See the `seed_demo_headlines` management command for demo data (run
+after `seed_demo_accounts`) — deliberately hand-written rather than
+generated, so seeding works offline with no `ANTHROPIC_API_KEY` set,
+and seeded rows carry `generated_at=None` so a later regenerate treats
+them as hand-written.
+
+### `GET/POST /api/v1/customers/<customer_id>/headlines/`
+
+Auth: `IsAuthenticated`. GET is every organization-level `Headline`
+for one `Customer`, scoped to the caller's own organisation — same
+404-not-empty-list convention as the other nested lists. POST writes
+one by hand; `customer` comes from the URL.
+
+Writable, unlike the Note/Activity/Email lists: a headline is normally
+generated, but a CSM writing or correcting one is a real case — and a
+hand-written card is exactly what regeneration must not clobber.
+
+**Response `200`** — a plain array (unpaginated), each entry: `id`,
+`kind`, `kind_display`, `title`, `content`, `status`, `status_display`,
+`period_start`, `period_end`, `time_period_label`, `data_sources`,
+`data_sources_display`, `group`, `generated_at`, `created_at`.
+**Response `201`** (POST) — the created entry, same shape.
+**`400`** — an unknown `data_sources` key, a `summary` sent with a
+`status`, or a period that ends before it starts.
+
+### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/headlines/`
+
+Auth: `IsAuthenticated`. Same as above but account-level, scoped to
+both the URL's `customer_id` and the caller's own organisation.
+
+**Responses** — same shapes as the Customer-scoped endpoint.
+
+### `GET/PATCH/DELETE /api/v1/headlines/<id>/`
+
+Auth: `IsAuthenticated`. One card, whether organization-level or
+account-level. Flat, not nested — same reasoning as
+`SurveyDetailView`/`CanvasDetailView`: the card's own edit/delete
+controls have the Headline in hand and shouldn't need to know which of
+the two parent shapes it came from.
+
+**Response `200`** (GET/PATCH) — same shape as the list endpoints.
+**Response `204`** (DELETE) — empty body.
+
+### `POST /api/v1/customers/<customer_id>/headlines/generate/` and `.../accounts/<account_id>/headlines/generate/`
+
+Auth: `IsAuthenticated`. Reads the parent's real `Note`/`Email`/
+`Ticket`/`Activity` records from a recent window and writes its
+Headline cards from them, through the same
+`services.copilot.anthropic_client.get_completion` the Copilot uses —
+one synchronous call, no task queue (same limit stated for Copilot
+replies and Scenario runs). This is what makes the card footer's
+"Data sources" line true rather than decorative: `data_sources` names
+only the record types that were actually non-empty in the window.
+
+Replaces only previously *generated* cards (`generated_at` not null),
+never anything hand-written, and does the delete+insert in one
+transaction so a failure can't leave the tab empty.
+
+Optional body: `window_days` (default 90) and `time_period_label`
+(default `"Last <n> days"`, used as the summary card's own label).
+
+**Response `201`** — every card now on the parent, same shape as the
+list endpoints. **`400`** — a non-numeric or sub-1 `window_days`.
+**`422`** — the parent has no records at all in the window; no model
+call is made. **`502`** — the call failed, or its answer couldn't be
+read as JSON. **`503`** — the provider isn't configured (no
+`ANTHROPIC_API_KEY`/Bedrock credentials). The 502/503 mapping matches
+`SendMessageView`'s exactly, since it is the same one external call
+underneath.
 
 ---
 

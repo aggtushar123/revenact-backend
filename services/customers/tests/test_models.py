@@ -12,6 +12,7 @@ from services.customers.models import (
     Contact,
     Customer,
     Email,
+    Headline,
     Note,
     Opportunity,
     Risk,
@@ -679,3 +680,63 @@ class CanvasNodesEdgesRoundTripTests(TestCase):
 
         self.assertEqual(canvas.nodes, nodes)
         self.assertEqual(canvas.edges, edges)
+
+
+class HeadlineParentConstraintTests(TestCase):
+    """Same "exactly one parent" DB constraint as Activity/Email/Task/Note."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Some Co")
+        self.account = create_account(self.customer, name="Some Region")
+
+    def _headline_kwargs(self, **overrides):
+        return {
+            "title": "Renewal and Expansion",
+            "content": "Renewal positioned for success with growth opportunities.",
+            "status": Headline.Status.OPEN,
+            "period_start": "2025-11-20",
+            "period_end": "2026-01-21",
+        } | overrides
+
+    def test_customer_only_is_valid(self):
+        headline = Headline.objects.create(customer=self.customer, **self._headline_kwargs())
+        self.assertIsNone(headline.account)
+
+    def test_account_only_is_valid(self):
+        headline = Headline.objects.create(account=self.account, **self._headline_kwargs())
+        self.assertIsNone(headline.customer)
+
+    def test_neither_parent_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Headline.objects.create(**self._headline_kwargs())
+
+    def test_both_parents_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Headline.objects.create(
+                customer=self.customer, account=self.account, **self._headline_kwargs()
+            )
+
+    def test_a_summary_may_not_carry_a_status(self):
+        """There is nothing open or closed about a rolling TL;DR — the
+        model refuses one at the DB level, not just in the serializer."""
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Headline.objects.create(
+                customer=self.customer,
+                **self._headline_kwargs(kind=Headline.Kind.SUMMARY),
+            )
+
+    def test_a_summary_without_a_status_is_valid(self):
+        headline = Headline.objects.create(
+            customer=self.customer,
+            **self._headline_kwargs(kind=Headline.Kind.SUMMARY, status=""),
+        )
+        self.assertEqual(headline.kind, Headline.Kind.SUMMARY)
+
+    def test_defaults_to_a_headline_with_no_sources_and_no_generated_at(self):
+        headline = Headline.objects.create(
+            customer=self.customer, title="T", content="C", status=Headline.Status.OPEN
+        )
+        self.assertEqual(headline.kind, Headline.Kind.HEADLINE)
+        self.assertEqual(headline.data_sources, [])
+        self.assertIsNone(headline.generated_at)

@@ -12,6 +12,7 @@ from .models import (
     Contact,
     Customer,
     Email,
+    Headline,
     Note,
     Opportunity,
     Risk,
@@ -573,3 +574,98 @@ class CanvasSerializer(serializers.ModelSerializer):
 
     def get_account_name(self, obj):
         return obj.account.name if obj.account_id else None
+
+
+class HeadlineSerializer(serializers.ModelSerializer):
+    """See Headline model's docstring. Writable, unlike NoteSerializer —
+    a headline can be hand-written or corrected, not only generated.
+
+    Three read-only fields exist so the card doesn't have to re-derive
+    what the model already knows:
+
+    * `group` — the pill above a feed card ('January'), derived from
+      `period_end` the same way NotesTab derives its own date headers.
+      Empty for a SUMMARY (pinned above the groups) and for a HEADLINE
+      with no `period_end` to group under.
+    * `status_display` / `kind_display` — the human labels, same
+      `get_<field>_display` passthrough as Activity/Task/Survey.
+    * `data_sources_display` — the footer's prose list ("Notes, Emails,
+      Call Transcripts and Tickets"), built from the stored keys so the
+      claim always matches what was actually read."""
+
+    kind_display = serializers.CharField(source="get_kind_display", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    group = serializers.SerializerMethodField()
+    data_sources_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Headline
+        fields = [
+            "id",
+            "kind",
+            "kind_display",
+            "title",
+            "content",
+            "status",
+            "status_display",
+            "period_start",
+            "period_end",
+            "time_period_label",
+            "data_sources",
+            "data_sources_display",
+            "group",
+            "generated_at",
+            "created_at",
+        ]
+        read_only_fields = ["generated_at", "created_at"]
+
+    def get_group(self, obj) -> str:
+        if obj.kind == Headline.Kind.SUMMARY or obj.period_end is None:
+            return ""
+        return obj.period_end.strftime("%B %Y")
+
+    def get_data_sources_display(self, obj) -> str:
+        labels = [
+            label
+            for value, label in Headline.DataSource.choices
+            if value in (obj.data_sources or [])
+        ]
+        if not labels:
+            return ""
+        if len(labels) == 1:
+            return labels[0]
+        return f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+    def validate_data_sources(self, value):
+        """The field is a JSONField, so DRF won't check its contents —
+        without this any string at all could be stored and then rendered
+        as a source the generator never read."""
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Expected a list of data source keys.")
+        allowed = set(Headline.DataSource.values)
+        unknown = [item for item in value if item not in allowed]
+        if unknown:
+            raise serializers.ValidationError(
+                f"Unknown data source(s): {', '.join(map(str, unknown))}. "
+                f"Choose from: {', '.join(sorted(allowed))}."
+            )
+        return value
+
+    def validate(self, attrs):
+        """Mirrors the model's own `headline_summary_has_no_status`
+        constraint so a bad payload is a 400 naming the field, not a
+        500 from the database."""
+        kind = attrs.get("kind", getattr(self.instance, "kind", Headline.Kind.HEADLINE))
+        status = attrs.get("status", getattr(self.instance, "status", ""))
+        if kind == Headline.Kind.SUMMARY and status:
+            raise serializers.ValidationError(
+                {"status": "A summary card has no status — leave it blank."}
+            )
+
+        start = attrs.get("period_start", getattr(self.instance, "period_start", None))
+        end = attrs.get("period_end", getattr(self.instance, "period_end", None))
+        if start and end and start > end:
+            raise serializers.ValidationError(
+                {"period_start": "The period can't start after it ends."}
+            )
+        return attrs

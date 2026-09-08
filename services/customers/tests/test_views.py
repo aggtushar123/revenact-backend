@@ -1,6 +1,7 @@
 """Integration tier: through the real URLconf + real test DB."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.utils import timezone
 from rest_framework import status
@@ -15,6 +16,7 @@ from services.customers.models import (
     Contact,
     Customer,
     Email,
+    Headline,
     Note,
     Opportunity,
     Risk,
@@ -4364,3 +4366,558 @@ class CockpitSummaryTests(APITestCase):
         self.assertEqual(response.data["customers"]["count"], 1)
         self.assertEqual(response.data["customers"]["value"], 0)
         self.assertEqual(response.data["customers"]["unconverted_count"], 1)
+
+
+class CustomerHeadlineListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.url = f"/api/v1/customers/{self.customer.id}/headlines/"
+
+    def _headline_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Globex Renewal and Expansion",
+            "content": "Renewal positioned for success with growth opportunities.",
+            "status": Headline.Status.OPEN,
+            "period_start": "2025-11-20",
+            "period_end": "2026-01-21",
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_customers_headlines_as_a_plain_array(self):
+        Headline.objects.create(customer=self.customer, **self._headline_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["title"], "Globex Renewal and Expansion")
+        self.assertEqual(response.data[0]["status_display"], "Open")
+
+    def test_group_is_derived_from_period_end(self):
+        """The mock stored a free-text 'January' group; the card's pill
+        now comes from the real date, same as every other tab's own
+        date-group header."""
+        Headline.objects.create(customer=self.customer, **self._headline_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data[0]["group"], "January 2026")
+
+    def test_a_summary_has_no_group_pill(self):
+        Headline.objects.create(
+            customer=self.customer,
+            **self._headline_kwargs(kind=Headline.Kind.SUMMARY, status=""),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data[0]["group"], "")
+
+    def test_data_sources_render_as_the_cards_prose_list(self):
+        Headline.objects.create(
+            customer=self.customer,
+            **self._headline_kwargs(
+                kind=Headline.Kind.SUMMARY,
+                status="",
+                data_sources=["notes", "emails", "call_transcripts", "tickets"],
+            ),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(
+            response.data[0]["data_sources_display"],
+            "Notes, Emails, Call Transcripts and Tickets",
+        )
+
+    def test_no_data_sources_renders_an_empty_footer_line(self):
+        Headline.objects.create(customer=self.customer, **self._headline_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data[0]["data_sources_display"], "")
+
+    def test_does_not_include_an_accounts_headlines(self):
+        account = create_account(self.customer, name="North America")
+        Headline.objects.create(account=account, **self._headline_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_customers_headlines(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        Headline.objects.create(customer=other_customer, **self._headline_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_nonexistent_customer_id_is_404(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/v1/customers/999999/headlines/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_customer_id_is_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_writes_a_headline_by_hand(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url, self._headline_kwargs(), format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Headline.objects.get().customer, self.customer)
+        self.assertIsNone(response.data["generated_at"])
+
+    def test_rejects_an_unknown_data_source(self):
+        """data_sources is a JSONField, so nothing but this validator
+        stops the card claiming a source that was never read."""
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, self._headline_kwargs(data_sources=["notes", "tea_leaves"]), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("tea_leaves", str(response.data["data_sources"]))
+
+    def test_rejects_a_summary_with_a_status(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, self._headline_kwargs(kind=Headline.Kind.SUMMARY), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("no status", str(response.data["status"]))
+
+    def test_rejects_a_period_that_ends_before_it_starts(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url,
+            self._headline_kwargs(period_start="2026-05-01", period_end="2026-01-01"),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class AccountHeadlineListTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = create_account(self.customer, name="Globex EMEA")
+        self.url = f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/headlines/"
+
+    def _headline_kwargs(self, **overrides):
+        kwargs = {
+            "title": "Globex EMEA Renewal",
+            "content": "Strong renewal momentum with 96% utilization.",
+            "status": Headline.Status.OPEN,
+            "period_end": "2026-01-21",
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_unauthenticated_cannot_list(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_accounts_headlines(self):
+        Headline.objects.create(account=self.account, **self._headline_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["title"], "Globex EMEA Renewal")
+
+    def test_does_not_include_the_customers_own_headlines(self):
+        Headline.objects.create(customer=self.customer, **self._headline_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_does_not_leak_another_accounts_headlines(self):
+        """The defect the mock had: every account rendered the same
+        hardcoded Apple headlines, because nothing scoped them."""
+        other_account = create_account(self.customer, name="Globex APAC")
+        Headline.objects.create(account=other_account, **self._headline_kwargs())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data, [])
+
+    def test_wrong_customer_id_in_the_url_is_404_even_for_a_valid_account_id(self):
+        other_customer = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(
+            f"/api/v1/customers/{other_customer.id}/accounts/{self.account.id}/headlines/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_organisations_admin_gets_404(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_writes_an_account_headline_by_hand(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url, self._headline_kwargs(), format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Headline.objects.get().account, self.account)
+
+
+class HeadlineDetailTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.headline = Headline.objects.create(
+            customer=self.customer,
+            title="Globex Renewal",
+            content="Original wording.",
+            status=Headline.Status.OPEN,
+        )
+        self.url = f"/api/v1/headlines/{self.headline.id}/"
+
+    def test_unauthenticated_cannot_read(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_corrects_a_headline(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(self.url, {"content": "Corrected."}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.headline.refresh_from_db()
+        self.assertEqual(self.headline.content, "Corrected.")
+
+    def test_deletes_a_headline(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Headline.objects.exists())
+
+    def test_another_organisation_cannot_reach_it(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.patch(self.url, {"content": "Nope."}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_reaches_an_account_level_headline_through_the_m2m(self):
+        """The queryset scopes account-level cards through
+        account__customers__organisation — a different path from the
+        customer-level one, so it gets its own test."""
+        account = create_account(self.customer, name="Globex EMEA")
+        headline = Headline.objects.create(account=account, title="T", content="C")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(f"/api/v1/headlines/{headline.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class HeadlineGenerateTests(APITestCase):
+    """The one external call is always patched — a real one would be
+    paid, slow, and non-deterministic. Same approach as
+    SendMessageView's own tests."""
+
+    MODEL_REPLY = """{
+      "summary": {
+        "title": "TL;DR (Last 90 days)",
+        "content": "Account health is strong with renewal momentum."
+      },
+      "headlines": [
+        {
+          "title": "Globex EMEA Renewal and Expansion",
+          "content": "Renewal coordinated with Priya and Leo.",
+          "status": "open",
+          "period_start": "2025-11-20",
+          "period_end": "2026-01-21"
+        }
+      ]
+    }"""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.account = create_account(self.customer, name="Globex EMEA")
+        self.url = (
+            f"/api/v1/customers/{self.customer.id}/accounts/{self.account.id}/headlines/generate/"
+        )
+        Note.objects.create(
+            account=self.account,
+            title="Commercial Negotiation Summary",
+            author_name="Edgar Holmes",
+            body="Customer requested 15% discount for a 3-year commitment.",
+            logged_at=timezone.now().date(),
+        )
+
+    def test_unauthenticated_cannot_generate(self):
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_writes_the_models_cards_against_the_accounts_real_records(self, get_completion):
+        get_completion.return_value = self.MODEL_REPLY
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Headline.objects.count(), 2)
+        summary = Headline.objects.get(kind=Headline.Kind.SUMMARY)
+        self.assertEqual(summary.account, self.account)
+        self.assertIsNotNone(summary.generated_at)
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_data_sources_name_only_what_was_actually_read(self, get_completion):
+        """The account has notes and nothing else — the card must not
+        claim emails, tickets or calls it never saw. That claim being
+        decorative is exactly what this replaces."""
+        get_completion.return_value = self.MODEL_REPLY
+        self.client.force_authenticate(self.admin)
+
+        self.client.post(self.url)
+
+        summary = Headline.objects.get(kind=Headline.Kind.SUMMARY)
+        self.assertEqual(summary.data_sources, ["notes"])
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_the_prompt_carries_the_accounts_own_records(self, get_completion):
+        get_completion.return_value = self.MODEL_REPLY
+        self.client.force_authenticate(self.admin)
+
+        self.client.post(self.url)
+
+        prompt = get_completion.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("Commercial Negotiation Summary", prompt)
+        self.assertIn("Globex EMEA", prompt)
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_regenerating_replaces_its_own_previous_cards(self, get_completion):
+        get_completion.return_value = self.MODEL_REPLY
+        self.client.force_authenticate(self.admin)
+
+        self.client.post(self.url)
+        first_ids = set(Headline.objects.values_list("id", flat=True))
+        self.client.post(self.url)
+
+        self.assertEqual(Headline.objects.count(), 2)
+        self.assertFalse(first_ids & set(Headline.objects.values_list("id", flat=True)))
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_regenerating_never_touches_a_hand_written_card(self, get_completion):
+        """A CSM's own correction has to survive a regenerate, or the
+        write endpoints would be a trap."""
+        get_completion.return_value = self.MODEL_REPLY
+        hand_written = Headline.objects.create(
+            account=self.account, title="Written by a human", content="Keep me."
+        )
+        self.client.force_authenticate(self.admin)
+
+        self.client.post(self.url)
+        self.client.post(self.url)
+
+        hand_written.refresh_from_db()
+        self.assertEqual(hand_written.title, "Written by a human")
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_an_account_with_nothing_to_summarise_is_422_and_makes_no_call(self, get_completion):
+        empty_account = create_account(self.customer, name="Globex APAC")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            f"/api/v1/customers/{self.customer.id}/accounts/{empty_account.id}/headlines/generate/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        self.assertIn("nothing to summarise", response.data["detail"])
+        get_completion.assert_not_called()
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_unreadable_model_output_is_502_and_keeps_the_old_cards(self, get_completion):
+        get_completion.return_value = "I'm afraid I can't do that."
+        existing = Headline.objects.create(
+            account=self.account, title="Still here", content="C", generated_at=timezone.now()
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertTrue(Headline.objects.filter(pk=existing.pk).exists())
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_a_fenced_json_reply_is_still_read(self, get_completion):
+        get_completion.return_value = f"```json\n{self.MODEL_REPLY}\n```"
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Headline.objects.count(), 2)
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_an_unconfigured_provider_is_503(self, get_completion):
+        from services.copilot.anthropic_client import CopilotNotConfigured
+
+        get_completion.side_effect = CopilotNotConfigured("Set ANTHROPIC_API_KEY in your .env.")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertIn("ANTHROPIC_API_KEY", response.data["detail"])
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_a_failed_call_is_502(self, get_completion):
+        from services.copilot.anthropic_client import CopilotRequestFailed
+
+        get_completion.side_effect = CopilotRequestFailed("rate limited")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_a_customer_level_generate_attaches_to_the_customer(self, get_completion):
+        get_completion.return_value = self.MODEL_REPLY
+        Note.objects.create(
+            customer=self.customer,
+            title="Renewal Strategy Discussion",
+            author_name="Natalie Reyes",
+            body="Multi-year deal preferred.",
+            logged_at=timezone.now().date(),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f"/api/v1/customers/{self.customer.id}/headlines/generate/")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Headline.objects.filter(customer=self.customer).count(), 2)
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_another_organisation_cannot_generate_for_this_account(self, get_completion):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_admin = User.objects.create_user(
+            email="other@other.io",
+            password="supersecret1",
+            name="Other",
+            organisation=other_org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(other_admin)
+
+        response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        get_completion.assert_not_called()
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_a_nonsense_window_is_400_and_makes_no_call(self, get_completion):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.url, {"window_days": "last tuesday"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        get_completion.assert_not_called()
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_a_narrow_window_excludes_older_records(self, get_completion):
+        get_completion.return_value = self.MODEL_REPLY
+        Note.objects.create(
+            account=self.account,
+            title="Ancient history",
+            author_name="Edgar Holmes",
+            body="Long ago.",
+            logged_at=timezone.now().date() - timedelta(days=200),
+        )
+        self.client.force_authenticate(self.admin)
+
+        self.client.post(self.url, {"window_days": 7}, format="json")
+
+        prompt = get_completion.call_args.kwargs["messages"][0]["content"]
+        self.assertNotIn("Ancient history", prompt)

@@ -125,5 +125,25 @@ urlpatterns = [
         views.AccountCanvasListView.as_view(),
         name="account-canvases",
     ),
+    path(
+        "<int:customer_id>/headlines/",
+        views.CustomerHeadlineListCreateView.as_view(),
+        name="customer-headlines",
+    ),
+    path(
+        "<int:customer_id>/headlines/generate/",
+        views.HeadlineGenerateView.as_view(),
+        name="customer-headlines-generate",
+    ),
+    path(
+        "<int:customer_id>/accounts/<int:account_id>/headlines/",
+        views.AccountHeadlineListCreateView.as_view(),
+        name="account-headlines",
+    ),
+    path(
+        "<int:customer_id>/accounts/<int:account_id>/headlines/generate/",
+        views.HeadlineGenerateView.as_view(),
+        name="account-headlines-generate",
+    ),
     path("<int:pk>/", views.CustomerDetailView.as_view(), name="customer-detail"),
 ]

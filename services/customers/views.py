@@ -1,19 +1,22 @@
 from datetime import timedelta
 
+from django.db import transaction
 from django.db.models import CharField, Q
 from django.db.models.functions import Cast
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import generics, views
+from rest_framework import generics, status, views
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
 from services.fx_rates.conversion import convert_to_org_currency
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from .models import Account, Canvas, Contact, Customer, Opportunity, Risk, Survey, Task
+from .headline_generation import NothingToSummarise, generate_headlines
+from .models import Account, Canvas, Contact, Customer, Headline, Opportunity, Risk, Survey, Task
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
@@ -22,6 +25,7 @@ from .serializers import (
     ContactSerializer,
     CustomerSerializer,
     EmailSerializer,
+    HeadlineSerializer,
     NoteSerializer,
     OpportunitySerializer,
     RiskSerializer,
@@ -1670,4 +1674,161 @@ class CockpitSummaryView(views.APIView):
                     "items": items,
                 },
             }
+        )
+
+
+def _headline_customer(request, customer_id):
+    """The one place Customer-scoped Headline views resolve their
+    parent — same get_object_or_404-on-the-parent scoping every other
+    nested list in this module uses, so an out-of-scope id is a 404,
+    never an empty list."""
+    return get_object_or_404(Customer, pk=customer_id, organisation=request.user.organisation)
+
+
+def _headline_account(request, customer_id, account_id):
+    """Account-scoped equivalent of _headline_customer. Filters the M2M
+    twice — `customers=<id>` pins it under the URL's Customer, and
+    `customers__organisation` pins that Customer to the caller's own
+    tenant."""
+    return get_object_or_404(
+        Account,
+        pk=account_id,
+        customers=customer_id,
+        customers__organisation=request.user.organisation,
+    )
+
+
+class CustomerHeadlineListCreateView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/headlines/ — every
+    organization-level Headline for one Customer (GET), or writes one
+    by hand (POST); `customer` comes from the URL. Powers the
+    "Headlines" sub-tab of ActivityFeed on the Organization Details
+    page. Scoped to the caller's own organisation.
+
+    Writable, unlike the Note/Activity/Email lists: a headline is
+    normally generated (see HeadlineGenerateView below), but a CSM
+    writing or correcting one by hand is a real case — and a
+    hand-written card is exactly what regeneration must not clobber."""
+
+    serializer_class = HeadlineSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        return _headline_customer(self.request, self.kwargs["customer_id"]).headlines.all()
+
+    def perform_create(self, serializer):
+        serializer.save(customer=_headline_customer(self.request, self.kwargs["customer_id"]))
+
+
+class AccountHeadlineListCreateView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/headlines/
+    — every account-level Headline for one Account (GET), or writes one
+    by hand (POST); `account` comes from the URL. Powers the
+    "Headlines" sub-tab on the standalone Account page. Same reasoning
+    as CustomerHeadlineListCreateView."""
+
+    serializer_class = HeadlineSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        return _headline_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
+        ).headlines.all()
+
+    def perform_create(self, serializer):
+        serializer.save(
+            account=_headline_account(
+                self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
+            )
+        )
+
+
+class HeadlineDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/headlines/<pk>/ — edit or remove one
+    card. Flat rather than nested under its parent, same shape as
+    OpportunityDetailView/RiskDetailView/CanvasDetailView: the id is
+    unique on its own, and the card's own edit/delete controls have the
+    Headline in hand without needing to know which of the two parent
+    shapes it came from.
+
+    Scoping is done on the queryset here rather than by a parent
+    lookup — there's no parent in the URL to 404 on — matching how
+    those same flat detail views scope themselves."""
+
+    serializer_class = HeadlineSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        org = self.request.user.organisation
+        return Headline.objects.filter(
+            Q(customer__organisation=org) | Q(account__customers__organisation=org)
+        ).distinct()
+
+
+class HeadlineGenerateView(views.APIView):
+    """POST /api/v1/customers/<customer_id>/headlines/generate/ and
+    .../accounts/<account_id>/headlines/generate/ — reads the parent's
+    real Notes/Emails/Tickets/Activities and writes its Headline cards
+    from them, making the card footer's "Data sources" line true rather
+    than decorative.
+
+    Replaces only previously *generated* cards (`generated_at` is not
+    null), never anything hand-written through the POST endpoints
+    above — so regenerating is safe to run repeatedly and a CSM's own
+    correction survives it.
+
+    Error mapping matches SendMessageView's exactly, since it is the
+    same one external call underneath: 503 when the provider isn't
+    configured, 502 when the call itself fails. Adds a 422 for "this
+    account has nothing to summarise", which is a real, expected state
+    for a newly created account rather than a failure of ours."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, customer_id, account_id=None):
+        if account_id is None:
+            parent = _headline_customer(request, customer_id)
+        else:
+            parent = _headline_account(request, customer_id, account_id)
+
+        window_days = request.data.get("window_days")
+        kwargs = {}
+        if window_days is not None:
+            try:
+                kwargs["window_days"] = int(window_days)
+            except (TypeError, ValueError):
+                raise ValidationError({"window_days": "Must be a whole number of days."}) from None
+            if kwargs["window_days"] < 1:
+                raise ValidationError({"window_days": "Must be at least 1 day."})
+        if request.data.get("time_period_label"):
+            kwargs["time_period_label"] = request.data["time_period_label"]
+
+        try:
+            built = generate_headlines(parent, **kwargs)
+        except NothingToSummarise as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except CopilotNotConfigured as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except CopilotRequestFailed as exc:
+            return Response(
+                {"detail": f"The summary couldn't be generated: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": f"The summary couldn't be generated: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # One transaction so a failure mid-write can't leave the tab
+        # showing the old cards deleted and the new ones missing.
+        with transaction.atomic():
+            parent.headlines.filter(generated_at__isnull=False).delete()
+            Headline.objects.bulk_create(built)
+
+        return Response(
+            HeadlineSerializer(parent.headlines.all(), many=True).data,
+            status=status.HTTP_201_CREATED,
         )

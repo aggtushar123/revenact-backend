@@ -26,6 +26,7 @@ from services.customers.views import (
     ContactDetailView,
     ContactListView,
     ContactStatsView,
+    HeadlineDetailView,
     OpportunityDetailView,
     OpportunityListView,
     RiskDetailView,
@@ -87,6 +88,13 @@ urlpatterns = [
     # services.customers.urls (the "Canvas List" Details-page tab).
     path("api/v1/canvases/<int:pk>/", CanvasDetailView.as_view(), name="canvas-detail"),
     path("api/v1/canvases/", CanvasListView.as_view(), name="canvas-list"),
+    # Headline detail only — unlike Survey/Canvas above there's no
+    # cross-company Headline list, because there's no page that wants
+    # one: a headline is only ever read in the context of the company
+    # it summarises. This exists so a card's own edit/delete controls
+    # have a route that doesn't require knowing which of the two
+    # parent shapes the card came from.
+    path("api/v1/headlines/<int:pk>/", HeadlineDetailView.as_view(), name="headline-detail"),
     # Scenarios — its own app (services/scenarios/), unlike everything
     # above which lives in services.customers. Nothing here is nested
     # under a Customer/Account the way Task/Note/etc. are: a Scenario

@@ -1255,3 +1255,157 @@ class Canvas(models.Model):
         if self.customer_id:
             return [self.customer]
         return list(self.account.customers.all())
+
+
+class Headline(models.Model):
+    """An AI-written summary card on the Headlines tab — same "belongs to
+    exactly one of Customer or Account" shape as Note/Survey/Canvas
+    above. Backs the "Headlines" sub-tab of ActivityFeed on both the
+    Organization Details page and the standalone Account page
+    (react-ts-app's src/components/organizations/activity/HeadlinesTab.tsx,
+    previously a hardcoded two-item HEADLINES_DATA array).
+
+    Two card shapes, distinguished by `kind` rather than the mock's
+    `isSummary` boolean — the mock only ever needed "is this the
+    TL;DR?", but the two genuinely differ in which fields apply, and a
+    choice field says that better than a bool:
+
+    * SUMMARY — the pinned TL;DR at the top. Carries
+      `time_period_label` ("Last 3 months") and `data_sources`, which
+      the card renders in its footer. Never has a `status` — there's
+      nothing open or closed about a rolling summary — enforced by
+      `headline_summary_has_no_status` below.
+    * HEADLINE — one themed storyline in the feed, with a `status` and
+      a `period_start`/`period_end` span shown on the card.
+
+    `data_sources` is a list of `DataSource` values, not the mock's
+    free-text "Notes, Emails, Call Transcripts and Tickets" string.
+    The string was decorative — nothing computed it — whereas the
+    generator (see services/customers/headline_generation.py) actually
+    knows which of the account's records it read, so this records that
+    honestly and the serializer renders the display string from it.
+    A hand-written Headline can leave it empty and the footer line
+    simply doesn't render, same "only when non-empty" rule as Note's
+    own `links` count.
+
+    No `group` field, though the mock carried one ('January'): the
+    card's group pill is derived from `period_end` at render time,
+    same as Note/Activity/Email/Task's own date-group headers. The
+    mock's `orgId` is likewise gone — the parent is the FK, and its
+    absence is what made every account show Apple's headlines.
+
+    `generated_at` is set only when a Headline came from the model, so
+    a regenerate can replace what it wrote previously without touching
+    anything a CSM typed by hand — see HeadlineGenerateView."""
+
+    class Kind(models.TextChoices):
+        SUMMARY = "summary", "Summary"
+        HEADLINE = "headline", "Headline"
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        IN_PROGRESS = "in_progress", "In Progress"
+        CLOSED = "closed", "Closed"
+
+    class DataSource(models.TextChoices):
+        """The record types the generator can read. Deliberately a
+        closed set matching real models in this app (plus
+        CALL_TRANSCRIPTS, which CallSense will own) — an open free-text
+        field would let the card claim a source that was never read."""
+
+        NOTES = "notes", "Notes"
+        EMAILS = "emails", "Emails"
+        CALL_TRANSCRIPTS = "call_transcripts", "Call Transcripts"
+        TICKETS = "tickets", "Tickets"
+        ACTIVITIES = "activities", "Activities"
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="headlines",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level headline. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="headlines",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level headline. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.HEADLINE)
+    title = models.CharField(max_length=255)
+    content = models.TextField()
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        blank=True,
+        help_text="HEADLINE cards only — always blank for a SUMMARY, "
+        "enforced by the model's own CheckConstraint.",
+    )
+    period_start = models.DateField(
+        null=True, blank=True, help_text="Start of the span the card covers."
+    )
+    period_end = models.DateField(
+        null=True,
+        blank=True,
+        help_text="End of the span the card covers. Also what the card's "
+        "group pill is derived from, so a HEADLINE meant to appear under a "
+        "group heading needs this set.",
+    )
+    time_period_label = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="SUMMARY cards only — the rolling window in words "
+        "('Last 3 months'), which no pair of dates conveys on its own.",
+    )
+    data_sources = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of DataSource values actually read to write this card. "
+        "Rendered in the footer only when non-empty.",
+    )
+    generated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when written by the model, null when hand-written — "
+        "regeneration only replaces its own previous output.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Grouped by kind (so "headline" before "summary", alphabetically)
+        # and newest-first within each, same "-<date field>, -id" shape as
+        # Note/Activity/Email. Which kind comes first is not a contract:
+        # the tab splits the list on `kind` and renders the TL;DR above
+        # the feed regardless of the order it arrived in.
+        ordering = ["kind", "-period_end", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="headline_belongs_to_exactly_one_parent",
+            ),
+            models.CheckConstraint(
+                check=~models.Q(kind="summary") | models.Q(status=""),
+                name="headline_summary_has_no_status",
+            ),
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.title} — {parent}"
+
+    @property
+    def companies(self) -> list["Customer"]:
+        """Every ultimate parent Customer — same reasoning as
+        Opportunity/Risk/Survey/Canvas's own `companies` property."""
+        if self.customer_id:
+            return [self.customer]
+        return list(self.account.customers.all())
