@@ -160,12 +160,18 @@ def collect_records(parent, *, window_days=DEFAULT_WINDOW_DAYS):
     return collected
 
 
-def build_prompt(parent, collected, *, window_days):
+def build_prompt(parent, collected, *, period_label):
     """The single user message. Named the parent explicitly — the model
     is asked to use real names, so it needs to know whose account this
-    is rather than inferring it from whoever appears most often."""
+    is rather than inferring it from whoever appears most often.
 
-    blocks = [f"Account: {parent}", f"Window: the last {window_days} days.", ""]
+    `period_label` is the caller's own wording, not the raw day count.
+    The system prompt asks for a title of the form "TL;DR (<window>)",
+    so whatever wording lands here is what ends up on the card — pass
+    the day count and a caller asking for "Last 13 months" gets a card
+    titled "Last 400 days" over a footer reading "Last 13 months"."""
+
+    blocks = [f"Account: {parent}", f"Window: {period_label}.", ""]
     for source, lines in collected.items():
         blocks.append(f"{Headline.DataSource(source).label}:")
         blocks.extend(lines)
@@ -224,7 +230,7 @@ def generate_headlines(parent, *, window_days=DEFAULT_WINDOW_DAYS, time_period_l
         )
 
     label = time_period_label or f"Last {window_days} days"
-    prompt = build_prompt(parent, collected, window_days=window_days)
+    prompt = build_prompt(parent, collected, period_label=label)
     raw = get_completion(
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],

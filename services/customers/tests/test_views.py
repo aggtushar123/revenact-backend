@@ -4906,6 +4906,37 @@ class HeadlineGenerateTests(APITestCase):
         get_completion.assert_not_called()
 
     @patch("services.customers.headline_generation.get_completion")
+    def test_the_callers_own_period_wording_is_what_the_model_is_given(self, get_completion):
+        """The system prompt asks for a title of the form
+        "TL;DR (<window>)", so the prompt has to carry the caller's
+        wording rather than the raw day count — otherwise a request for
+        "Last 13 months" comes back titled "Last 400 days" sitting above
+        a footer that reads "Last 13 months". Caught in a real
+        generation against Bedrock, not in a stubbed test."""
+        get_completion.return_value = self.MODEL_REPLY
+        self.client.force_authenticate(self.admin)
+
+        self.client.post(
+            self.url,
+            {"window_days": 400, "time_period_label": "Last 13 months"},
+            format="json",
+        )
+
+        prompt = get_completion.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("Last 13 months", prompt)
+        self.assertNotIn("400 days", prompt)
+
+    @patch("services.customers.headline_generation.get_completion")
+    def test_the_default_period_wording_falls_back_to_the_day_count(self, get_completion):
+        get_completion.return_value = self.MODEL_REPLY
+        self.client.force_authenticate(self.admin)
+
+        self.client.post(self.url)
+
+        prompt = get_completion.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("Last 90 days", prompt)
+
+    @patch("services.customers.headline_generation.get_completion")
     def test_a_narrow_window_excludes_older_records(self, get_completion):
         get_completion.return_value = self.MODEL_REPLY
         Note.objects.create(
