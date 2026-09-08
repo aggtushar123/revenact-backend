@@ -73,9 +73,46 @@ class CampaignListCreateTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        campaign = Campaign.objects.get(pk=response.data["id"])
-        self.assertEqual(list(campaign.recipients.all()), [])
+        # A 400 rather than the silent drop this used to do — the test
+        # name has always said "rejects" and now it's true. Quietly
+        # creating a campaign missing the recipients you picked is the
+        # worse outcome for something that sends real, unrecallable
+        # email.
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("aren't available to you", str(response.data["recipient_ids"]))
+        self.assertFalse(Campaign.objects.filter(name="Renewal Reminder").exists())
+
+    def test_recipient_ids_rejects_a_contact_at_an_account_you_cannot_see(self):
+        """The case that made this worth changing: same tenant, someone
+        else's account. Before ownership scoping this could only happen
+        across tenants, which no UI flow produces."""
+        other_user = User.objects.create_user(
+            email="dana@acme.io",
+            password="supersecret1",
+            name="Dana",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        theirs = Customer.objects.create(organisation=self.org, name="Theirs", owner=other_user)
+        their_contact = Contact.objects.create(
+            customer=theirs, name="Priya", email="priya@theirs.example"
+        )
+        csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.client.force_authenticate(csm)
+
+        response = self.client.post(
+            self.url,
+            {"name": "Renewal Reminder", "recipient_ids": [their_contact.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class CampaignDetailTests(APITestCase):

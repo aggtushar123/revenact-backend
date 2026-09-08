@@ -1,4 +1,3 @@
-from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
@@ -8,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from services.customers.models import Contact, Email
+from services.customers.scoping import visible_children_q
 from services.email import send_campaign_email
 
 from .models import Campaign
@@ -17,17 +17,36 @@ from .serializers import CampaignSerializer
 def _resolve_recipients(request):
     """`recipient_ids` is never a real serializer field (see
     CampaignSerializer's own docstring) — read straight off raw request
-    data and resolved against the caller's own organisation, same
-    reasoning ContactListView's own org-scoping Q uses, so a client
-    can't add another org's Contact as a recipient."""
+    data and resolved against what the caller can actually see, so a
+    client can't add a Contact from another organisation *or* from an
+    account somebody else owns.
+
+    Unreachable ids are a 400, not silently dropped. This used to drop
+    them, which was defensible when the only way to hit it was naming
+    another tenant's contact id — something no UI flow produces. Now
+    that a same-tenant contact can be out of scope (a stale tab after a
+    reassignment is enough), silently sending to seven of the ten
+    people you picked is the worse failure: you can't unsend the seven,
+    and nothing tells you about the three."""
     recipient_ids = request.data.get("recipient_ids")
     if recipient_ids is None:
         return None
-    organisation = request.user.organisation
-    return Contact.objects.filter(
-        Q(customer__organisation=organisation) | Q(account__customers__organisation=organisation),
-        id__in=recipient_ids,
+
+    recipients = Contact.objects.filter(
+        visible_children_q(request.user), id__in=recipient_ids
     ).distinct()
+
+    missing = len(set(recipient_ids)) - recipients.count()
+    if missing:
+        raise ValidationError(
+            {
+                "recipient_ids": (
+                    f"{missing} of the contacts you picked aren't available to you — "
+                    "they belong to an account you don't have access to."
+                )
+            }
+        )
+    return recipients
 
 
 class CampaignListCreateView(generics.ListCreateAPIView):
@@ -44,8 +63,11 @@ class CampaignListCreateView(generics.ListCreateAPIView):
         return Campaign.objects.filter(organisation=self.request.user.organisation)
 
     def perform_create(self, serializer):
-        campaign = serializer.save(organisation=self.request.user.organisation)
+        # Resolved *before* the save: _resolve_recipients can raise, and
+        # doing it after left a campaign row behind on a 400 — a half-made
+        # record from a request the caller was told had failed.
         recipients = _resolve_recipients(self.request)
+        campaign = serializer.save(organisation=self.request.user.organisation)
         if recipients is not None:
             campaign.recipients.set(recipients)
 
@@ -64,8 +86,10 @@ class CampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         if serializer.instance.status == Campaign.Status.SENT:
             raise ValidationError({"detail": "Can't edit a campaign that's already been sent."})
-        campaign = serializer.save()
+        # Same ordering as perform_create's, same reason — a rejected
+        # recipient list shouldn't leave the rest of the edit applied.
         recipients = _resolve_recipients(self.request)
+        campaign = serializer.save()
         if recipients is not None:
             campaign.recipients.set(recipients)
 

@@ -573,15 +573,20 @@ count toward your own ARR.
    Contact/Opportunity/Risk/Survey/Canvas rows carry a `companies`
    list. A name and an id, with no ARR/health/notes attached; filtering
    them would blank the account page header for account-only owners.
-3. **Still organisation-wide, deliberately out of this change's scope:**
-   scenario runs can target and mutate any customer
-   (`services/scenarios/views.py` writes `lifecycle_stage`/`churn_date`);
-   campaign recipients resolve org-wide and send real email
-   (`services/campaigns/views.py`); Copilot session invites disclose an
-   account name before acceptance. Separately, `Notification.message`
-   and Copilot `Message.content` are denormalised free text written
-   once at creation — no queryset gate can retroactively scrub what
-   they already say.
+3. **Still organisation-wide:** Copilot session invites disclose an
+   account name before acceptance; custom-object records list org-wide
+   when no `?customer=`/`?account=` is given; `GET /api/v1/tasks/`
+   defaults to the whole tenant unless the client passes `?mine=true`.
+   Separately, `Notification.message` and Copilot `Message.content` are
+   denormalised free text written once at creation — no queryset gate
+   can retroactively scrub what they already say.
+4. **A Campaign and a Scenario are themselves tenant-wide**, visible to
+   every member. Neither has a creator or owner field, so there is
+   nothing to scope them by; what *is* scoped is which customers and
+   contacts you can point them at (see the two app sections below). A
+   campaign's recipient roster therefore stays readable by any member —
+   closing that needs a `created_by` on Campaign, which is a data-model
+   decision rather than a queryset one.
 
 ### `GET /api/v1/customers/`, `POST /api/v1/customers/`
 
@@ -1946,8 +1951,14 @@ no partial-field save from the UI today.
 Auth: `IsAuthenticated`. Body: `{"customer_id": <id>}`. The builder's
 "Run Now" button. Runs synchronously — there's no task queue, so the
 response IS the completed run. `400` if the scenario's `apply_to` isn't
-`"organizations"`; `404` if the scenario or the customer isn't in the
-caller's own organisation.
+`"organizations"`; `404` if the scenario isn't in the caller's own
+organisation, or if the customer isn't one the caller can see (see the
+`customers` app's visibility section).
+
+The target is scoped by visibility, not just by tenant: a run is a
+*write*, not a read — the engine sets `lifecycle_stage`/`churn_date`,
+creates Tasks and sends real email — so an ungated target let any
+member act on an account they couldn't open.
 
 **Response `201`**
 ```json
@@ -1971,6 +1982,17 @@ caller's own organisation.
 Auth: `IsAuthenticated`. This scenario's own run history, newest first
 — manual runs and On Event auto-runs both appear here, told apart by
 `triggered_by`. **Pagination off**, same reasoning as the list endpoint.
+
+Filtered to runs against customers the caller can see, even though the
+Scenario itself is tenant-wide: each row names its customer and its
+`log` quotes contact addresses (`Emailed x@y: "..."`). A run whose
+customer has since been deleted (`customer` is `SET_NULL`) names nobody
+and stays listed.
+
+The On Event auto-run signal is deliberately *not* scoped — it fires on
+every new Customer in the organisation regardless of owner, because a
+tenant-wide automation that only ran for some people's customers would
+be broken, not safer.
 
 **Response `200`** — an array of the same shape as `POST .../run/`'s
 response.
@@ -2014,10 +2036,19 @@ A sent Campaign is locked — `PATCH` 400s once `status == "sent"` rather
 than silently accepting an edit nobody could act on (you can't unsend a
 real email). `recipient_ids` (a list of Contact ids) is never a real
 serializer field — read straight off raw request data in
-`perform_create`/`perform_update` and resolved against the caller's own
-organisation, same "not a real serializer field" convention Survey/
-Canvas's own flat create views already use for `customer_id`/
+`perform_create`/`perform_update` and resolved against the contacts the
+caller can actually see, same "not a real serializer field" convention
+Survey/Canvas's own flat create views already use for `customer_id`/
 `account_id`, generalized here to a list.
+
+**An id you can't reach is a `400`, not a silent drop** — from another
+organisation, or from an account somebody else owns. Dropping them
+quietly was defensible when only a cross-tenant id could trigger it
+(no UI flow produces one); now that a same-tenant contact can be out of
+scope, sending to seven of the ten people you picked is the worse
+failure, because you can't unsend the seven and nothing tells you about
+the three. Recipients are resolved *before* the Campaign row is saved,
+so a rejected list leaves nothing behind.
 
 ### `GET/POST /api/v1/campaigns/`
 

@@ -184,3 +184,125 @@ class OnEventSignalTests(APITestCase):
             customer = Customer.objects.create(organisation=other_org, name="Initech")
 
         self.assertEqual(ScenarioRun.objects.filter(customer=customer).count(), 0)
+
+
+class ScenarioOwnershipScopingTests(APITestCase):
+    """A scenario is a tenant-wide automation and stays visible to
+    everyone. What's scoped is which customers you can point it at, and
+    whose runs you can read back — see services/customers/scoping.py."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.other = User.objects.create_user(
+            email="dana@acme.io",
+            password="supersecret1",
+            name="Dana",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.theirs = Customer.objects.create(
+            organisation=self.org,
+            name="Theirs",
+            email="ops@theirs.example",
+            owner=self.other,
+            lifecycle_stage="live",
+        )
+        self.scenario = Scenario.objects.create(
+            organisation=self.org,
+            nodes=[entry(), action_node("n1", "Send Email", emailSubject="Hi", emailBody="Body")],
+            edges=[{"id": "e1", "source": "entry", "target": "n1"}],
+        )
+        self.run_url = f"/api/v1/scenarios/{self.scenario.id}/run/"
+
+    def test_cannot_run_against_a_customer_you_cannot_see(self):
+        """The write leak this closes: the engine sets lifecycle_stage
+        and churn_date and sends real mail, so an ungated target let any
+        member act on an account they couldn't open."""
+        self.client.force_authenticate(self.csm)
+
+        response = self.client.post(self.run_url, {"customer_id": self.theirs.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(ScenarioRun.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_can_run_against_your_own_customer(self):
+        mine = Customer.objects.create(
+            organisation=self.org, name="Mine", email="ops@mine.example", owner=self.csm
+        )
+        self.client.force_authenticate(self.csm)
+
+        response = self.client.post(self.run_url, {"customer_id": mine.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_a_capability_holder_can_run_against_anyone(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(self.run_url, {"customer_id": self.theirs.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_run_history_hides_other_peoples_customers(self):
+        """Each row names its customer and the log quotes contact
+        addresses ("Emailed x@y: ..."), so the history leaks even when
+        the scenario itself is legitimately shared."""
+        self.client.force_authenticate(self.admin)
+        self.client.post(self.run_url, {"customer_id": self.theirs.id}, format="json")
+
+        self.client.force_authenticate(self.csm)
+        response = self.client.get(f"/api/v1/scenarios/{self.scenario.id}/runs/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_run_history_still_shows_your_own(self):
+        mine = Customer.objects.create(
+            organisation=self.org, name="Mine", email="ops@mine.example", owner=self.csm
+        )
+        self.client.force_authenticate(self.csm)
+        self.client.post(self.run_url, {"customer_id": mine.id}, format="json")
+
+        response = self.client.get(f"/api/v1/scenarios/{self.scenario.id}/runs/")
+
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["customer"]["name"], "Mine")
+
+    def test_a_run_whose_customer_was_deleted_stays_visible(self):
+        """`ScenarioRun.customer` is SET_NULL. An orphaned run names
+        nobody, so it has nothing to hide and shouldn't silently vanish
+        from the history."""
+        mine = Customer.objects.create(
+            organisation=self.org, name="Mine", email="ops@mine.example", owner=self.csm
+        )
+        self.client.force_authenticate(self.csm)
+        self.client.post(self.run_url, {"customer_id": mine.id}, format="json")
+        mine.delete()
+
+        response = self.client.get(f"/api/v1/scenarios/{self.scenario.id}/runs/")
+
+        self.assertEqual(len(response.data), 1)
+        self.assertIsNone(response.data[0]["customer"])
+
+    def test_the_scenario_itself_stays_visible_to_everyone(self):
+        """Deliberate: a Scenario has no owner — it's a tenant-wide
+        automation, not a per-account record."""
+        self.client.force_authenticate(self.csm)
+
+        response = self.client.get("/api/v1/scenarios/")
+
+        self.assertEqual(len(response.data), 1)

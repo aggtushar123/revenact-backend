@@ -1,10 +1,11 @@
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from services.customers.models import Customer
+from services.customers.scoping import visible_customers
 
 from .engine import run_scenario
 from .models import Scenario, ScenarioRun
@@ -59,10 +60,13 @@ class ScenarioRunView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Scoped to what the caller can actually see, not just to the
+        # tenant. A run isn't a read: the engine really does write
+        # lifecycle_stage/churn_date and send mail (see engine.py), so
+        # an ungated target let any member churn an account they
+        # couldn't even open.
         customer_id = request.data.get("customer_id")
-        customer = get_object_or_404(
-            Customer, pk=customer_id, organisation=request.user.organisation
-        )
+        customer = get_object_or_404(visible_customers(request.user), pk=customer_id)
 
         run = run_scenario(scenario, customer, triggered_by=ScenarioRun.TriggeredBy.MANUAL)
         return Response(ScenarioRunSerializer(run).data, status=status.HTTP_201_CREATED)
@@ -81,4 +85,15 @@ class ScenarioRunListView(generics.ListAPIView):
         scenario = get_object_or_404(
             Scenario, pk=self.kwargs["pk"], organisation=self.request.user.organisation
         )
-        return scenario.runs.all()
+        # The Scenario itself is a tenant-wide automation and stays
+        # visible to everyone, but its runs are per-customer: each row
+        # names the customer and its `log` quotes contact addresses
+        # ("Emailed x@y: ..."), so the history is filtered even though
+        # the scenario isn't.
+        #
+        # `customer` is nullable (SET_NULL — the customer may since have
+        # been deleted). Such a run names nobody, so it has nothing to
+        # hide and stays in the list rather than vanishing.
+        return scenario.runs.filter(
+            Q(customer__in=visible_customers(self.request.user)) | Q(customer__isnull=True)
+        )
