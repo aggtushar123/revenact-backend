@@ -39,7 +39,7 @@ class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
 
         # 3. Admin adds a CSM to their organisation.
         status, body = http_post(
-            self.api("/csms/"),
+            self.api("/users/"),
             {"name": "Carl CSM", "email": "carl@acme.io", "password": "csmpassword1"},
             token=admin_access,
         )
@@ -61,7 +61,7 @@ class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
 
         # 5. The CSM cannot add other CSMs — only the org admin can.
         status, body = http_post(
-            self.api("/csms/"),
+            self.api("/users/"),
             {"name": "Someone Else", "email": "someone@acme.io", "password": "whatever12"},
             token=csm_access,
         )
@@ -76,18 +76,25 @@ class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["name"], "Carl Renamed")
 
-        # ...but not someone else's — User Management is admin-only.
-        status, body = http_get(self.api("/csms/"), token=csm_access)
+        # ...but not someone else's — User Management needs manage_users,
+        # which the CSM role doesn't hold.
+        status, body = http_get(self.api("/users/"), token=csm_access)
         self.assertEqual(status, 403)
 
         # 7. The admin manages the CSM via User Management: list, then edit.
-        status, body = http_get(self.api("/csms/"), token=admin_access)
+        #    The list is every member, admins included — the old /csms/
+        #    endpoint filtered itself down to CSMs and so couldn't show
+        #    the admin their own row.
+        status, body = http_get(self.api("/users/"), token=admin_access)
         self.assertEqual(status, 200)
-        self.assertEqual([row["email"] for row in body["results"]], ["carl@acme.io"])
-        csm_id = body["results"][0]["id"]
+        self.assertEqual(
+            sorted(row["email"] for row in body["results"]),
+            ["alice@acme.io", "carl@acme.io"],
+        )
+        csm_id = next(row["id"] for row in body["results"] if row["email"] == "carl@acme.io")
 
         status, body = http_patch(
-            self.api(f"/csms/{csm_id}/"), {"password": "newcsmpassword1"}, token=admin_access
+            self.api(f"/users/{csm_id}/"), {"password": "newcsmpassword1"}, token=admin_access
         )
         self.assertEqual(status, 200)
 
@@ -99,7 +106,7 @@ class OrgSignupThenCSMLoginFlowTests(LiveServerTestCase):
         # 8. The admin deactivates the CSM — their still-valid access token
         #    is rejected on its very next request, not just future logins.
         status, body = http_patch(
-            self.api(f"/csms/{csm_id}/"), {"is_active": False}, token=admin_access
+            self.api(f"/users/{csm_id}/"), {"is_active": False}, token=admin_access
         )
         self.assertEqual(status, 200)
 

@@ -32,7 +32,7 @@ class CustomersFlowTests(LiveServerTestCase):
 
         # 2. Admin adds a CSM.
         status, body = http_post(
-            self.auth_api("/csms/"),
+            self.auth_api("/users/"),
             {"name": "Carl CSM", "email": "carl@acme.io", "password": "csmpassword1"},
             token=admin_access,
         )
