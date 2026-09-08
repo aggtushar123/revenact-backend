@@ -22,6 +22,11 @@ class Capability(models.TextChoices):
     MANAGE_CUSTOM_OBJECTS = "manage_custom_objects", "Manage custom objects"
     MANAGE_INTEGRATIONS = "manage_integrations", "Manage integrations & webhooks"
     MANAGE_FX_RATES = "manage_fx_rates", "Manage exchange rates"
+    # Unlike the five above, this one widens a result set rather than
+    # opening an endpoint: every customer/account view stays reachable
+    # by everyone, and what changes is how much comes back. See
+    # services/customers/scoping.py for the rule it switches off.
+    VIEW_ALL_ACCOUNTS = "view_all_accounts", "View all customers & accounts"
 
 
 ALL_CAPABILITIES = [choice.value for choice in Capability]

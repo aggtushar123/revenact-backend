@@ -8,9 +8,13 @@ each view asks is "does this user hold *this* capability" rather than
 as declarative as they were — `permission_classes = [CanManageUsers]`
 reads the same way `[IsOrgAdmin]` did.
 
-Every one of these is a plain `has_permission` check; there's no
-object-level permission anywhere, because every view is already scoped
-to `request.user.organisation` by its own queryset.
+Every one of these is a plain `has_permission` check. There's still no
+DRF object-level permission anywhere — record-level visibility is
+enforced by the querysets themselves (see
+services/customers/scoping.py), which narrow to what the caller owns
+rather than refusing the request. That keeps the "404, not an empty
+list" convention those views already follow: a record you can't see
+doesn't exist as far as the API is concerned.
 """
 
 from rest_framework.permissions import BasePermission
@@ -55,3 +59,16 @@ class CanManageIntegrations(HasCapability):
 class CanManageFxRates(HasCapability):
     capability = Capability.MANAGE_FX_RATES
     message = "You don't have permission to manage exchange rates."
+
+
+class CanViewAllAccounts(HasCapability):
+    """The odd one out: no view lists this in `permission_classes`,
+    because holding it doesn't unlock an endpoint — it widens what the
+    endpoint returns. The real check is
+    `user.has_capability(Capability.VIEW_ALL_ACCOUNTS)` inside
+    services/customers/scoping.py. This class exists so the capability
+    has the same shape as the other five if a view ever does need to
+    gate on it outright."""
+
+    capability = Capability.VIEW_ALL_ACCOUNTS
+    message = "You can only see the customers and accounts you own."
