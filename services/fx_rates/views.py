@@ -1,6 +1,6 @@
 from rest_framework import generics
 
-from services.accounts.permissions import IsOrgAdmin
+from services.accounts.permissions import CanManageFxRates
 
 from .models import FxRate
 from .serializers import FxRateSerializer
@@ -13,7 +13,7 @@ class FxRateListCreateView(generics.ListCreateAPIView):
     config, not everyday customer data."""
 
     serializer_class = FxRateSerializer
-    permission_classes = [IsOrgAdmin]
+    permission_classes = [CanManageFxRates]
     pagination_class = None
 
     def get_queryset(self):
@@ -25,11 +25,11 @@ class FxRateListCreateView(generics.ListCreateAPIView):
 
 class FxRateDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/fx-rates/<id>/ — scoped to the caller's
-    own organisation, admin-only. PATCH is mainly for updating
+    own organisation, requires `manage_fx_rates`. PATCH is mainly for updating
     `rate_to_org_currency` as real-world rates move."""
 
     serializer_class = FxRateSerializer
-    permission_classes = [IsOrgAdmin]
+    permission_classes = [CanManageFxRates]
 
     def get_queryset(self):
         return FxRate.objects.filter(organisation=self.request.user.organisation)

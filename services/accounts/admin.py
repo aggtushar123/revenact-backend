@@ -1,12 +1,19 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 
-from .models import Organisation, User
+from .models import Organisation, Role, User
 
 
 @admin.register(Organisation)
 class OrganisationAdmin(admin.ModelAdmin):
     list_display = ["name", "slug", "created_at"]
+    search_fields = ["name", "slug"]
+
+
+@admin.register(Role)
+class RoleAdmin(admin.ModelAdmin):
+    list_display = ["name", "slug", "organisation", "is_system", "created_at"]
+    list_filter = ["is_system", "organisation"]
     search_fields = ["name", "slug"]
 
 

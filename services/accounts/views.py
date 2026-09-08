@@ -1,4 +1,5 @@
-from rest_framework import generics, status
+from rest_framework import generics, status, views
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
@@ -6,18 +7,20 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, Ou
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .models import User
-from .permissions import IsOrgAdmin
+from .capabilities import Capability
+from .models import Role, User
+from .permissions import CanManageOrgSettings, CanManageUsers
 from .serializers import (
     ChangePasswordSerializer,
-    CreateCSMSerializer,
-    EditCSMSerializer,
+    CreateOrgUserSerializer,
+    EditOrgUserSerializer,
     ForgotPasswordSerializer,
     LoginSerializer,
     LogoutSerializer,
     MeSerializer,
     OrganisationSerializer,
     ResetPasswordSerializer,
+    RoleSerializer,
     SignupSerializer,
     UserSerializer,
 )
@@ -96,15 +99,15 @@ class OrganisationSettingsView(generics.RetrieveUpdateAPIView):
     Backs Settings > Currency and Settings > Global Presets
     (react-ts-app's src/pages/settings/CurrencyPage.tsx/
     GlobalPresetsPage.tsx). Any authenticated user can view it (both
-    pages show a read-only view to a CSM); only the org's own admin can
-    change it — same `IsOrgAdmin` gate as CSMListCreateView's own, method-
-    gated here since GET stays open to everyone."""
+    pages show a read-only view to someone without the capability);
+    changing it requires `manage_org_settings`, method-gated here since
+    GET stays open to everyone."""
 
     serializer_class = OrganisationSerializer
 
     def get_permissions(self):
         if self.request.method in ("PATCH", "PUT"):
-            return [IsAuthenticated(), IsOrgAdmin()]
+            return [IsAuthenticated(), CanManageOrgSettings()]
         return [IsAuthenticated()]
 
     def get_object(self):
@@ -177,21 +180,90 @@ class ResetPasswordView(generics.GenericAPIView):
         return Response({"detail": "Your password has been reset."}, status=status.HTTP_200_OK)
 
 
-class CSMListCreateView(generics.ListCreateAPIView):
-    """GET /api/v1/auth/csms/ — list the CSMs in the caller's own
-    organisation (org-admin-only; the admin manages members, they don't
-    appear in their own list here).
-    POST /api/v1/auth/csms/ — adds a CSM to the caller's own organisation."""
+class CapabilityListView(views.APIView):
+    """GET /api/v1/auth/capabilities/ — the closed set of capabilities a
+    Role can hold, as `[{key, label}]`.
 
-    permission_classes = [IsOrgAdmin]
+    Served rather than hardcoded in the frontend so the role editor's
+    checkboxes can't drift out of sync with what the backend actually
+    enforces (see capabilities.py's own docstring on why that set stays
+    small). Open to any authenticated member — it's a static vocabulary,
+    not org data."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response([{"key": choice.value, "label": choice.label} for choice in Capability])
+
+
+class RoleListCreateView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/auth/roles/ — the caller's own organisation's
+    roles.
+
+    GET is open to any member: the Users page renders role names, and
+    anyone may legitimately need to see what roles exist. POST requires
+    `manage_users` — same capability that gates assigning them."""
+
+    serializer_class = RoleSerializer
+    pagination_class = None  # one org's own roles — a handful.
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), CanManageUsers()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
-        return User.objects.filter(
-            organisation=self.request.user.organisation, role=User.Role.CSM
-        ).order_by("name")
+        return Role.objects.filter(organisation=self.request.user.organisation)
+
+
+class RoleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/auth/roles/<id>/ — same read-open,
+    write-gated split as the list view above.
+
+    The system roles (Admin/CSM) reject PATCH and DELETE, and a role
+    still assigned to somebody rejects DELETE — see RoleSerializer and
+    `destroy` below for the real checks and why each exists."""
+
+    serializer_class = RoleSerializer
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), CanManageUsers()]
+
+    def get_queryset(self):
+        return Role.objects.filter(organisation=self.request.user.organisation)
+
+    def destroy(self, request, *args, **kwargs):
+        role = self.get_object()
+        if role.is_system:
+            raise ValidationError("The built-in Admin and CSM roles can't be deleted.")
+        if role.users.exists():
+            raise ValidationError(
+                "Move the people holding this role onto another one before deleting it."
+            )
+        return super().destroy(request, *args, **kwargs)
+
+
+class OrgUserListCreateView(generics.ListCreateAPIView):
+    """GET /api/v1/auth/users/ — every member of the caller's own
+    organisation, admins included (unlike the CSM-only list this
+    replaced, which meant an admin couldn't see themselves or their
+    fellow admins on the Users page at all).
+    POST /api/v1/auth/users/ — adds a member, in a role of the
+    admin's choosing (defaulting to CSM). Both require `manage_users`."""
+
+    permission_classes = [CanManageUsers]
+
+    def get_queryset(self):
+        return (
+            User.objects.filter(organisation=self.request.user.organisation)
+            .select_related("role")
+            .order_by("name")
+        )
 
     def get_serializer_class(self):
-        return UserSerializer if self.request.method == "GET" else CreateCSMSerializer
+        return UserSerializer if self.request.method == "GET" else CreateOrgUserSerializer
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data, context={"request": request})
@@ -200,11 +272,11 @@ class CSMListCreateView(generics.ListCreateAPIView):
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
-class CSMDetailView(generics.RetrieveUpdateAPIView):
-    """GET/PATCH /api/v1/auth/csms/<id>/ — org-admin-only. Scoped to CSMs in
-    the caller's own organisation — a 404, not a 403, for any other id (out
-    of this org, or not a CSM), so admins can't probe for other orgs' user
-    ids. Edits name/is_active/password — see EditCSMSerializer.
+class OrgUserDetailView(generics.RetrieveUpdateAPIView):
+    """GET/PATCH /api/v1/auth/users/<id>/ — requires `manage_users`.
+    Scoped to the caller's own organisation — a 404, not a 403, for any
+    other id, so nobody can probe for other orgs' user ids. Edits
+    name/is_active/role/password — see EditOrgUserSerializer.
 
     Deactivating (is_active: false) also blacklists every outstanding
     refresh token for that user — the JWTAuthentication is_active check
@@ -212,14 +284,14 @@ class CSMDetailView(generics.RetrieveUpdateAPIView):
     this is defense-in-depth for the refresh token specifically, not the
     only thing making deactivation effective."""
 
-    serializer_class = EditCSMSerializer
-    permission_classes = [IsOrgAdmin]
+    serializer_class = EditOrgUserSerializer
+    permission_classes = [CanManageUsers]
 
     def get_queryset(self):
-        return User.objects.filter(organisation=self.request.user.organisation, role=User.Role.CSM)
+        return User.objects.filter(organisation=self.request.user.organisation)
 
     def get_serializer_class(self):
-        return UserSerializer if self.request.method == "GET" else EditCSMSerializer
+        return UserSerializer if self.request.method == "GET" else EditOrgUserSerializer
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -236,9 +308,9 @@ class CSMDetailView(generics.RetrieveUpdateAPIView):
 
 
 class MembersListView(generics.ListAPIView):
-    """GET /api/v1/auth/members/ — every member (admin + CSMs) of the
-    caller's own organisation. Unlike /csms/, this is not admin-gated —
-    it exists so any authenticated user can populate an owner-picker
+    """GET /api/v1/auth/members/ — every member of the caller's own
+    organisation. Unlike /users/, this is not capability-gated — it
+    exists so any authenticated user can populate an owner-picker
     (e.g. assigning a customer to a CSM) without needing User Management
     access. Read-only; no pagination envelope, this list is expected to
     stay small."""

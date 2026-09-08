@@ -1,6 +1,6 @@
 from rest_framework import generics
 
-from services.accounts.permissions import IsOrgAdmin
+from services.accounts.permissions import CanManageIntegrations
 
 from .models import WebhookSubscription
 from .serializers import WebhookSubscriptionSerializer
@@ -14,7 +14,7 @@ class WebhookListCreateView(generics.ListCreateAPIView):
     reasoning `/auth/csms/` gates member management to admins only."""
 
     serializer_class = WebhookSubscriptionSerializer
-    permission_classes = [IsOrgAdmin]
+    permission_classes = [CanManageIntegrations]
     pagination_class = None
 
     def get_queryset(self):
@@ -26,12 +26,12 @@ class WebhookListCreateView(generics.ListCreateAPIView):
 
 class WebhookDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/webhooks/<id>/ — scoped to the caller's
-    own organisation, admin-only. PATCH is mainly for toggling
+    own organisation, requires `manage_integrations`. PATCH is mainly for toggling
     `is_active`; `url`/`event` can be changed too (re-validated the
     same way as on create)."""
 
     serializer_class = WebhookSubscriptionSerializer
-    permission_classes = [IsOrgAdmin]
+    permission_classes = [CanManageIntegrations]
 
     def get_queryset(self):
         return WebhookSubscription.objects.filter(organisation=self.request.user.organisation)

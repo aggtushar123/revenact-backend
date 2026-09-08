@@ -5,7 +5,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 
-from services.accounts.permissions import IsOrgAdmin
+from services.accounts.permissions import CanManageCustomObjects
 
 from .models import CustomFieldDefinition, CustomObjectDefinition, CustomObjectRecord
 from .serializers import (
@@ -19,9 +19,9 @@ class CustomObjectDefinitionListCreateView(generics.ListCreateAPIView):
     """GET/POST /api/v1/custom-objects/definitions/ — every custom
     object type the caller's own organisation has defined (GET, any
     authenticated org member — everyone needs to know what object tabs
-    exist to use them, same "read is open, write is admin-gated" shape
-    as OrganisationSettingsView), or defines a new one (POST, admin-only
-    — same `IsOrgAdmin` gate as member management, method-gated here
+    exist to use them, same "read is open, write is capability-gated"
+    shape as OrganisationSettingsView), or defines a new one (POST,
+    requiring the `manage_custom_objects` capability, method-gated here
     since GET stays open to everyone)."""
 
     serializer_class = CustomObjectDefinitionSerializer
@@ -29,7 +29,7 @@ class CustomObjectDefinitionListCreateView(generics.ListCreateAPIView):
 
     def get_permissions(self):
         if self.request.method == "POST":
-            return [IsAuthenticated(), IsOrgAdmin()]
+            return [IsAuthenticated(), CanManageCustomObjects()]
         return [IsAuthenticated()]
 
     def get_queryset(self):
@@ -40,7 +40,7 @@ class CustomObjectDefinitionListCreateView(generics.ListCreateAPIView):
 
 class CustomObjectDefinitionDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/custom-objects/definitions/<id>/ — same
-    read-open/write-admin-only split as the list view above. Deleting a
+    read-open/write-gated split as the list view above. Deleting a
     definition cascades to its own fields and every record ever created
     against it (see the model's own on_delete=CASCADE) — same
     "deleting the parent really does delete its children" behaviour as
@@ -51,7 +51,7 @@ class CustomObjectDefinitionDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_permissions(self):
         if self.request.method == "GET":
             return [IsAuthenticated()]
-        return [IsAuthenticated(), IsOrgAdmin()]
+        return [IsAuthenticated(), CanManageCustomObjects()]
 
     def get_queryset(self):
         return CustomObjectDefinition.objects.filter(organisation=self.request.user.organisation)
@@ -59,7 +59,7 @@ class CustomObjectDefinitionDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class CustomFieldDefinitionListCreateView(generics.ListCreateAPIView):
     """GET/POST /api/v1/custom-objects/definitions/<definition_id>/fields/
-    — admin-only POST (adds one field to that object type); GET is open
+    — POST requires `manage_custom_objects`; GET is open
     to any org member for parity with the definition endpoints, though
     the frontend normally reads fields nested on the definition itself
     rather than calling this separately.
@@ -73,7 +73,7 @@ class CustomFieldDefinitionListCreateView(generics.ListCreateAPIView):
 
     def get_permissions(self):
         if self.request.method == "POST":
-            return [IsAuthenticated(), IsOrgAdmin()]
+            return [IsAuthenticated(), CanManageCustomObjects()]
         return [IsAuthenticated()]
 
     def _object_definition(self):
@@ -95,10 +95,11 @@ class CustomFieldDefinitionListCreateView(generics.ListCreateAPIView):
 class CustomFieldDefinitionDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE
     /api/v1/custom-objects/definitions/<definition_id>/fields/<pk>/ —
-    admin-only, same reasoning as the field list view's own POST."""
+    requires `manage_custom_objects`, same reasoning as the field list
+    view's own POST."""
 
     serializer_class = CustomFieldDefinitionSerializer
-    permission_classes = [IsAuthenticated, IsOrgAdmin]
+    permission_classes = [IsAuthenticated, CanManageCustomObjects]
 
     def get_queryset(self):
         return CustomFieldDefinition.objects.filter(
@@ -125,10 +126,10 @@ class CustomObjectRecordListCreateView(generics.ListCreateAPIView):
     handful of records stays unpaginated, same reasoning as the
     per-object-definition views above) — see `pagination_class`.
 
-    Not admin-gated — adding/viewing a custom object *record* is like
+    Not capability-gated — adding/viewing a custom object *record* is like
     adding a Task or a Note, open to any org member (see this app's own
     plan/docstring on why only *defining* object/field types is
-    admin-only)."""
+    gated)."""
 
     serializer_class = CustomObjectRecordSerializer
     permission_classes = [IsAuthenticated]

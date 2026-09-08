@@ -311,33 +311,95 @@ access.
 **Response `200`** — a **plain array** (no pagination envelope; this list
 is expected to stay small), each entry the same shape as elsewhere.
 
-### `GET /api/v1/auth/csms/`, `POST /api/v1/auth/csms/`
+### `GET /api/v1/auth/capabilities/`
 
-Auth: **`IsAuthenticated` + org-admin only** (`accounts.permissions.IsOrgAdmin`).
-Scoped to the caller's own `organisation` — there's no way to see or add a
-CSM in a different org. `403` for an authenticated non-admin
-(`{"detail": "Only an organisation admin can do this."}`), `401` if
-unauthenticated.
+Auth: `IsAuthenticated`. The closed set of capabilities a Role can hold,
+as `[{key, label}]` — served rather than hardcoded in the frontend so the
+role editor's checkboxes can't drift from what's actually enforced. A
+static vocabulary, not org data.
 
-GET lists the org's CSMs (paginated, per the usual envelope) — **not**
-the admin themselves; this is "manage my members", not "list my org".
-Ordered by name.
+**Response `200`**
+```json
+[
+  { "key": "manage_users", "label": "Manage users & roles" },
+  { "key": "manage_org_settings", "label": "Manage organisation settings" },
+  { "key": "manage_custom_objects", "label": "Manage custom objects" },
+  { "key": "manage_integrations", "label": "Manage integrations & webhooks" },
+  { "key": "manage_fx_rates", "label": "Manage exchange rates" }
+]
+```
 
-POST: **Request** `{ "name": "Carl CSM", "email": "carl@acme.io", "password": "csmpassword1" }`
-**Response `201`** — the created user, same shape as the `user` object above
-(no tokens — the CSM logs in themselves via `/login/`).
+### `GET /api/v1/auth/roles/`, `POST /api/v1/auth/roles/`
 
-### `GET /api/v1/auth/csms/<id>/`, `PATCH /api/v1/auth/csms/<id>/`
+Auth: `IsAuthenticated` (GET) / `CanManageUsers` (POST). Scoped to the
+caller's own organisation. **Pagination off** — a handful of rows.
 
-Auth: same as above — org-admin only, scoped to the caller's own org.
-**`404`, not `403`, for an id outside that scope** (wrong org, or not a
-CSM) — an admin can't use the response to tell "doesn't exist" apart from
-"exists but isn't yours".
+GET lists the org's roles. POST takes `{ "name": "...", "permissions":
+[...] }`; `slug` is derived server-side (unique per org, suffixed on
+collision) and `is_system` is always `false` for anything a client
+creates. `400` for an unknown capability key, or for granting a
+capability the caller doesn't hold themselves (no privilege escalation —
+otherwise `manage_users` would silently be full admin).
 
-PATCH accepts any of `{ "name": "...", "is_active": true|false, "password": "..." }`,
+**Response `200`/`201`**
+```json
+[
+  {
+    "id": 1,
+    "name": "Admin",
+    "slug": "admin",
+    "permissions": ["manage_users", "manage_org_settings", "manage_custom_objects", "manage_integrations", "manage_fx_rates"],
+    "is_system": true,
+    "users_count": 1,
+    "created_at": "2026-09-07T10:00:00Z"
+  }
+]
+```
+
+### `GET/PATCH/DELETE /api/v1/auth/roles/<id>/`
+
+Auth: `IsAuthenticated` (GET) / `CanManageUsers` (PATCH/DELETE). `404`,
+not `403`, for a role in another organisation.
+
+`400` when the target `is_system` (the built-in Admin/CSM roles can't be
+renamed, re-permissioned, or deleted — Admin is the only thing standing
+between an org and locking itself out, and CSM is the default every new
+member falls back to), and on DELETE when the role is still assigned to
+somebody.
+
+### `GET /api/v1/auth/users/`, `POST /api/v1/auth/users/`
+
+Auth: **`CanManageUsers`** for both. Scoped to the caller's own
+`organisation` — there's no way to see or add a member in a different
+org. `403` without the capability, `401` if unauthenticated.
+
+GET lists **every** member of the org, admins included (paginated, per
+the usual envelope), ordered by name. This replaced a CSM-only list at
+`/auth/csms/`, which meant an admin couldn't see or manage themselves or
+any fellow admin on the Users page at all.
+
+POST: **Request** `{ "name": "Carl CSM", "email": "carl@acme.io", "password": "csmpassword1", "role_id": 4 }`
+— `role_id` is optional and defaults to the org's CSM role; it's
+validated against the caller's own org and against the same
+no-privilege-escalation rule as role creation.
+**Response `201`** — the created user, same shape as the `user` object
+above (no tokens — they log in themselves via `/login/`).
+
+### `GET /api/v1/auth/users/<id>/`, `PATCH /api/v1/auth/users/<id>/`
+
+Auth: same as above. **`404`, not `403`, for an id outside that scope** —
+the response can't be used to tell "doesn't exist" apart from "exists but
+isn't yours".
+
+PATCH accepts any of `{ "name": "...", "is_active": true|false, "role_id": 4, "password": "..." }`,
 all optional (partial update). `password` here is an **admin override** —
-no current-password check, since there's no other way for a CSM to
-recover a forgotten password yet (no self-serve reset flow).
+no current-password check, unlike the self-service change-password flow.
+
+`400` **when the change would leave the organisation with no active
+member holding `manage_users`** — applies to both a role change and a
+deactivation, since either can strip the last one. Without it an org
+could lock itself out entirely: nobody could add a member, mint a role,
+or restore anyone again.
 
 Setting `is_active: false` also blacklists every outstanding refresh
 token for that user. Their access token is rejected on its very next
@@ -345,15 +407,12 @@ request regardless (simplejwt's `JWTAuthentication` checks `is_active` on
 every request) — the blacklist call is defense-in-depth for the refresh
 token specifically, not what makes deactivation effective.
 
-**Response `200`** (both) — the (possibly updated) CSM, same shape as
+**Response `200`** (both) — the (possibly updated) member, same shape as
 elsewhere.
 
 Not built yet, and deliberately out of scope for this pass: removing a
-member outright (only deactivate), a second admin per org or promoting a
-CSM to admin, self-serve organisation signup validation beyond email
-uniqueness (e.g. org name collisions), email verification, a self-serve
-"forgot password" flow (admin password-reset is the only recovery path
-right now).
+member outright (only deactivate), reordering or renaming the built-in
+roles, per-object (row-level) permissions, and email verification.
 
 ---
 

@@ -8,7 +8,8 @@ from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from services.accounts.models import Organisation, User
+from services.accounts.capabilities import Capability
+from services.accounts.models import Organisation, Role, User
 
 
 class SignupTests(APITestCase):
@@ -34,7 +35,7 @@ class SignupTests(APITestCase):
 
         self.assertEqual(Organisation.objects.count(), 1)
         user = User.objects.get(email="alice@acme.io")
-        self.assertEqual(user.role, User.Role.ADMIN)
+        self.assertEqual(user.role.slug, User.Role.ADMIN)
         self.assertTrue(user.check_password("supersecret1"))
 
     def test_signup_rejects_duplicate_email(self):
@@ -152,8 +153,8 @@ class LogoutTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_205_RESET_CONTENT)
 
 
-class CSMListCreateTests(APITestCase):
-    url = "/api/v1/auth/csms/"
+class OrgUserListCreateTests(APITestCase):
+    url = "/api/v1/auth/users/"
 
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
@@ -201,17 +202,31 @@ class CSMListCreateTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_admin_can_list_own_org_csms(self):
+    def test_admin_can_list_every_member_including_themselves(self):
+        """This list used to be CSMs only, which meant an admin couldn't
+        see or manage themselves or any fellow admin on the Users page."""
+
         self.client.force_authenticate(self.admin)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        emails = [row["email"] for row in response.data["results"]]
-        self.assertEqual(emails, ["carl@acme.io"])
+        emails = sorted(row["email"] for row in response.data["results"])
+        self.assertEqual(emails, ["alice@acme.io", "carl@acme.io"])
         # is_active must be visible here — the User Management UI needs it
-        # to render each CSM's active/deactivated status.
-        self.assertTrue(response.data["results"][0]["is_active"])
+        # to render each member's active/deactivated status.
+        self.assertTrue(all(row["is_active"] for row in response.data["results"]))
 
-    def test_admin_does_not_see_csms_from_another_org(self):
+    def test_the_list_carries_each_members_real_role_and_capabilities(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(self.url)
+        by_email = {row["email"]: row for row in response.data["results"]}
+
+        self.assertEqual(by_email["alice@acme.io"]["role"], User.Role.ADMIN)
+        self.assertEqual(by_email["alice@acme.io"]["role_name"], "Admin")
+        self.assertIn(Capability.MANAGE_USERS, by_email["alice@acme.io"]["permissions"])
+        self.assertEqual(by_email["carl@acme.io"]["role"], User.Role.CSM)
+        self.assertEqual(by_email["carl@acme.io"]["permissions"], [])
+
+    def test_admin_does_not_see_members_from_another_org(self):
         other_org = Organisation.objects.create(name="Other Org")
         other_admin = User.objects.create_user(
             email="other@other.io",
@@ -222,9 +237,10 @@ class CSMListCreateTests(APITestCase):
         )
         self.client.force_authenticate(other_admin)
         response = self.client.get(self.url)
-        self.assertEqual(response.data["count"], 0)
+        emails = [row["email"] for row in response.data["results"]]
+        self.assertEqual(emails, ["other@other.io"])
 
-    def test_csm_cannot_list_csms(self):
+    def test_csm_cannot_list_members(self):
         self.client.force_authenticate(self.csm)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -268,7 +284,7 @@ class MeViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, "alice@acme.io")
-        self.assertEqual(self.user.role, User.Role.ADMIN)
+        self.assertEqual(self.user.role.slug, User.Role.ADMIN)
 
 
 class OrganisationSettingsTests(APITestCase):
@@ -438,7 +454,7 @@ class ChangePasswordTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
-class CSMDetailTests(APITestCase):
+class OrgUserDetailTests(APITestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
         self.admin = User.objects.create_user(
@@ -455,7 +471,7 @@ class CSMDetailTests(APITestCase):
             organisation=self.org,
             role=User.Role.CSM,
         )
-        self.url = f"/api/v1/auth/csms/{self.csm.id}/"
+        self.url = f"/api/v1/auth/users/{self.csm.id}/"
 
     def test_admin_can_edit_csm_name(self):
         self.client.force_authenticate(self.admin)
@@ -507,7 +523,7 @@ class CSMDetailTests(APITestCase):
         )
         self.client.force_authenticate(self.csm)
         response = self.client.patch(
-            f"/api/v1/auth/csms/{other_csm.id}/", {"name": "Hacked"}, format="json"
+            f"/api/v1/auth/users/{other_csm.id}/", {"name": "Hacked"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
@@ -696,3 +712,373 @@ class ResetPasswordTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("oldpassword1"))
+
+
+class CapabilityListTests(APITestCase):
+    url = "/api/v1/auth/capabilities/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+
+    def test_unauthenticated_cannot_list(self):
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_any_member_sees_the_real_capability_vocabulary(self):
+        """Served rather than hardcoded in the frontend so the role
+        editor's checkboxes can't drift from what's enforced."""
+
+        self.client.force_authenticate(self.csm)
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(sorted(row["key"] for row in response.data), sorted(Capability.values))
+        self.assertTrue(all(row["label"] for row in response.data))
+
+
+class RoleTests(APITestCase):
+    url = "/api/v1/auth/roles/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+
+    def _detail(self, role):
+        return f"/api/v1/auth/roles/{role.id}/"
+
+    def test_every_org_starts_with_its_two_system_roles(self):
+        self.client.force_authenticate(self.csm)
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        by_slug = {row["slug"]: row for row in response.data}
+        self.assertEqual(sorted(by_slug), ["admin", "csm"])
+        self.assertTrue(all(row["is_system"] for row in response.data))
+        self.assertEqual(sorted(by_slug["admin"]["permissions"]), sorted(Capability.values))
+        self.assertEqual(by_slug["csm"]["permissions"], [])
+
+    def test_roles_are_scoped_to_the_callers_own_organisation(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_org.ensure_system_roles()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(len(response.data), 2)
+        self.assertTrue(
+            all(Role.objects.get(pk=r["id"]).organisation_id == self.org.id for r in response.data)
+        )
+
+    def test_a_csm_cannot_create_a_role(self):
+        self.client.force_authenticate(self.csm)
+        response = self.client.post(
+            self.url, {"name": "Support Lead", "permissions": []}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_someone_with_manage_users_can_create_a_role_with_a_derived_slug(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            self.url,
+            {"name": "Support Lead", "permissions": [Capability.MANAGE_INTEGRATIONS]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["slug"], "support-lead")
+        self.assertFalse(response.data["is_system"])
+        self.assertEqual(response.data["permissions"], [Capability.MANAGE_INTEGRATIONS])
+        self.assertEqual(response.data["users_count"], 0)
+
+    def test_colliding_role_names_get_a_real_unique_slug(self):
+        self.client.force_authenticate(self.admin)
+        self.client.post(self.url, {"name": "Support Lead", "permissions": []}, format="json")
+        second = self.client.post(
+            self.url, {"name": "Support Lead", "permissions": []}, format="json"
+        )
+        self.assertEqual(second.data["slug"], "support-lead-2")
+
+    def test_unknown_capabilities_are_rejected(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            self.url, {"name": "Bogus", "permissions": ["make_coffee"]}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_you_cannot_grant_a_capability_you_do_not_hold_yourself(self):
+        """Otherwise `manage_users` would silently be full admin: mint a
+        role holding everything, assign it to yourself, done."""
+
+        delegated = Role.objects.create(
+            organisation=self.org,
+            name="User Manager",
+            slug="user-manager",
+            permissions=[Capability.MANAGE_USERS],
+        )
+        self.csm.role = delegated
+        self.csm.save(update_fields=["role"])
+        self.client.force_authenticate(self.csm)
+
+        response = self.client.post(
+            self.url,
+            {"name": "Sneaky", "permissions": [Capability.MANAGE_FX_RATES]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Role.objects.filter(name="Sneaky").exists())
+
+    def test_system_roles_cannot_be_edited_or_deleted(self):
+        admin_role = self.org.roles.get(slug=User.Role.ADMIN)
+        self.client.force_authenticate(self.admin)
+
+        patched = self.client.patch(self._detail(admin_role), {"permissions": []}, format="json")
+        deleted = self.client.delete(self._detail(admin_role))
+
+        self.assertEqual(patched.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(deleted.status_code, status.HTTP_400_BAD_REQUEST)
+        admin_role.refresh_from_db()
+        self.assertEqual(sorted(admin_role.permissions), sorted(Capability.values))
+
+    def test_a_custom_role_can_be_edited_and_deleted(self):
+        role = Role.objects.create(
+            organisation=self.org, name="Support Lead", slug="support-lead", permissions=[]
+        )
+        self.client.force_authenticate(self.admin)
+
+        patched = self.client.patch(
+            self._detail(role),
+            {"permissions": [Capability.MANAGE_INTEGRATIONS]},
+            format="json",
+        )
+        self.assertEqual(patched.status_code, status.HTTP_200_OK)
+        self.assertEqual(patched.data["permissions"], [Capability.MANAGE_INTEGRATIONS])
+
+        self.assertEqual(
+            self.client.delete(self._detail(role)).status_code, status.HTTP_204_NO_CONTENT
+        )
+
+    def test_a_role_still_assigned_to_someone_cannot_be_deleted(self):
+        role = Role.objects.create(
+            organisation=self.org, name="Support Lead", slug="support-lead", permissions=[]
+        )
+        self.csm.role = role
+        self.csm.save(update_fields=["role"])
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(self._detail(role))
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Role.objects.filter(pk=role.pk).exists())
+
+    def test_404_for_a_role_in_another_organisation(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_role = other_org.ensure_system_roles()[User.Role.ADMIN]
+        self.client.force_authenticate(self.admin)
+
+        self.assertEqual(
+            self.client.get(self._detail(other_role)).status_code, status.HTTP_404_NOT_FOUND
+        )
+
+
+class CapabilityEnforcementTests(APITestCase):
+    """One test per capability, proving a role holding *only* that
+    capability reaches exactly its own endpoints and nothing else.
+
+    This is what makes the roles real rather than decorative — without
+    it, a checkbox in the UI could easily grant nothing at all."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.org.ensure_system_roles()
+
+    def _user_with(self, *capabilities, email="scoped@acme.io"):
+        role = Role.objects.create(
+            organisation=self.org,
+            name="Scoped",
+            slug=f"scoped-{email}",
+            permissions=list(capabilities),
+        )
+        user = User.objects.create_user(
+            email=email,
+            password="supersecret1",
+            name="Scoped",
+            organisation=self.org,
+            role=role,
+        )
+        self.client.force_authenticate(user)
+        return user
+
+    def test_manage_users_reaches_only_user_and_role_management(self):
+        self._user_with(Capability.MANAGE_USERS)
+
+        self.assertEqual(self.client.get("/api/v1/auth/users/").status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/auth/roles/", {"name": "X", "permissions": []}, format="json"
+            ).status_code,
+            status.HTTP_201_CREATED,
+        )
+        self.assertEqual(
+            self.client.get("/api/v1/webhooks/").status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.get("/api/v1/fx-rates/").status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_manage_integrations_reaches_only_webhooks(self):
+        self._user_with(Capability.MANAGE_INTEGRATIONS)
+
+        self.assertEqual(self.client.get("/api/v1/webhooks/").status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.get("/api/v1/auth/users/").status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.get("/api/v1/fx-rates/").status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_manage_fx_rates_reaches_only_fx_rates(self):
+        self._user_with(Capability.MANAGE_FX_RATES)
+
+        self.assertEqual(self.client.get("/api/v1/fx-rates/").status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.get("/api/v1/webhooks/").status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_manage_org_settings_reaches_only_the_org_settings_patch(self):
+        self._user_with(Capability.MANAGE_ORG_SETTINGS)
+
+        self.assertEqual(
+            self.client.patch(
+                "/api/v1/auth/organisation/", {"currency": "EUR"}, format="json"
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.get("/api/v1/webhooks/").status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_manage_custom_objects_reaches_only_custom_object_config(self):
+        self._user_with(Capability.MANAGE_CUSTOM_OBJECTS)
+
+        created = self.client.post(
+            "/api/v1/custom-objects/definitions/",
+            {"name": "Line Item", "applies_to_customer": True},
+            format="json",
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            self.client.get("/api/v1/auth/users/").status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_a_role_with_no_capabilities_reaches_none_of_them(self):
+        self._user_with()
+
+        for path in ("/api/v1/auth/users/", "/api/v1/webhooks/", "/api/v1/fx-rates/"):
+            self.assertEqual(self.client.get(path).status_code, status.HTTP_403_FORBIDDEN, path)
+        self.assertEqual(
+            self.client.patch(
+                "/api/v1/auth/organisation/", {"currency": "EUR"}, format="json"
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        # …but everyday work is still open to them, exactly as before.
+        self.assertEqual(self.client.get("/api/v1/customers/").status_code, status.HTTP_200_OK)
+
+
+class LastUserManagerGuardrailTests(APITestCase):
+    """An organisation must always keep at least one active person who
+    can manage users — otherwise nobody could ever add a member, mint a
+    role, or restore anyone again."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.client.force_authenticate(self.admin)
+
+    def _url(self, user):
+        return f"/api/v1/auth/users/{user.id}/"
+
+    def test_the_only_user_manager_cannot_be_demoted(self):
+        csm_role = self.org.roles.get(slug=User.Role.CSM)
+        response = self.client.patch(self._url(self.admin), {"role_id": csm_role.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.has_capability(Capability.MANAGE_USERS))
+
+    def test_the_only_user_manager_cannot_be_deactivated(self):
+        response = self.client.patch(self._url(self.admin), {"is_active": False}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_active)
+
+    def test_demotion_is_allowed_once_somebody_else_can_manage_users(self):
+        self.csm.role = self.org.roles.get(slug=User.Role.ADMIN)
+        self.csm.save(update_fields=["role"])
+        csm_role = self.org.roles.get(slug=User.Role.CSM)
+
+        response = self.client.patch(self._url(self.admin), {"role_id": csm_role.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.admin.refresh_from_db()
+        self.assertFalse(self.admin.has_capability(Capability.MANAGE_USERS))
+
+    def test_an_admin_can_change_someone_elses_role(self):
+        support_lead = Role.objects.create(
+            organisation=self.org,
+            name="Support Lead",
+            slug="support-lead",
+            permissions=[Capability.MANAGE_INTEGRATIONS],
+        )
+
+        response = self.client.patch(
+            self._url(self.csm), {"role_id": support_lead.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["role"], "support-lead")
+        self.csm.refresh_from_db()
+        self.assertTrue(self.csm.has_capability(Capability.MANAGE_INTEGRATIONS))
+        self.assertFalse(self.csm.has_capability(Capability.MANAGE_USERS))
+
+    def test_cannot_move_someone_onto_another_organisations_role(self):
+        other_org = Organisation.objects.create(name="Other Org")
+        other_role = other_org.ensure_system_roles()[User.Role.CSM]
+
+        response = self.client.patch(self._url(self.csm), {"role_id": other_role.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

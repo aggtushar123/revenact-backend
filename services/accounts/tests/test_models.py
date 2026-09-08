@@ -2,6 +2,7 @@
 
 from django.test import TestCase
 
+from services.accounts.capabilities import Capability
 from services.accounts.models import Organisation, User
 
 
@@ -35,16 +36,33 @@ class UserManagerTests(TestCase):
         self.assertEqual(user.email, "Alice@acme.io")
         self.assertNotEqual(user.password, "supersecret1")
         self.assertTrue(user.check_password("supersecret1"))
-        self.assertEqual(user.role, User.Role.CSM)  # default
+        self.assertEqual(user.role.slug, User.Role.CSM)  # default
 
-    def test_create_superuser_has_no_organisation_and_is_admin_role(self):
+    def test_create_superuser_has_no_organisation_and_no_role(self):
+        """Platform staff belong to no tenant, so there's no org-scoped
+        Role to hold — but has_capability still grants them everything,
+        the same way Django's own permission checks do."""
+
         superuser = User.objects.create_superuser(email="staff@revenact.io", password="x1234567")
         self.assertIsNone(superuser.organisation)
         self.assertTrue(superuser.is_staff)
         self.assertTrue(superuser.is_superuser)
-        self.assertEqual(superuser.role, User.Role.ADMIN)
+        self.assertIsNone(superuser.role)
+        self.assertTrue(superuser.has_capability(Capability.MANAGE_USERS))
 
-    def test_is_org_admin_property(self):
+    def test_a_role_slug_string_resolves_to_that_organisations_real_role(self):
+        """`create_user(role="admin")` still works now that role is a
+        ForeignKey — the slug resolves to the org's own Admin row."""
+
+        org = Organisation.objects.create(name="Acme Inc")
+        admin = User.objects.create_user(
+            email="a@acme.io", password="x1234567", name="A", organisation=org, role=User.Role.ADMIN
+        )
+        self.assertEqual(admin.role.organisation, org)
+        self.assertEqual(admin.role.slug, User.Role.ADMIN)
+        self.assertTrue(admin.role.is_system)
+
+    def test_has_capability_reflects_the_users_own_role(self):
         org = Organisation.objects.create(name="Acme Inc")
         admin = User.objects.create_user(
             email="a@acme.io", password="x1234567", name="A", organisation=org, role=User.Role.ADMIN
@@ -52,5 +70,13 @@ class UserManagerTests(TestCase):
         csm = User.objects.create_user(
             email="c@acme.io", password="x1234567", name="C", organisation=org, role=User.Role.CSM
         )
-        self.assertTrue(admin.is_org_admin)
-        self.assertFalse(csm.is_org_admin)
+        for capability in Capability.values:
+            self.assertTrue(admin.has_capability(capability))
+            self.assertFalse(csm.has_capability(capability))
+
+    def test_ensure_system_roles_is_idempotent(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        first = org.ensure_system_roles()
+        second = org.ensure_system_roles()
+        self.assertEqual(org.roles.count(), 2)
+        self.assertEqual(first[User.Role.ADMIN].pk, second[User.Role.ADMIN].pk)

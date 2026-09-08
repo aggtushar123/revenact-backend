@@ -2,12 +2,14 @@ from django.contrib.auth.tokens import default_token_generator
 from django.db import transaction
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
+from django.utils.text import slugify
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from services.email import send_password_reset_email
 
-from .models import Organisation, User
+from .capabilities import ALL_CAPABILITIES, Capability
+from .models import Organisation, Role, User
 
 
 class OrganisationSerializer(serializers.ModelSerializer):
@@ -43,18 +45,46 @@ class UserSerializer(serializers.ModelSerializer):
     """Read-only representation embedded in signup/login responses — shaped
     to match the frontend's `User` type in authSlice.ts (email, name,
     avatar), plus organisation + role for tenant-scoping the UI.
-    `is_active` matters for the User Management list (a deactivated CSM
-    still shows up there, just greyed out/toggleable — it isn't a delete)."""
+    `is_active` matters for the User Management list (a deactivated
+    member still shows up there, just greyed out/toggleable — it isn't a
+    delete).
+
+    `role` stays a plain **slug string** even though it's a ForeignKey
+    now, so the two built-in slugs read exactly as they did when this
+    was a CharField. `permissions` is the flat capability list the
+    frontend actually gates on (see useCapability in the frontend's
+    hooks.ts) — a role's name is for display, its capabilities are what
+    mean something."""
 
     avatar = serializers.SerializerMethodField()
     organisation = OrganisationSerializer(read_only=True)
+    role = serializers.SlugRelatedField(slug_field="slug", read_only=True)
+    role_id = serializers.PrimaryKeyRelatedField(source="role", read_only=True)
+    role_name = serializers.CharField(source="role.name", read_only=True, default="")
+    permissions = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "email", "name", "avatar", "role", "organisation", "is_active"]
+        fields = [
+            "id",
+            "email",
+            "name",
+            "avatar",
+            "role",
+            "role_id",
+            "role_name",
+            "permissions",
+            "organisation",
+            "is_active",
+        ]
 
     def get_avatar(self, obj):
         return f"https://i.pravatar.cc/150?u={obj.email}"
+
+    def get_permissions(self, obj) -> list:
+        if obj.is_superuser:
+            return list(ALL_CAPABILITIES)
+        return list(obj.role.permissions or []) if obj.role_id else []
 
 
 class SignupSerializer(serializers.Serializer):
@@ -101,14 +131,85 @@ class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
 
 
-class CreateCSMSerializer(serializers.Serializer):
-    """Org-admin-only: adds a Customer Success Manager to the admin's own
-    organisation. The admin sets the CSM's initial password directly (no
-    email invite flow yet)."""
+def _validate_grantable(permissions, actor):
+    """No privilege escalation: you can only put capabilities into a role
+    that you already hold yourself.
+
+    Without this, anyone with `manage_users` — a capability an admin
+    might reasonably delegate to an office manager — could mint a role
+    holding every other capability and assign it to themselves, making
+    `manage_users` silently equivalent to full admin."""
+
+    missing = [c for c in permissions if not actor.has_capability(c)]
+    if missing:
+        raise serializers.ValidationError(
+            {"permissions": f"You can't grant capabilities you don't have yourself: {missing}."}
+        )
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    """Read/write for the Roles tab of the Users page. `slug`,
+    `is_system` and `organisation` are all server-derived — a client
+    names a role and picks its capabilities, nothing else."""
+
+    users_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Role
+        fields = ["id", "name", "slug", "permissions", "is_system", "users_count", "created_at"]
+        read_only_fields = ["slug", "is_system", "created_at"]
+
+    def get_users_count(self, obj) -> int:
+        return obj.users.count()
+
+    def validate_permissions(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Expected a list of capability keys.")
+        unknown = [c for c in value if c not in Capability.values]
+        if unknown:
+            raise serializers.ValidationError(f"Unknown capabilities: {unknown}.")
+        _validate_grantable(value, self.context["request"].user)
+        return list(dict.fromkeys(value))
+
+    def validate(self, attrs):
+        # A system role's whole point is being the fixed floor (CSM) and
+        # ceiling (Admin) of an org's permissions — editing either would
+        # let an org quietly redefine what "Admin" means and lock itself
+        # out. New roles are the supported way to express anything else.
+        if self.instance and self.instance.is_system:
+            raise serializers.ValidationError("The built-in Admin and CSM roles can't be changed.")
+        return attrs
+
+    def create(self, validated_data):
+        organisation = self.context["request"].user.organisation
+        validated_data["organisation"] = organisation
+        validated_data["slug"] = _unique_role_slug(validated_data["name"], organisation)
+        return super().create(validated_data)
+
+
+def _unique_role_slug(name, organisation):
+    """A real, collision-free slug within one organisation — same
+    derive-then-suffix shape as Organisation._generate_unique_slug and
+    custom_objects' own `_unique_slug`."""
+
+    base = slugify(name) or "role"
+    slug = base
+    n = 1
+    while organisation.roles.filter(slug=slug).exists():
+        n += 1
+        slug = f"{base}-{n}"
+    return slug
+
+
+class CreateOrgUserSerializer(serializers.Serializer):
+    """Adds a member to the caller's own organisation, in a role of the
+    caller's choosing (defaulting to CSM when `role_id` is omitted). The
+    admin sets the initial password directly (no email invite flow yet)."""
 
     name = serializers.CharField(max_length=255)
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=8)
+    role_id = serializers.IntegerField(required=False)
 
     def validate_email(self, value):
         value = value.lower()
@@ -116,14 +217,28 @@ class CreateCSMSerializer(serializers.Serializer):
             raise serializers.ValidationError("A user with this email already exists.")
         return value
 
+    def validate_role_id(self, value):
+        organisation = self.context["request"].user.organisation
+        role = organisation.roles.filter(pk=value).first()
+        if role is None:
+            raise serializers.ValidationError("That role isn't in your own organisation.")
+        _validate_grantable(role.permissions or [], self.context["request"].user)
+        return value
+
     def create(self, validated_data):
         organisation = self.context["request"].user.organisation
+        role_id = validated_data.get("role_id")
+        role = (
+            organisation.roles.get(pk=role_id)
+            if role_id
+            else organisation.ensure_system_roles()[User.Role.CSM]
+        )
         return User.objects.create_user(
             email=validated_data["email"],
             password=validated_data["password"],
             name=validated_data["name"],
             organisation=organisation,
-            role=User.Role.CSM,
+            role=role,
         )
 
 
@@ -217,18 +332,60 @@ class ResetPasswordSerializer(serializers.Serializer):
         return user
 
 
-class EditCSMSerializer(serializers.ModelSerializer):
-    """Org-admin-only: edits a CSM in the admin's own organisation. `password`
-    is an admin override (no current-password check, unlike self-service
-    ChangePasswordSerializer) — a manual reset an admin can still reach for
-    even though CSMs now also have the self-serve ForgotPasswordSerializer
-    flow (e.g. if their email account itself is inaccessible)."""
+class EditOrgUserSerializer(serializers.ModelSerializer):
+    """Edits a member of the caller's own organisation — name, active
+    state, role, or password. `password` is an admin override (no
+    current-password check, unlike self-service ChangePasswordSerializer)
+    — a manual reset an admin can still reach for even though members
+    also have the self-serve ForgotPasswordSerializer flow (e.g. if
+    their email account itself is inaccessible).
+
+    `role_id` is what makes role *assignment* real; it's validated
+    against the caller's own organisation so an admin can't move
+    somebody onto another tenant's role."""
 
     password = serializers.CharField(write_only=True, required=False, min_length=8)
+    role_id = serializers.PrimaryKeyRelatedField(
+        source="role", queryset=Role.objects.all(), required=False
+    )
 
     class Meta:
         model = User
-        fields = ["name", "is_active", "password"]
+        fields = ["name", "is_active", "role_id", "password"]
+
+    def validate_role_id(self, role):
+        actor = self.context["request"].user
+        if role.organisation_id != actor.organisation_id:
+            raise serializers.ValidationError("That role isn't in your own organisation.")
+        _validate_grantable(role.permissions or [], actor)
+        return role
+
+    def validate(self, attrs):
+        """The no-lockout rule: an organisation must always keep at least
+        one *active* person who can manage users.
+
+        Both a role change and a deactivation can violate it, so it's
+        checked here rather than in either field's own validator —
+        strip that last person's access and nobody could ever add a
+        member, mint a role, or restore anyone again."""
+
+        new_role = attrs.get("role", self.instance.role)
+        will_be_active = attrs.get("is_active", self.instance.is_active)
+        still_manages_users = will_be_active and Capability.MANAGE_USERS in (
+            new_role.permissions or [] if new_role else []
+        )
+        if not still_manages_users and self._is_last_user_manager():
+            raise serializers.ValidationError(
+                "This is the only person who can manage users — give someone else "
+                "that permission first."
+            )
+        return attrs
+
+    def _is_last_user_manager(self):
+        others = User.objects.filter(
+            organisation_id=self.instance.organisation_id, is_active=True
+        ).exclude(pk=self.instance.pk)
+        return not any(u.has_capability(Capability.MANAGE_USERS) for u in others)
 
     def update(self, instance, validated_data):
         password = validated_data.pop("password", None)

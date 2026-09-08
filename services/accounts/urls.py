@@ -16,6 +16,9 @@ urlpatterns = [
     path("organisation/", views.OrganisationSettingsView.as_view(), name="organisation-settings"),
     path("me/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
     path("members/", views.MembersListView.as_view(), name="members-list"),
-    path("csms/", views.CSMListCreateView.as_view(), name="csm-list-create"),
-    path("csms/<int:pk>/", views.CSMDetailView.as_view(), name="csm-detail"),
+    path("capabilities/", views.CapabilityListView.as_view(), name="capability-list"),
+    path("roles/", views.RoleListCreateView.as_view(), name="role-list-create"),
+    path("roles/<int:pk>/", views.RoleDetailView.as_view(), name="role-detail"),
+    path("users/", views.OrgUserListCreateView.as_view(), name="org-user-list-create"),
+    path("users/<int:pk>/", views.OrgUserDetailView.as_view(), name="org-user-detail"),
 ]
