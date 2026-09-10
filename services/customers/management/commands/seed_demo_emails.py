@@ -132,8 +132,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Re: Onboarding Milestone Reached",
         "sender_name": "Natalie Reyes",
         "recipient_name": "Edgar Holmes",
-        "body": "Great news — Arista hit their first onboarding milestone "
-        "ahead of schedule.",
+        "body": "Great news — Arista hit their first onboarding milestone ahead of schedule.",
         "sent_at": "2026-05-03T09:15:00Z",
         "links": 0,
         "watchers": 1,
@@ -144,8 +143,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Escalation: Booking API Downtime",
         "sender_name": "Edgar Holmes",
         "recipient_name": "Support Team",
-        "body": "Booking API returned 500s for ~20 minutes this morning — "
-        "RCA attached.",
+        "body": "Booking API returned 500s for ~20 minutes this morning — RCA attached.",
         "sent_at": "2026-07-19T08:45:00Z",
         "links": 2,
         "watchers": 6,
@@ -167,8 +165,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Welcome to Revenact — Onboarding Kickoff",
         "sender_name": "Edgar Holmes",
         "recipient_name": "Notion Team",
-        "body": "Excited to get Notion Labs onboarded — kickoff call scheduled "
-        "for next week.",
+        "body": "Excited to get Notion Labs onboarded — kickoff call scheduled for next week.",
         "sent_at": "2026-08-06T11:00:00Z",
         "links": 0,
         "watchers": 3,
@@ -179,8 +176,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Re: Feature Request — Workspace Analytics",
         "sender_name": "Natalie Reyes",
         "recipient_name": "Product Team",
-        "body": "Notion Labs asked about workspace-level analytics — logging "
-        "as a feature request.",
+        "body": "Notion Labs asked about workspace-level analytics — logging as a feature request.",
         "sent_at": "2026-07-23T15:20:00Z",
         "links": 1,
         "watchers": 1,
@@ -191,8 +187,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Executive Alignment Recap",
         "sender_name": "Edgar Holmes",
         "recipient_name": "Sarah Chen",
-        "body": "Great session with Oracle's VP of Ops — aligned on Q3 "
-        "priorities.",
+        "body": "Great session with Oracle's VP of Ops — aligned on Q3 priorities.",
         "sent_at": "2026-06-29T16:00:00Z",
         "links": 1,
         "watchers": 4,
@@ -214,8 +209,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Success Plan Created — H2 Goals",
         "sender_name": "Edgar Holmes",
         "recipient_name": "Natalie Reyes",
-        "body": "Drafted the H2 success plan for Salesforce — 3 key expansion "
-        "metrics.",
+        "body": "Drafted the H2 success plan for Salesforce — 3 key expansion metrics.",
         "sent_at": "2026-07-02T10:30:00Z",
         "links": 2,
         "watchers": 3,
@@ -237,8 +231,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Renewal Proposal Submitted",
         "sender_name": "Edgar Holmes",
         "recipient_name": "Natalie Reyes",
-        "body": "Renewal proposal sent to Shopify's procurement team — "
-        "awaiting sign-off.",
+        "body": "Renewal proposal sent to Shopify's procurement team — awaiting sign-off.",
         "sent_at": "2026-08-13T09:00:00Z",
         "links": 1,
         "watchers": 5,
@@ -249,8 +242,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Re: Enablement Session Follow-Up",
         "sender_name": "Natalie Reyes",
         "recipient_name": "Support Team",
-        "body": "Sent the recorded enablement session and slide deck to the "
-        "Shopify team.",
+        "body": "Sent the recorded enablement session and slide deck to the Shopify team.",
         "sent_at": "2026-07-01T12:00:00Z",
         "links": 0,
         "watchers": 1,
@@ -261,8 +253,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Value Reinforcement — Quarterly ROI Summary",
         "sender_name": "Edgar Holmes",
         "recipient_name": "Sarah Chen",
-        "body": "Shared the ROI summary highlighting time saved across "
-        "Spotify's CS team.",
+        "body": "Shared the ROI summary highlighting time saved across Spotify's CS team.",
         "sent_at": "2026-07-10T11:15:00Z",
         "links": 1,
         "watchers": 2,
@@ -295,8 +286,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Escalation: Payment Webhook Delays",
         "sender_name": "Edgar Holmes",
         "recipient_name": "Engineering",
-        "body": "Webhook delivery delays reported by Stripe — escalating to "
-        "engineering.",
+        "body": "Webhook delivery delays reported by Stripe — escalating to engineering.",
         "sent_at": "2026-06-15T09:00:00Z",
         "links": 1,
         "watchers": 7,
@@ -351,8 +341,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Escalation: Billing Discrepancy",
         "sender_name": "Edgar Holmes",
         "recipient_name": "Support Team",
-        "body": "WeWork flagged a billing discrepancy — investigating with "
-        "finance.",
+        "body": "WeWork flagged a billing discrepancy — investigating with finance.",
         "sent_at": "2026-07-03T08:00:00Z",
         "links": 2,
         "watchers": 5,
@@ -363,8 +352,7 @@ DEMO_CUSTOMER_EMAILS = [
         "subject": "Health Check Review Notes",
         "sender_name": "Sarah Chen",
         "recipient_name": "Edgar Holmes",
-        "body": "WeWork's health check shows moderate risk — churn signals "
-        "present.",
+        "body": "WeWork's health check shows moderate risk — churn signals present.",
         "sent_at": "2026-05-09T11:20:00Z",
         "links": 1,
         "watchers": 2,
@@ -846,11 +834,15 @@ class Command(BaseCommand):
 
         for row in DEMO_ACCOUNT_EMAILS:
             try:
-                account = Account.objects.filter(
-                    customers__organisation=org,
-                    customers__name=row["customer_name"],
-                    name=row["account_name"],
-                ).distinct().get()
+                account = (
+                    Account.objects.filter(
+                        customers__organisation=org,
+                        customers__name=row["customer_name"],
+                        name=row["account_name"],
+                    )
+                    .distinct()
+                    .get()
+                )
             except Account.DoesNotExist:
                 self.stderr.write(
                     f"  skipping email — no account {row['account_name']!r} under "
@@ -877,7 +869,6 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"{org.name}: created {created}, updated {updated}, "
-                f"skipped {skipped} email(s)."
+                f"{org.name}: created {created}, updated {updated}, skipped {skipped} email(s)."
             )
         )

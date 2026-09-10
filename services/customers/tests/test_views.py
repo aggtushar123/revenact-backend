@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
+from services.connectors.models import Connector
 from services.customers.models import (
     Account,
     Activity,
@@ -5163,3 +5164,225 @@ class OwnershipVisibilityTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Account.objects.get(name="Mine EMEA").owner, self.csm)
+
+
+class TicketStatsTests(APITestCase):
+    """Every bucket is asserted against a known fixture rather than
+    "some number came back" — an aggregation that silently groups
+    wrongly still returns 200 with plausible-looking rows."""
+
+    url = "/api/v1/tickets/stats/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.other = User.objects.create_user(
+            email="dana@acme.io",
+            password="supersecret1",
+            name="Dana",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.mine = Customer.objects.create(organisation=self.org, name="Mine", owner=self.csm)
+        self.theirs = Customer.objects.create(
+            organisation=self.org, name="Theirs", owner=self.other
+        )
+        self.zendesk = Connector.objects.create(
+            organisation=self.org, provider=Connector.Provider.ZENDESK, name="Zendesk"
+        )
+        self.client.force_authenticate(self.csm)
+
+    def _ticket(self, n, **overrides):
+        return Ticket.objects.create(
+            **{
+                "customer": self.mine,
+                "ticket_number": f"TKT-{n}",
+                "title": "Something broke",
+                "assignee_name": "Support Team",
+                "status": Ticket.Status.OPEN,
+                "priority": Ticket.Priority.HIGH,
+                "opened_at": "2026-03-01",
+                **overrides,
+            }
+        )
+
+    def test_unauthenticated_is_rejected(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    # ── the six aggregations ─────────────────────────────────────────
+
+    def test_priority_and_status_buckets_sum_to_the_total(self):
+        """The guard against Django folding Ticket.Meta.ordering into
+        the GROUP BY, which makes every bucket count exactly 1 while
+        still returning a well-formed 200."""
+        for n in range(5):
+            self._ticket(n, priority=Ticket.Priority.LOW)
+        self._ticket(99, priority=Ticket.Priority.CRITICAL)
+
+        data = self.client.get(self.url).data
+
+        by_priority = {r["name"]: r["value"] for r in data["priority"]}
+        self.assertEqual(by_priority["Low"], 5)
+        self.assertEqual(by_priority["Critical"], 1)
+        self.assertEqual(sum(r["value"] for r in data["priority"]), data["kpis"]["total"])
+        self.assertEqual(sum(r["value"] for r in data["status"]), data["kpis"]["total"])
+
+    def test_every_bucket_is_present_even_when_empty(self):
+        self._ticket(1, priority=Ticket.Priority.LOW)
+
+        data = self.client.get(self.url).data
+
+        self.assertEqual(
+            {r["name"] for r in data["priority"]}, {"Critical", "High", "Medium", "Low"}
+        )
+        self.assertEqual(
+            {r["name"] for r in data["status"]},
+            {"Open", "In Progress", "On Hold", "Resolved", "Closed"},
+        )
+
+    def test_origin_groups_by_connector_and_names_unattached_tickets(self):
+        self._ticket(1, connector=self.zendesk)
+        self._ticket(2, connector=self.zendesk)
+        self._ticket(3)
+
+        origin = {r["name"]: r["value"] for r in self.client.get(self.url).data["origin"]}
+
+        self.assertEqual(origin["Zendesk"], 2)
+        self.assertEqual(origin["Revenact"], 1)
+
+    def test_assignees_carry_display_keys_and_a_precomputed_total(self):
+        self._ticket(1, assignee_name="Ada", status=Ticket.Status.RESOLVED)
+        self._ticket(2, assignee_name="Ada", status=Ticket.Status.OPEN)
+        self._ticket(3, assignee_name="Grace", status=Ticket.Status.ON_HOLD)
+
+        rows = {r["name"]: r for r in self.client.get(self.url).data["assignees"]}
+
+        self.assertEqual(rows["Ada"]["Resolved"], 1)
+        self.assertEqual(rows["Ada"]["Open"], 1)
+        self.assertEqual(rows["Ada"]["total"], 2)
+        self.assertEqual(rows["Grace"]["On Hold"], 1)
+
+    def test_assignees_are_ordered_smallest_last_for_a_horizontal_chart(self):
+        """Recharts draws a horizontal bar chart's first row at the
+        bottom, so the busiest assignee has to come last to appear on
+        top."""
+        for n in range(3):
+            self._ticket(n, assignee_name="Busy")
+        self._ticket(9, assignee_name="Quiet")
+
+        names = [r["name"] for r in self.client.get(self.url).data["assignees"]]
+
+        self.assertEqual(names, ["Quiet", "Busy"])
+
+    def test_the_timeline_buckets_by_month_of_opened_at(self):
+        self._ticket(1, opened_at="2026-03-01", sentiment=Ticket.Sentiment.POSITIVE)
+        self._ticket(2, opened_at="2026-03-28", sentiment=Ticket.Sentiment.NEGATIVE)
+        self._ticket(3, opened_at="2026-05-02", sentiment=Ticket.Sentiment.POSITIVE)
+
+        timeline = self.client.get(self.url).data["sentiment_timeline"]
+
+        self.assertEqual(
+            timeline,
+            [
+                {"date": "Mar 2026", "positive": 1, "negative": 1},
+                {"date": "May 2026", "positive": 1, "negative": 0},
+            ],
+        )
+
+    # ── the KPIs ─────────────────────────────────────────────────────
+
+    def test_lifetime_and_resolution_rate(self):
+        self._ticket(
+            1, status=Ticket.Status.RESOLVED, opened_at="2026-03-01", resolved_at="2026-03-11"
+        )
+        self._ticket(
+            2, status=Ticket.Status.CLOSED, opened_at="2026-03-01", resolved_at="2026-03-05"
+        )
+        self._ticket(3, status=Ticket.Status.OPEN)
+        self._ticket(4, status=Ticket.Status.ON_HOLD)
+
+        kpis = self.client.get(self.url).data["kpis"]
+
+        self.assertEqual(kpis["avg_lifetime_days"], 7.0)
+        self.assertEqual(kpis["resolution_rate"], 50.0)
+        self.assertEqual(kpis["on_hold"], 1)
+
+    def test_lifetime_is_none_rather_than_zero_when_nothing_has_resolved(self):
+        """Zero days would read as "everything closed instantly"; an
+        average of no samples is undefined."""
+        self._ticket(1, status=Ticket.Status.OPEN)
+
+        self.assertIsNone(self.client.get(self.url).data["kpis"]["avg_lifetime_days"])
+
+    def test_an_empty_set_does_not_divide_by_zero(self):
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["kpis"]["total"], 0)
+        self.assertEqual(response.data["kpis"]["resolution_rate"], 0)
+
+    # ── filters ──────────────────────────────────────────────────────
+
+    def test_date_range_filters_on_opened_at(self):
+        self._ticket(1, opened_at="2026-01-15")
+        self._ticket(2, opened_at="2026-06-15")
+
+        data = self.client.get(f"{self.url}?from=2026-06-01&to=2026-06-30").data
+
+        self.assertEqual(data["kpis"]["total"], 1)
+
+    def test_priority_filter(self):
+        self._ticket(1, priority=Ticket.Priority.LOW)
+        self._ticket(2, priority=Ticket.Priority.CRITICAL)
+
+        self.assertEqual(self.client.get(f"{self.url}?priority=critical").data["kpis"]["total"], 1)
+
+    def test_connector_filter(self):
+        self._ticket(1, connector=self.zendesk)
+        self._ticket(2)
+
+        data = self.client.get(f"{self.url}?connector={self.zendesk.id}").data
+
+        self.assertEqual(data["kpis"]["total"], 1)
+
+    def test_customer_filter(self):
+        other = Customer.objects.create(organisation=self.org, name="Also Mine", owner=self.csm)
+        self._ticket(1)
+        self._ticket(2, customer=other)
+
+        self.assertEqual(
+            self.client.get(f"{self.url}?customer={self.mine.id}").data["kpis"]["total"], 1
+        )
+
+    def test_a_nonsense_filter_is_ignored_rather_than_a_400(self):
+        """House convention: a dashboard should render with the filters
+        it understood, not refuse to draw."""
+        self._ticket(1)
+
+        response = self.client.get(f"{self.url}?priority=banana&from=nonsense&owner=abc")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["kpis"]["total"], 1)
+
+    # ── visibility ───────────────────────────────────────────────────
+
+    def test_another_owners_tickets_are_excluded(self):
+        self._ticket(1)
+        self._ticket(2, customer=self.theirs)
+
+        self.assertEqual(self.client.get(self.url).data["kpis"]["total"], 1)
+
+    def test_filter_options_are_scoped_too(self):
+        """A CSM shouldn't be offered a company they can't see as a
+        filter option."""
+        names = {c["name"] for c in self.client.get(self.url).data["filters"]["customers"]}
+
+        self.assertIn("Mine", names)
+        self.assertNotIn("Theirs", names)

@@ -82,8 +82,7 @@ DEMO_CUSTOMER_NOTES = [
         "customer_name": "Arista Networks",
         "title": "Network Health Review Notes",
         "author_name": "Natalie Reyes",
-        "body": "Latency benchmarks look strong post-upgrade. No open "
-        "incidents this cycle.",
+        "body": "Latency benchmarks look strong post-upgrade. No open incidents this cycle.",
         "logged_at": "2026-06-12",
         "links": 1,
     },
@@ -154,8 +153,7 @@ DEMO_CUSTOMER_NOTES = [
         "customer_name": "Twilio",
         "title": "Health Check Notes",
         "author_name": "Sarah Chen",
-        "body": "Score holding steady at 9.1. No churn signals present this "
-        "cycle.",
+        "body": "Score holding steady at 9.1. No churn signals present this cycle.",
         "logged_at": "2026-07-26",
         "links": 0,
     },
@@ -181,8 +179,7 @@ DEMO_CUSTOMER_NOTES = [
         "customer_name": "Zoom",
         "title": "Usage Review Notes",
         "author_name": "Sarah Chen",
-        "body": "Licensed seat usage remains strong. No red flags to report "
-        "this cycle.",
+        "body": "Licensed seat usage remains strong. No red flags to report this cycle.",
         "logged_at": "2026-08-21",
         "links": 0,
     },
@@ -226,8 +223,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Apple APAC",
         "title": "APAC Rollout Notes",
         "author_name": "Natalie Reyes",
-        "body": "Three offices fully onboarded. Fourth office scheduled for "
-        "next month.",
+        "body": "Three offices fully onboarded. Fourth office scheduled for next month.",
         "logged_at": "2026-06-20",
         "links": 0,
     },
@@ -236,8 +232,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "APAC Division",
         "title": "Usage Uptick Notes",
         "author_name": "Sarah Chen",
-        "body": "Adoption ticked up noticeably after the new regional "
-        "rollout completed.",
+        "body": "Adoption ticked up noticeably after the new regional rollout completed.",
         "logged_at": "2026-07-15",
         "links": 1,
     },
@@ -246,8 +241,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Heinz Europe",
         "title": "Renewal Timeline Notes",
         "author_name": "Edgar Holmes",
-        "body": "Europe leadership confirmed target renewal date. No "
-        "outstanding blockers.",
+        "body": "Europe leadership confirmed target renewal date. No outstanding blockers.",
         "logged_at": "2026-08-04",
         "links": 0,
     },
@@ -256,8 +250,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Kraft Heinz North America (Renamed)",
         "title": "Adoption Summary Notes",
         "author_name": "Edgar Holmes",
-        "body": "North America account showing consistent week-over-week "
-        "engagement growth.",
+        "body": "North America account showing consistent week-over-week engagement growth.",
         "logged_at": "2026-07-11",
         "links": 2,
     },
@@ -266,8 +259,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Arista Global",
         "title": "Data Sync Incident Notes",
         "author_name": "Natalie Reyes",
-        "body": "Sync delay resolved — root cause was a misconfigured retry "
-        "interval.",
+        "body": "Sync delay resolved — root cause was a misconfigured retry interval.",
         "logged_at": "2026-05-13",
         "links": 1,
     },
@@ -276,8 +268,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Hyatt Americas",
         "title": "Renewal Proposal Notes",
         "author_name": "Edgar Holmes",
-        "body": "Proposal sent to procurement. Awaiting sign-off before end "
-        "of quarter.",
+        "body": "Proposal sent to procurement. Awaiting sign-off before end of quarter.",
         "logged_at": "2026-07-20",
         "links": 0,
     },
@@ -286,8 +277,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Hyatt EMEA & APAC",
         "title": "Onboarding Milestone Notes",
         "author_name": "Natalie Reyes",
-        "body": "Region hit its first onboarding milestone ahead of "
-        "schedule.",
+        "body": "Region hit its first onboarding milestone ahead of schedule.",
         "logged_at": "2026-06-24",
         "links": 0,
     },
@@ -296,8 +286,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Oracle Cloud Division",
         "title": "Cloud Migration Delay Notes",
         "author_name": "Edgar Holmes",
-        "body": "Migration delay escalated to engineering — new ETA is next "
-        "sprint.",
+        "body": "Migration delay escalated to engineering — new ETA is next sprint.",
         "logged_at": "2026-08-14",
         "links": 3,
     },
@@ -315,8 +304,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Pizza Hut US Operations",
         "title": "Onboarding Milestone Notes",
         "author_name": "Natalie Reyes",
-        "body": "US Operations completed their second onboarding milestone "
-        "on schedule.",
+        "body": "US Operations completed their second onboarding milestone on schedule.",
         "logged_at": "2026-08-22",
         "links": 1,
     },
@@ -325,8 +313,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Salesforce Core Platform",
         "title": "Health Check Notes",
         "author_name": "Sarah Chen",
-        "body": "Core Platform health check came back clean across all "
-        "metrics.",
+        "body": "Core Platform health check came back clean across all metrics.",
         "logged_at": "2026-07-30",
         "links": 0,
     },
@@ -354,8 +341,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "Stripe Payments",
         "title": "Adoption Wins Notes",
         "author_name": "Natalie Reyes",
-        "body": "Payments account team highlighted several workflow wins "
-        "this quarter.",
+        "body": "Payments account team highlighted several workflow wins this quarter.",
         "logged_at": "2026-06-02",
         "links": 1,
     },
@@ -364,8 +350,7 @@ DEMO_ACCOUNT_NOTES = [
         "account_name": "WeWork US",
         "title": "Renewal Path Notes",
         "author_name": "Edgar Holmes",
-        "body": "US leadership aligned on renewal path — no blockers "
-        "identified.",
+        "body": "US leadership aligned on renewal path — no blockers identified.",
         "logged_at": "2026-07-24",
         "links": 0,
     },
@@ -416,11 +401,15 @@ class Command(BaseCommand):
 
         for row in DEMO_ACCOUNT_NOTES:
             try:
-                account = Account.objects.filter(
-                    customers__organisation=org,
-                    customers__name=row["customer_name"],
-                    name=row["account_name"],
-                ).distinct().get()
+                account = (
+                    Account.objects.filter(
+                        customers__organisation=org,
+                        customers__name=row["customer_name"],
+                        name=row["account_name"],
+                    )
+                    .distinct()
+                    .get()
+                )
             except Account.DoesNotExist:
                 self.stderr.write(
                     f"  skipping note — no account {row['account_name']!r} under "
@@ -444,7 +433,6 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"{org.name}: created {created}, updated {updated}, "
-                f"skipped {skipped} note(s)."
+                f"{org.name}: created {created}, updated {updated}, skipped {skipped} note(s)."
             )
         )

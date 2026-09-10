@@ -1,8 +1,8 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db import transaction
-from django.db.models import CharField, Q
-from django.db.models.functions import Cast
+from django.db.models import CharField, Count, Q
+from django.db.models.functions import Cast, TruncMonth
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status, views
@@ -10,13 +10,26 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from services.accounts.models import User
+from services.connectors.models import Connector
 from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
 from services.fx_rates.conversion import convert_to_org_currency
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
 from .headline_generation import NothingToSummarise, generate_headlines
-from .models import Account, Canvas, Contact, Customer, Headline, Opportunity, Risk, Survey, Task
+from .models import (
+    Account,
+    Canvas,
+    Contact,
+    Customer,
+    Headline,
+    Opportunity,
+    Risk,
+    Survey,
+    Task,
+    Ticket,
+)
 from .scoping import (
     get_visible_account,
     get_visible_customer,
@@ -1693,3 +1706,258 @@ class HeadlineGenerateView(views.APIView):
             HeadlineSerializer(parent.headlines.all(), many=True).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+class TicketStatsView(views.APIView):
+    """GET /api/v1/tickets/stats/ — every rollup the Ticket Overview
+    dashboard's Controls tab needs, in one response.
+
+    One endpoint rather than six because the six charts are six views
+    of the same filtered set: splitting them would mean applying the
+    same filters six times and risking them disagreeing with each
+    other mid-render. Same "spans everything, not just the current
+    page" reasoning as ContactStatsView, which this is otherwise
+    modelled on.
+
+    **Unfiltered by default, deliberately.** A rolling default window
+    would be the obvious choice and is a trap here: the seeded demo
+    data is fixed 2026 dates, so a "last 30 days" default renders every
+    chart empty the moment real time moves past it — which looks
+    exactly like a broken integration rather than an empty window.
+    Callers that want a window ask for one.
+
+    Every filter ignores a bad value rather than 400ing, the same
+    convention `?renewal_within=` and `?days=` already follow. A
+    dashboard should render with the filters it understood, not refuse
+    to draw because one dropdown sent something odd.
+
+    Colours are not in this response. Every real-data chart in this
+    frontend maps its own name -> CSS variable (see SurveyTrendChart);
+    only the mock this replaces carried `fill` in its data."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _filtered_tickets(self, request):
+        """Visibility first, then the caller's filters narrow from
+        there. Applying a raw `?account=` id before the visibility gate
+        is what previously let members read other owners' custom-object
+        records — see CustomObjectRecordListCreateView's own note."""
+
+        tickets = Ticket.objects.filter(visible_children_q(request.user)).distinct()
+        params = request.query_params
+
+        opened_from = _parse_date(params.get("from"))
+        if opened_from:
+            tickets = tickets.filter(opened_at__gte=opened_from)
+        opened_to = _parse_date(params.get("to"))
+        if opened_to:
+            tickets = tickets.filter(opened_at__lte=opened_to)
+
+        priority = params.get("priority")
+        if priority in Ticket.Priority.values:
+            tickets = tickets.filter(priority=priority)
+
+        owner_id = _parse_int(params.get("owner"))
+        if owner_id is not None:
+            tickets = tickets.filter(Q(customer__owner_id=owner_id) | Q(account__owner_id=owner_id))
+
+        customer_id = _parse_int(params.get("customer"))
+        if customer_id is not None:
+            tickets = tickets.filter(
+                Q(customer_id=customer_id) | Q(account__customers__id=customer_id)
+            )
+
+        account_id = _parse_int(params.get("account"))
+        if account_id is not None:
+            tickets = tickets.filter(account_id=account_id)
+
+        connector_id = _parse_int(params.get("connector"))
+        if connector_id is not None:
+            tickets = tickets.filter(connector_id=connector_id)
+
+        return tickets.distinct()
+
+    def get(self, request):
+        tickets = self._filtered_tickets(request)
+        total = tickets.count()
+
+        resolved = tickets.filter(status__in=Ticket.RESOLVED_STATUSES)
+        lifetimes = [
+            (t.resolved_at - t.opened_at).days
+            for t in resolved.exclude(resolved_at__isnull=True).only("resolved_at", "opened_at")
+        ]
+
+        kpis = {
+            "total": total,
+            "on_hold": tickets.filter(status=Ticket.Status.ON_HOLD).count(),
+            # None, not 0, when nothing has been resolved — an average
+            # of no samples is undefined, and 0 days would read as
+            # "everything closed instantly". Same convention as
+            # ContactStatsView's own growth_30d_pct.
+            "avg_lifetime_days": (round(sum(lifetimes) / len(lifetimes), 2) if lifetimes else None),
+            "resolution_rate": round(resolved.count() / total * 100, 2) if total else 0,
+            "positive_sentiment": tickets.filter(sentiment=Ticket.Sentiment.POSITIVE).count(),
+            "negative_sentiment": tickets.filter(sentiment=Ticket.Sentiment.NEGATIVE).count(),
+        }
+
+        # Every bucket pre-seeded so an absent one comes back as a zero
+        # row rather than a missing key — a donut with a vanishing
+        # segment is harder to read than one with an empty one.
+        #
+        # `.order_by()` before each annotate is load-bearing, not tidying:
+        # Ticket.Meta.ordering is ["-opened_at", "-id"], and Django folds
+        # a model's default ordering into the GROUP BY. Grouping by
+        # (priority, opened_at, id) makes every bucket count exactly 1,
+        # which is what these returned before the empty order_by.
+        priority_counts = dict(
+            tickets.order_by()
+            .values_list("priority")
+            .annotate(n=Count("id"))
+            .values_list("priority", "n")
+        )
+        status_counts = dict(
+            tickets.order_by()
+            .values_list("status")
+            .annotate(n=Count("id"))
+            .values_list("status", "n")
+        )
+
+        origin = [
+            {
+                "name": row["connector__name"] or "Revenact",
+                "value": row["n"],
+                "provider": row["connector__provider"] or "",
+                "connector_id": row["connector_id"],
+            }
+            for row in tickets.order_by()
+            .values("connector_id", "connector__name", "connector__provider")
+            .annotate(n=Count("id"))
+            .order_by("-n")
+        ]
+
+        return Response(
+            {
+                "kpis": kpis,
+                "priority": [
+                    {"name": label, "value": priority_counts.get(value, 0)}
+                    for value, label in Ticket.Priority.choices
+                ],
+                "status": [
+                    {"name": label, "value": status_counts.get(value, 0)}
+                    for value, label in Ticket.Status.choices
+                ],
+                "origin": origin,
+                "assignees": _assignee_breakdown(tickets),
+                "sentiment_timeline": _sentiment_timeline(tickets),
+                "filters": _filter_options(request.user),
+            }
+        )
+
+
+def _parse_int(raw):
+    """Shared by every id-shaped filter above. Returns None for
+    anything unparseable, which the caller treats as "no filter" —
+    this module's own ignore-don't-400 convention."""
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_date(raw):
+    """`YYYY-MM-DD` only. Anything else is ignored rather than 400ing,
+    same as _parse_int."""
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _assignee_breakdown(tickets):
+    """One row per assignee, counts keyed by the status's *display*
+    label, plus a precomputed `total`.
+
+    Display labels rather than raw values because the chart stacks its
+    bars by these keys and renders them in its legend — and `total` is
+    precomputed because the chart draws it through an invisible bar
+    rather than deriving it.
+
+    Ordered biggest-first, then reversed: the chart is a horizontal
+    Recharts bar chart, which draws its first row at the bottom."""
+
+    labels = dict(Ticket.Status.choices)
+    rows = {}
+    for assignee, status_value, count in (
+        tickets.order_by()
+        .values_list("assignee_name", "status")
+        .annotate(n=Count("id"))
+        .values_list("assignee_name", "status", "n")
+    ):
+        row = rows.setdefault(
+            assignee, {"name": assignee, **{label: 0 for label in labels.values()}, "total": 0}
+        )
+        row[labels[status_value]] = count
+        row["total"] += count
+
+    ordered = sorted(rows.values(), key=lambda r: r["total"], reverse=True)
+    return list(reversed(ordered))
+
+
+def _sentiment_timeline(tickets):
+    """Positive/negative counts per calendar month of `opened_at`.
+
+    Bucketed on `opened_at` rather than `created_at`: `created_at` is
+    auto_now_add, so every seeded row shares one timestamp and a trend
+    over it would be a single spike. Months with no tickets are left
+    out rather than back-filled with zeros — the gap is the truth, and
+    inventing a zero month implies data was checked and found empty.
+
+    `date` is a pre-formatted label ("Jun 2026") because the chart
+    renders it verbatim as a category tick."""
+
+    buckets = {}
+    for month, sentiment, count in (
+        tickets.order_by()
+        .annotate(month=TruncMonth("opened_at"))
+        .values_list("month", "sentiment")
+        .annotate(n=Count("id"))
+        .values_list("month", "sentiment", "n")
+    ):
+        bucket = buckets.setdefault(month, {"positive": 0, "negative": 0})
+        if sentiment in bucket:
+            bucket[sentiment] = count
+
+    return [
+        {"date": month.strftime("%b %Y"), "positive": v["positive"], "negative": v["negative"]}
+        for month, v in sorted(buckets.items())
+    ]
+
+
+def _filter_options(user):
+    """The dropdown options for the filter bar, shipped alongside the
+    numbers so it doesn't need a second round trip. Scoped the same way
+    the stats are, so a CSM can't filter by a company they can't see."""
+
+    customers = visible_customers(user)
+    accounts = visible_accounts(user)
+    owner_ids = set(customers.values_list("owner_id", flat=True)) | set(
+        accounts.values_list("owner_id", flat=True)
+    )
+
+    return {
+        "owners": [
+            {"id": u.id, "name": u.name}
+            for u in User.objects.filter(id__in=owner_ids - {None}).order_by("name")
+        ],
+        "customers": [{"id": c.id, "name": c.name} for c in customers.order_by("name")],
+        "accounts": [{"id": a.id, "name": a.name} for a in accounts.order_by("name")],
+        "connectors": [
+            {"id": c.id, "name": c.name, "provider": c.provider}
+            for c in Connector.objects.filter(organisation=user.organisation).order_by("name")
+        ],
+        "priorities": [{"value": v, "name": label} for v, label in Ticket.Priority.choices],
+    }

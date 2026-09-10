@@ -34,6 +34,7 @@ from services.customers.views import (
     SurveyDetailView,
     SurveyListView,
     TaskListView,
+    TicketStatsView,
 )
 
 urlpatterns = [
@@ -142,6 +143,10 @@ urlpatterns = [
     # Task, same top-level-prefix reasoning as Contact/Opportunity/Risk
     # above — the one Task view spanning every Customer/Account at once.
     path("api/v1/tasks/", TaskListView.as_view(), name="task-list"),
+    # Ticket rollups for the Ticket Overview dashboard. A stats-only
+    # endpoint with no matching list — a flat "every ticket" list has
+    # no consumer, and the dashboard only ever wants the aggregates.
+    path("api/v1/tickets/stats/", TicketStatsView.as_view(), name="ticket-stats"),
     # Cockpit — its own top-level endpoint, not nested under any one app:
     # a real-data rollup spanning both Customer and Account, scoped to
     # the caller's own owned book of business. Powers Cockpit's own

@@ -26,9 +26,15 @@ Usage:
     python manage.py seed_demo_tickets --org-email alice@acme.io
 """
 
+import random
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Q
+from django.utils import timezone
 
 from services.accounts.models import User
+from services.connectors.models import Connector
 from services.customers.models import Account, Customer, Ticket
 
 # Org-level tickets — customer_name must match a Customer.name already
@@ -410,6 +416,127 @@ DEMO_ACCOUNT_TICKETS = [
 ]
 
 
+# ── Generated volume ─────────────────────────────────────────────────
+#
+# The 35 hand-written tickets above are real, specific content and stay
+# exactly as they are. They are nowhere near enough to make the Ticket
+# Overview dashboard's six charts look like anything though — 35 rows
+# across 2 assignees leaves an assignee chart with two bars and a
+# monthly trend with an empty April.
+#
+# So a bulk pass generates the rest from templates. Deterministic
+# (a fixed seed), and numbered TKT-9xxx so update_or_create matches on
+# re-run rather than piling up duplicates.
+
+GENERATED_PREFIX = "TKT-9"
+
+ASSIGNEES = [
+    "Support Team",
+    "Engineering",
+    "Logan Martinez",
+    "Isabella Hernandez",
+    "Henry Taylor",
+    "Elijah Johnson",
+    "Jack Thomas",
+]
+
+SUBJECTS = [
+    "SSO login loop after password reset",
+    "Report export times out on large date ranges",
+    "Webhook deliveries arriving out of order",
+    "Mobile app crashes on cold start",
+    "Bulk import rejects valid CSV rows",
+    "API rate limit hit during nightly sync",
+    "Dashboard totals disagree with export",
+    "Email notifications delayed by several hours",
+    "Seat count not updating after user removal",
+    "Search returns stale results",
+    "Attachment upload fails over 10MB",
+    "Timezone shown incorrectly on scheduled items",
+    "Permission change not taking effect",
+    "Duplicate records created on retry",
+    "Slow page load for large accounts",
+]
+
+# Weighted so the sentiment chart has a believable shape — mostly fine,
+# a real but smaller unhappy tail — rather than an even three-way split
+# that would look synthetic.
+SENTIMENT_WEIGHTS = [
+    (Ticket.Sentiment.POSITIVE, 5),
+    (Ticket.Sentiment.NEUTRAL, 3),
+    (Ticket.Sentiment.NEGATIVE, 2),
+]
+
+STATUS_WEIGHTS = [
+    (Ticket.Status.RESOLVED, 8),
+    (Ticket.Status.CLOSED, 4),
+    (Ticket.Status.OPEN, 3),
+    (Ticket.Status.IN_PROGRESS, 3),
+    (Ticket.Status.ON_HOLD, 1),
+]
+
+
+def _weighted(rng, weighted):
+    values, weights = zip(*weighted)
+    return rng.choices(values, weights=weights, k=1)[0]
+
+
+def _connector_for(rng, connectors, *, customer=None, account=None):
+    """Pick from the connectors that actually cover this company.
+
+    Not a random connector — attributing an Apple ticket to Kraft
+    Heinz's Jira would violate the same invariant Ticket.clean()
+    enforces, and would make the origin chart a lie. A small share are
+    left unattached on purpose, representing tickets raised in Revenact
+    itself."""
+
+    covering = [c for c in connectors if c.covers(customer=customer, account=account)]
+    if not covering or rng.random() < 0.08:
+        return None
+    return rng.choice(covering)
+
+
+def _generate(rng, *, parent_kwargs, connectors, index, today):
+    """One synthetic ticket. `opened_at` runs from ~8 months ago up to
+    today rather than stopping at a fixed date: a dashboard filtered to
+    a recent window has to have something in it, and every other seeder
+    in this repo hardcodes 2026 dates that drift out from under exactly
+    that kind of filter."""
+
+    opened = today - timedelta(days=rng.randint(0, 245))
+    status = _weighted(rng, STATUS_WEIGHTS)
+    resolved = None
+    if status in Ticket.RESOLVED_STATUSES:
+        # Most tickets close within a few weeks; a few drag on.
+        resolved = opened + timedelta(days=rng.choice([1, 2, 3, 5, 8, 13, 21, 34, 55]))
+        if resolved > today:
+            resolved = today
+
+    return {
+        **parent_kwargs,
+        "ticket_number": f"{GENERATED_PREFIX}{index:03d}",
+        "defaults": {
+            "title": rng.choice(SUBJECTS),
+            "assignee_name": rng.choice(ASSIGNEES),
+            "status": status,
+            "priority": _weighted(
+                rng,
+                [
+                    (Ticket.Priority.LOW, 4),
+                    (Ticket.Priority.MEDIUM, 4),
+                    (Ticket.Priority.HIGH, 2),
+                    (Ticket.Priority.CRITICAL, 1),
+                ],
+            ),
+            "sentiment": _weighted(rng, SENTIMENT_WEIGHTS),
+            "opened_at": opened,
+            "resolved_at": resolved,
+            "links": rng.choice([0, 0, 0, 1, 1, 2, 3]),
+            "connector": _connector_for(rng, connectors, **parent_kwargs),
+        },
+    }
+
+
 class Command(BaseCommand):
     help = "Seeds demo Ticket rows under existing demo Customers/Accounts."
 
@@ -418,6 +545,13 @@ class Command(BaseCommand):
             "--org-email",
             required=True,
             help="Email of a user in the target organisation (e.g. the admin who signed up).",
+        )
+        parser.add_argument(
+            "--volume",
+            type=int,
+            default=700,
+            help="How many additional generated tickets to seed on top of the "
+            "35 hand-written ones (default 700). Pass 0 for the hand-written set only.",
         )
 
     def handle(self, *args, **options):
@@ -456,11 +590,15 @@ class Command(BaseCommand):
 
         for row in DEMO_ACCOUNT_TICKETS:
             try:
-                account = Account.objects.filter(
-                    customers__organisation=org,
-                    customers__name=row["customer_name"],
-                    name=row["account_name"],
-                ).distinct().get()
+                account = (
+                    Account.objects.filter(
+                        customers__organisation=org,
+                        customers__name=row["customer_name"],
+                        name=row["account_name"],
+                    )
+                    .distinct()
+                    .get()
+                )
             except Account.DoesNotExist:
                 self.stderr.write(
                     f"  skipping ticket — no account {row['account_name']!r} under "
@@ -484,9 +622,56 @@ class Command(BaseCommand):
             created += was_created
             updated += not was_created
 
+        rng = random.Random(20260910)
+        today = timezone.localdate()
+        connectors = list(
+            Connector.objects.filter(organisation=org).prefetch_related("customers", "accounts")
+        )
+
+        # The hand-written rows above predate connectors/sentiment/
+        # resolution dates, so give them the same treatment rather than
+        # leaving 35 rows conspicuously blank in every chart.
+        enriched = 0
+        for ticket in (
+            Ticket.objects.filter(
+                Q(customer__organisation=org) | Q(account__customers__organisation=org)
+            )
+            .exclude(ticket_number__startswith=GENERATED_PREFIX)
+            .distinct()
+        ):
+            ticket.sentiment = _weighted(rng, SENTIMENT_WEIGHTS)
+            ticket.connector = _connector_for(
+                rng, connectors, customer=ticket.customer, account=ticket.account
+            )
+            if ticket.status in Ticket.RESOLVED_STATUSES and ticket.resolved_at is None:
+                ticket.resolved_at = min(
+                    ticket.opened_at + timedelta(days=rng.randint(1, 30)), today
+                )
+            ticket.save(update_fields=["sentiment", "connector", "resolved_at"])
+            enriched += 1
+
+        volume = options["volume"]
+        parents = [{"customer": c} for c in Customer.objects.filter(organisation=org)] + [
+            {"account": a} for a in Account.objects.filter(customers__organisation=org).distinct()
+        ]
+        generated = 0
+        if volume and parents:
+            for index in range(volume):
+                row = _generate(
+                    rng,
+                    parent_kwargs=rng.choice(parents),
+                    connectors=connectors,
+                    index=index,
+                    today=today,
+                )
+                defaults = row.pop("defaults")
+                _, was_created = Ticket.objects.update_or_create(**row, defaults=defaults)
+                generated += was_created
+
         self.stdout.write(
             self.style.SUCCESS(
                 f"{org.name}: created {created}, updated {updated}, "
-                f"skipped {skipped} ticket(s)."
+                f"skipped {skipped} hand-written ticket(s); "
+                f"enriched {enriched}; generated {generated}."
             )
         )
