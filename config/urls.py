@@ -126,6 +126,12 @@ urlpatterns = [
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).
     path("api/v1/fx-rates/", include("services.fx_rates.urls")),
+    # Connectors — the external systems an organisation has hooked up
+    # (Zendesk, Jira, ...). Same "tenant-wide config, not owned by one
+    # Customer/Account" reasoning as Webhooks and FX rates above, with
+    # one difference: reads are open to any member, because the Ticket
+    # Overview dashboard labels its origin chart with connector names.
+    path("api/v1/connectors/", include("services.connectors.urls")),
     # Account, same top-level-prefix reasoning as Contact/Opportunity/Risk
     # above — the one Account view spanning every Customer at once. GET
     # only; there's no matching flat detail/create endpoint since "Add"/

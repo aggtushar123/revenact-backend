@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "services.copilot",
     "services.notifications",
     "services.custom_objects",
+    "services.connectors",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
