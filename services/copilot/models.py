@@ -55,6 +55,14 @@ class Message(models.Model):
     )
     role = models.CharField(max_length=16, choices=Role.choices)
     content = models.TextField()
+    sources = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Assistant turns only: the records this answer was built "
+        "from, as snapshots — see services/copilot/retrieval.py's _source_ref "
+        "for why a snapshot rather than a foreign key. Empty on user turns, "
+        "and on assistant turns where retrieval found nothing to quote.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

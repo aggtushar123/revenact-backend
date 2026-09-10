@@ -36,6 +36,8 @@ overall most *relevant* items across every source together, not a fixed
 per-source quota of the most recent. Nothing here is itself new data:
 every row already exists for the Activity Feed's own tabs."""
 
+from typing import NamedTuple
+
 from services.customers.models import Account, Activity, Customer, Email, Note, Ticket
 
 from .embeddings import rank_by_similarity
@@ -123,23 +125,80 @@ def find_relevant_company_semantic(
     return companies[best_index] if best_score >= threshold else None
 
 
-def _gather_candidates(company) -> list[tuple[str, str]]:
-    """Every real candidate item for `company`, each as (display_line,
-    embed_text) — `display_line` is what actually goes in the digest,
-    `embed_text` is the shorter/plainer text relevance-ranking runs
-    against, so formatting noise (dates, "Email (...)" prefixes) doesn't
-    skew the ranking."""
+class RetrievedItem(NamedTuple):
+    """One candidate record, in three forms.
+
+    `line` is what goes in the prompt. `embed_text` is the plainer text
+    relevance-ranking runs against, so formatting noise (dates, "Email
+    (...)" prefixes) doesn't skew the ranking. `source` is the record's
+    own identity, carried so an answer can cite what it was built from
+    — until this existed, retrieval formatted records into a string and
+    threw away which records they were, which made "where did that come
+    from?" unanswerable."""
+
+    line: str
+    embed_text: str
+    source: dict
+
+
+def _source_ref(*, kind: str, record_id: int, label: str, date, company) -> dict:
+    """A citation is a **snapshot**, not a foreign key.
+
+    The record it points at may later be edited or deleted, and an
+    answer given in March shouldn't silently start citing April's
+    version of a note — or vanish because someone tidied up. The `id`
+    is kept so the UI can still offer a link, which simply doesn't
+    resolve if the record is gone."""
+
+    is_account = company.__class__.__name__ == "Account"
+    return {
+        "type": kind,
+        "id": record_id,
+        "label": label,
+        "date": str(date),
+        "company": company.name,
+        "company_type": "account" if is_account else "customer",
+        "company_id": company.id,
+    }
+
+
+def _gather_candidates(company) -> list[RetrievedItem]:
+    """Every real candidate item for `company` — see RetrievedItem."""
 
     scope = _scope_kwargs(company)
-    candidates: list[tuple[str, str]] = []
+    candidates: list[RetrievedItem] = []
 
     for email in Email.objects.filter(**scope).order_by("-sent_at")[:CANDIDATE_POOL_PER_SOURCE]:
         line = f'Email ({email.sent_at.date()}) "{email.subject}": {_snippet(email.body)}'
-        candidates.append((line, f"{email.subject} {email.body}"))
+        candidates.append(
+            RetrievedItem(
+                line,
+                f"{email.subject} {email.body}",
+                _source_ref(
+                    kind="email",
+                    record_id=email.id,
+                    label=email.subject,
+                    date=email.sent_at.date(),
+                    company=company,
+                ),
+            )
+        )
 
     for note in Note.objects.filter(**scope).order_by("-logged_at")[:CANDIDATE_POOL_PER_SOURCE]:
         line = f'Note ({note.logged_at}) "{note.title}": {_snippet(note.body)}'
-        candidates.append((line, f"{note.title} {note.body}"))
+        candidates.append(
+            RetrievedItem(
+                line,
+                f"{note.title} {note.body}",
+                _source_ref(
+                    kind="note",
+                    record_id=note.id,
+                    label=note.title,
+                    date=note.logged_at,
+                    company=company,
+                ),
+            )
+        )
 
     open_tickets = (
         Ticket.objects.filter(**scope)
@@ -149,23 +208,48 @@ def _gather_candidates(company) -> list[tuple[str, str]]:
     for ticket in open_tickets:
         priority = ticket.get_priority_display()
         line = f"Open ticket {ticket.ticket_number} ({priority}): {ticket.title}"
-        candidates.append((line, ticket.title))
+        candidates.append(
+            RetrievedItem(
+                line,
+                ticket.title,
+                _source_ref(
+                    kind="ticket",
+                    record_id=ticket.id,
+                    label=f"{ticket.ticket_number} {ticket.title}",
+                    date=ticket.opened_at,
+                    company=company,
+                ),
+            )
+        )
 
     activities = Activity.objects.filter(**scope).order_by("-occurred_at")[
         :CANDIDATE_POOL_PER_SOURCE
     ]
     for activity in activities:
         activity_type = activity.get_type_display()
-        candidates.append((f"Activity ({activity.occurred_at}): {activity_type}", activity_type))
+        candidates.append(
+            RetrievedItem(
+                f"Activity ({activity.occurred_at}): {activity_type}",
+                activity_type,
+                _source_ref(
+                    kind="activity",
+                    record_id=activity.id,
+                    label=activity_type,
+                    date=activity.occurred_at,
+                    company=company,
+                ),
+            )
+        )
 
     return candidates
 
 
-def retrieve_recent_communications(company, limit: int, query: str = "") -> list[str]:
-    """Real content for `company`. With a query to rank against, this is
-    the overall `limit` most *relevant* items across every source
-    together — real semantic ranking (see embeddings.py), not a fixed
-    per-source quota. With no query (or nothing to rank — see
+def retrieve_with_sources(company, limit: int, query: str = "") -> list[RetrievedItem]:
+    """Real content for `company`, each item still carrying the record
+    it came from. With a query to rank against, this is the overall
+    `limit` most *relevant* items across every source together — real
+    semantic ranking (see embeddings.py), not a fixed per-source quota.
+    With no query (or nothing to rank — see
     embeddings.rank_by_similarity's own empty-input handling), falls
     back to the `limit` most recent across sources in Email/Note/Ticket/
     Activity order."""
@@ -175,9 +259,15 @@ def retrieve_recent_communications(company, limit: int, query: str = "") -> list
         return []
 
     if query:
-        lines = [line for line, _ in candidates]
-        texts = [text for _, text in candidates]
-        ranked = rank_by_similarity(query, texts)
-        return [lines[i] for i, _ in ranked[:limit]]
+        ranked = rank_by_similarity(query, [item.embed_text for item in candidates])
+        return [candidates[i] for i, _ in ranked[:limit]]
 
-    return [line for line, _ in candidates[:limit]]
+    return candidates[:limit]
+
+
+def retrieve_recent_communications(company, limit: int, query: str = "") -> list[str]:
+    """The prompt lines alone — what most callers want, and the shape
+    this had before citations existed. See retrieve_with_sources for the
+    same items with their record identities attached."""
+
+    return [item.line for item in retrieve_with_sources(company, limit, query)]

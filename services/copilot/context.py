@@ -39,6 +39,8 @@ question; otherwise a smaller slice for each of the top few at-risk
 companies keeps the digest from being pure numbers even with none
 identified."""
 
+from dataclasses import dataclass, field
+
 from django.db.models import Q
 
 from services.customers.models import Account, Customer, Opportunity, Risk, Ticket
@@ -47,11 +49,33 @@ from services.fx_rates.conversion import convert_to_org_currency
 from .retrieval import (
     find_mentioned_company,
     find_relevant_company_semantic,
-    retrieve_recent_communications,
+    retrieve_with_sources,
 )
 
 
+@dataclass
+class Grounding:
+    """What a Copilot answer was built from: the digest that went into
+    the prompt, and the records that digest quoted.
+
+    The two travel together because they're the same act — the summary
+    is what the model saw, `sources` is what the user gets shown as the
+    citation for it. Splitting them would let an answer cite records
+    that never reached the prompt."""
+
+    summary: str
+    sources: list = field(default_factory=list)
+
+
 def build_org_context_summary(organisation, user, query: str = "") -> str:
+    """The digest alone — the shape this had before citations existed,
+    and what most callers still want. See build_grounding for the same
+    digest with the cited records attached."""
+
+    return build_grounding(organisation, user, query).summary
+
+
+def build_grounding(organisation, user, query: str = "") -> Grounding:
     customers = Customer.objects.filter(organisation=organisation, owner=user, is_archived=False)
     # `.distinct()` — same fan-out reasoning as AccountListView's own.
     accounts = Account.objects.filter(customers__organisation=organisation, owner=user).distinct()
@@ -59,7 +83,7 @@ def build_org_context_summary(organisation, user, query: str = "") -> str:
     customer_total = customers.count()
     account_total = accounts.count()
     if customer_total == 0 and account_total == 0:
-        return "You don't own any customers or accounts yet — nothing to summarize."
+        return Grounding("You don't own any customers or accounts yet — nothing to summarize.")
 
     lines = []
     top_at_risk: list[Customer] = []
@@ -143,16 +167,23 @@ def build_org_context_summary(organisation, user, query: str = "") -> str:
         mentioned = find_relevant_company_semantic(query, customers, accounts)
         match_label = "the account your question seems to be about"
 
+    # Sources are collected from exactly the items appended to the
+    # digest, never gathered separately — so a citation can only ever
+    # name something the model actually saw.
+    sources: list[dict] = []
+
     if mentioned is not None:
-        comms = retrieve_recent_communications(mentioned, limit=6, query=query)
+        comms = retrieve_with_sources(mentioned, limit=6, query=query)
         if comms:
             lines.append(f"Recent real communications for {mentioned.name} ({match_label}):")
-            lines.extend(f"  - {line}" for line in comms)
+            lines.extend(f"  - {item.line}" for item in comms)
+            sources.extend(item.source for item in comms)
     else:
         for company in top_at_risk[:3]:
-            comms = retrieve_recent_communications(company, limit=2, query=query)
+            comms = retrieve_with_sources(company, limit=2, query=query)
             if comms:
                 lines.append(f"Recent real communications for {company.name}:")
-                lines.extend(f"  - {line}" for line in comms)
+                lines.extend(f"  - {item.line}" for item in comms)
+                sources.extend(item.source for item in comms)
 
-    return "\n".join(lines)
+    return Grounding("\n".join(lines), sources)

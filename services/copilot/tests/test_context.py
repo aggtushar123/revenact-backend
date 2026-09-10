@@ -9,7 +9,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from services.accounts.models import Organisation, User
-from services.copilot.context import build_org_context_summary
+from services.copilot.context import build_grounding, build_org_context_summary
 from services.customers.models import Account, Customer, Note, Opportunity, Risk, Ticket
 
 
@@ -194,3 +194,116 @@ class BuildOrgContextSummaryTests(TestCase):
         summary = build_org_context_summary(self.org, self.user)
 
         self.assertIn("Recent real communications for Globex:", summary)
+
+
+class GroundingSourcesTests(TestCase):
+    """`build_grounding` returns the digest *and* the records it quoted.
+
+    Until it did, retrieval formatted records into a prompt string and
+    threw away which records they were, so "where did that come from?"
+    had no answer.
+    """
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="carl@acme.io", password="supersecret1", name="Carl", organisation=self.org
+        )
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.user, health_score="3.0"
+        )
+
+    def test_a_book_with_no_content_cites_nothing(self):
+        grounding = build_grounding(self.org, self.user)
+
+        self.assertEqual(grounding.sources, [])
+        self.assertIn("Globex", grounding.summary)
+
+    def test_a_quoted_note_comes_back_as_a_citation(self):
+        Note.objects.create(
+            customer=self.customer,
+            title="Commercial Negotiation Summary",
+            author_name="Edgar Holmes",
+            body="Customer requested 15% discount for a 3-year commitment.",
+            logged_at="2026-03-15",
+        )
+
+        grounding = build_grounding(self.org, self.user)
+
+        self.assertEqual(len(grounding.sources), 1)
+        source = grounding.sources[0]
+        self.assertEqual(source["type"], "note")
+        self.assertEqual(source["label"], "Commercial Negotiation Summary")
+        self.assertEqual(source["company"], "Globex")
+        self.assertEqual(source["company_type"], "customer")
+        self.assertEqual(source["date"], "2026-03-15")
+
+    def test_citations_carry_an_id_so_the_ui_can_link_to_the_record(self):
+        note = Note.objects.create(
+            customer=self.customer,
+            title="Renewal Strategy",
+            author_name="Carl",
+            body="Multi-year preferred.",
+            logged_at="2026-03-15",
+        )
+
+        grounding = build_grounding(self.org, self.user)
+
+        self.assertEqual(grounding.sources[0]["id"], note.id)
+        self.assertEqual(grounding.sources[0]["company_id"], self.customer.id)
+
+    def test_every_cited_record_also_appears_in_the_digest(self):
+        """The invariant that makes a citation trustworthy: sources are
+        collected from exactly the items appended to the prompt, so an
+        answer can't cite something the model never saw.
+
+        Three notes exist but only two are cited — with no company named
+        in the question, each at-risk company contributes at most two
+        items. The point is that cited and quoted stay in lockstep, not
+        that everything gets cited."""
+        for n in range(3):
+            Note.objects.create(
+                customer=self.customer,
+                title=f"Note {n}",
+                author_name="Carl",
+                body="Body.",
+                logged_at="2026-03-15",
+            )
+
+        grounding = build_grounding(self.org, self.user)
+
+        self.assertEqual(len(grounding.sources), 2)
+        for source in grounding.sources:
+            self.assertIn(source["label"], grounding.summary)
+
+    def test_an_account_source_is_labelled_as_an_account(self):
+        # Named distinctly so the exact-match pass picks the account
+        # rather than the customer — with no company named in the
+        # question, retrieval only walks the top at-risk *customers*,
+        # so an account's records are reached by naming it.
+        account = Account.objects.create(name="Northwind Division", owner=self.user)
+        account.customers.add(self.customer)
+        Note.objects.create(
+            customer=None,
+            account=account,
+            title="EMEA rollout",
+            author_name="Carl",
+            body="Three offices live.",
+            logged_at="2026-04-01",
+        )
+
+        sources = build_grounding(
+            self.org, self.user, query="How is Northwind Division doing?"
+        ).sources
+
+        emea = next(s for s in sources if s["company"] == "Northwind Division")
+        self.assertEqual(emea["company_type"], "account")
+        self.assertEqual(emea["company_id"], account.id)
+
+    def test_the_old_summary_only_helper_still_returns_a_string(self):
+        """~20 existing tests call it — it's a one-line wrapper now, not
+        a second implementation."""
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIsInstance(summary, str)
+        self.assertEqual(summary, build_grounding(self.org, self.user).summary)

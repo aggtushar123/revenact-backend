@@ -12,7 +12,7 @@ from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
 from .anthropic_client import CopilotNotConfigured, CopilotRequestFailed, get_completion
-from .context import build_org_context_summary
+from .context import build_grounding
 from .models import (
     Conversation,
     CopilotSession,
@@ -178,7 +178,8 @@ class SendMessageView(APIView):
 
         default_tone = TONE_INSTRUCTIONS[Organisation.AgentTone.PROFESSIONAL]
         tone_instruction = TONE_INSTRUCTIONS.get(organisation.ai_agent_tone, default_tone)
-        book_summary = build_org_context_summary(organisation, request.user, content)
+        grounding = build_grounding(organisation, user=request.user, query=content)
+        book_summary = grounding.summary
         system = (
             f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nYour own book of business:\n{book_summary}"
         )
@@ -207,7 +208,14 @@ class SendMessageView(APIView):
             conversation=conversation, role=Message.Role.USER, content=content
         )
         Message.objects.create(
-            conversation=conversation, role=Message.Role.ASSISTANT, content=reply
+            conversation=conversation,
+            role=Message.Role.ASSISTANT,
+            content=reply,
+            # Stored on the turn rather than recomputed on read: the
+            # records are what the answer was built from *at the time*,
+            # and re-running retrieval later would cite whatever is
+            # relevant now instead.
+            sources=grounding.sources,
         )
         conversation.save(update_fields=["updated_at"])
 

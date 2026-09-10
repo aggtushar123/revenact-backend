@@ -11,9 +11,12 @@ from .models import (
 
 
 class MessageSerializer(serializers.ModelSerializer):
+    """`sources` is always present but empty on user turns, so the
+    client can render citations without branching on role first."""
+
     class Meta:
         model = Message
-        fields = ["id", "role", "content", "created_at"]
+        fields = ["id", "role", "content", "sources", "created_at"]
 
 
 class ConversationListSerializer(serializers.ModelSerializer):

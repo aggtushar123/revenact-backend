@@ -11,6 +11,7 @@ from rest_framework.test import APITestCase
 from services.accounts.models import Organisation, User
 from services.copilot.anthropic_client import CopilotRequestFailed
 from services.copilot.models import Conversation, Message
+from services.customers.models import Customer, Note
 
 
 class ConversationListViewTests(APITestCase):
@@ -212,3 +213,83 @@ class SendMessageViewTests(APITestCase):
         system_prompt = mock_get_completion.call_args.kwargs["system"]
         self.assertIn("warm, friendly", system_prompt)
         self.assertIn("Your own book of business", system_prompt)
+
+
+class MessageSourcesTests(APITestCase):
+    """An answer carries the records it was built from, so the chat can
+    show where it came from — the difference between "trust me" and
+    "here's the note that says so"."""
+
+    url = "/api/v1/copilot/messages/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io", password="supersecret1", name="Alice", organisation=self.org
+        )
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.user, health_score="3.0"
+        )
+        self.note = Note.objects.create(
+            customer=self.customer,
+            title="Commercial Negotiation Summary",
+            author_name="Edgar Holmes",
+            body="Customer requested 15% discount for a 3-year commitment.",
+            logged_at="2026-03-15",
+        )
+        self.client.force_authenticate(self.user)
+
+    @patch("services.copilot.views.get_completion")
+    def test_the_answer_cites_the_records_it_was_built_from(self, mock_get_completion):
+        mock_get_completion.return_value = "They asked for a 15% discount."
+
+        response = self.client.post(self.url, {"content": "What's happening?"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        assistant = Message.objects.get(role=Message.Role.ASSISTANT)
+        self.assertEqual(len(assistant.sources), 1)
+        self.assertEqual(assistant.sources[0]["type"], "note")
+        self.assertEqual(assistant.sources[0]["id"], self.note.id)
+
+    @patch("services.copilot.views.get_completion")
+    def test_the_user_turn_carries_no_sources(self, mock_get_completion):
+        mock_get_completion.return_value = "Sure."
+
+        self.client.post(self.url, {"content": "What's happening?"}, format="json")
+
+        self.assertEqual(Message.objects.get(role=Message.Role.USER).sources, [])
+
+    @patch("services.copilot.views.get_completion")
+    def test_sources_come_back_on_the_response(self, mock_get_completion):
+        mock_get_completion.return_value = "They asked for a 15% discount."
+
+        response = self.client.post(self.url, {"content": "What's happening?"}, format="json")
+
+        cited = response.data["messages"][-1]["sources"]
+        self.assertEqual(cited[0]["label"], "Commercial Negotiation Summary")
+        self.assertEqual(cited[0]["company"], "Globex")
+
+    @patch("services.copilot.views.get_completion")
+    def test_an_answer_with_nothing_to_quote_cites_nothing(self, mock_get_completion):
+        """Better an empty citation list than an invented one — a
+        question about the book as a whole isn't grounded in any
+        particular record."""
+        self.note.delete()
+        mock_get_completion.return_value = "Your book looks healthy."
+
+        self.client.post(self.url, {"content": "How am I doing?"}, format="json")
+
+        self.assertEqual(Message.objects.get(role=Message.Role.ASSISTANT).sources, [])
+
+    @patch("services.copilot.views.get_completion")
+    def test_a_citation_survives_its_record_being_deleted(self, mock_get_completion):
+        """Snapshots, not foreign keys — an answer given in March
+        shouldn't lose its citation because someone tidied up in April.
+        The link simply stops resolving."""
+        mock_get_completion.return_value = "They asked for a 15% discount."
+        self.client.post(self.url, {"content": "What's happening?"}, format="json")
+
+        self.note.delete()
+
+        assistant = Message.objects.get(role=Message.Role.ASSISTANT)
+        self.assertEqual(assistant.sources[0]["label"], "Commercial Negotiation Summary")
