@@ -310,7 +310,18 @@ class NoteSerializer(serializers.ModelSerializer):
 
 
 class TicketSerializer(serializers.ModelSerializer):
-    """Read-only — see Ticket model's docstring."""
+    """Read-only — see Ticket model's docstring.
+
+    `connector_name`/`connector_provider` are flattened rather than
+    nested: a ticket card wants "Zendesk" as a label, not an object,
+    and the full connector is available from /connectors/ for anything
+    that needs more. Both are null for a ticket raised in Revenact
+    itself."""
+
+    connector_name = serializers.CharField(source="connector.name", read_only=True, default=None)
+    connector_provider = serializers.CharField(
+        source="connector.provider", read_only=True, default=None
+    )
 
     class Meta:
         model = Ticket
@@ -321,8 +332,12 @@ class TicketSerializer(serializers.ModelSerializer):
             "assignee_name",
             "status",
             "priority",
+            "sentiment",
             "opened_at",
+            "resolved_at",
             "links",
+            "connector_name",
+            "connector_provider",
         ]
 
 

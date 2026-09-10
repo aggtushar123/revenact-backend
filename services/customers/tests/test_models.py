@@ -1,9 +1,11 @@
 """Unit tier: model logic in isolation, no HTTP."""
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from services.accounts.models import Organisation
+from services.connectors.models import Connector
 from services.customers.models import (
     Account,
     Activity,
@@ -740,3 +742,87 @@ class HeadlineParentConstraintTests(TestCase):
         self.assertEqual(headline.kind, Headline.Kind.HEADLINE)
         self.assertEqual(headline.data_sources, [])
         self.assertIsNone(headline.generated_at)
+
+
+class TicketConnectorTests(TestCase):
+    """`Ticket.clean()` is where the connector-scope invariant lives —
+    see that method's own docstring on why not the serializer."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.apple = Customer.objects.create(organisation=self.org, name="Apple Inc")
+        self.kraft = Customer.objects.create(organisation=self.org, name="Kraft Heinz")
+        self.apple_emea = create_account(self.apple, name="Apple EMEA")
+        self.zendesk = Connector.objects.create(
+            organisation=self.org, provider=Connector.Provider.ZENDESK, name="Zendesk"
+        )
+
+    def _ticket(self, **overrides):
+        return Ticket(
+            **{
+                "customer": self.apple,
+                "ticket_number": "TKT-1",
+                "title": "Login fails",
+                "assignee_name": "Support Team",
+                "priority": Ticket.Priority.HIGH,
+                "opened_at": "2026-03-01",
+                **overrides,
+            }
+        )
+
+    def test_a_ticket_with_no_connector_is_valid(self):
+        """Null means raised in Revenact itself — a real case, not
+        missing data."""
+        ticket = self._ticket()
+        ticket.full_clean()
+        self.assertIsNone(ticket.connector)
+
+    def test_an_organisation_wide_connector_covers_any_ticket(self):
+        self._ticket(connector=self.zendesk).full_clean()
+        self._ticket(customer=self.kraft, connector=self.zendesk).full_clean()
+
+    def test_a_scoped_connector_rejects_a_company_it_does_not_cover(self):
+        self.zendesk.customers.add(self.apple)
+
+        self._ticket(connector=self.zendesk).full_clean()  # Apple is fine
+
+        with self.assertRaises(DjangoValidationError) as caught:
+            self._ticket(customer=self.kraft, connector=self.zendesk).full_clean()
+        self.assertIn("isn't connected for", str(caught.exception))
+
+    def test_a_customer_scoped_connector_covers_that_customers_accounts(self):
+        self.zendesk.customers.add(self.apple)
+
+        self._ticket(customer=None, account=self.apple_emea, connector=self.zendesk).full_clean()
+
+    def test_another_organisations_connector_is_rejected(self):
+        other_org = Organisation.objects.create(name="Other Inc")
+        theirs = Connector.objects.create(
+            organisation=other_org, provider=Connector.Provider.JIRA, name="Jira"
+        )
+
+        with self.assertRaises(DjangoValidationError) as caught:
+            self._ticket(connector=theirs).full_clean()
+        self.assertIn("different organisation", str(caught.exception))
+
+    def test_the_new_fields_default_sensibly(self):
+        ticket = Ticket.objects.create(customer=self.apple, **self._ticket_kwargs())
+
+        self.assertEqual(ticket.sentiment, Ticket.Sentiment.NEUTRAL)
+        self.assertIsNone(ticket.resolved_at)
+        self.assertIsNone(ticket.connector)
+
+    def _ticket_kwargs(self):
+        return {
+            "ticket_number": "TKT-2",
+            "title": "Sync failure",
+            "assignee_name": "Engineering",
+            "priority": Ticket.Priority.LOW,
+            "opened_at": "2026-03-02",
+        }
+
+    def test_on_hold_is_a_real_status(self):
+        ticket = Ticket.objects.create(
+            customer=self.apple, status=Ticket.Status.ON_HOLD, **self._ticket_kwargs()
+        )
+        self.assertEqual(ticket.get_status_display(), "On Hold")

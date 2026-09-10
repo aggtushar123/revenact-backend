@@ -678,6 +678,10 @@ class Ticket(models.Model):
     class Status(models.TextChoices):
         OPEN = "open", "Open"
         IN_PROGRESS = "in-progress", "In Progress"
+        # Hyphenated to match IN_PROGRESS above, not the underscore
+        # Headline.Status happens to use — a value is read alongside its
+        # own model's neighbours, not another model's.
+        ON_HOLD = "on-hold", "On Hold"
         RESOLVED = "resolved", "Resolved"
         CLOSED = "closed", "Closed"
 
@@ -686,6 +690,21 @@ class Ticket(models.Model):
         HIGH = "high", "High"
         MEDIUM = "medium", "Medium"
         LOW = "low", "Low"
+
+    class Sentiment(models.TextChoices):
+        """Same three values as Contact.Sentiment. Deliberately the
+        identical vocabulary rather than a second one for the same
+        idea — "how does this feel" means the same thing about a
+        support ticket as about a person."""
+
+        POSITIVE = "positive", "Positive"
+        NEUTRAL = "neutral", "Neutral"
+        NEGATIVE = "negative", "Negative"
+
+    # Terminal statuses — the ones that mean the work is finished.
+    # Named once because the resolution-rate KPI and `resolved_at`'s
+    # own meaning both depend on the same answer.
+    RESOLVED_STATUSES = ("resolved", "closed")
 
     customer = models.ForeignKey(
         Customer,
@@ -710,7 +729,31 @@ class Ticket(models.Model):
     assignee_name = models.CharField(max_length=150)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     priority = models.CharField(max_length=8, choices=Priority.choices)
+    sentiment = models.CharField(
+        max_length=16,
+        choices=Sentiment.choices,
+        default=Sentiment.NEUTRAL,
+        help_text="How the customer sounds in this ticket. Backs the Ticket "
+        "Overview dashboard's positive/negative counts and its sentiment trend.",
+    )
+    connector = models.ForeignKey(
+        "connectors.Connector",
+        related_name="tickets",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Where this ticket came from. Null means it was raised in "
+        "Revenact itself, which is a real case rather than missing data — and "
+        "SET_NULL so removing a connector doesn't delete real support history.",
+    )
     opened_at = models.DateField()
+    resolved_at = models.DateField(
+        null=True,
+        blank=True,
+        help_text="When the work finished. Null while the ticket is still open. "
+        "Without this neither average ticket lifetime nor resolution rate can "
+        "be computed at all.",
+    )
     links = models.PositiveIntegerField(
         default=0, help_text="Count shown on the card's link line — only rendered when > 0."
     )
@@ -731,6 +774,44 @@ class Ticket(models.Model):
     def __str__(self):
         parent = self.customer or self.account
         return f"{self.ticket_number} {self.title} — {parent}"
+
+    def clean(self):
+        """A ticket can't come from a connector that doesn't cover its
+        own company.
+
+        Enforced here rather than in TicketSerializer because there is
+        no ticket create/update endpoint — that serializer is read-only,
+        so validation there would be code nothing can reach. `clean()`
+        is what Django admin calls, and what the seed commands and any
+        future write path go through, so the invariant lives where it
+        can actually run.
+
+        Not a database CheckConstraint either: the answer depends on an
+        M2M traversal (see Connector.covers), which SQL-level
+        constraints can't express."""
+
+        from django.core.exceptions import ValidationError
+
+        super().clean()
+        if self.connector_id is None:
+            return
+
+        parent_org_id = (
+            self.customer.organisation_id
+            if self.customer_id
+            else self.account.customers.values_list("organisation_id", flat=True).first()
+        )
+        if self.connector.organisation_id != parent_org_id:
+            raise ValidationError(
+                {"connector": "That connector belongs to a different organisation."}
+            )
+        if not self.connector.covers(customer=self.customer, account=self.account):
+            raise ValidationError(
+                {
+                    "connector": f"{self.connector.name} isn't connected for "
+                    f"{self.customer or self.account}."
+                }
+            )
 
 
 class CalendarEvent(models.Model):
