@@ -463,12 +463,73 @@ system, hence two different names — never call a `Customer` an
   table's actual scale, which is *not* the 0–100 scale used elsewhere in
   the mock app, e.g. the dashboard's health donut; `health_category` is
   *derived* from it — good ≥7.0, average 4.0–6.9, poor <4.0 — never
-  stored, so the two can't disagree), `pulse` (JSON list of small ints,
-  e.g. `[1,1,0,2,1]`, the recent-pulse-history dots), `ai_pulse_score`
-  (choices: very_satisfied/satisfied/moderate/high_risk — despite the
-  name this is a categorical AI-generated label in the actual mock data,
-  not a number), `ai_pulse_reason` (text), `nps_score` (integer, −100 to
-  100), `csat_score` (decimal, 0–100).
+  stored, so the two can't disagree),
+
+  `health_score` is **calculated**, not typed in. Five weighted components
+  (`services/customers/health.py`), totalling 10:
+
+  | Component | Weight | Measured from |
+  |---|---|---|
+  | Customer Touch | 4.0 | days since the newest `Activity.occurred_at`, decaying linearly to zero at 90 days; measured from `joined_date`/`created_at` when there are no activities yet, so a new logo isn't punished |
+  | AI Pulse | 2.0 | `ai_pulse_value`, 1-5 normalised onto 0-1 |
+  | Licence Utilization | 2.0 | `total_active_seats / total_contracted_seats`, capped at 1.0 |
+  | Aggregate Adoption Score | 1.5 | `primary_product` + `additional_products_count` against a target breadth of 4 |
+  | Support Tickets Volume | 0.5 | open (non-`RESOLVED_STATUSES`) tickets, decaying to zero at 20 |
+
+  A component with nothing to measure is **excluded and the rest
+  rescaled**, not scored zero - a customer with no seat figures recorded
+  is not one with no seats in use, and scoring the blank would make
+  health a measure of how completely the CRM was filled in.
+  `health_breakdown` (read-only) returns every component as `{key, label,
+  weight, points, ratio, available}`; the `points` of the available ones
+  sum exactly to `health_score`.
+
+  It stays a stored column so the list endpoint can still order and
+  filter on it in SQL. It is refreshed whenever a customer is written
+  through the API, and by `manage.py run_health_maintenance` for the
+  components that move without the row being saved (an activity logged, a
+  ticket opened, a week passing).
+
+  **`run_health_maintenance` is the job to schedule** — it recalculates every
+  score and then records that month's `HealthSnapshot`. There is no task queue
+  in this project, so it is a plain management command for cron to call; it is
+  idempotent and writes at most one snapshot per customer per month. It skips
+  a month already recorded rather than upserting it, since that row is a
+  record of how the month *ended* and re-running later would drift it forwards.
+  `manage.py recalculate_health` still exists for scores alone.
+
+  `csat_breakdown` (read-only) is the distribution behind `csat_score`:
+  `{responses, bands}` where each band is `{key, label, count, share}`, best
+  to worst, always all five. Counts answered CSAT `Survey` rows bucketed into
+  equal fifths of the 0-100 scale (0-20 very dissatisfied ... 81-100 very
+  satisfied). `responses` is 0 when nobody has answered one — the bands come
+  back all-zero rather than absent, so the popover keeps a stable shape.
+
+  **Writing `health_score` pins an override.** A PATCH sets
+  `health_score_override` rather than the score itself - the caller is
+  saying they disagree with the calculation - and
+  `health_score_is_overridden` (read-only bool) reports which of the two
+  is in force. Send `null` to clear the override and hand the customer
+  back to the rubric. `pulse` (JSON list of small ints,
+  e.g. `[1,1,0,2,1]`, the recent-pulse-history dots), `ai_pulse_value`
+  (integer **1–5**, nullable — the AI's own reading, and the stored one),
+  `ai_pulse_score` (choices: very_satisfied/satisfied/moderate/high_risk
+  — *derived* from `ai_pulse_value`: 5, 4, 3, and 1–2 respectively, blank
+  when unscored), `ai_pulse_reason` (text), `csm_pulse_score` (integer
+  **1–5**, nullable — the CSM's own hand-set reading, deliberately the
+  same scale as `ai_pulse_value` so the two can be compared directly),
+  `csm_pulse_modified_at` (read-only datetime, stamped server-side only
+  when `csm_pulse_score` actually changes, so a stale read stays visibly
+  stale), `nps_score` (integer, −100 to 100), `csat_score` (decimal,
+  0–100).
+
+  `ai_pulse_score` was its own column until the AI pulse gained a numeric
+  scale; it is derived now so it can't disagree with the number, the same
+  arrangement as `health_score`/`health_category`. **Both names still
+  read and write**: POST/PATCH either `ai_pulse_score` (the category, as
+  before) or `ai_pulse_value` (the number). Sending *both* in one request
+  is a 400 — they write the same column, and silently resolving it would
+  mean quietly discarding one of them.
 - **Dates**: `joined_date`, `renewal_date`, `contract_start_date`,
   `contract_end_date` — all plain nullable dates, no derivation.
 - **Financials**: `currency` (choices, same `Organisation.Currency` set —
@@ -720,14 +781,18 @@ added alongside Customer's own for the same Overview-tab reason),
 `owner` (FK to `accounts.User`, nullable, same-tenant only, validated
 the same way as `Customer.owner_id`), `created_at`/`updated_at`,
 `lifecycle_stage`, `health_score` (0.0–10.0, `health_category` derived,
-same thresholds as Customer), `pulse` (JSON list), `ai_pulse_score`,
-`ai_pulse_reason`, `nps_score` (−100 to 100), `csat_score` (0–100),
+same thresholds as Customer), `pulse` (JSON list), `ai_pulse_value`
+(1–5, nullable), `ai_pulse_score` (derived from it, same mapping and
+same both-names-write rule as Customer), `ai_pulse_reason`,
+`csm_pulse_score` (1–5, nullable), `csm_pulse_modified_at` (read-only),
+`nps_score` (−100 to 100), `csat_score` (0–100),
 `renewal_date`, `arr` (MRR is derived, `arr / 12`, not stored — same
 convention as Customer).
 
 **Add/Edit Account** covers identity, ownership, lifecycle stage, and
 renewal date — same product decision as Customer's own Add/Edit form.
-`health_score`/`pulse`/`ai_pulse_score`/`ai_pulse_reason`/`nps_score`/
+`health_score`/`pulse`/`ai_pulse_value`/`ai_pulse_score`/
+`ai_pulse_reason`/`csm_pulse_score`/`nps_score`/
 `csat_score`/`arr`/`address`/`email`/`phone` are technically writable
 via `AccountSerializer` too (not restricted at the API layer, same as
 `CustomerSerializer`) but the Add/Edit Account UI never sends them —
@@ -881,6 +946,43 @@ soonest-first — a real drill-down, not just a count/value pair, same
   }
 }
 ```
+
+### Models — `HealthSnapshot`
+
+One row per Customer (or Account) per date, recording what that row's
+health looked like then. `Customer.health_score` / `csm_pulse_score` /
+`ai_pulse_value` only ever hold *today's* reading — updating them
+overwrites yesterday's — so this is what remembers.
+
+Exists for the Health Overview's **Movement** tab, which counts how many
+accounts moved between Good/Average/Poor from one month to the next
+rather than how many sit in each today. Those are different questions: a
+month where nine accounts fell and nine recovered is indistinguishable
+from a quiet one if you only ever count the current state.
+
+Fields: `customer` / `account` (both nullable FKs, **exactly one set** —
+enforced by a `CheckConstraint`, same shape and reasoning as `Activity`),
+`captured_on` (date; month-end when backfilled, so a series lines up as
+monthly columns), `health_score` (decimal 0.0–10.0 as it stood then),
+`csm_pulse_score` and `ai_pulse_value` (1–5, nullable — as they stood
+then, null if unrated/unscored at the time), `created_at`.
+
+`health_category` and `ai_pulse_score` are derived here too, from *this
+row's* stored numbers — so a snapshot reports its categories exactly the
+way a live row does, and a snapshot of a Poor month keeps reading Poor
+even after the parent recovers.
+
+One snapshot per parent per date, enforced by two partial unique
+constraints (partial, not `unique_together`: a null parent must not
+collide with every other null parent on the same date). A Customer and
+one of its Accounts may both have a snapshot for the same date.
+
+Served to the dashboard by `GET /api/v1/customers/health/` (above), and
+written by `manage.py run_health_maintenance`. `capture_health_snapshot(parent, captured_on)`
+is the entry point for recording a reading (upserts, so a scheduled job
+firing twice in a day is harmless), and `seed_demo_health_snapshots`
+backfills a year of history for demo data. Nothing writes these on a
+schedule yet.
 
 ### Models — `Activity`
 

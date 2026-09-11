@@ -1,5 +1,8 @@
 """Unit tier: model logic in isolation, no HTTP."""
 
+from datetime import date
+from decimal import Decimal
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -15,12 +18,15 @@ from services.customers.models import (
     Customer,
     Email,
     Headline,
+    HealthSnapshot,
     Note,
     Opportunity,
     Risk,
     Survey,
     Task,
     Ticket,
+    capture_health_snapshot,
+    csat_band,
 )
 
 
@@ -826,3 +832,254 @@ class TicketConnectorTests(TestCase):
             customer=self.apple, status=Ticket.Status.ON_HOLD, **self._ticket_kwargs()
         )
         self.assertEqual(ticket.get_status_display(), "On Hold")
+
+
+class AIPulseCategoryTests(TestCase):
+    """`ai_pulse_score` was a stored column and is derived from
+    `ai_pulse_value` now, the same way `health_category` is derived from
+    `health_score` — so the two can never disagree."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+
+    def _customer(self, value):
+        return Customer.objects.create(
+            organisation=self.org, name="Some Co", ai_pulse_value=value
+        )
+
+    def test_maps_each_value_to_its_category(self):
+        self.assertEqual(self._customer(5).ai_pulse_score, Customer.AIPulseScore.VERY_SATISFIED)
+        self.assertEqual(self._customer(4).ai_pulse_score, Customer.AIPulseScore.SATISFIED)
+        self.assertEqual(self._customer(3).ai_pulse_score, Customer.AIPulseScore.MODERATE)
+
+    def test_the_bottom_two_values_are_both_high_risk(self):
+        self.assertEqual(self._customer(2).ai_pulse_score, Customer.AIPulseScore.HIGH_RISK)
+        self.assertEqual(self._customer(1).ai_pulse_score, Customer.AIPulseScore.HIGH_RISK)
+
+    def test_unscored_reads_blank_not_high_risk(self):
+        # Blank, not null, because that is what the column used to hold and
+        # what the frontend's AI_PULSE_LABELS still expects. "Not scored yet"
+        # is emphatically not the same as "scored badly".
+        self.assertEqual(self._customer(None).ai_pulse_score, "")
+
+    def test_accounts_derive_it_the_same_way(self):
+        customer = Customer.objects.create(organisation=self.org, name="Parent Co")
+        account = create_account(customer, name="EMEA", ai_pulse_value=1)
+        self.assertEqual(account.ai_pulse_score, Customer.AIPulseScore.HIGH_RISK)
+        self.assertEqual(create_account(customer, name="APAC").ai_pulse_score, "")
+
+    def test_rejects_a_value_outside_the_scale(self):
+        for value in (0, 6):
+            customer = Customer(organisation=self.org, name="Some Co", ai_pulse_value=value)
+            with self.assertRaises(DjangoValidationError):
+                customer.full_clean()
+
+
+class CSMPulseTests(TestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+
+    def test_defaults_to_unrated(self):
+        # Null rather than a middling 3: "the CSM hasn't looked" is a
+        # different fact from "the CSM thinks it's average", and the
+        # Divergence view must not read the first as the second.
+        customer = Customer.objects.create(organisation=self.org, name="Some Co")
+        self.assertIsNone(customer.csm_pulse_score)
+        self.assertIsNone(customer.csm_pulse_modified_at)
+
+    def test_shares_the_ai_pulse_scale(self):
+        customer = Customer.objects.create(
+            organisation=self.org, name="Some Co", csm_pulse_score=4, ai_pulse_value=2
+        )
+        # The whole point: both are 1-5, so the gap is meaningful.
+        self.assertEqual(customer.csm_pulse_score - customer.ai_pulse_value, 2)
+
+    def test_rejects_a_value_outside_the_scale(self):
+        for value in (0, 6):
+            customer = Customer(organisation=self.org, name="Some Co", csm_pulse_score=value)
+            with self.assertRaises(DjangoValidationError):
+                customer.full_clean()
+
+
+class HealthSnapshotTests(TestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Some Co", health_score="8.0", csm_pulse_score=4,
+            ai_pulse_value=5,
+        )
+        self.account = create_account(self.customer, name="EMEA", health_score="3.0")
+
+    def test_derives_its_categories_from_its_own_stored_numbers(self):
+        snapshot = HealthSnapshot.objects.create(
+            customer=self.customer, captured_on=date(2026, 1, 31),
+            health_score="2.5", ai_pulse_value=1,
+        )
+        # A snapshot reports the past, not the parent's current 8.0/5.
+        self.assertEqual(snapshot.health_category, Customer.HealthCategory.POOR)
+        self.assertEqual(snapshot.ai_pulse_score, Customer.AIPulseScore.HIGH_RISK)
+        self.assertEqual(self.customer.health_category, Customer.HealthCategory.GOOD)
+
+    def test_requires_exactly_one_parent(self):
+        for kwargs in ({}, {"customer": self.customer, "account": self.account}):
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                HealthSnapshot.objects.create(
+                    captured_on=date(2026, 1, 31), health_score="5.0", **kwargs
+                )
+
+    def test_one_snapshot_per_parent_per_date(self):
+        HealthSnapshot.objects.create(
+            customer=self.customer, captured_on=date(2026, 1, 31), health_score="5.0"
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            HealthSnapshot.objects.create(
+                customer=self.customer, captured_on=date(2026, 1, 31), health_score="6.0"
+            )
+
+    def test_a_customer_and_an_account_can_share_a_date(self):
+        HealthSnapshot.objects.create(
+            customer=self.customer, captured_on=date(2026, 1, 31), health_score="5.0"
+        )
+        HealthSnapshot.objects.create(
+            account=self.account, captured_on=date(2026, 1, 31), health_score="5.0"
+        )
+        self.assertEqual(HealthSnapshot.objects.count(), 2)
+
+    def test_orders_oldest_first_so_a_series_reads_left_to_right(self):
+        for day in (31, 28, 15):
+            HealthSnapshot.objects.create(
+                customer=self.customer,
+                captured_on=date(2026, 1, day) if day != 28 else date(2026, 2, 28),
+                health_score="5.0",
+            )
+        captured = list(HealthSnapshot.objects.values_list("captured_on", flat=True))
+        self.assertEqual(captured, sorted(captured))
+
+
+class CaptureHealthSnapshotTests(TestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Some Co", health_score="7.5",
+            csm_pulse_score=3, ai_pulse_value=4,
+        )
+
+    def test_records_the_parents_current_readings(self):
+        snapshot = capture_health_snapshot(self.customer, date(2026, 3, 31))
+        # Reloaded, not the returned in-memory copy: a DecimalField holds
+        # whatever was assigned until the row round-trips through the DB.
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.customer, self.customer)
+        self.assertEqual(snapshot.health_score, Decimal("7.5"))
+        self.assertEqual(snapshot.csm_pulse_score, 3)
+        self.assertEqual(snapshot.ai_pulse_value, 4)
+
+    def test_rerunning_for_the_same_date_overwrites_rather_than_raising(self):
+        # A scheduled job that fires twice in a day must be harmless.
+        capture_health_snapshot(self.customer, date(2026, 3, 31))
+        self.customer.health_score = Decimal("2.0")
+        self.customer.save()
+        snapshot = capture_health_snapshot(self.customer, date(2026, 3, 31))
+        snapshot.refresh_from_db()
+
+        self.assertEqual(HealthSnapshot.objects.count(), 1)
+        self.assertEqual(snapshot.health_score, Decimal("2.0"))
+
+    def test_sets_the_account_fk_for_an_account(self):
+        account = create_account(self.customer, name="EMEA", health_score="4.0")
+        snapshot = capture_health_snapshot(account, date(2026, 3, 31))
+        self.assertEqual(snapshot.account, account)
+        self.assertIsNone(snapshot.customer)
+
+
+class HealthCategoryCoercionTests(TestCase):
+    """`health_category` reads a DecimalField, which holds whatever was
+    assigned to it until the row is reloaded — so the category has to cope
+    with a str, an int and a Decimal alike rather than raising TypeError."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+
+    def test_reads_the_same_category_whatever_the_score_was_assigned_as(self):
+        for score in ("8.0", 8.0, 8, Decimal("8.0")):
+            customer = Customer(organisation=self.org, name="Some Co", health_score=score)
+            self.assertEqual(customer.health_category, Customer.HealthCategory.GOOD)
+
+    def test_applies_to_snapshots_too(self):
+        customer = Customer.objects.create(organisation=self.org, name="Some Co")
+        snapshot = HealthSnapshot(customer=customer, captured_on=date(2026, 1, 31),
+                                  health_score="3.9")
+        self.assertEqual(snapshot.health_category, Customer.HealthCategory.POOR)
+
+
+class CsatBreakdownTests(TestCase):
+    """The Organisations table's CSAT popover invented its whole distribution.
+    It reads this now: real answered surveys, bucketed into five bands."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=self.org, name="Some Co")
+
+    def _respond(self, score, survey_type=None, status=None):
+        return Survey.objects.create(
+            customer=self.customer,
+            survey_type=survey_type or Survey.SurveyType.CSAT,
+            status=status or Survey.Status.RESPONDED,
+            score=score,
+            sent_at=date(2026, 1, 1),
+            responded_at=date(2026, 1, 5),
+        )
+
+    def _bands(self):
+        return {b["key"]: b for b in self.customer.csat_breakdown["bands"]}
+
+    def test_buckets_scores_into_equal_fifths(self):
+        for score, expected in ((0, "very_dissatisfied"), (20, "very_dissatisfied"),
+                                (21, "dissatisfied"), (40, "dissatisfied"),
+                                (41, "neutral"), (60, "neutral"),
+                                (61, "satisfied"), (80, "satisfied"),
+                                (81, "very_satisfied"), (100, "very_satisfied")):
+            self.assertEqual(csat_band(score), expected, msg=f"score {score}")
+
+    def test_counts_and_shares_the_answered_surveys(self):
+        for score in (100, 90, 50):
+            self._respond(score)
+
+        breakdown = self.customer.csat_breakdown
+        self.assertEqual(breakdown["responses"], 3)
+        bands = self._bands()
+        self.assertEqual(bands["very_satisfied"]["count"], 2)
+        self.assertEqual(bands["neutral"]["count"], 1)
+        self.assertAlmostEqual(bands["very_satisfied"]["share"], 66.67, places=1)
+
+    def test_shares_total_one_hundred(self):
+        for score in (95, 85, 70, 45, 10):
+            self._respond(score)
+        shares = sum(b["share"] for b in self.customer.csat_breakdown["bands"])
+        self.assertAlmostEqual(shares, 100.0, places=1)
+
+    def test_always_returns_all_five_bands(self):
+        # A stable five-row shape, so the popover doesn't change length
+        # per customer.
+        self._respond(100)
+        self.assertEqual(len(self.customer.csat_breakdown["bands"]), 5)
+        self.assertEqual(self._bands()["very_dissatisfied"]["count"], 0)
+
+    def test_ignores_surveys_that_are_not_answered_csat(self):
+        self._respond(100)
+        self._respond(90, survey_type=Survey.SurveyType.NPS)
+        self._respond(90, status=Survey.Status.SENT)
+        self.assertEqual(self.customer.csat_breakdown["responses"], 1)
+
+    def test_reports_zero_rather_than_a_made_up_spread(self):
+        breakdown = self.customer.csat_breakdown
+        self.assertEqual(breakdown["responses"], 0)
+        self.assertTrue(all(b["count"] == 0 and b["share"] == 0.0 for b in breakdown["bands"]))
+
+    def test_orders_bands_best_to_worst(self):
+        self._respond(100)
+        keys = [b["key"] for b in self.customer.csat_breakdown["bands"]]
+        self.assertEqual(
+            keys,
+            ["very_satisfied", "satisfied", "neutral", "dissatisfied", "very_dissatisfied"],
+        )

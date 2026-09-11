@@ -1,6 +1,7 @@
 """Integration tier: through the real URLconf + real test DB."""
 
-from datetime import timedelta
+from datetime import date, timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.utils import timezone
@@ -18,6 +19,7 @@ from services.customers.models import (
     Customer,
     Email,
     Headline,
+    HealthSnapshot,
     Note,
     Opportunity,
     Risk,
@@ -5386,3 +5388,407 @@ class TicketStatsTests(APITestCase):
 
         self.assertIn("Mine", names)
         self.assertNotIn("Theirs", names)
+
+
+class PulseFieldsAPITests(APITestCase):
+    """The AI pulse moved from a stored category to a stored 1-5 value with the
+    category derived. `ai_pulse_score` is part of the shipped API — the
+    frontend's AI_PULSE_LABELS reads it and clients POST it — so these pin that
+    both names keep working in both directions."""
+
+    url = "/api/v1/customers/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+
+    def _detail_url(self, customer):
+        return f"{self.url}{customer.id}/"
+
+    def test_create_accepts_the_category_and_stores_the_value(self):
+        response = self.client.post(
+            self.url, {"name": "Globex", "ai_pulse_score": "satisfied"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["ai_pulse_score"], "satisfied")
+        self.assertEqual(response.data["ai_pulse_value"], 4)
+        self.assertEqual(Customer.objects.get(name="Globex").ai_pulse_value, 4)
+
+    def test_create_accepts_the_value_and_derives_the_category(self):
+        response = self.client.post(
+            self.url, {"name": "Initech", "ai_pulse_value": 2}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["ai_pulse_value"], 2)
+        self.assertEqual(response.data["ai_pulse_score"], "high_risk")
+
+    def test_every_category_round_trips_back_to_itself(self):
+        for category in ("very_satisfied", "satisfied", "moderate", "high_risk"):
+            response = self.client.post(
+                self.url, {"name": f"Co {category}", "ai_pulse_score": category}, format="json"
+            )
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+            self.assertEqual(response.data["ai_pulse_score"], category)
+
+    def test_unscored_reads_back_blank(self):
+        response = self.client.post(self.url, {"name": "Blank Co"}, format="json")
+        self.assertIsNone(response.data["ai_pulse_value"])
+        self.assertEqual(response.data["ai_pulse_score"], "")
+
+    def test_rejects_sending_both_names_at_once(self):
+        # They write the same column, so a request carrying both is ambiguous.
+        # Resolving it silently would mean one of the two is quietly ignored.
+        response = self.client.post(
+            self.url,
+            {"name": "Globex", "ai_pulse_score": "satisfied", "ai_pulse_value": 1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("ai_pulse_score", response.data)
+
+    def test_rejects_an_unknown_category(self):
+        response = self.client.post(
+            self.url, {"name": "Globex", "ai_pulse_score": "delighted"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_rejects_a_value_off_the_scale(self):
+        response = self.client.post(
+            self.url, {"name": "Globex", "ai_pulse_value": 9}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_setting_the_csm_pulse_stamps_when_it_changed(self):
+        customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.assertIsNone(customer.csm_pulse_modified_at)
+
+        response = self.client.patch(
+            self._detail_url(customer), {"csm_pulse_score": 4}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["csm_pulse_score"], 4)
+        self.assertIsNotNone(response.data["csm_pulse_modified_at"])
+
+    def test_resaving_the_same_csm_pulse_does_not_restamp_it(self):
+        # The stamp answers "how stale is this CSM's read" — a PATCH that
+        # didn't move the number must not make a stale read look fresh.
+        customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.client.patch(self._detail_url(customer), {"csm_pulse_score": 4}, format="json")
+        customer.refresh_from_db()
+        first_stamp = customer.csm_pulse_modified_at
+
+        self.client.patch(self._detail_url(customer), {"csm_pulse_score": 4}, format="json")
+        customer.refresh_from_db()
+        self.assertEqual(customer.csm_pulse_modified_at, first_stamp)
+
+    def test_editing_something_else_does_not_stamp_the_csm_pulse(self):
+        customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.client.patch(self._detail_url(customer), {"name": "Globex Corp"}, format="json")
+        customer.refresh_from_db()
+        self.assertIsNone(customer.csm_pulse_modified_at)
+
+    def test_the_stamp_is_not_client_settable(self):
+        customer = Customer.objects.create(organisation=self.org, name="Globex")
+        response = self.client.patch(
+            self._detail_url(customer),
+            {"csm_pulse_score": 3, "csm_pulse_modified_at": "2020-01-01T00:00:00Z"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        customer.refresh_from_db()
+        self.assertNotEqual(str(customer.csm_pulse_modified_at)[:4], "2020")
+
+    def test_accounts_expose_the_same_pair(self):
+        customer = Customer.objects.create(organisation=self.org, name="Globex")
+        response = self.client.post(
+            f"/api/v1/customers/{customer.id}/accounts/",
+            {"name": "EMEA", "ai_pulse_score": "moderate", "csm_pulse_score": 5},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["ai_pulse_value"], 3)
+        self.assertEqual(response.data["ai_pulse_score"], "moderate")
+        self.assertEqual(response.data["csm_pulse_score"], 5)
+        self.assertIsNotNone(response.data["csm_pulse_modified_at"])
+
+
+class HealthRubricAPITests(APITestCase):
+    """`health_score` is computed from the five components in health.py now,
+    and writing it pins an override instead of setting the number directly."""
+
+    url = "/api/v1/customers/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+
+    def _customer(self, **kwargs):
+        return Customer.objects.create(organisation=self.org, name="Globex", **kwargs)
+
+    def _detail(self, customer):
+        return f"{self.url}{customer.id}/"
+
+    def _get(self, customer):
+        return self.client.get(self._detail(customer)).data
+
+    def test_exposes_every_component_of_the_score(self):
+        data = self._get(self._customer())
+        labels = [row["label"] for row in data["health_breakdown"]]
+        self.assertEqual(
+            labels,
+            [
+                "Customer Touch",
+                "AI Pulse",
+                "Licence Utilization",
+                "Aggregate Adoption Score",
+                "Support Tickets Volume",
+            ],
+        )
+
+    def test_the_components_add_up_to_the_score(self):
+        # The whole reason the rubric exists: the popover used to derive its
+        # rows *from* the headline number, so they could never reconcile.
+        customer = self._customer(
+            ai_pulse_value=4,
+            total_active_seats=80,
+            total_contracted_seats=100,
+            primary_product="Product A",
+            additional_products_count=1,
+        )
+        customer.recalculate_health()
+
+        data = self._get(customer)
+        measured = [r for r in data["health_breakdown"] if r["available"]]
+        self.assertEqual(len(measured), len(data["health_breakdown"]))
+        self.assertEqual(
+            sum(Decimal(r["points"]) for r in measured), Decimal(data["health_score"])
+        )
+
+    def test_marks_a_component_it_cannot_measure(self):
+        # No seat figures recorded — the component is reported unavailable
+        # rather than scored zero, and is left out of the total.
+        data = self._get(self._customer(total_contracted_seats=None))
+        licence = next(r for r in data["health_breakdown"] if r["key"] == "licence_utilization")
+        self.assertFalse(licence["available"])
+        self.assertEqual(licence["points"], "0.0")
+
+    def test_a_fresh_customer_is_not_punished_for_having_no_activity(self):
+        # Touch is measured from when the row arrived if it has no activities,
+        # so a new logo doesn't lose the heaviest component on day one.
+        data = self._get(self._customer())
+        touch = next(r for r in data["health_breakdown"] if r["key"] == "customer_touch")
+        self.assertTrue(touch["available"])
+        self.assertEqual(touch["ratio"], 1.0)
+
+    def test_score_is_recalculated_on_create(self):
+        response = self.client.post(
+            self.url,
+            {"name": "Initech", "ai_pulse_value": 1, "primary_product": ""},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(response.data["health_score_is_overridden"])
+        # Not the model's 5.0 default — the rubric ran.
+        customer = Customer.objects.get(name="Initech")
+        self.assertEqual(Decimal(response.data["health_score"]), customer.health_score)
+
+    def test_writing_the_score_pins_it_as_an_override(self):
+        customer = self._customer(ai_pulse_value=1)
+        response = self.client.patch(self._detail(customer), {"health_score": "9.9"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["health_score"], "9.9")
+        self.assertTrue(response.data["health_score_is_overridden"])
+        customer.refresh_from_db()
+        self.assertEqual(customer.health_score_override, Decimal("9.9"))
+        self.assertEqual(customer.health_score, Decimal("9.9"))
+
+    def test_an_override_survives_an_unrelated_edit(self):
+        customer = self._customer()
+        self.client.patch(self._detail(customer), {"health_score": "9.9"}, format="json")
+        self.client.patch(self._detail(customer), {"name": "Globex Corp"}, format="json")
+
+        customer.refresh_from_db()
+        self.assertEqual(customer.health_score, Decimal("9.9"))
+
+    def test_clearing_the_override_hands_the_customer_back_to_the_rubric(self):
+        customer = self._customer(ai_pulse_value=1)
+        self.client.patch(self._detail(customer), {"health_score": "9.9"}, format="json")
+
+        response = self.client.patch(self._detail(customer), {"health_score": None}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["health_score_is_overridden"])
+
+        customer.refresh_from_db()
+        self.assertIsNone(customer.health_score_override)
+        self.assertNotEqual(customer.health_score, Decimal("9.9"))
+
+    def test_rejects_a_score_off_the_scale(self):
+        customer = self._customer()
+        for value in ("-1.0", "11.0"):
+            response = self.client.patch(
+                self._detail(customer), {"health_score": value}, format="json"
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_health_category_follows_the_computed_score(self):
+        customer = self._customer()
+        self.client.patch(self._detail(customer), {"health_score": "2.0"}, format="json")
+        self.assertEqual(self._get(customer)["health_category"], "poor")
+
+        self.client.patch(self._detail(customer), {"health_score": "9.0"}, format="json")
+        self.assertEqual(self._get(customer)["health_category"], "good")
+
+    def test_listing_many_customers_does_not_query_per_row(self):
+        # health_breakdown needs a last-touch date and an open-ticket count;
+        # without the annotation that is two extra queries per row.
+        for i in range(8):
+            Customer.objects.create(organisation=self.org, name=f"Co {i}")
+
+        # Three for the page however many rows it has: a COUNT, the SELECT
+        # carrying both health subqueries, and one prefetch of every CSAT
+        # response. The per-row breakdowns cost nothing further.
+        with self.assertNumQueries(3):
+            response = self.client.get(self.url)
+        self.assertEqual(len(response.data["results"]), 8)
+
+    def test_the_query_count_does_not_grow_with_the_page(self):
+        # The assertion above is only meaningful if it holds at a larger size:
+        # a fixed number for 8 rows could still be per-row at 30.
+        for i in range(30):
+            Customer.objects.create(organisation=self.org, name=f"Big {i}")
+
+        with self.assertNumQueries(3):
+            response = self.client.get(self.url)
+        self.assertGreater(len(response.data["results"]), 8)
+
+
+class CustomerHealthViewTests(APITestCase):
+    """One request serving all four Health Overview tabs."""
+
+    url = "/api/v1/customers/health/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.other_org = Organisation.objects.create(name="Globex")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(
+            organisation=self.org,
+            name="Hyatt",
+            csm_pulse_score=4,
+            ai_pulse_value=2,
+            total_active_seats=822,
+        )
+        self.client.force_authenticate(self.admin)
+
+    def test_unauthenticated_is_refused(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_returns_the_whole_book_unpaginated(self):
+        # Every tab aggregates over all of it — a paged triage queue would
+        # rank nothing, and a paged flow chart would show the wrong movement.
+        for i in range(30):
+            Customer.objects.create(organisation=self.org, name=f"Co {i}")
+
+        data = self.client.get(self.url).data
+        self.assertEqual(data["count"], 31)
+        self.assertEqual(len(data["results"]), 31)
+        self.assertFalse(data["truncated"])
+
+    def test_is_scoped_to_the_callers_organisation(self):
+        Customer.objects.create(organisation=self.other_org, name="Not Mine")
+        names = [r["name"] for r in self.client.get(self.url).data["results"]]
+        self.assertIn("Hyatt", names)
+        self.assertNotIn("Not Mine", names)
+
+    def test_excludes_archived_customers(self):
+        Customer.objects.create(organisation=self.org, name="Gone", is_archived=True)
+        names = [r["name"] for r in self.client.get(self.url).data["results"]]
+        self.assertNotIn("Gone", names)
+
+    def test_carries_the_fields_the_dashboard_reads(self):
+        row = self.client.get(self.url).data["results"][0]
+        for field in (
+            "id", "name", "owner_name", "lifecycle_stage_display", "renewal_date",
+            "health_score", "health_category", "csm_pulse_score", "csm_pulse_modified_at",
+            "ai_pulse_value", "ai_pulse_reason", "total_active_seats", "history",
+        ):
+            self.assertIn(field, row)
+
+    def test_keeps_an_unrated_pulse_null_rather_than_guessing(self):
+        # "Not rated yet" is a real state. Sending 0 or 3 instead would make
+        # the Divergence view read an unrated account as an agreed-on one.
+        Customer.objects.create(organisation=self.org, name="Unrated")
+        row = next(r for r in self.client.get(self.url).data["results"] if r["name"] == "Unrated")
+        self.assertIsNone(row["csm_pulse_score"])
+        self.assertIsNone(row["ai_pulse_value"])
+
+    def test_includes_recorded_history_oldest_first(self):
+        for day, score in ((31, "8.0"), (28, "5.0")):
+            HealthSnapshot.objects.create(
+                customer=self.customer,
+                captured_on=date(2026, 1, 31) if day == 31 else date(2026, 2, 28),
+                health_score=score,
+            )
+        row = next(r for r in self.client.get(self.url).data["results"] if r["name"] == "Hyatt")
+        captured = [h["captured_on"] for h in row["history"]]
+        self.assertEqual(captured, sorted(captured))
+        self.assertEqual(row["history"][0]["health_category"], "good")
+
+    def test_history_months_trims_the_payload(self):
+        today = timezone.localdate()
+        for months_back in (1, 10):
+            HealthSnapshot.objects.create(
+                customer=self.customer,
+                captured_on=today - timedelta(days=31 * months_back),
+                health_score="5.0",
+            )
+
+        full = self.client.get(self.url).data["results"]
+        trimmed = self.client.get(f"{self.url}?history_months=3").data
+
+        self.assertEqual(len(next(r for r in full if r["name"] == "Hyatt")["history"]), 2)
+        self.assertEqual(
+            len(next(r for r in trimmed["results"] if r["name"] == "Hyatt")["history"]), 1
+        )
+        self.assertEqual(trimmed["history_months"], 3)
+
+    def test_rejects_a_nonsense_history_window(self):
+        for value in ("0", "-3", "soon"):
+            response = self.client.get(f"{self.url}?history_months={value}")
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_does_not_query_per_customer(self):
+        # Each row carries its owner and a year of snapshots; without
+        # select_related/prefetch that is two more queries per customer.
+        for i in range(10):
+            other = Customer.objects.create(organisation=self.org, name=f"Co {i}")
+            HealthSnapshot.objects.create(
+                customer=other, captured_on=date(2026, 1, 31), health_score="7.0"
+            )
+
+        # One SELECT for the customers (owners joined), one for every
+        # snapshot at once. Nothing per row.
+        with self.assertNumQueries(2):
+            self.client.get(self.url)

@@ -24,6 +24,8 @@ Usage:
     python manage.py seed_demo_surveys --org-email alice@acme.io
 """
 
+import random
+
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
@@ -52,6 +54,31 @@ DEMO_EXTRA_SURVEYS = [
         "days_ago": 60,
     },
 ]
+
+
+#: Extra CSAT responses seeded per customer, on top of the exact-score one.
+#: Six plus the exact one fills the seven-month rotation `next_dates` uses,
+#: so every response lands in its own month.
+CSAT_EXTRA_RESPONSES = 6
+
+#: How far the extra responses sit from the customer's own average. Wide
+#: enough to cross band boundaries — a spread that never leaves one band
+#: would draw the same single bar the hardcoded popover did.
+CSAT_SPREAD = (-30, -18, -9, 9, 18, 30)
+
+
+def csat_scatter(customer):
+    """Extra CSAT scores for `customer`, spread around its stored average.
+
+    Deterministic per customer (seeded off its pk), so re-running seeds the
+    same distribution rather than a new one each time. Clamped to 0-100, which
+    means the set averages near the stored score rather than exactly to it —
+    the exact value is carried by its own response alongside these.
+    """
+    rng = random.Random(f"csat:{customer.pk}")
+    mean = int(round(customer.csat_score))
+    offsets = rng.sample(CSAT_SPREAD, k=min(CSAT_EXTRA_RESPONSES, len(CSAT_SPREAD)))
+    return [max(0, min(100, mean + offset)) for offset in offsets]
 
 
 class Command(BaseCommand):
@@ -113,6 +140,8 @@ class Command(BaseCommand):
                 created += was_created
                 updated += not was_created
             if customer.csat_score is not None:
+                # The exact stored score first — that's the provenance this
+                # command exists to supply.
                 was_created = upsert_responded(
                     customer=customer,
                     survey_type=Survey.SurveyType.CSAT,
@@ -120,6 +149,19 @@ class Command(BaseCommand):
                 )
                 created += was_created
                 updated += not was_created
+
+                # Then a handful more scattered around it. One response is a
+                # real number but not a distribution, and the Organizations
+                # table's CSAT popover exists to show how answers *spread* —
+                # with a single response every customer showed one 100% bar.
+                for extra in csat_scatter(customer):
+                    was_created = upsert_responded(
+                        customer=customer,
+                        survey_type=Survey.SurveyType.CSAT,
+                        score=extra,
+                    )
+                    created += was_created
+                    updated += not was_created
             if customer.ces_percentage is not None:
                 was_created = upsert_responded(
                     customer=customer,

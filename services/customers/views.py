@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from django.db import transaction
-from django.db.models import CharField, Count, Q
+from django.db.models import CharField, Count, Prefetch, Q
 from django.db.models.functions import Cast, TruncMonth
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -24,11 +24,13 @@ from .models import (
     Contact,
     Customer,
     Headline,
+    HealthSnapshot,
     Opportunity,
     Risk,
     Survey,
     Task,
     Ticket,
+    with_health_inputs,
 )
 from .scoping import (
     get_visible_account,
@@ -43,6 +45,7 @@ from .serializers import (
     CalendarEventSerializer,
     CanvasSerializer,
     ContactSerializer,
+    CustomerHealthRowSerializer,
     CustomerSerializer,
     EmailSerializer,
     HeadlineSerializer,
@@ -110,7 +113,12 @@ class CustomerListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = visible_customers(self.request.user).filter(is_archived=False)
+        # Annotated up front: every serialized row renders health_breakdown,
+        # which needs a last-touch date and an open-ticket count. Without this
+        # each row runs two more queries — 120 extra on a 60-customer page.
+        queryset = with_health_inputs(
+            visible_customers(self.request.user).filter(is_archived=False)
+        )
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -142,6 +150,87 @@ class CustomerListCreateView(generics.ListCreateAPIView):
             kind=Notification.Kind.CUSTOMER_ASSIGNED,
             noun="the organization",
             link=f"/organizations/{customer.id}",
+        )
+
+
+class CustomerHealthView(generics.ListAPIView):
+    """GET /api/v1/customers/health/ — the whole book with its health history,
+    for the Health Overview dashboard (Triage / Divergence / Movement /
+    Controls). Scoped to the caller's own organisation.
+
+    One request for four tabs. They read the same rows differently — ranked by
+    risk, plotted CSM-pulse against AI-pulse, counted as transitions between
+    months — so splitting this into four endpoints would fetch the same book
+    four times.
+
+    **Unpaginated on purpose.** Every tab aggregates over the entire book:
+    a triage queue that ranked only page one would rank nothing, and a flow
+    chart missing half the accounts would show the wrong movement. Capped at
+    MAX_ROWS so it can't become an unbounded response if a tenant grows past
+    what this shape supports — the cap is reported in the payload rather than
+    silently truncating.
+
+    Archived customers are excluded, matching the list endpoint: they're
+    deliberately hidden from the working views, and health is a working view.
+
+    `?history_months=` trims how much history comes back (default 12, the most
+    any tab offers). Movement's own window selector re-slices client-side;
+    this is for keeping the payload down, not for the UI.
+    """
+
+    serializer_class = CustomerHealthRowSerializer
+    pagination_class = None
+
+    #: Beyond this the one-request-for-the-whole-book shape stops being
+    #: reasonable and the dashboard needs server-side aggregation instead.
+    MAX_ROWS = 500
+    DEFAULT_HISTORY_MONTHS = 12
+
+    def _history_months(self):
+        raw = self.request.query_params.get("history_months")
+        if raw is None:
+            return self.DEFAULT_HISTORY_MONTHS
+        try:
+            months = int(raw)
+        except ValueError as exc:
+            raise ValidationError({"history_months": "Must be a whole number."}) from exc
+        if months < 1:
+            raise ValidationError({"history_months": "Must be at least 1."})
+        return months
+
+    def get_queryset(self):
+        months = self._history_months()
+        # Month-ends only go back so far; trimming by date rather than by count
+        # keeps every customer's history aligned on the same months, which is
+        # what the flow chart's columns depend on.
+        earliest = timezone.localdate() - timedelta(days=31 * months)
+
+        snapshots = HealthSnapshot.objects.filter(captured_on__gte=earliest).order_by(
+            "captured_on"
+        )
+        return (
+            visible_customers(self.request.user)
+            .filter(is_archived=False)
+            .select_related("owner")
+            .prefetch_related(Prefetch("health_snapshots", queryset=snapshots))
+            # One past the cap, so `list` can tell "exactly MAX_ROWS rows"
+            # from "more than MAX_ROWS and trimmed" without a second count.
+            .order_by("name")[: self.MAX_ROWS + 1]
+        )
+
+    def list(self, request, *args, **kwargs):
+        customers = list(self.get_queryset())
+        truncated = len(customers) > self.MAX_ROWS
+        rows = self.get_serializer(customers[: self.MAX_ROWS], many=True).data
+        return Response(
+            {
+                "results": rows,
+                "count": len(rows),
+                "history_months": self._history_months(),
+                # True only when rows were actually dropped, so the client can
+                # say so rather than quietly charting a partial book.
+                "truncated": truncated,
+            }
         )
 
 
@@ -260,7 +349,7 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return visible_customers(self.request.user)
+        return with_health_inputs(visible_customers(self.request.user))
 
     def perform_update(self, serializer):
         previous_owner_id = serializer.instance.owner_id

@@ -1,7 +1,78 @@
+from decimal import Decimal
+
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import OuterRef, Subquery
+from django.db.models.functions import Coalesce
 
 from services.accounts.models import Organisation
+
+from .health import breakdown_from, score_from
+
+#: CSAT bands, worst first, as `(upper_bound_inclusive, label)`.
+#:
+#: Equal fifths of the 0-100 scale. Survey.score for a CSAT response is a
+#: percentage, but the popover this backs has always spoken in five
+#: satisfaction bands — so the mapping is the plainest one that can be
+#: explained in a sentence, rather than a curve nobody can defend.
+CSAT_BANDS = (
+    (20, "very_dissatisfied"),
+    (40, "dissatisfied"),
+    (60, "neutral"),
+    (80, "satisfied"),
+    (100, "very_satisfied"),
+)
+
+CSAT_BAND_LABELS = {
+    "very_satisfied": "Very Satisfied",
+    "satisfied": "Satisfied",
+    "neutral": "Neutral",
+    "dissatisfied": "Dissatisfied",
+    "very_dissatisfied": "Very Dissatisfied",
+}
+
+
+def csat_band(score):
+    """Which band a 0-100 CSAT score falls in, or None if there isn't one."""
+    if score is None:
+        return None
+    for upper, band in CSAT_BANDS:
+        if score <= upper:
+            return band
+    # Above 100 shouldn't happen (the serializer range-checks it), but a
+    # stray high score is "very satisfied", not "no band at all".
+    return CSAT_BANDS[-1][1]
+
+
+def health_category_for(score):
+    """Map a 0-10 health score onto its display category.
+
+    Coerces first: a DecimalField holds whatever was assigned to it until the
+    row is reloaded, so an instance built with `health_score="2.5"` carries a
+    str, and comparing that to a threshold raises TypeError rather than
+    returning a category. Customer, Account and HealthSnapshot all read through
+    here so none of them can drift from the others.
+    """
+    for threshold, category in Customer.HEALTH_THRESHOLDS:
+        if Decimal(score) >= threshold:
+            return category
+    return Customer.HealthCategory.POOR
+
+
+def ai_pulse_category(value):
+    """Map a 1-5 AI pulse value onto the four categories the API speaks in.
+
+    Lives at module level rather than on Customer because Account, the
+    serializers and the snapshot model all need the same mapping, and a second
+    copy is exactly how a derived value starts disagreeing with itself.
+    """
+    if value is None:
+        return ""
+    for threshold, category in Customer.AI_PULSE_THRESHOLDS:
+        if value >= threshold:
+            return category
+    return Customer.AIPulseScore.HIGH_RISK
 
 
 class Customer(models.Model):
@@ -112,13 +183,49 @@ class Customer(models.Model):
         max_digits=3,
         decimal_places=1,
         default=5.0,
-        help_text="0.0-10.0. health_category is derived from this, not stored.",
+        help_text="0.0-10.0. Maintained by recalculate_health() from the five "
+        "components in health.py — or set straight from health_score_override when "
+        "that is set. Stored rather than derived so the list endpoint can still "
+        "order and filter on it in SQL. health_category is derived from it.",
+    )
+    health_score_override = models.DecimalField(
+        max_digits=3,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        help_text="A score pinned by hand, overriding the rubric. Null means the "
+        "score is whatever the components add up to. Kept as its own column rather "
+        "than just writing health_score, so 'a human decided this' stays "
+        "distinguishable from 'the maths happened to land here' — the popover says "
+        "which, and clearing this returns the customer to the calculation.",
     )
     pulse = models.JSONField(
         default=list, blank=True, help_text="Recent pulse-history dots, e.g. [1,1,0,2,1]."
     )
-    ai_pulse_score = models.CharField(max_length=20, choices=AIPulseScore.choices, blank=True)
+    ai_pulse_value = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="1-5, produced by the model. ai_pulse_score (the category) is "
+        "derived from this, not stored — same reasoning as health_score/health_category. "
+        "Null means the model hasn't scored this one yet, which is not the same as a 1.",
+    )
     ai_pulse_reason = models.TextField(blank=True)
+    csm_pulse_score = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="1-5, set by hand by the CSM who owns this. Deliberately the same "
+        "scale as ai_pulse_value so the two are directly comparable — the gap between "
+        "them is what the Health Overview's Divergence view reads. Null means the CSM "
+        "hasn't rated it, which is not the same as a 1.",
+    )
+    csm_pulse_modified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When csm_pulse_score was last changed. Not auto_now — it tracks the "
+        "pulse specifically, not any edit to the row, so a stale CSM read stays visibly stale.",
+    )
     nps_score = models.IntegerField(null=True, blank=True, help_text="-100 to 100.")
     csat_score = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True, help_text="0-100 (%)."
@@ -175,12 +282,140 @@ class Customer(models.Model):
     # score >= 7.0 -> good, 4.0-6.9 -> average, < 4.0 -> poor.
     HEALTH_THRESHOLDS = ((7, HealthCategory.GOOD), (4, HealthCategory.AVERAGE))
 
+    # value 5 -> very satisfied, 4 -> satisfied, 3 -> moderate, 1-2 -> high risk.
+    # The API still speaks in these four categories; the number behind them is
+    # what the dashboards compare against csm_pulse_score.
+    AI_PULSE_THRESHOLDS = (
+        (5, AIPulseScore.VERY_SATISFIED),
+        (4, AIPulseScore.SATISFIED),
+        (3, AIPulseScore.MODERATE),
+    )
+
+    @property
+    def csat_breakdown(self):
+        """How this customer's answered CSAT surveys fall across the five bands.
+
+        Reads `surveys` — prefetched as `_csat_responses` where the queryset
+        supplied it, queried otherwise, the same arrangement as
+        `health_inputs`. Returns every band, including the empty ones, so the
+        popover renders a stable five-row shape rather than a list that
+        changes length per customer.
+        """
+        if hasattr(self, "_csat_responses"):
+            responses = self._csat_responses
+        else:
+            responses = self.surveys.filter(
+                survey_type=Survey.SurveyType.CSAT, status=Survey.Status.RESPONDED
+            )
+
+        counts = {band: 0 for _, band in CSAT_BANDS}
+        total = 0
+        for survey in responses:
+            band = csat_band(survey.score)
+            if band is None:
+                continue
+            counts[band] += 1
+            total += 1
+
+        # Worst band last, matching the popover's own top-to-bottom order.
+        ordered = [band for _, band in reversed(CSAT_BANDS)]
+        return {
+            "responses": total,
+            "bands": [
+                {
+                    "key": band,
+                    "label": CSAT_BAND_LABELS[band],
+                    "count": counts[band],
+                    "share": round(counts[band] / total * 100, 2) if total else 0.0,
+                }
+                for band in ordered
+            ],
+        }
+
+    @property
+    def health_score_is_overridden(self):
+        return self.health_score_override is not None
+
+    def health_inputs(self, today=None):
+        """Everything health.py needs, as plain values.
+
+        Reads the two related-row figures off annotations when the queryset
+        supplied them (see `with_health_inputs`) and falls back to querying
+        otherwise — so a single customer works standalone, and a list page
+        doesn't run two extra queries per row.
+        """
+        from django.utils import timezone
+
+        today = today or timezone.localdate()
+
+        if hasattr(self, "_last_touch_on"):
+            last_touch_on = self._last_touch_on
+        else:
+            last_touch_on = self.activities.aggregate(m=models.Max("occurred_at"))["m"]
+
+        if hasattr(self, "_open_ticket_count"):
+            open_ticket_count = self._open_ticket_count
+        else:
+            open_ticket_count = self.tickets.exclude(
+                status__in=Ticket.RESOLVED_STATUSES
+            ).count()
+
+        # An untouched customer is measured from when it arrived, not from
+        # never — a logo onboarded last week hasn't been neglected.
+        reference = last_touch_on or self.joined_date or self.created_at.date()
+
+        return {
+            "days_since_touch": (today - reference).days,
+            "ai_pulse_value": self.ai_pulse_value,
+            "active_seats": self.total_active_seats,
+            "contracted_seats": self.total_contracted_seats,
+            "primary_product": self.primary_product,
+            "additional_products_count": self.additional_products_count,
+            "open_ticket_count": open_ticket_count,
+        }
+
+    @property
+    def health_breakdown(self):
+        """The five components behind this customer's score."""
+        return breakdown_from(**self.health_inputs())
+
+    def recalculate_health(self, save=True):
+        """Recompute `health_score` from the rubric (or apply the override).
+
+        Called explicitly rather than from save(): the calculation needs two
+        related-row figures, and running them on every write — including writes
+        that touch nothing health-related — would be a surprise cost on a model
+        this widely saved.
+
+        Leaves the existing score alone when nothing at all could be measured,
+        rather than dropping the customer to zero for having an empty CRM row.
+        """
+        if self.health_score_override is not None:
+            self.health_score = self.health_score_override
+        else:
+            computed = score_from(self.health_breakdown)
+            if computed is None:
+                return self.health_score
+            self.health_score = computed
+
+        if save:
+            self.save(update_fields=["health_score"])
+        return self.health_score
+
     @property
     def health_category(self):
-        for threshold, category in self.HEALTH_THRESHOLDS:
-            if self.health_score >= threshold:
-                return category
-        return self.HealthCategory.POOR
+        return health_category_for(self.health_score)
+
+    @property
+    def ai_pulse_score(self):
+        """The AI pulse as one of the four display categories.
+
+        Was a stored CharField. It is derived now so it can never disagree with
+        `ai_pulse_value`, which is the number the Divergence view plots against
+        the CSM's own read. Blank (not null) when unscored, matching what the
+        column used to hold and what the frontend's AI_PULSE_LABELS expects.
+        """
+        return ai_pulse_category(self.ai_pulse_value)
 
     @property
     def seat_utilization_percentage(self):
@@ -308,10 +543,22 @@ class Account(models.Model):
     pulse = models.JSONField(
         default=list, blank=True, help_text="Recent pulse-history dots, e.g. [1,1,0,2,1]."
     )
-    ai_pulse_score = models.CharField(
-        max_length=20, choices=Customer.AIPulseScore.choices, blank=True
+    ai_pulse_value = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="1-5, produced by the model. See Customer.ai_pulse_value.",
     )
     ai_pulse_reason = models.TextField(blank=True)
+    csm_pulse_score = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="1-5, set by hand by the CSM. See Customer.csm_pulse_score.",
+    )
+    csm_pulse_modified_at = models.DateTimeField(
+        null=True, blank=True, help_text="See Customer.csm_pulse_modified_at."
+    )
     nps_score = models.IntegerField(null=True, blank=True, help_text="-100 to 100.")
     csat_score = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True, help_text="0-100 (%)."
@@ -326,10 +573,12 @@ class Account(models.Model):
 
     @property
     def health_category(self):
-        for threshold, category in Customer.HEALTH_THRESHOLDS:
-            if self.health_score >= threshold:
-                return category
-        return Customer.HealthCategory.POOR
+        return health_category_for(self.health_score)
+
+    @property
+    def ai_pulse_score(self):
+        """See Customer.ai_pulse_score — same derivation, same categories."""
+        return ai_pulse_category(self.ai_pulse_value)
 
     class Meta:
         ordering = ["name"]
@@ -337,6 +586,182 @@ class Account(models.Model):
     def __str__(self):
         names = ", ".join(self.customers.values_list("name", flat=True)) or "no organisation"
         return f"{self.name} ({names})"
+
+
+def with_health_inputs(queryset):
+    """Annotate `queryset` with the two related-row figures the rubric needs.
+
+    Subqueries rather than `annotate(Max(...), Count(...))`: aggregating over
+    two different reverse relations in one annotate joins them together first,
+    so every activity multiplies every ticket and the count comes back inflated.
+    Two correlated subqueries give the right numbers and still cost one query
+    for the page.
+
+    `Customer.health_inputs` picks these up automatically when they're present.
+    """
+    last_touch = (
+        Activity.objects.filter(customer=OuterRef("pk"))
+        .order_by()
+        .values("customer")
+        .annotate(value=models.Max("occurred_at"))
+        .values("value")[:1]
+    )
+    open_tickets = (
+        Ticket.objects.filter(customer=OuterRef("pk"))
+        .exclude(status__in=Ticket.RESOLVED_STATUSES)
+        .order_by()
+        .values("customer")
+        .annotate(value=models.Count("id"))
+        .values("value")[:1]
+    )
+    return queryset.annotate(
+        _last_touch_on=Subquery(last_touch, output_field=models.DateField()),
+        # No open tickets at all means the subquery returns nothing, not 0.
+        _open_ticket_count=Coalesce(
+            Subquery(open_tickets, output_field=models.IntegerField()), 0
+        ),
+    ).prefetch_related(
+        # `csat_breakdown` buckets these in Python. A prefetch rather than five
+        # more subqueries: one query for the page either way, and the banding
+        # rule stays in one place instead of being restated in SQL.
+        models.Prefetch(
+            "surveys",
+            queryset=Survey.objects.filter(
+                survey_type=Survey.SurveyType.CSAT, status=Survey.Status.RESPONDED
+            ),
+            to_attr="_csat_responses",
+        )
+    )
+
+
+class HealthSnapshot(models.Model):
+    """What one Customer's (or Account's) health looked like on one date.
+
+    `Customer.health_score` / `csm_pulse_score` / `ai_pulse_value` only ever
+    hold *today's* reading — updating them overwrites yesterday's. This is the
+    row that remembers, so the Health Overview's Movement view can count how
+    many accounts moved between Good/Average/Poor from one month to the next
+    rather than just how many sit in each today. A month where nine accounts
+    fell and nine recovered is indistinguishable from a quiet one without it.
+
+    One row per parent per `captured_on` (enforced below). Nothing writes these
+    on a schedule yet — `capture_health_snapshot` is the entry point, and the
+    seed command backfills a year so the charts have something real to draw.
+
+    `customer`/`account` are both nullable FKs with a CheckConstraint that
+    exactly one is set, the same shape and for the same reasons as Activity —
+    see that model's docstring.
+
+    The three readings are stored, not derived from the parent: that is the
+    whole point of a snapshot. `health_category` and `ai_pulse_score` *are*
+    derived, from this row's own stored numbers, so a snapshot reports its
+    categories exactly the way a live row does.
+    """
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="health_snapshots",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level snapshot. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="health_snapshots",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level snapshot. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    captured_on = models.DateField(
+        help_text="The date this reading is for. Month-end when backfilled, so a "
+        "series of these lines up as monthly columns."
+    )
+    health_score = models.DecimalField(
+        max_digits=3,
+        decimal_places=1,
+        help_text="0.0-10.0 as it stood on captured_on. health_category is derived.",
+    )
+    csm_pulse_score = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="1-5 as it stood on captured_on, or null if unrated then.",
+    )
+    ai_pulse_value = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="1-5 as it stood on captured_on, or null if unscored then.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def health_category(self):
+        return health_category_for(self.health_score)
+
+    @property
+    def ai_pulse_score(self):
+        return ai_pulse_category(self.ai_pulse_value)
+
+    class Meta:
+        ordering = ["captured_on", "id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="healthsnapshot_belongs_to_exactly_one_parent",
+            ),
+            # Partial uniques rather than unique_together: a null parent must not
+            # collide with every other null parent on the same date.
+            models.UniqueConstraint(
+                fields=["customer", "captured_on"],
+                condition=models.Q(customer__isnull=False),
+                name="healthsnapshot_one_per_customer_per_date",
+            ),
+            models.UniqueConstraint(
+                fields=["account", "captured_on"],
+                condition=models.Q(account__isnull=False),
+                name="healthsnapshot_one_per_account_per_date",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["customer", "captured_on"]),
+            models.Index(fields=["account", "captured_on"]),
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{parent} @ {self.captured_on} ({self.health_category})"
+
+
+def capture_health_snapshot(parent, captured_on=None):
+    """Record `parent`'s current health as a snapshot for `captured_on`.
+
+    Upserts: re-running for a date that already has a row overwrites it rather
+    than raising, so a scheduled job that fires twice in a day is harmless.
+    `parent` is a Customer or an Account; which FK gets set follows from that.
+    """
+    from django.utils import timezone
+
+    captured_on = captured_on or timezone.localdate()
+    key = "customer" if isinstance(parent, Customer) else "account"
+
+    snapshot, _ = HealthSnapshot.objects.update_or_create(
+        **{key: parent},
+        captured_on=captured_on,
+        defaults={
+            "health_score": parent.health_score,
+            "csm_pulse_score": parent.csm_pulse_score,
+            "ai_pulse_value": parent.ai_pulse_value,
+        },
+    )
+    return snapshot
 
 
 class Activity(models.Model):

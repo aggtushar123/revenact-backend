@@ -108,6 +108,35 @@ The API is now live at `http://localhost:8000/`.
 schema above — it explains *why* endpoints look the way they do, notes
 frontend↔backend shape differences, and tracks what's built vs. pending.
 
+## Scheduled work
+
+One job needs to run on a timer:
+
+```bash
+python manage.py run_health_maintenance
+```
+
+It recalculates every `Customer.health_score` from the health rubric
+(`services/customers/health.py`) and records that month's `HealthSnapshot`.
+Both drift without anyone touching a customer row — the score counts days
+since the last touch and open tickets, and the snapshots are what the Health
+Overview's Movement tab charts.
+
+**Run it daily.** It is idempotent: recalculation recomputes from scratch, and
+the snapshot writes at most one row per customer per month and skips a month
+already recorded. A tick firing twice, landing at an odd hour, or being missed
+costs nothing.
+
+`docker compose up scheduler` runs it in a loop for local/demo use. There is
+deliberately **no task queue** in this project — celery plus a beat process and
+a worker is a lot of infrastructure for one daily command, so the scheduler
+service is a `sleep` loop and real deployments should point cron (or whatever
+the platform offers) at the command directly. `--dry-run` reports what it would
+do; `--org-email` limits it to one tenant.
+
+`python manage.py recalculate_health` does the scores alone, without recording
+a snapshot.
+
 ## Workflow for adding a feature
 
 This backend grows in lockstep with the frontend, one feature at a time:

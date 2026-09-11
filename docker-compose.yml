@@ -54,5 +54,39 @@ services:
       sh -c "python manage.py migrate --noinput &&
              python manage.py runserver 0.0.0.0:8000"
 
+  # Account health goes stale on its own: `health_score` counts days since
+  # the last touch and open tickets, and `HealthSnapshot` is what the Health
+  # Overview's Movement tab charts — neither moves unless something runs.
+  # `run_health_maintenance` does both (see its own docstring).
+  #
+  # A sleep loop rather than cron-in-the-image or a task queue. There is no
+  # celery here, and installing cron would mean a second process supervisor
+  # and its logs going somewhere other than `docker compose logs`. The job is
+  # idempotent — recalculation recomputes from scratch and the snapshot writes
+  # at most one row per customer per month — so a tick landing at an odd hour,
+  # firing twice after a restart, or being missed entirely costs nothing.
+  #
+  # The tradeoff: the run time drifts by however long the job takes and by
+  # when the container last restarted, so this is "about daily", not "00:05
+  # daily". Swap in a real scheduler when there's a deployment to hang one on.
+  scheduler:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://revenact:revenact@db:5432/revenact
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "while true; do
+               python manage.py run_health_maintenance || echo 'health maintenance failed; retrying tomorrow';
+               sleep 86400;
+             done"
+
 volumes:
   revenact_pgdata:

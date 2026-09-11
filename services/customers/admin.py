@@ -9,6 +9,7 @@ from .models import (
     Customer,
     Email,
     Headline,
+    HealthSnapshot,
     Note,
     Opportunity,
     Risk,
@@ -29,7 +30,7 @@ class CustomerAdmin(admin.ModelAdmin):
         "renewal_date",
         "total_contract_value",
     ]
-    list_filter = ["organisation", "lifecycle_stage", "ai_pulse_score"]
+    list_filter = ["organisation", "lifecycle_stage", "ai_pulse_value"]
     search_fields = ["name", "domain"]
     readonly_fields = ["created_at", "updated_at", "created_by", "modified_by"]
 
@@ -45,7 +46,7 @@ class AccountAdmin(admin.ModelAdmin):
         "renewal_date",
         "arr",
     ]
-    list_filter = ["customers__organisation", "lifecycle_stage", "ai_pulse_score"]
+    list_filter = ["customers__organisation", "lifecycle_stage", "ai_pulse_value"]
     search_fields = ["name", "domain", "customers__name"]
     readonly_fields = ["created_at", "updated_at"]
 
@@ -54,6 +55,20 @@ class AccountAdmin(admin.ModelAdmin):
         # `customers` is a many-to-many now (see the Account model's own
         # docstring) — list_display can't render an M2M field directly.
         return ", ".join(obj.customers.values_list("name", flat=True))
+
+
+@admin.register(HealthSnapshot)
+class HealthSnapshotAdmin(admin.ModelAdmin):
+    list_display = ["parent", "captured_on", "health_score", "csm_pulse_score", "ai_pulse_value"]
+    list_filter = ["captured_on"]
+    search_fields = ["customer__name", "account__name"]
+    readonly_fields = ["created_at"]
+    date_hierarchy = "captured_on"
+
+    @admin.display(description="Customer / Account")
+    def parent(self, obj):
+        # Exactly one of the two is set — see the model's own CheckConstraint.
+        return obj.customer or obj.account
 
 
 @admin.register(Activity)

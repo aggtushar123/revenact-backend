@@ -13,16 +13,187 @@ from .models import (
     Customer,
     Email,
     Headline,
+    HealthSnapshot,
     Note,
     Opportunity,
     Risk,
     Survey,
     Task,
     Ticket,
+    ai_pulse_category,
 )
 
+# Reverse of Customer.AI_PULSE_THRESHOLDS: the value a category is written as
+# when a client sends the category instead of the number. Each one round-trips
+# back to the same category through ai_pulse_category().
+AI_PULSE_CATEGORY_VALUES = {
+    Customer.AIPulseScore.VERY_SATISFIED: 5,
+    Customer.AIPulseScore.SATISFIED: 4,
+    Customer.AIPulseScore.MODERATE: 3,
+    Customer.AIPulseScore.HIGH_RISK: 1,
+}
 
-class CustomerSerializer(serializers.ModelSerializer):
+
+class AIPulseScoreField(serializers.Field):
+    """The AI pulse as its category string, backed by the stored number.
+
+    `ai_pulse_score` used to be its own column and is part of the shipped API —
+    the frontend's AI_PULSE_LABELS reads it and clients POST it. The number is
+    what's stored now (see Customer.ai_pulse_value), so this keeps the old name
+    working in both directions rather than breaking callers: it renders the
+    category on read, and on write records the value that category stands for.
+
+    Declared with `source="*"` so the whole instance reaches
+    `to_representation`. Pointing it straight at `ai_pulse_value` looks simpler
+    but renders an unscored row as `null`, because DRF short-circuits a None
+    attribute before the field is ever consulted — and the column this replaced
+    was blank-not-null, which is what the frontend's own type still says.
+
+    For the same reason it is not `allow_null`: with `source="*"` a null would
+    reach `set_value` as the whole validated dict. An empty string clears the
+    score, exactly as it did when this was a blank CharField.
+    """
+
+    default_error_messages = {
+        "invalid_choice": "'{input}' is not a valid AI pulse score.",
+    }
+
+    def to_representation(self, instance):
+        return ai_pulse_category(instance.ai_pulse_value)
+
+    def to_internal_value(self, data):
+        if data == "":
+            return {"ai_pulse_value": None}
+        if data not in AI_PULSE_CATEGORY_VALUES:
+            self.fail("invalid_choice", input=data)
+        return {"ai_pulse_value": AI_PULSE_CATEGORY_VALUES[data]}
+
+
+class HealthScoreField(serializers.Field):
+    """`health_score` as the number in force, writing through to the override.
+
+    Reading returns whatever the customer's score currently is — the rubric's
+    own figure, or the pinned one when somebody has overridden it. Writing pins
+    it: a client PATCHing `health_score` is saying "I disagree with the
+    calculation", which is exactly what `health_score_override` records.
+
+    `source="*"` for the same reason as AIPulseScoreField — and because read and
+    write land on two different attributes here.
+    """
+
+    #: Bounds live on a real DecimalField so the range is enforced by the same
+    #: machinery as everywhere else, rather than a hand-rolled comparison.
+    _override = serializers.DecimalField(
+        max_digits=3, decimal_places=1, min_value=0, max_value=10
+    )
+
+    def validate_empty_values(self, data):
+        """Accept an explicit null as "clear the override".
+
+        Handled here rather than via `allow_null`: with `source="*"` a null
+        validated value reaches `set_value` as the whole validated dict and
+        blows up, so the null has to become the dict right here.
+        """
+        if data is None or data == "":
+            return True, {"health_score_override": None}
+        return super().validate_empty_values(data)
+
+    def to_representation(self, instance):
+        return str(instance.health_score)
+
+    def to_internal_value(self, data):
+        # run_validation, not to_internal_value: min_value/max_value are
+        # validators, and to_internal_value alone would parse "11.0" happily.
+        return {"health_score_override": self._override.run_validation(data)}
+
+
+class HealthBreakdownField(serializers.Field):
+    """The five components behind `health_score`, as the popover renders them.
+
+    Read-only. `points`/`weight` are strings for the same reason DRF renders
+    DecimalField that way — these are exact tenths, not floats to be summed in
+    JavaScript. `available` false means the component had nothing to measure
+    and was left out of the score rather than scored zero.
+    """
+
+    def __init__(self, **kwargs):
+        kwargs["read_only"] = True
+        kwargs.setdefault("source", "*")
+        super().__init__(**kwargs)
+
+    def to_representation(self, instance):
+        return [
+            {
+                "key": component.key,
+                "label": component.label,
+                "weight": str(component.weight),
+                "points": str(component.points),
+                "ratio": component.ratio,
+                "available": component.available,
+            }
+            for component in instance.health_breakdown
+        ]
+
+
+class HealthRecalculationMixin:
+    """Refresh `health_score` from the rubric after any write.
+
+    Here rather than in `Model.save()` so an ordinary save stays one query:
+    the calculation reads two related-row figures, and most writes to a
+    Customer have nothing to do with its health.
+    """
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        instance.recalculate_health()
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        instance.recalculate_health()
+        return instance
+
+
+class PulseWritesMixin:
+    """Shared handling for the two ways one pulse can arrive, and for stamping
+    the CSM's own edit time.
+
+    `ai_pulse_score` (category) and `ai_pulse_value` (number) both write the
+    same column, so a request carrying both is ambiguous and is rejected rather
+    than silently resolved. `csm_pulse_modified_at` is stamped here rather than
+    by the model, so it tracks the pulse changing and not any other edit.
+    """
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        initial = getattr(self, "initial_data", {}) or {}
+        if "ai_pulse_score" in initial and "ai_pulse_value" in initial:
+            raise serializers.ValidationError(
+                {
+                    "ai_pulse_score": "Send either ai_pulse_score or ai_pulse_value, not both — "
+                    "they write the same value."
+                }
+            )
+        return attrs
+
+    def _stamp_csm_pulse(self, validated_data, instance=None):
+        if "csm_pulse_score" not in validated_data:
+            return validated_data
+        unchanged = instance is not None and instance.csm_pulse_score == validated_data[
+            "csm_pulse_score"
+        ]
+        if not unchanged:
+            validated_data["csm_pulse_modified_at"] = timezone.now()
+        return validated_data
+
+    def create(self, validated_data):
+        return super().create(self._stamp_csm_pulse(validated_data))
+
+    def update(self, instance, validated_data):
+        return super().update(instance, self._stamp_csm_pulse(validated_data, instance))
+
+
+class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers.ModelSerializer):
     """Read: owner/created_by/modified_by nested (id/name/avatar/role/...).
     Write: owner_id, validated against the caller's own organisation in
     the view (a Customer can't be assigned to a CSM from a different
@@ -32,6 +203,11 @@ class CustomerSerializer(serializers.ModelSerializer):
     health_category = serializers.ChoiceField(
         choices=Customer.HealthCategory.choices, read_only=True
     )
+    health_score = HealthScoreField(source="*", required=False)
+    health_score_is_overridden = serializers.BooleanField(read_only=True)
+    health_breakdown = HealthBreakdownField()
+    csat_breakdown = serializers.JSONField(read_only=True)
+    ai_pulse_score = AIPulseScoreField(source="*", required=False)
     seat_utilization_percentage = serializers.FloatField(read_only=True)
     currency_display = serializers.CharField(source="get_currency_display", read_only=True)
 
@@ -64,10 +240,16 @@ class CustomerSerializer(serializers.ModelSerializer):
             "updated_at",
             "lifecycle_stage",
             "health_score",
+            "health_score_is_overridden",
+            "health_breakdown",
             "health_category",
+            "csat_breakdown",
             "pulse",
             "ai_pulse_score",
+            "ai_pulse_value",
             "ai_pulse_reason",
+            "csm_pulse_score",
+            "csm_pulse_modified_at",
             "nps_score",
             "csat_score",
             "joined_date",
@@ -95,7 +277,7 @@ class CustomerSerializer(serializers.ModelSerializer):
             "churn_comment",
             "is_archived",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at", "csm_pulse_modified_at"]
 
     def validate_owner_id(self, owner):
         request = self.context["request"]
@@ -128,7 +310,63 @@ class CustomerSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
-class AccountSerializer(serializers.ModelSerializer):
+class HealthSnapshotSerializer(serializers.ModelSerializer):
+    """One recorded month, as the Movement view's flow chart consumes it."""
+
+    health_category = serializers.ChoiceField(
+        choices=Customer.HealthCategory.choices, read_only=True
+    )
+
+    class Meta:
+        model = HealthSnapshot
+        fields = ["captured_on", "health_score", "health_category", "csm_pulse_score",
+                  "ai_pulse_value"]
+
+
+class CustomerHealthRowSerializer(serializers.ModelSerializer):
+    """One customer as the Health Overview dashboard needs it.
+
+    Deliberately not `CustomerSerializer`: that carries forty-odd fields
+    including every financial figure, and this endpoint returns the whole book
+    with a year of history attached. Only what the four tabs actually read.
+
+    `csm_pulse_score` and `ai_pulse_value` stay **nullable** all the way to the
+    browser. "Not rated yet" is a real state — the Divergence view must not read
+    an unrated account as one both parties agree is terrible.
+    """
+
+    owner_name = serializers.CharField(source="owner.name", default=None, read_only=True)
+    lifecycle_stage_display = serializers.CharField(
+        source="get_lifecycle_stage_display", read_only=True
+    )
+    health_category = serializers.ChoiceField(
+        choices=Customer.HealthCategory.choices, read_only=True
+    )
+    history = HealthSnapshotSerializer(source="health_snapshots", many=True, read_only=True)
+
+    class Meta:
+        model = Customer
+        fields = [
+            "id",
+            "name",
+            "owner_name",
+            "lifecycle_stage",
+            "lifecycle_stage_display",
+            "renewal_date",
+            "health_score",
+            "health_category",
+            "csm_pulse_score",
+            "csm_pulse_modified_at",
+            "ai_pulse_value",
+            "ai_pulse_reason",
+            # The dashboard sizes its scatter dots by this. It is seats, not
+            # "recruiters" — the mock it replaces invented that field.
+            "total_active_seats",
+            "history",
+        ]
+
+
+class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
     """Shaped to mirror CustomerSerializer's own conventions (nested
     owner, derived health_category, an `owner_id` write field validated
     same-organisation-only) since an account's health/lifecycle mean the
@@ -151,6 +389,7 @@ class AccountSerializer(serializers.ModelSerializer):
     health_category = serializers.ChoiceField(
         choices=Customer.HealthCategory.choices, read_only=True
     )
+    ai_pulse_score = AIPulseScoreField(source="*", required=False)
     owner = UserSerializer(read_only=True)
     owner_id = serializers.PrimaryKeyRelatedField(
         source="owner",
@@ -189,13 +428,16 @@ class AccountSerializer(serializers.ModelSerializer):
             "health_category",
             "pulse",
             "ai_pulse_score",
+            "ai_pulse_value",
             "ai_pulse_reason",
+            "csm_pulse_score",
+            "csm_pulse_modified_at",
             "nps_score",
             "csat_score",
             "renewal_date",
             "arr",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at", "csm_pulse_modified_at"]
 
     def get_customers(self, obj):
         return [{"id": c.id, "name": c.name} for c in obj.customers.all()]

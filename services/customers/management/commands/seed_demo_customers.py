@@ -17,7 +17,10 @@ Usage:
     python manage.py seed_demo_customers --org-email alice@acme.io
 """
 
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from services.accounts.models import Organisation, User
 from services.customers.models import Customer
@@ -36,7 +39,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "live",
         "health_score": "9.3",
         "pulse": [1, 1, 1, 1, 1],
-        "ai_pulse_score": "very_satisfied",
+        "ai_pulse_value": 5,
+        "csm_pulse_score": 5,
         "ai_pulse_reason": (
             "Consistent high feature adoption and proactive usage across all key metrics."
         ),
@@ -70,7 +74,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "live",
         "health_score": "1.8",
         "pulse": [2, 0, 0, 0, 0],
-        "ai_pulse_score": "high_risk",
+        "ai_pulse_value": 1,
+        "csm_pulse_score": 2,
         "ai_pulse_reason": (
             "Significant drop in active users and multiple unresolved "
             "high-severity support tickets."
@@ -103,7 +108,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "onboarding",
         "health_score": "8.6",
         "pulse": [1, 1, 1, 1, 1],
-        "ai_pulse_score": "moderate",
+        "ai_pulse_value": 3,
+        "csm_pulse_score": 3,
         "ai_pulse_reason": (
             "Successful milestone completion but technical integration delays "
             "causing moderate friction."
@@ -137,7 +143,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "live",
         "health_score": "8.8",
         "pulse": [3, 3, 3, 0, 0],
-        "ai_pulse_score": "satisfied",
+        "ai_pulse_value": 4,
+        "csm_pulse_score": 4,
         "ai_pulse_reason": (
             "High renewal probability backed by strong expansion into the LATAM region."
         ),
@@ -170,7 +177,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "onboarding",
         "health_score": "10.0",
         "pulse": [1, 1, 1, 1, 1],
-        "ai_pulse_score": "satisfied",
+        "ai_pulse_value": 4,
+        "csm_pulse_score": 1,
         "ai_pulse_reason": (
             "Steady onboarding progress with high sentiment scores from the execution team."
         ),
@@ -204,7 +212,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "onboarding",
         "health_score": "10.0",
         "pulse": [1, 1, 1, 1, 0],
-        "ai_pulse_score": "very_satisfied",
+        "ai_pulse_value": 5,
+        "csm_pulse_score": 5,
         "ai_pulse_reason": (
             "Peak platform utilization and frequent participation in our beta features program."
         ),
@@ -238,7 +247,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "kickoff",
         "health_score": "7.2",
         "pulse": [1, 1, 1, 0, 0],
-        "ai_pulse_score": "satisfied",
+        "ai_pulse_value": 4,
+        "csm_pulse_score": 4,
         "ai_pulse_reason": (
             "Strong executive sponsorship with clear success criteria defined during kickoff phase."
         ),
@@ -272,7 +282,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "adoption",
         "health_score": "6.5",
         "pulse": [1, 3, 1, 0, 0],
-        "ai_pulse_score": "moderate",
+        "ai_pulse_value": 3,
+        "csm_pulse_score": 5,
         "ai_pulse_reason": (
             "Feature adoption is growing but user engagement remains inconsistent across teams."
         ),
@@ -306,7 +317,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "renewal",
         "health_score": "8.1",
         "pulse": [1, 1, 1, 1, 0],
-        "ai_pulse_score": "satisfied",
+        "ai_pulse_value": 4,
+        "csm_pulse_score": 1,
         "ai_pulse_reason": (
             "Upcoming renewal with strong ROI metrics and expanding use cases across departments."
         ),
@@ -340,7 +352,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "churn",
         "health_score": "1.2",
         "pulse": [2, 2, 0, 0, 0],
-        "ai_pulse_score": "high_risk",
+        "ai_pulse_value": 1,
+        "csm_pulse_score": 1,
         "ai_pulse_reason": (
             "Account has been marked for churn due to budget constraints and leadership changes."
         ),
@@ -375,7 +388,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "expansion",
         "health_score": "9.5",
         "pulse": [1, 1, 1, 1, 1],
-        "ai_pulse_score": "very_satisfied",
+        "ai_pulse_value": 5,
+        "csm_pulse_score": 5,
         "ai_pulse_reason": (
             "Expanding license count and requesting additional modules for their APAC teams."
         ),
@@ -409,7 +423,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "kickoff",
         "health_score": "5.5",
         "pulse": [3, 1, 0, 0, 0],
-        "ai_pulse_score": "moderate",
+        "ai_pulse_value": 3,
+        "csm_pulse_score": 3,
         "ai_pulse_reason": (
             "Initial kickoff progressing but stakeholder alignment still "
             "pending on success metrics."
@@ -443,7 +458,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "adoption",
         "health_score": "7.8",
         "pulse": [1, 1, 1, 3, 0],
-        "ai_pulse_score": "satisfied",
+        "ai_pulse_value": 4,
+        "csm_pulse_score": 4,
         "ai_pulse_reason": (
             "Adoption phase going well with increasing DAU across all modules "
             "and positive exec feedback."
@@ -478,7 +494,8 @@ DEMO_CUSTOMERS = [
         "lifecycle_stage": "renewal",
         "health_score": "3.5",
         "pulse": [2, 3, 2, 0, 0],
-        "ai_pulse_score": "high_risk",
+        "ai_pulse_value": 1,
+        "csm_pulse_score": 4,
         "ai_pulse_reason": (
             "Renewal at risk due to champion departure and active competitive "
             "evaluation with a rival platform."
@@ -508,6 +525,18 @@ DEMO_CUSTOMERS = [
 DEFAULT_SKIP = {"Apple Inc", "Pizza Hut", "WeWork"}
 
 
+def csm_pulse_stamp(index):
+    """A plausible "last touched" time for a seeded CSM pulse.
+
+    The serializer stamps `csm_pulse_modified_at` when a pulse changes through
+    the API; these rows are written straight to the ORM, so without this the
+    frontend's "Latest Pulse Modified" column would be empty for every seeded
+    row. Spread across recent weeks rather than all identical, so the column
+    shows a range of staleness the way real data would.
+    """
+    return timezone.now() - timedelta(days=3 + (index * 5) % 40)
+
+
 class Command(BaseCommand):
     help = "Seeds demo Customer rows (from the frontend's tableData.ts mock) for an organisation."
 
@@ -533,11 +562,13 @@ class Command(BaseCommand):
         skip = set() if options["include_existing"] else DEFAULT_SKIP
 
         created, updated = 0, 0
-        for row in DEMO_CUSTOMERS:
+        for index, row in enumerate(DEMO_CUSTOMERS):
             if row["name"] in skip:
                 continue
 
             data = {k: v for k, v in row.items() if k not in ("name", "owner_email")}
+            if data.get("csm_pulse_score") is not None:
+                data["csm_pulse_modified_at"] = csm_pulse_stamp(index)
             owner_email = row.get("owner_email")
             if owner_email:
                 try:
