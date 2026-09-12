@@ -478,7 +478,7 @@ system, hence two different names — never call a `Customer` an
 
   | Component | Weight | Measured from |
   |---|---|---|
-  | Customer Touch | 4.0 | days since the newest `Activity.occurred_at`, decaying linearly to zero at 90 days; measured from `joined_date`/`created_at` when there are no activities yet, so a new logo isn't punished |
+  | Customer Touch | 4.0 | days since the newest contact of **any** kind — call, email, note, meeting or logged activity, on the company or any of its accounts (`services/customers/contact.py` owns the list) — decaying linearly to zero at 90 days; measured from `joined_date`/`created_at` when there is no contact yet, so a new logo isn't punished. Was `Activity` rows only until this changed, which let a customer emailed every week decay to "no touch" |
   | AI Pulse | 2.0 | `ai_pulse_value`, 1-5 normalised onto 0-1 |
   | Licence Utilization | 2.0 | `total_active_seats / total_contracted_seats`, capped at 1.0 |
   | Aggregate Adoption Score | 1.5 | `primary_product` + `additional_products_count` against a target breadth of 4 |
@@ -1175,15 +1175,16 @@ places a screen like this can mislead:
   inbound reply does count as a touch: a named overstatement, taken
   because dropping email would remove the largest source of real contact
   from a coverage metric.)
-* **"Last contact" here is broader than the health rubric's.**
-  `Customer.health_inputs()` measures days-since-touch from `Activity`
-  rows only — that is what the Customer Touch component scores and what
-  the renewal churn rule reads. This module measures across every kind
-  of logged contact. They can differ, so each `going_dark` row returns
-  both (`days_since_contact` and `days_since_activity`) rather than
-  quietly picking one. Broadening the rubric itself is defensible and
-  deliberately **not** done here: it would move every health score and
-  every snapshot of history already recorded.
+* **"Last contact" here is the same number the health rubric uses.**
+  Both read `services/customers/contact.py`, which defines once what
+  counts as contact (calls, emails, notes, meetings, activities — on the
+  company or any of its accounts; tickets are inbound and excluded). The
+  rubric used to count `Activity` rows only, so this module returned a
+  second figure, `days_since_activity`, beside `days_since_contact` and
+  the cadence chart admitted the two could differ. They can't now, and
+  the second field is gone. Broadening the rubric moved every health
+  score that had non-activity contact; snapshots already recorded are
+  history and were not rewritten — the Movement view shows the step.
 * **Per-CSM figures are by account owner, never by the name on a
   record.** `sender_name`, `host_name`, `assignee_name` and
   `author_name` are all free text; grouping a team-performance view on

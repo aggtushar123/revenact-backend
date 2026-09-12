@@ -455,7 +455,10 @@ class Customer(models.Model):
         if hasattr(self, "_last_touch_on"):
             last_touch_on = self._last_touch_on
         else:
-            last_touch_on = self.activities.aggregate(m=models.Max("occurred_at"))["m"]
+            # Any kind of contact — the same rule Activity Tracking reads.
+            from .contact import last_contact_by_customer
+
+            last_touch_on = last_contact_by_customer([self.pk]).get(self.pk)
 
         if hasattr(self, "_open_ticket_count"):
             open_ticket_count = self._open_ticket_count
@@ -697,20 +700,17 @@ def with_health_inputs(queryset):
     """Annotate `queryset` with the two related-row figures the rubric needs.
 
     Subqueries rather than `annotate(Max(...), Count(...))`: aggregating over
-    two different reverse relations in one annotate joins them together first,
-    so every activity multiplies every ticket and the count comes back inflated.
-    Two correlated subqueries give the right numbers and still cost one query
-    for the page.
+    different reverse relations in one annotate joins them together first, so
+    every activity multiplies every ticket and the count comes back inflated.
+    Correlated subqueries give the right numbers and still cost one query for
+    the page.
 
     `Customer.health_inputs` picks these up automatically when they're present.
     """
-    last_touch = (
-        Activity.objects.filter(customer=OuterRef("pk"))
-        .order_by()
-        .values("customer")
-        .annotate(value=models.Max("occurred_at"))
-        .values("value")[:1]
-    )
+    # Imported here: contact.py imports the models, so the models module
+    # cannot import it at the top.
+    from .contact import last_contact_annotation
+
     open_tickets = (
         Ticket.objects.filter(customer=OuterRef("pk"))
         .exclude(status__in=Ticket.RESOLVED_STATUSES)
@@ -720,7 +720,11 @@ def with_health_inputs(queryset):
         .values("value")[:1]
     )
     return queryset.annotate(
-        _last_touch_on=Subquery(last_touch, output_field=models.DateField()),
+        # The newest contact of any kind — calls, emails, notes, meetings,
+        # activities — on the company or any of its accounts. Was Activity
+        # rows only, which let a customer emailed every week decay to "no
+        # touch". contact.py owns the list of what counts.
+        _last_touch_on=last_contact_annotation(),
         # No open tickets at all means the subquery returns nothing, not 0.
         _open_ticket_count=Coalesce(Subquery(open_tickets, output_field=models.IntegerField()), 0),
     ).prefetch_related(

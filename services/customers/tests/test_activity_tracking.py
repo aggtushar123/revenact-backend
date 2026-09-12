@@ -246,9 +246,11 @@ class ActivityTrackingViewTests(APITestCase):
         self.assertEqual(data["kpis"]["dark_accounts"], 0)
         self.assertEqual(data["going_dark"], [])
 
-    def test_each_row_reports_both_definitions_of_last_contact(self):
-        """The rubric counts activities only; this screen counts any contact.
-        They differ here, and the row shows both rather than picking one."""
+    def test_last_contact_is_the_same_number_the_health_rubric_uses(self):
+        """This screen and the Customer Touch component read one rule
+        (contact.py). The rubric used to count logged Activities only, so a
+        call left it measuring from the customer's own arrival while this row
+        said 70 days — and the row carried a second figure to admit it."""
         Call.objects.create(
             customer=self.customer,
             title="Long call",
@@ -259,9 +261,8 @@ class ActivityTrackingViewTests(APITestCase):
         row = self.client.get(self.url, {"days": 365}).data["going_dark"][0]
 
         self.assertEqual(row["days_since_contact"], 70)
-        # No Activity rows at all, so the rubric measures from the customer's
-        # own arrival — a different, larger number.
-        self.assertNotEqual(row["days_since_activity"], 70)
+        self.assertEqual(self.customer.health_inputs()["days_since_touch"], 70)
+        self.assertNotIn("days_since_activity", row)
 
     # ── owners and tasks ─────────────────────────────────────────────
 

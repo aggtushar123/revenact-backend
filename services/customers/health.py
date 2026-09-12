@@ -156,8 +156,10 @@ def _allocate_points(weights_and_ratios):
 def _customer_touch(*, days_since_touch):
     """How recently anyone touched this customer.
 
-    `days_since_touch` is measured from the most recent Activity, or from when
-    the row was created if it has none yet — a customer onboarded last week has
+    `days_since_touch` is measured from the most recent contact of any kind —
+    call, email, note, meeting or logged activity, on the company or any of its
+    accounts (see contact.py) — or from when the row was created if it has none
+    yet — a customer onboarded last week has
     not been neglected, and scoring it zero on the heaviest component would bury
     every new logo at the bottom of the book.
     """

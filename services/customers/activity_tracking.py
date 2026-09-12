@@ -43,14 +43,15 @@ answers "is this book being worked", not "who did the work".
 
 from datetime import timedelta
 
-from django.db.models import Count, Max, Q
+from django.db.models import Count
 from django.db.models.functions import TruncWeek
 from django.utils import timezone
 
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
 
 from . import churn
-from .models import Activity, CalendarEvent, Call, Customer, Email, Note, Task, Ticket
+from .contact import TOUCH_SOURCES, last_contact_by_customer, parent_q
+from .models import Call, Customer, Email, Task, Ticket
 from .scoping import live_customers
 
 #: The analysis window, in days. A quarter: long enough that a weekly trend has
@@ -63,14 +64,6 @@ DEFAULT_WINDOW_DAYS = 90
 #: no direction flag, so an inbound reply counts too. That is a known
 #: overstatement, named here rather than hidden: the alternative is dropping
 #: the largest source of real contact from a coverage metric.
-TOUCH_SOURCES = {
-    "activities": (Activity, "occurred_at", "Activities"),
-    "calls": (Call, "occurred_at", "Calls"),
-    "emails": (Email, "sent_at", "Emails"),
-    "notes": (Note, "logged_at", "Notes"),
-    "meetings": (CalendarEvent, "event_date", "Meetings"),
-}
-
 #: Counted separately: customer-initiated, so not evidence of team output.
 INBOUND_SOURCES = {"tickets": (Ticket, "opened_at", "Tickets")}
 
@@ -135,16 +128,6 @@ def filtered_customers(user, params):
     return queryset
 
 
-def _parent_q(ids):
-    """Rows hanging off any of these customers, directly or via an account.
-
-    A touch on a division is a touch on that company: the same direction of
-    travel record visibility already uses, and the reason a coverage number
-    computed customer-only would report a worked account as neglected.
-    """
-    return Q(customer_id__in=ids) | Q(account__customers__id__in=ids)
-
-
 def _counts_by_week(model, field, ids, since):
     """`{week_start: count}` for one source inside the window.
 
@@ -154,7 +137,7 @@ def _counts_by_week(model, field, ids, since):
     """
     lookup = f"{field}__date__gte" if model in (Email, Call) else f"{field}__gte"
     rows = (
-        model.objects.filter(_parent_q(ids))
+        model.objects.filter(parent_q(ids))
         .filter(**{lookup: since})
         .order_by()
         .annotate(week=TruncWeek(field))
@@ -162,33 +145,6 @@ def _counts_by_week(model, field, ids, since):
         .annotate(n=Count("id", distinct=True))
     )
     return {row["week"]: row["n"] for row in rows if row["week"] is not None}
-
-
-def _last_contact_by_customer(ids):
-    """The most recent contact of any kind, per customer id.
-
-    One query per source rather than a union: the sources have different date
-    fields and different parent shapes, and five small aggregates are cheaper
-    to read than one clever query nobody can modify later.
-    """
-    latest = {}
-    for model, field, _label in TOUCH_SOURCES.values():
-        rows = (
-            model.objects.filter(_parent_q(ids))
-            .order_by()
-            .values("customer_id", "account__customers__id")
-            .annotate(last=Max(field))
-        )
-        for row in rows:
-            customer_id = row["customer_id"] or row["account__customers__id"]
-            if customer_id is None or row["last"] is None:
-                continue
-            when = row["last"]
-            # Email and Call carry timestamps; the rest carry dates.
-            when = when.date() if hasattr(when, "date") else when
-            if customer_id not in latest or when > latest[customer_id]:
-                latest[customer_id] = when
-    return latest
 
 
 def _bucket_for(days):
@@ -228,7 +184,7 @@ def build_stats(user, params):
         if not ids:
             continue
         lookup = f"{field}__date__gte" if model in (Email, Call) else f"{field}__gte"
-        inbound += model.objects.filter(_parent_q(ids)).filter(**{lookup: since}).distinct().count()
+        inbound += model.objects.filter(parent_q(ids)).filter(**{lookup: since}).distinct().count()
 
     timeline = [
         {"date": f"{week:%b} {week.day}", "iso": week.isoformat(), **counts}
@@ -236,7 +192,7 @@ def build_stats(user, params):
     ]
 
     # ── coverage and cadence ─────────────────────────────────────────
-    latest = _last_contact_by_customer(ids) if ids else {}
+    latest = last_contact_by_customer(ids) if ids else {}
     cadence = {
         key: {"key": key, "name": label, "accounts": 0, "arr": 0.0}
         for key, label, _f, _c in CADENCE_BUCKETS
@@ -277,7 +233,6 @@ def build_stats(user, params):
                     "days_since_contact": age,
                     # The rubric's own narrower measure, beside it, because the
                     # two can differ — see the module docstring.
-                    "days_since_activity": customer.health_inputs(today)["days_since_touch"],
                     "renewal_date": (
                         customer.renewal_date.isoformat() if customer.renewal_date else None
                     ),
@@ -291,7 +246,7 @@ def build_stats(user, params):
     )
 
     # ── tasks ────────────────────────────────────────────────────────
-    tasks = Task.objects.filter(_parent_q(ids)).distinct() if ids else Task.objects.none()
+    tasks = Task.objects.filter(parent_q(ids)).distinct() if ids else Task.objects.none()
     overdue = tasks.filter(due_date__lt=today).exclude(status=Task.Status.COMPLETED).count()
     open_tasks = tasks.exclude(status=Task.Status.COMPLETED).count()
     completed = tasks.filter(status=Task.Status.COMPLETED).count()
