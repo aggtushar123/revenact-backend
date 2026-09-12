@@ -3161,10 +3161,13 @@ non-integer or negative → `400`. Returns the summary.
 
 ### `GET /api/v1/copilot/conversations/`
 
-Auth: `IsAuthenticated`. Every Conversation the caller has started —
-scoped to `request.user`, not the whole organisation. **Pagination is
-off**, same reasoning as `CampaignListCreateView`. Powers the sidebar's
-own "Chat history" list.
+Auth: `IsAuthenticated`. Every Conversation the caller may read
+(`conversations_visible_to`): their own, plus the live sessions they were
+invited into, accepted, and are still present in — not the whole
+organisation. **Pagination is off**, same reasoning as
+`CampaignListCreateView`. Powers the sidebar's own "Chat history" list,
+so an accepted participant keeps a way back to a session after the
+invite card is gone.
 
 **Response `200`**
 ```json

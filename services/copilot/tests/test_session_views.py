@@ -47,6 +47,26 @@ class SessionViewTests(APITestCase):
     def _url(self, suffix=""):
         return f"/api/v1/copilot/conversations/{self.conversation.id}/session/{suffix}"
 
+    def test_an_accepted_participant_sees_the_conversation_in_their_own_list(self):
+        session = CopilotSession.objects.create(
+            conversation=self.conversation, status=CopilotSession.Status.LIVE
+        )
+        SessionInvite.objects.create(
+            session=session,
+            invited_user=self.teammate,
+            invited_by=self.owner,
+            status=SessionInvite.Status.ACCEPTED,
+        )
+        SessionParticipant.objects.create(session=session, user=self.teammate)
+
+        self.client.force_authenticate(self.teammate)
+        listed = self.client.get("/api/v1/copilot/conversations/")
+        self.assertEqual([c["id"] for c in listed.data], [self.conversation.id])
+
+        # Not for someone merely invited, and not for a stranger.
+        self.client.force_authenticate(self.stranger)
+        self.assertEqual(self.client.get("/api/v1/copilot/conversations/").data, [])
+
     def test_get_404s_when_no_session_exists_yet(self):
         self.client.force_authenticate(self.owner)
         response = self.client.get(self._url())

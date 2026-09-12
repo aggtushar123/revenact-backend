@@ -81,17 +81,22 @@ def conversations_visible_to(user):
 
 class ConversationListView(generics.ListAPIView):
     """GET /api/v1/copilot/conversations/ — every Copilot conversation
-    the caller has started, private to them (not shared org-wide — see
-    Conversation's own docstring). Powers the sidebar's "Chat history"
-    list. Pagination off — same reasoning as ScenarioListCreateView's
-    own: one CSM's own conversation list, not meant to be paged through."""
+    the caller may read: their own, plus the sessions they were invited
+    into and accepted and are still present in (`conversations_visible_to`,
+    the same rule the detail and send views apply). Not shared org-wide —
+    see Conversation's own docstring. Before this used the shared rule an
+    accepted participant lost the conversation from their sidebar the
+    moment the invite card went away, and had no way back to a session
+    they were part of. Powers the sidebar's "Chat history" list.
+    Pagination off — same reasoning as ScenarioListCreateView's own: one
+    person's conversation list, not meant to be paged through."""
 
     serializer_class = ConversationListSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
     def get_queryset(self):
-        return Conversation.objects.filter(user=self.request.user)
+        return conversations_visible_to(self.request.user)
 
 
 class ConversationDetailView(generics.RetrieveDestroyAPIView):
