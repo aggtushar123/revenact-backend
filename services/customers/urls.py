@@ -19,6 +19,11 @@ urlpatterns = [
     # Customer Overview's portfolio rollups. The one dashboard endpoint that
     # includes archived and churned customers — see its own docstring.
     path("overview/", views.CustomerOverviewView.as_view(), name="customer-overview"),
+    # Product Usage — one row per product. Under /customers/ like its
+    # siblings because it is a rollup of customers grouped by a field on
+    # them; there is no Product model to hang it off, which is the same
+    # limitation its own attribution note names.
+    path("products/", views.ProductUsageView.as_view(), name="customer-products"),
     path(
         "<int:customer_id>/accounts/",
         views.AccountListCreateView.as_view(),

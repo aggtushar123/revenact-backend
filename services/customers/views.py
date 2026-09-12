@@ -17,7 +17,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from . import activity_tracking, forecast, interactions, portfolio, usage
+from . import activity_tracking, forecast, interactions, portfolio, product_usage, usage
 from .headline_generation import NothingToSummarise, generate_headlines
 from .models import (
     Account,
@@ -255,6 +255,43 @@ class CustomerHealthView(generics.ListAPIView):
                 # than one that says how many it dropped.
                 "currency": request.user.organisation.currency,
                 "unconverted_count": sum(1 for row in rows if row["arr"] is None),
+            }
+        )
+
+
+class ProductUsageView(views.APIView):
+    """GET /api/v1/customers/products/ — one row per product, for the
+    Product Usage dashboard.
+
+    Not the Usage Overview, which reads seats in aggregate across the
+    whole book. This compares products against each other: ARR led,
+    health mix, utilisation, satisfaction, support burden and churn. The
+    Usage Overview is a CS operations screen; this is the one a product
+    manager opens, and the only place that can answer "is one of these
+    products responsible for most of the churn".
+
+    **Attributed on `primary_product` only**, which the response says out
+    loud in `attribution`. `additional_products_count` is a bare integer
+    — nobody records *which* other products a customer has — so a
+    customer on three products is counted once, under their primary.
+    These are customers *led by* a product, never revenue split across
+    products. Doing it properly needs a Product model and a per-customer
+    join; see services/customers/product_usage.py.
+
+    Includes churned customers, like the Customer Overview: a product
+    whose customers all left would otherwise look like a product with no
+    problems.
+
+    Params: `owner`, `lifecycle`, `product`.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(
+            {
+                **product_usage.build_stats(request.user, request.query_params),
+                "filters": product_usage.filter_options(request.user),
             }
         )
 

@@ -75,6 +75,7 @@ expects.
 | Dashboards — Activity Tracking | `customers` | 🟢 Runs on `GET /api/v1/customers/activity/` — coverage, cadence and follow-through. See below. |
 | Dashboards — Revenue Forecast | `customers` | 🟢 Runs on `GET /api/v1/customers/forecast/` — the ARR bridge, with churn weighted by the shared rule in `churn.py`. See below. |
 | Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
+| Dashboards — Product Usage | `customers` | 🟢 Runs on `GET /api/v1/customers/products/` — one row per product: ARR led, health mix, utilisation, satisfaction, support burden and churn. Attribution is by `primary_product` only, and the response says so. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
@@ -1324,6 +1325,105 @@ The rules worth knowing before reading any of those numbers:
   `convert_to_org_currency` hook everything else uses, and is null when
   no rate is configured — those rows still count in every *seat* figure
   and are counted in `unpriced_count`.
+
+
+### `GET /api/v1/customers/products/`
+
+Auth: `IsAuthenticated`. One row per product, behind the Product Usage
+dashboard: **which products carry the book, and how are the customers on
+each one doing?**
+
+Not a second Usage Overview. That one reads seats across the whole book —
+one utilisation rate, one shelfware list, a CS operations screen. This
+compares *products against each other*: ARR led, health mix, utilisation,
+satisfaction, support burden and churn, side by side. It is the screen a
+product manager opens, and it answers the question nothing else here asks
+— is one of these products quietly responsible for most of the churn?
+
+**The limitation that has to be on the screen, not just in this doc.**
+`Customer.primary_product` names **one** product.
+`additional_products_count` is a bare integer — nobody recorded *which*
+other products a customer has, so there is nothing to attribute them to.
+Every figure below therefore counts customers this product **leads**, and
+a customer on three products is counted once, under their primary one.
+The response carries `attribution` so the UI states this above the
+numbers rather than leaving a reader to assume revenue has been split
+across products. Doing it properly needs a `Product` model and a
+per-customer join — worth having, and not something a dashboard can
+invent.
+
+Params: `owner`, `lifecycle`, `product`. Like the Customer Overview and
+unlike the working dashboards, this reads the whole visible book
+including churned customers: churn by product is half of what the screen
+is for, and a product whose customers all left would otherwise read as a
+product with no problems.
+
+**Response `200`** — `rows`, `kpis`, `attribution`, `currency`,
+`filters`.
+
+```json
+{
+  "rows": [{
+    "product": "Product A", "spellings": 1,
+    "customers": 4, "arr": 443600.0, "share": 64.4, "unpriced": 0,
+    "utilisation": 75.1, "contracted_seats": 1040, "active_seats": 781,
+    "health": {"good": 4, "average": 0, "poor": 0},
+    "healthy_share": 100.0, "unhealthy_arr": 0.0,
+    "ces": 84.5, "nps": 57.5,
+    "open_tickets": 33, "tickets_per_customer": 8.2,
+    "churned": 0, "churned_arr": 0.0, "churn_rate": 0.0
+  }],
+  "kpis": {
+    "products": 5, "customers": 9, "arr": 688600.0,
+    "largest": {"product": "Product A", "share": 64.4, "arr": 443600.0},
+    "weakest": {"product": "Product B", "unhealthy_arr": 203000.0,
+                "healthy_share": 0.0, "customers": 3, "healthy": 0},
+    "worst_churn": {"product": "Integrations Module",
+                    "churned": 1, "churned_arr": 152600.0}
+  },
+  "attribution": {"basis": "primary_product", "note": "Every figure counts customers whose *primary* product this is. ..."}
+}
+```
+
+The decisions behind those numbers:
+
+* **"Weakest" is ranked on the ARR sitting in accounts that are not in
+  good health (`unhealthy_arr`), not on the share that are.** The first
+  version ranked on `healthy_share` and answered with a product that had
+  one unhappy customer worth $42K over one with three unhappy customers
+  worth $203K. "Which product do we fix first" is answered in money.
+  `largest` is by ARR led, `worst_churn` by the ARR that left — all three
+  headlines rank on money, none on a percentage.
+* **Utilisation is seats over seats, never the mean of per-account
+  percentages** — the same rule the Usage Overview uses, so the two
+  screens cannot report different utilisation for the same accounts. A
+  product with no seats recorded has `null` utilisation, not 0%:
+  unmeasured is not unused.
+* **CES and NPS average only the customers who answered.** A product
+  nobody surveyed has no score; a zero would make it the worst-rated
+  product on the screen.
+* **Customers with no product recorded get their own row**
+  (`"No product recorded"`). "Nobody wrote down what they bought" is a
+  finding about the CRM, and dropping those rows would make the shares
+  add up to less than 100% with nothing on screen to explain it.
+* **`primary_product` is free text, and reported as such.** Rows fold on
+  case and surrounding whitespace, and `spellings` counts how many raw
+  strings went into each — the same treatment, and the same argument for
+  giving the field choices, as `churn_reason` in the Customer Overview.
+  "Product A" and "Product A Pro" differ by more than case and stay
+  separate, because nothing here can merge them honestly.
+* **`churn_rate` is over everyone the product ever led** (active +
+  churned), and a product with no active customers left still gets a row
+  — that is the most important row on the screen when it happens, and
+  both an ARR sort and a customer-count filter would have hidden it.
+  Archiving is neither churn nor active, for the same reason as in the
+  Customer Overview.
+* **The product dropdown is built from the book**, not from a table,
+  because there is no product table — which is the same limitation
+  `attribution` names. Churned customers keep their product in the list.
+* Tickets hang off a Customer or one of its Accounts and both count
+  toward the product: support load on a division is support load on that
+  product. Counted once for the whole page in a single annotated query.
 
 ### Models — `HealthSnapshot`
 
