@@ -208,7 +208,7 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
     sources: list[dict] = []
 
     if mentioned is not None:
-        comms = retrieve_with_sources(mentioned, limit=6, query=query)
+        comms = retrieve_with_sources(mentioned, limit=6, query=query, viewer=user)
         if comms:
             lines.append(f"Recent real communications for {mentioned.name} ({match_label}):")
             lines.extend(f"  - {item.line}" for item in comms)
@@ -218,7 +218,7 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
             lines.append(responsible)
     else:
         for company in top_at_risk[:3]:
-            comms = retrieve_with_sources(company, limit=2, query=query)
+            comms = retrieve_with_sources(company, limit=2, query=query, viewer=user)
             if comms:
                 lines.append(f"Recent real communications for {company.name}:")
                 lines.extend(f"  - {item.line}" for item in comms)

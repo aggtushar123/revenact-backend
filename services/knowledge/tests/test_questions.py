@@ -49,6 +49,18 @@ class Fixture(APITestCase):
         self.pizza = Customer.objects.create(
             organisation=self.org, name="Pizza Hut", owner=self.carl
         )
+        # The chart: everyone reports to Alice (services.accounts.hierarchy).
+        User.objects.filter(organisation=self.org).exclude(pk=self.alice.pk).update(
+            reports_to=self.alice
+        )
+        # The in-memory users must see their new manager too.
+        for person in User.objects.filter(organisation=self.org):
+            for attr in vars(self):
+                if (
+                    getattr(self, attr, None).__class__ is User
+                    and getattr(self, attr).pk == person.pk
+                ):
+                    getattr(self, attr).refresh_from_db()
 
 
 class MentionTests(Fixture):

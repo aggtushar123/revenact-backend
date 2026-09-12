@@ -55,6 +55,16 @@ class Message(models.Model):
     )
     role = models.CharField(max_length=16, choices=Role.choices)
     content = models.TextField()
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="copilot_messages",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="User turns: who wrote it — the owner, or a participant. Null on "
+        "assistant turns. What a mentioned person may see of a conversation is "
+        "decided per turn from this (services.accounts.hierarchy).",
+    )
     sources = models.JSONField(
         default=list,
         blank=True,

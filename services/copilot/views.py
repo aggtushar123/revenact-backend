@@ -80,7 +80,52 @@ def conversations_visible_to(user):
             session__invites__invited_user=user,
             session__invites__status=SessionInvite.Status.ACCEPTED,
         )
+        # Mentioned in it: a question routed to them from one of its turns
+        # (services.knowledge). They see a slice, not the whole — see
+        # visible_messages.
+        | Q(messages__questions__assignee=user)
     ).distinct()
+
+
+def sees_whole_conversation(conversation, user):
+    """The owner and accepted, present participants see every turn."""
+    if conversation.user_id == user.id:
+        return True
+    session = getattr(conversation, "session", None)
+    if session is None:
+        return False
+    return (
+        session.participants.filter(user=user, left_at__isnull=True).exists()
+        and session.invites.filter(invited_user=user, status=SessionInvite.Status.ACCEPTED).exists()
+    )
+
+
+def visible_messages(conversation, user):
+    """The turns `user` may read. Everything for the owner and participants;
+    for someone who is only mentioned, the turns written by people in
+    their scope (their team, their reports, leadership above them — see
+    services.accounts.hierarchy), the turns that mention them, their own,
+    and the Copilot's replies to those turns."""
+    from services.accounts.hierarchy import scope_ids
+
+    turns = list(conversation.messages.order_by("created_at", "id"))
+    if sees_whole_conversation(conversation, user):
+        return turns
+    allowed = scope_ids(user)
+    mentioned_in = set(
+        conversation.messages.filter(questions__assignee=user).values_list("id", flat=True)
+    )
+    kept, previous_kept = [], False
+    for turn in turns:
+        if turn.role == Message.Role.USER:
+            previous_kept = (
+                turn.author_id in allowed or turn.author_id is None or turn.id in mentioned_in
+            )
+            if previous_kept:
+                kept.append(turn)
+        elif previous_kept:
+            kept.append(turn)
+    return kept
 
 
 class ConversationListView(generics.ListAPIView):
@@ -115,6 +160,14 @@ class ConversationDetailView(generics.RetrieveDestroyAPIView):
 
     serializer_class = ConversationDetailSerializer
     permission_classes = [IsAuthenticated]
+
+    def retrieve(self, request, *args, **kwargs):
+        conversation = self.get_object()
+        conversation._visible_messages = visible_messages(conversation, request.user)
+        conversation._visibility = (
+            "full" if sees_whole_conversation(conversation, request.user) else "partial"
+        )
+        return Response(ConversationDetailSerializer(conversation).data)
 
     def get_queryset(self):
         if self.request.method == "DELETE":
@@ -216,7 +269,7 @@ class SendMessageView(APIView):
         prior_history = (
             [
                 {"role": m.role, "content": m.content}
-                for m in conversation.messages.order_by("created_at", "id")[:HISTORY_WINDOW]
+                for m in visible_messages(conversation, request.user)[:HISTORY_WINDOW]
             ]
             if conversation
             else []
@@ -243,7 +296,7 @@ class SendMessageView(APIView):
                 organisation=organisation, user=request.user, title=content[:50]
             )
         user_message = Message.objects.create(
-            conversation=conversation, role=Message.Role.USER, content=content
+            conversation=conversation, role=Message.Role.USER, content=content, author=request.user
         )
         Message.objects.create(
             conversation=conversation,
@@ -279,6 +332,10 @@ class SendMessageView(APIView):
             )
             broadcast_session_update(session)
 
+        conversation._visible_messages = visible_messages(conversation, request.user)
+        conversation._visibility = (
+            "full" if sees_whole_conversation(conversation, request.user) else "partial"
+        )
         return Response(ConversationDetailSerializer(conversation).data)
 
 

@@ -162,8 +162,10 @@ def _source_ref(*, kind: str, record_id: int, label: str, date, company) -> dict
     }
 
 
-def _gather_candidates(company) -> list[RetrievedItem]:
-    """Every real candidate item for `company` — see RetrievedItem."""
+def _gather_candidates(company, viewer=None) -> list[RetrievedItem]:
+    """Every real candidate item for `company` — see RetrievedItem.
+    `viewer` scopes the company's contributions to what that person may
+    see (services.accounts.hierarchy); None means all of them."""
 
     scope = _scope_kwargs(company)
     is_account = company.__class__.__name__ == "Account"
@@ -249,11 +251,14 @@ def _gather_candidates(company) -> list[RetrievedItem]:
     if not is_account:
         from services.knowledge.models import Contribution
 
-        for row in (
-            Contribution.objects.filter(customer=company)
-            .select_related("author")
-            .order_by("-created_at")[:CANDIDATE_POOL_PER_SOURCE]
-        ):
+        rows = Contribution.objects.filter(customer=company)
+        if viewer is not None:
+            from services.knowledge.views import visible_contributions
+
+            rows = visible_contributions(viewer, rows)
+        for row in rows.select_related("author").order_by("-created_at")[
+            :CANDIDATE_POOL_PER_SOURCE
+        ]:
             when = row.created_at.date()
             line = f"{row.get_function_display()} ({row.author.name}, {when}): {_snippet(row.body)}"
             candidates.append(
@@ -273,7 +278,7 @@ def _gather_candidates(company) -> list[RetrievedItem]:
     return candidates
 
 
-def retrieve_with_sources(company, limit: int, query: str = "") -> list[RetrievedItem]:
+def retrieve_with_sources(company, limit: int, query: str = "", viewer=None) -> list[RetrievedItem]:
     """Real content for `company`, each item still carrying the record
     it came from. With a query to rank against, this is the overall
     `limit` most *relevant* items across every source together — real
@@ -283,7 +288,7 @@ def retrieve_with_sources(company, limit: int, query: str = "") -> list[Retrieve
     back to the `limit` most recent across sources in Email/Note/Ticket/
     Activity order."""
 
-    candidates = _gather_candidates(company)
+    candidates = _gather_candidates(company, viewer)
     if not candidates:
         return []
 

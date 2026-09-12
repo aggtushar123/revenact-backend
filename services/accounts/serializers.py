@@ -63,6 +63,7 @@ class UserSerializer(serializers.ModelSerializer):
     role_name = serializers.CharField(source="role.name", read_only=True, default="")
     permissions = serializers.SerializerMethodField()
     function_display = serializers.CharField(source="get_function_display", read_only=True)
+    reports_to = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -77,12 +78,19 @@ class UserSerializer(serializers.ModelSerializer):
             "permissions",
             "function",
             "function_display",
+            "reports_to",
             "organisation",
             "is_active",
         ]
 
     def get_avatar(self, obj):
         return f"https://i.pravatar.cc/150?u={obj.email}"
+
+    def get_reports_to(self, obj):
+        # The org chart, one level up — see services.accounts.hierarchy.
+        if obj.reports_to_id is None:
+            return None
+        return {"id": obj.reports_to.id, "name": obj.reports_to.name}
 
     def get_permissions(self, obj) -> list:
         if obj.is_superuser:
@@ -214,6 +222,15 @@ class CreateOrgUserSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, min_length=8)
     role_id = serializers.IntegerField(required=False)
     function = serializers.ChoiceField(choices=User.Function.choices, required=False)
+    reports_to_id = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate_reports_to_id(self, value):
+        if value is None:
+            return None
+        organisation = self.context["request"].user.organisation
+        if not User.objects.filter(pk=value, organisation=organisation).exists():
+            raise serializers.ValidationError("That person isn't in your own organisation.")
+        return value
 
     def validate_email(self, value):
         value = value.lower()
@@ -244,6 +261,7 @@ class CreateOrgUserSerializer(serializers.Serializer):
             organisation=organisation,
             role=role,
             function=validated_data.get("function", User.Function.CS),
+            reports_to_id=validated_data.get("reports_to_id"),
         )
 
 
@@ -362,9 +380,25 @@ class EditOrgUserSerializer(serializers.ModelSerializer):
         source="role", queryset=Role.objects.all(), required=False
     )
 
+    reports_to_id = serializers.PrimaryKeyRelatedField(
+        source="reports_to", queryset=User.objects.all(), required=False, allow_null=True
+    )
+
     class Meta:
         model = User
-        fields = ["name", "is_active", "role_id", "password", "function"]
+        fields = ["name", "is_active", "role_id", "password", "function", "reports_to_id"]
+
+    def validate_reports_to_id(self, manager):
+        from .hierarchy import would_cycle
+
+        actor = self.context["request"].user
+        if manager is not None and manager.organisation_id != actor.organisation_id:
+            raise serializers.ValidationError("That person isn't in your own organisation.")
+        if would_cycle(self.instance, manager):
+            raise serializers.ValidationError(
+                "That would make someone their own manager, directly or through the chain."
+            )
+        return manager
 
     def validate_role_id(self, role):
         actor = self.context["request"].user

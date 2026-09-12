@@ -51,6 +51,20 @@ class KnowledgeViewTests(APITestCase):
         self.pizza = Customer.objects.create(
             organisation=self.org, name="Pizza Hut", owner=self.carl
         )
+        # The org chart: everyone reports to Alice, so leadership sees all
+        # (services.accounts.hierarchy); Dana and Priya are on different
+        # branches and teams.
+        User.objects.filter(pk__in=[self.carl.pk, self.priya.pk, self.dana.pk]).update(
+            reports_to=self.alice
+        )
+        # The in-memory users must see their new manager too.
+        for person in User.objects.filter(organisation=self.org):
+            for attr in vars(self):
+                if (
+                    getattr(self, attr, None).__class__ is User
+                    and getattr(self, attr).pk == person.pk
+                ):
+                    getattr(self, attr).refresh_from_db()
 
     def test_anyone_in_the_organisation_contributes_and_reads_whatever_their_book(self):
         # Priya owns nothing and is not a CSM; Dana is a CSM who does not own Pizza Hut.
@@ -64,10 +78,16 @@ class KnowledgeViewTests(APITestCase):
         self.assertEqual(written.data["function"], "engineering")
         self.assertEqual(written.data["author"]["name"], "Priya")
 
-        self.client.force_authenticate(self.dana)
+        # Alice owns no book, but leadership at the top of the chart sees all.
+        self.client.force_authenticate(self.alice)
         listed = self.client.get(f"/api/v1/customers/{self.pizza.id}/contributions/")
         self.assertEqual(listed.status_code, status.HTTP_200_OK)
         self.assertEqual([c["function_display"] for c in listed.data], ["Engineering"])
+        # Dana is CS on another branch: Priya's engineering note is not hers to read.
+        self.client.force_authenticate(self.dana)
+        self.assertEqual(
+            self.client.get(f"/api/v1/customers/{self.pizza.id}/contributions/").data, []
+        )
 
         self.client.force_authenticate(self.outsider)
         self.assertEqual(
@@ -88,7 +108,7 @@ class KnowledgeViewTests(APITestCase):
             self.client.patch(
                 f"/api/v1/contributions/{row.id}/", {"body": "x"}, format="json"
             ).status_code,
-            status.HTTP_403_FORBIDDEN,
+            status.HTTP_404_NOT_FOUND,
         )
         self.client.force_authenticate(self.priya)
         self.assertEqual(
@@ -182,6 +202,15 @@ class CopilotKnowledgeTests(APITestCase):
         self.pizza = Customer.objects.create(
             organisation=self.org, name="Pizza Hut", owner=self.carl
         )
+        User.objects.filter(pk__in=[self.carl.pk, self.priya.pk]).update(reports_to=self.ceo)
+        # The in-memory users must see their new manager too.
+        for person in User.objects.filter(organisation=self.org):
+            for attr in vars(self):
+                if (
+                    getattr(self, attr, None).__class__ is User
+                    and getattr(self, attr).pk == person.pk
+                ):
+                    getattr(self, attr).refresh_from_db()
         FunctionOwner.objects.create(customer=self.pizza, function="engineering", user=self.priya)
         Contribution.objects.create(
             organisation=self.org,

@@ -3253,6 +3253,34 @@ SET_NULL.
 
 ## `knowledge` — What the whole company knows (Organization Details › Company View, `CompanyViewTab.tsx`)
 
+### Who may see whose words — the org chart rule
+
+`User.reports_to` is the org chart (set via `/auth/users/` `reports_to_id`,
+read as `reports_to {id, name}`; a loop is a `400`). From it,
+`services/accounts/hierarchy.scope_ids(user)` is the set of people whose
+records a person may see: themselves, everyone below them in the chart,
+everyone in their function, and everyone above them in the chain.
+Anything addressed to them (a question routed to them, a message that
+@mentions them) is theirs regardless. The rule applies to what people
+*say*: contributions (`visible_contributions`, plus answers to the
+reader's own questions), questions (`visible_questions`), the Copilot's
+retrieval (scoped to the asker), and chat turns (below). Customer and
+account records keep their capability scoping.
+
+**A mentioned person sees a slice of a chat, not the chat.** A
+conversation is visible to its owner, to accepted session participants,
+and to anyone a turn routed a question to. The first two see every turn;
+a mentioned person sees the turns whose author is in their scope, the
+turns that mention them, their own, and the Copilot's replies to those
+(`copilot.views.visible_messages`). `GET/POST` conversation payloads
+carry `visibility: "full" | "partial"` and each turn its `author`
+(`Message.author`, backfilled for older turns from the session's
+redirect events). A follow-up posted by a mentioned person is grounded
+and given history from their slice only.
+
+Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei
+report to her; Dana to Carl.
+
 ### Models — `User.function`, `Contribution`, `FunctionOwner`
 
 `User.function` (`cs`, `engineering`, `sales`, `analytics`, `leadership`,
@@ -3264,9 +3292,8 @@ what "the responsible person" is looked up by. Set on create/edit via
 
 A `Contribution` is one person's knowledge about one customer from their
 function: `customer`, `author`, `function` (a snapshot of the author's
-function when written), `body`. **Company-wide by design**: every member
-of the organisation reads and writes them, whatever their book — the
-CSM's own-book scoping stays on the CSM dashboards, not on knowledge.
+function when written), `body`. **Scoped by the org chart** (see above), never by the CSM's book:
+every member may write; who may read is the chart rule.
 `FunctionOwner` (`customer`, `function`, `user`; unique per customer and
 function) says who answers for the customer in each function; CS stays
 `Customer.owner`.

@@ -240,6 +240,15 @@ class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
     name = models.CharField(max_length=255)
     function = models.CharField(max_length=16, choices=Function.choices, default=Function.CS)
+    reports_to = models.ForeignKey(
+        "self",
+        related_name="reports",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Their manager — the org chart. What a person may see of what others "
+        "say is read from it (services.accounts.hierarchy).",
+    )
     organisation = models.ForeignKey(
         Organisation,
         related_name="members",

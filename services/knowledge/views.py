@@ -32,7 +32,9 @@ class CustomerContributionListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = _company_customer(self.request, self.kwargs["pk"])
-        queryset = customer.contributions.select_related("author", "customer")
+        queryset = visible_contributions(self.request.user, customer.contributions).select_related(
+            "author", "customer"
+        )
         wanted = self.request.query_params.get("function")
         if wanted in User.Function.values:
             queryset = queryset.filter(function=wanted)
@@ -56,7 +58,10 @@ class ContributionDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Contribution.objects.filter(organisation=self.request.user.organisation)
+        return visible_contributions(
+            self.request.user,
+            Contribution.objects.filter(organisation=self.request.user.organisation),
+        )
 
     def _check(self, obj):
         user = self.request.user
@@ -130,9 +135,33 @@ class CustomerResponsibleView(APIView):
         return Response(self._payload(customer))
 
 
+def visible_contributions(user, queryset):
+    """The scope rule (services.accounts.hierarchy) plus what is addressed
+    to `user`: an answer to a question they asked is theirs to read."""
+    from django.db.models import Q
+
+    from services.accounts.hierarchy import scope_ids
+
+    return queryset.filter(
+        Q(author_id__in=scope_ids(user)) | Q(answers_question__asked_by=user)
+    ).distinct()
+
+
+def visible_questions(user, queryset):
+    """Questions asked by someone in `user`'s scope, or routed to them."""
+    from django.db.models import Q
+
+    from services.accounts.hierarchy import scope_ids
+
+    return queryset.filter(Q(asked_by_id__in=scope_ids(user)) | Q(assignee=user)).distinct()
+
+
 def _question_queryset(request):
-    return Question.objects.filter(organisation=request.user.organisation).select_related(
-        "customer", "asked_by", "assignee", "answer__author", "answer__customer"
+    return visible_questions(
+        request.user,
+        Question.objects.filter(organisation=request.user.organisation).select_related(
+            "customer", "asked_by", "assignee", "answer__author", "answer__customer"
+        ),
     )
 
 

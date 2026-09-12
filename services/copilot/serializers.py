@@ -15,10 +15,26 @@ class MessageSerializer(serializers.ModelSerializer):
     client can render citations without branching on role first."""
 
     questions = serializers.SerializerMethodField()
+    author = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
-        fields = ["id", "role", "content", "sources", "questions", "ask_suggestions", "created_at"]
+        fields = [
+            "id",
+            "role",
+            "content",
+            "author",
+            "sources",
+            "questions",
+            "ask_suggestions",
+            "created_at",
+        ]
+
+    def get_author(self, obj):
+        # Who wrote a user turn; null on assistant turns.
+        if obj.author_id is None:
+            return None
+        return {"id": obj.author.id, "name": obj.author.name, "function": obj.author.function}
 
     def get_questions(self, obj):
         # The people this turn routed a question to (services.knowledge) —
@@ -44,11 +60,27 @@ class ConversationListSerializer(serializers.ModelSerializer):
 
 
 class ConversationDetailSerializer(serializers.ModelSerializer):
-    messages = MessageSerializer(many=True, read_only=True)
+    """`messages` are the turns the caller may read — set on the instance
+    by the view (`_visible_messages`, see copilot.views.visible_messages);
+    every turn when read outside a view. `visibility` says whether that is
+    the whole conversation ("full") or the slice a mentioned person gets
+    ("partial"), so the screen can say so."""
+
+    messages = serializers.SerializerMethodField()
+    visibility = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
-        fields = ["id", "title", "messages", "created_at", "updated_at"]
+        fields = ["id", "title", "messages", "visibility", "created_at", "updated_at"]
+
+    def get_messages(self, obj):
+        turns = getattr(obj, "_visible_messages", None)
+        if turns is None:
+            turns = obj.messages.all()
+        return MessageSerializer(turns, many=True).data
+
+    def get_visibility(self, obj):
+        return getattr(obj, "_visibility", "full")
 
 
 class _ActorSerializer(serializers.Serializer):
