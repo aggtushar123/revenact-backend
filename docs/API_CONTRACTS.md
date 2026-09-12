@@ -3513,6 +3513,7 @@ ARR here. `401` unauthenticated, `403` without the capability.
   "metrics": [{
     "key": "nrr", "label": "Net revenue retention", "unit": "percent", "better": "up",
     "note": "Forecast ARR as a share of opening ARR, before any new logos. ...",
+    "dimensions": ["owner", "product"],
     "value": 99.6,
     "previous": {"period_end": "2026-08-31", "value": 97.1},
     "change": 2.5

@@ -32,6 +32,9 @@ def _describe(metric):
         "unit": metric.unit,
         "better": metric.better,
         "note": metric.note,
+        # The cuts this metric has, so a screen can offer them without a
+        # round of 404s.
+        "dimensions": sorted(metric.slices),
     }
 
 

@@ -60,6 +60,8 @@ class MetricAPITests(APITestCase):
         self.assertEqual(by_key["active_arr"]["value"], 120_000.0)
         self.assertEqual(by_key["active_arr"]["unit"], "money")
         self.assertEqual(by_key["active_arr"]["better"], "up")
+        self.assertEqual(by_key["active_arr"]["dimensions"], ["lifecycle", "segment"])
+        self.assertEqual(by_key["open_tickets"]["dimensions"], [])
         self.assertEqual(data["currency"], "USD")
 
     def test_carries_the_last_month_end_and_the_change_since(self):
