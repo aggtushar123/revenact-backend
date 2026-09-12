@@ -1,3 +1,4 @@
+from django.db.models import DateField
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 
@@ -5,6 +6,22 @@ from services.accounts.permissions import CanManageIntegrations
 
 from .models import Connector
 from .serializers import ConnectorSerializer
+
+
+def with_ingested(queryset):
+    """Annotate what each connector has brought in. Two separate Max
+    annotations rather than one expression across both joins: a ticket's
+    `opened_at` is a date and a call's `occurred_at` a datetime, and the
+    serializer picks the newer once both are Python values."""
+    from django.db.models import Count, Max
+    from django.db.models.functions import Cast, TruncDate
+
+    return queryset.annotate(
+        ticket_count=Count("tickets", distinct=True),
+        call_count=Count("calls", distinct=True),
+        last_ticket_at=Max("tickets__opened_at"),
+        last_call_at=Cast(Max(TruncDate("calls__occurred_at")), output_field=DateField()),
+    )
 
 
 class ConnectorListCreateView(generics.ListCreateAPIView):
@@ -31,7 +48,7 @@ class ConnectorListCreateView(generics.ListCreateAPIView):
         return [IsAuthenticated()]
 
     def get_queryset(self):
-        return (
+        return with_ingested(
             Connector.objects.filter(organisation=self.request.user.organisation)
             .prefetch_related("customers", "accounts")
             .distinct()
@@ -58,7 +75,7 @@ class ConnectorDetailView(generics.RetrieveUpdateDestroyAPIView):
         return [IsAuthenticated()]
 
     def get_queryset(self):
-        return (
+        return with_ingested(
             Connector.objects.filter(organisation=self.request.user.organisation)
             .prefetch_related("customers", "accounts")
             .distinct()

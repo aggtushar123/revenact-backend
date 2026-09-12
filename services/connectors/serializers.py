@@ -19,6 +19,14 @@ class ConnectorSerializer(serializers.ModelSerializer):
 
     provider_display = serializers.CharField(source="get_provider_display", read_only=True)
     is_organisation_wide = serializers.BooleanField(read_only=True)
+    # What the connector has actually brought in — from the views' own
+    # annotations (see `with_ingested`), so a page of connectors costs one
+    # query. A connector is not a live sync (see the model), so these are
+    # the records already attributed to it, and `last_record_at` is the
+    # newest of a ticket's opened date and a call's time.
+    ticket_count = serializers.IntegerField(read_only=True, default=0)
+    call_count = serializers.IntegerField(read_only=True, default=0)
+    last_record_at = serializers.SerializerMethodField()
     customers = serializers.SerializerMethodField()
     accounts = serializers.SerializerMethodField()
     customer_ids = serializers.PrimaryKeyRelatedField(
@@ -49,9 +57,20 @@ class ConnectorSerializer(serializers.ModelSerializer):
             "customer_ids",
             "account_ids",
             "is_organisation_wide",
+            "ticket_count",
+            "call_count",
+            "last_record_at",
             "created_at",
         ]
         read_only_fields = ["created_at"]
+
+    def get_last_record_at(self, obj):
+        latest = [
+            d
+            for d in (getattr(obj, "last_ticket_at", None), getattr(obj, "last_call_at", None))
+            if d is not None
+        ]
+        return max(latest).isoformat() if latest else None
 
     def get_customers(self, obj):
         return [{"id": c.id, "name": c.name} for c in obj.customers.all()]

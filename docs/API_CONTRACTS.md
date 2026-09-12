@@ -3220,6 +3220,37 @@ user message and the model's real assistant reply.
 
 ---
 
+## `connectors` — Integrations (`/integrations`, `Integrations.tsx`)
+
+### Models — `Connector`
+
+One external system the organisation has connected — `provider` (a
+closed list: Zendesk, Jira, Intercom, Salesforce, HubSpot, Slack, Gmail,
+Microsoft Teams, Zoom, GitHub, Figma), `name` (distinguishes two of the
+same provider), `is_enabled`, and a scope of `customers`/`accounts` where
+**empty means the whole organisation**. Not a live sync — no OAuth, no
+credentials, nothing reaches out — it records *that* a system is used
+and which companies it covers, so `Ticket.connector` and `Call.connector`
+can say where a record came from. See the model's own docstring.
+
+### `GET/POST /api/v1/connectors/`, `GET/PATCH/DELETE /api/v1/connectors/<id>/`
+
+Reading is open to any member (the Ticket Overview's origin chart and
+the Integrations page need it); writing needs `manage_integrations`.
+Every row carries what the connector has brought in — `ticket_count`,
+`call_count`, and `last_record_at` (the newer of the latest ticket's
+`opened_at` and the latest call's date, or null) — annotated in one
+query, so the Integrations page can show "169 tickets · last 10 Sep"
+without a second call. `DELETE` keeps the records: both foreign keys are
+SET_NULL.
+
+```json
+[{"id": 3, "provider": "zendesk", "provider_display": "Zendesk", "name": "Zendesk",
+  "is_enabled": true, "customers": [{"id": 1, "name": "Apple"}], "accounts": [],
+  "is_organisation_wide": false, "ticket_count": 169, "call_count": 0,
+  "last_record_at": "2026-09-10", "created_at": "2026-08-01T00:00:00Z"}]
+```
+
 ## `webhooks` — Outbound integrations (Settings > Webhooks, `WebhooksPage.tsx`)
 
 Mirrors: `src/pages/settings/WebhooksPage.tsx`. Its own top-level app,
