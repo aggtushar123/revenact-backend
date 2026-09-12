@@ -93,6 +93,8 @@ class ExplainTests(TestCase):
     def test_prose_around_the_object_is_tolerated_and_an_empty_text_is_not(self):
         with patch(PATH, return_value="Sure — here it is:\n" + ANSWER + "\nHope that helps."):
             self.assertEqual(len(explain.explain(self.org, "at_risk_arr").evidence), 2)
+        with patch(PATH, return_value="{" + ANSWER + "}"):
+            self.assertEqual(len(explain.explain(self.org, "at_risk_arr").evidence), 2)
         with patch(PATH, return_value='{"text": "", "evidence": []}'):
             with self.assertRaises(ValueError):
                 explain.explain(self.org, "at_risk_arr")

@@ -51,8 +51,8 @@ month-end, every cut of it the platform has (with each member's own value \
 and move), the accounts carrying the most revenue at risk, and any open \
 decision on this number.
 
-Answer with a JSON object and nothing else — your reply starts with "{{" and \
-ends with "}}":
+Answer with a JSON object and nothing else — your reply starts with "{" and \
+ends with "}":
   "text": 2 to 4 plain sentences saying why the number is where it is and, \
 if there is a month-end to compare against, what moved it. Name the members \
 and accounts that account for most of it, with their figures. If the cuts \
@@ -225,11 +225,18 @@ def _parse(raw):
     try:
         payload = json.loads(text, strict=False)
     except json.JSONDecodeError as exc:
+        # Prose around the object, or the object wrapped in a second pair of
+        # braces (seen live: the first prompt said the reply "starts with
+        # {{" and the model took it literally). Take the outermost object
+        # and peel one doubled brace.
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end <= start:
             raise ValueError(f"The model's answer wasn't JSON: {exc}") from exc
+        inner_text = text[start : end + 1]
+        if inner_text.startswith("{{") and inner_text.endswith("}}"):
+            inner_text = inner_text[1:-1]
         try:
-            payload = json.loads(text[start : end + 1], strict=False)
+            payload = json.loads(inner_text, strict=False)
         except json.JSONDecodeError as inner:
             raise ValueError(f"The model's answer wasn't JSON: {inner}") from inner
     if not isinstance(payload, dict) or not str(payload.get("text") or "").strip():
