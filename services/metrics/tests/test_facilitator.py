@@ -129,6 +129,16 @@ class CaptureTests(TestCase):
         self.assertEqual(proposal.generated_by, self.carl)
         self.assertEqual(proposal.status, Proposal.Status.PROPOSED)
 
+    def test_an_array_wrapped_in_prose_is_still_read(self):
+        wrapped = (
+            "Here is what the participants decided:\n"
+            + _answer(self.fine.id)
+            + "\nLet me know if you need anything else."
+        )
+        with patch(PATH, return_value=wrapped):
+            stored = facilitator.capture_decisions(self.session)
+        self.assertEqual([p.title for p in stored], ["Book the exec sponsor call with Fine"])
+
     def test_a_session_where_nothing_was_decided_stores_nothing(self):
         with patch(PATH, return_value="[]"):
             self.assertEqual(facilitator.capture_decisions(self.session), [])

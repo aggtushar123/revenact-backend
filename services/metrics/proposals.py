@@ -234,7 +234,16 @@ def _parse(raw):
     try:
         payload = json.loads(text, strict=False)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"The model's answer wasn't JSON: {exc}") from exc
+        # The model was told to answer with the array and nothing else, and
+        # mostly does; when it wraps the array in a sentence anyway, the
+        # array is still the answer. Seen live from the facilitator.
+        start, end = text.find("["), text.rfind("]")
+        if start == -1 or end <= start:
+            raise ValueError(f"The model's answer wasn't JSON: {exc}") from exc
+        try:
+            payload = json.loads(text[start : end + 1], strict=False)
+        except json.JSONDecodeError as inner:
+            raise ValueError(f"The model's answer wasn't JSON: {inner}") from inner
     if isinstance(payload, dict):
         for value in payload.values():
             if isinstance(value, list):

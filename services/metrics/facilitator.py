@@ -52,8 +52,8 @@ decisions) and then the session itself: which account it was about, who took \
 part, who handed off to whom and why, and the transcript with each turn's \
 author.
 
-Return a JSON array of 0 to {max_decisions} decisions and nothing else. Each \
-is an object with:
+Return a JSON array of 0 to {max_decisions} decisions and nothing else — your \
+reply starts with "[" and ends with "]", no preamble. Each is an object with:
   "kind": "task" or "initiative".
   "title": a specific imperative sentence, at most 80 characters.
   "rationale": 1-3 sentences saying who decided it and why, quoting the \
