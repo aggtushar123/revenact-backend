@@ -135,25 +135,45 @@ class CustomerResponsibleView(APIView):
         return Response(self._payload(customer))
 
 
+def responsible_for_q():
+    """Responsibility grants reading: the people who answer for a customer
+    — its CS owner and its function owners — see every function's notes
+    and questions on *that* customer, whatever the chart says. Someone
+    responsible for an account cannot do their job blind to what the
+    other functions wrote about it."""
+    from django.db.models import Q
+
+    def q(user):
+        return Q(customer__owner=user) | Q(customer__function_owners__user=user)
+
+    return q
+
+
 def visible_contributions(user, queryset):
-    """The scope rule (services.accounts.hierarchy) plus what is addressed
-    to `user`: an answer to a question they asked is theirs to read."""
+    """The scope rule (services.accounts.hierarchy), plus what is addressed
+    to `user` (an answer to a question they asked), plus every note on a
+    customer they are responsible for."""
     from django.db.models import Q
 
     from services.accounts.hierarchy import scope_ids
 
     return queryset.filter(
-        Q(author_id__in=scope_ids(user)) | Q(answers_question__asked_by=user)
+        Q(author_id__in=scope_ids(user))
+        | Q(answers_question__asked_by=user)
+        | responsible_for_q()(user)
     ).distinct()
 
 
 def visible_questions(user, queryset):
-    """Questions asked by someone in `user`'s scope, or routed to them."""
+    """Questions asked by someone in `user`'s scope, routed to them, or on a
+    customer they are responsible for."""
     from django.db.models import Q
 
     from services.accounts.hierarchy import scope_ids
 
-    return queryset.filter(Q(asked_by_id__in=scope_ids(user)) | Q(assignee=user)).distinct()
+    return queryset.filter(
+        Q(asked_by_id__in=scope_ids(user)) | Q(assignee=user) | responsible_for_q()(user)
+    ).distinct()
 
 
 def _question_queryset(request):

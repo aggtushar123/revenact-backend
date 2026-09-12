@@ -90,7 +90,10 @@ class KnowledgeScopeTests(ChartFixture):
             seen_by(self.alice), ["dana note", "eng note", "leadership note", "sales note"]
         )
         self.assertEqual(seen_by(self.priya), ["eng note", "leadership note"])
-        self.assertEqual(seen_by(self.carl), ["dana note", "leadership note"])
+        # Carl owns Pizza Hut: responsibility grants reading on it, so he sees all.
+        self.assertEqual(
+            seen_by(self.carl), ["dana note", "eng note", "leadership note", "sales note"]
+        )
         self.assertEqual(seen_by(self.dana), ["dana note", "leadership note"])
 
     def test_an_answer_reaches_the_asker_across_branches(self):
@@ -119,6 +122,44 @@ class KnowledgeScopeTests(ChartFixture):
         # Priya was asked: the question is hers even though Raj is outside her scope.
         self.client.force_authenticate(self.priya)
         self.assertEqual([r["id"] for r in self.client.get("/api/v1/questions/").data], [q.id])
+
+    def test_responsibility_grants_reading_on_that_customer_only(self):
+        from services.knowledge.models import FunctionOwner
+
+        other = Customer.objects.create(organisation=self.org, name="Uber", owner=self.carl)
+        self.note(self.raj, "sales note on pizza hut")
+        Contribution.objects.create(
+            organisation=self.org,
+            customer=other,
+            author=self.raj,
+            function="sales",
+            body="sales note on uber",
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.raj,
+            assignee=self.carl,
+            text="pizza q",
+        )
+        FunctionOwner.objects.create(customer=self.pizza, function="engineering", user=self.priya)
+
+        self.client.force_authenticate(self.priya)
+        pizza = [
+            c["body"]
+            for c in self.client.get(f"/api/v1/customers/{self.pizza.id}/contributions/").data
+        ]
+        self.assertEqual(pizza, ["sales note on pizza hut"])
+        uber = self.client.get(f"/api/v1/customers/{other.id}/contributions/").data
+        self.assertEqual(uber, [])
+        self.assertEqual(
+            [q["text"] for q in self.client.get("/api/v1/questions/").data], ["pizza q"]
+        )
+        # Dana is responsible for nothing here and stays outside.
+        self.client.force_authenticate(self.dana)
+        self.assertEqual(
+            self.client.get(f"/api/v1/customers/{self.pizza.id}/contributions/").data, []
+        )
 
     def test_the_copilot_grounds_only_in_what_the_asker_may_see(self):
         from services.copilot.context import build_grounding

@@ -3261,7 +3261,10 @@ read as `reports_to {id, name}`; a loop is a `400`). From it,
 records a person may see: themselves, everyone below them in the chart,
 everyone in their function, and everyone above them in the chain.
 Anything addressed to them (a question routed to them, a message that
-@mentions them) is theirs regardless. The rule applies to what people
+@mentions them) is theirs regardless, and **responsibility grants
+reading**: the people who answer for a customer — its CS owner and its
+function owners — see every function's notes and questions on that
+customer, whatever the chart says (`knowledge.views.responsible_for_q`). The rule applies to what people
 *say*: contributions (`visible_contributions`, plus answers to the
 reader's own questions), questions (`visible_questions`), the Copilot's
 retrieval (scoped to the asker), and chat turns (below). Customer and
