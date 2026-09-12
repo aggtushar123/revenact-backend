@@ -5,7 +5,7 @@ the whole organisation's, and a CSM whose book is scoped to their own
 customers would otherwise read the company's ARR off this endpoint.
 """
 
-from rest_framework import views
+from rest_framework import generics, views
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 
@@ -218,3 +218,44 @@ class BriefGenerateView(views.APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response({"brief": _brief_payload(brief)}, status=status.HTTP_201_CREATED)
+
+
+class _InitiativeViewMixin:
+    """Shared by the list and detail: the organisation's own initiatives,
+    with one `Figures` per request so a page of them runs the rollups once."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def get_serializer_class(self):
+        from .serializers import InitiativeSerializer
+
+        return InitiativeSerializer
+
+    def get_queryset(self):
+        from .models import Initiative
+
+        return Initiative.objects.filter(
+            organisation=self.request.user.organisation
+        ).select_related("owner")
+
+    def get_serializer_context(self):
+        from .initiatives import Figures
+
+        context = super().get_serializer_context()
+        if not hasattr(self, "_figures"):
+            self._figures = Figures(self.request.user.organisation)
+        context["figures"] = self._figures
+        return context
+
+
+class InitiativeListCreateView(_InitiativeViewMixin, generics.ListCreateAPIView):
+    """GET/POST /api/v1/metrics/initiatives/ — management's decisions, each
+    judged live against the metric layer. Unpaginated: a board of decisions
+    is tens of rows, and the page wants all of them."""
+
+    pagination_class = None
+
+
+class InitiativeDetailView(_InitiativeViewMixin, generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/metrics/initiatives/<id>/. Closing one
+    (status done or abandoned) stamps closed_at; reopening clears it."""

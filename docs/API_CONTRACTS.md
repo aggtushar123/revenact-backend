@@ -3615,6 +3615,53 @@ configured, `502` when the call fails or the answer isn't readable,
            "generated_at": "2026-09-12T15:40:02Z", "generated_by": "Alice"}}
 ```
 
+### Models — `Initiative`
+
+A decision, with a number attached. Management's half of the brain: the
+metric layer says what the numbers are and what moved them; an
+initiative says what someone decided to do about one of them — a
+`hypothesis`, a `metric` from the registry (optionally one cut of it,
+`dimension` + `member`, which must be a cut the registry has), a
+`target_value`, a `target_by`, an `owner` — and is then judged against
+the same registry everything else reads, so "did it work" is a fact
+rather than a memory.
+
+`baseline_value`/`baseline_as_of` are the starting line, captured when
+the initiative is written from the registry as it stood that day, and
+never re-read: the point is movement since the decision. `member_label`
+is kept as it read at creation so a card still says "Product B" if the
+cut is later empty. `status` is `planned`/`active`/`done`/`abandoned`;
+closing stamps `closed_at`, reopening clears it; `outcome` is what
+happened, written at close.
+
+### `GET/POST /api/v1/metrics/initiatives/`, `GET/PATCH/DELETE /api/v1/metrics/initiatives/<id>/`
+
+Auth: `CanViewAllAccounts`. Unpaginated. Each row carries the live
+judgement:
+
+```json
+{"id": 1, "title": "Bring Product B's risk down",
+ "metric": "at_risk_arr", "metric_label": "ARR at risk",
+ "dimension": "product", "dimension_label": "Product", "member": "4", "member_label": "Product B",
+ "target_value": "30000.0000", "target_by": "2026-11-11",
+ "owner": {"id": 5, "name": "Carl CSM"}, "status": "active", "status_display": "Active",
+ "baseline_value": "64090.0000", "baseline_as_of": "2026-09-12",
+ "progress": {"baseline": 64090.0, "current": 64090.0, "target": 30000.0,
+              "progress_pct": 0.0, "days_left": 60, "direction": "down", "unit": "money", "better": "down"},
+ "history": [{"period_end": "2026-09-30", "value": 58000.0}]}
+```
+
+`progress.current` is the registry's value now (whole-org or the cut's
+member); `progress_pct` is the share of the way from the starting line
+to the target, clamped 0–100 and null when either end is unmeasured or
+the target equals the baseline; `history` is the month-end snapshots for
+that number since the baseline, so a card can draw the path. A page of
+initiatives computes the registry once (`initiatives.Figures`), not once
+per row. Writes take `owner_id`; validation refuses an unknown metric, a
+cut the metric doesn't have (naming the ones it does), a member not in
+that cut, a past `target_by` on create, and an owner from another
+organisation.
+
 ### `GET /api/v1/metrics/<key>/history/`
 
 The month-end series for one metric, oldest first, this organisation

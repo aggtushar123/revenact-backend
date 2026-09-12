@@ -81,3 +81,70 @@ class Brief(models.Model):
 
     def __str__(self):
         return f"Brief for {self.organisation} as of {self.as_of}"
+
+
+class Initiative(models.Model):
+    """A decision, with a number attached.
+
+    Management's half of the brain. The metric layer says what the numbers
+    are and what moved them; an initiative says what someone decided to do
+    about one of them — a hypothesis, a target, a date, an owner — and is
+    then judged against the same registry that everything else reads, so
+    "did it work" is a fact rather than a memory.
+
+    `baseline_value` is the starting line, captured when the initiative was
+    written: the number as it stood on `baseline_as_of`. Stored rather than
+    re-read, because the point is to measure movement since the decision, and
+    the registry only knows "now".
+
+    An initiative can target one cut of a metric — ARR at risk on Product B,
+    coverage for one owner — through `dimension`/`member`, which must be a
+    cut the registry actually has. `member_label` is kept as it read when the
+    initiative was written, so the card still says "Product B" if the cut is
+    later empty.
+    """
+
+    class Status(models.TextChoices):
+        PLANNED = "planned", "Planned"
+        ACTIVE = "active", "Active"
+        DONE = "done", "Done"
+        ABANDONED = "abandoned", "Abandoned"
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="initiatives", on_delete=models.CASCADE
+    )
+    title = models.CharField(max_length=200)
+    hypothesis = models.TextField(
+        blank=True,
+        help_text='"If we …, then … because …". The reasoning, so the outcome can be '
+        "judged against it.",
+    )
+    metric = models.CharField(max_length=64, help_text="A key from services.metrics.registry.")
+    dimension = models.CharField(max_length=32, blank=True)
+    member = models.CharField(max_length=64, blank=True)
+    member_label = models.CharField(max_length=255, blank=True)
+    target_value = models.DecimalField(max_digits=18, decimal_places=4)
+    target_by = models.DateField()
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="owned_initiatives",
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    outcome = models.TextField(blank=True, help_text="What happened, written when it is closed.")
+    baseline_value = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    baseline_as_of = models.DateField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.title
