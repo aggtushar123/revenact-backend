@@ -3,6 +3,7 @@ from rest_framework import serializers
 
 from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
+from services.fx_rates.conversion import convert_to_org_currency
 
 from .models import (
     Account,
@@ -343,6 +344,42 @@ class CustomerHealthRowSerializer(serializers.ModelSerializer):
         choices=Customer.HealthCategory.choices, read_only=True
     )
     history = HealthSnapshotSerializer(source="health_snapshots", many=True, read_only=True)
+    arr = serializers.SerializerMethodField()
+    days_since_touch = serializers.SerializerMethodField()
+
+    def get_arr(self, customer):
+        """`arr_billed_at_account`, converted into the organisation's own
+        reporting currency — **null when it can't be converted**.
+
+        The Renewal Date tab adds money up across the whole book, and a book
+        can hold contracts in several currencies (Customer.currency is
+        independent of the org's). Treating an unconverted figure as though it
+        were already in the org's currency is the one outcome worse than
+        leaving it out, so a missing FX rate returns null and the view counts
+        it in `unconverted_count` — the same arrangement CustomerStatsView
+        uses, through the same single conversion hook.
+        """
+
+        organisation = self.context["organisation"]
+        converted = convert_to_org_currency(
+            customer.arr_billed_at_account,
+            customer.currency,
+            organisation,
+            # Pre-fetched by the view: one query for the request rather than
+            # one per row of a five-hundred-row book.
+            rates=self.context.get("fx_rates"),
+        )
+        return None if converted is None else float(converted)
+
+    def get_days_since_touch(self, customer):
+        """Days since the last logged activity — how stale the relationship is.
+
+        Already computed for the health rubric (Customer Touch is 4 of its 10
+        points), so this is the same number the score is built from rather than
+        a second definition of "touched". An account nobody has touched is
+        measured from when it arrived, not from never: see `health_inputs`.
+        """
+        return customer.health_inputs()["days_since_touch"]
 
     class Meta:
         model = Customer
@@ -353,6 +390,10 @@ class CustomerHealthRowSerializer(serializers.ModelSerializer):
             "lifecycle_stage",
             "lifecycle_stage_display",
             "renewal_date",
+            # Money and staleness: the Renewal Date tab ranks by ARR at risk
+            # and calls out renewals nobody has touched.
+            "arr",
+            "days_since_touch",
             "health_score",
             "health_category",
             "csm_pulse_score",

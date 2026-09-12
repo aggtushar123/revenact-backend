@@ -41,6 +41,9 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from services.accounts.models import User
+from services.customers.management.commands.seed_demo_customers import (
+    upcoming_anniversary,
+)
 from services.customers.models import Account, Customer
 
 # `customer_name` must match a Customer.name already seeded by
@@ -400,8 +403,25 @@ class Command(BaseCommand):
             created += was_created
             updated += not was_created
 
+        # Accounts carry their own renewal dates, and the standalone Accounts
+        # page shows them beside their parent company's. Rolling only the
+        # customers would leave the two screens disagreeing about the same
+        # contract — see upcoming_anniversary for why the roll happens at all.
+        today = timezone.localdate()
+        rolled = 0
+        for account in Account.objects.filter(
+            customers__organisation=org, renewal_date__isnull=False
+        ).distinct():
+            next_date = upcoming_anniversary(account.renewal_date, today)
+            if next_date == account.renewal_date:
+                continue
+            account.renewal_date = next_date
+            account.save(update_fields=["renewal_date"])
+            rolled += 1
+
         self.stdout.write(
             self.style.SUCCESS(
-                f"{org.name}: created {created}, updated {updated}, skipped {skipped} account(s)."
+                f"{org.name}: created {created}, updated {updated}, skipped {skipped} "
+                f"account(s); rolled {rolled} renewal date(s) forward."
             )
         )

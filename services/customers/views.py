@@ -13,7 +13,7 @@ from rest_framework.response import Response
 from services.accounts.models import User
 from services.connectors.models import Connector
 from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
-from services.fx_rates.conversion import convert_to_org_currency
+from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
@@ -177,6 +177,13 @@ class CustomerHealthView(generics.ListAPIView):
     `?history_months=` trims how much history comes back (default 12, the most
     any tab offers). Movement's own window selector re-slices client-side;
     this is for keeping the payload down, not for the UI.
+
+    **Money comes back converted.** Each row's `arr` is in the organisation's
+    own reporting currency, or null where no FX rate is configured for that
+    customer's contract currency — `currency` and `unconverted_count` in the
+    payload say which, so the Renewal tab can name what it left out instead of
+    adding up figures in different units. Same single conversion hook
+    CustomerStatsView uses.
     """
 
     serializer_class = CustomerHealthRowSerializer
@@ -210,7 +217,10 @@ class CustomerHealthView(generics.ListAPIView):
             "captured_on"
         )
         return (
-            visible_customers(self.request.user)
+            # Annotated: every row serialises `days_since_touch`, which the
+            # Renewal tab ranks by. Without this each row runs its own
+            # aggregate — 500 extra queries on a full book.
+            with_health_inputs(visible_customers(self.request.user))
             .filter(is_archived=False)
             .select_related("owner")
             .prefetch_related(Prefetch("health_snapshots", queryset=snapshots))
@@ -218,6 +228,16 @@ class CustomerHealthView(generics.ListAPIView):
             # from "more than MAX_ROWS and trimmed" without a second count.
             .order_by("name")[: self.MAX_ROWS + 1]
         )
+
+    def get_serializer_context(self):
+        # The row serializer converts each ARR into the org's own currency;
+        # the rate table is fetched once here rather than per row.
+        organisation = self.request.user.organisation
+        return {
+            **super().get_serializer_context(),
+            "organisation": organisation,
+            "fx_rates": rates_for(organisation),
+        }
 
     def list(self, request, *args, **kwargs):
         customers = list(self.get_queryset())
@@ -231,6 +251,12 @@ class CustomerHealthView(generics.ListAPIView):
                 # True only when rows were actually dropped, so the client can
                 # say so rather than quietly charting a partial book.
                 "truncated": truncated,
+                # The currency every `arr` above is denominated in, and how many
+                # rows have none because their contract currency has no rate
+                # configured. A money chart that silently drops rows is worse
+                # than one that says how many it dropped.
+                "currency": request.user.organisation.currency,
+                "unconverted_count": sum(1 for row in rows if row["arr"] is None),
             }
         )
 

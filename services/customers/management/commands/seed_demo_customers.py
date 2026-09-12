@@ -537,6 +537,37 @@ def csm_pulse_stamp(index):
     return timezone.now() - timedelta(days=3 + (index * 5) % 40)
 
 
+#: Companies whose renewal is deliberately left in the past, and by how many
+#: days. A renewal date that has passed while the customer is still active is a
+#: real and common state — the deal slipped, or nobody updated the record after
+#: it closed — and the Renewal Date tab has a tile for exactly that. A demo book
+#: where every date is tidy would leave that tile permanently empty and the
+#: worst case untested by anyone looking at the screen.
+DEMO_OVERDUE_DAYS = {"WeWork": 9, "Pizza Hut": 34}
+
+
+def upcoming_anniversary(anniversary, today):
+    """The next occurrence of `anniversary` on or after `today`.
+
+    The literal dates above are contract anniversaries, not one-off events: a
+    renewal that passed while the customer stayed active means the contract
+    renewed, and the next one is a year later. Rolling them forward at seed time
+    is what keeps this book meaningful as real time moves past 2026 — the same
+    trap seed_demo_tickets documents, where fixed demo dates quietly empty every
+    rolling window the dashboards ask for.
+
+    Whole years, so a March renewal stays a March renewal. Feb 29 falls back to
+    Feb 28 in a non-leap year rather than raising.
+    """
+    rolled = anniversary
+    while rolled < today:
+        try:
+            rolled = rolled.replace(year=rolled.year + 1)
+        except ValueError:
+            rolled = rolled.replace(year=rolled.year + 1, day=28)
+    return rolled
+
+
 class Command(BaseCommand):
     help = "Seeds demo Customer rows (from the frontend's tableData.ts mock) for an organisation."
 
@@ -585,6 +616,39 @@ class Command(BaseCommand):
             created += was_created
             updated += not was_created
 
+        rolled, overdue = self._spread_renewals(org)
+
         self.stdout.write(
-            self.style.SUCCESS(f"{org.name}: created {created}, updated {updated} customer(s).")
+            self.style.SUCCESS(
+                f"{org.name}: created {created}, updated {updated} customer(s); "
+                f"rolled {rolled} renewal date(s) forward, left {overdue} overdue."
+            )
         )
+
+    def _spread_renewals(self, org):
+        """Move every past renewal date to its next anniversary, keeping a
+        couple deliberately overdue.
+
+        Runs after the main loop rather than inside it so the literals above
+        stay readable as "this customer renews on 2 March" — the roll is a
+        property of when the seed is run, not of the data."""
+
+        today = timezone.localdate()
+        rolled = overdue = 0
+
+        for customer in Customer.objects.filter(
+            organisation=org, renewal_date__isnull=False
+        ):
+            overdue_days = DEMO_OVERDUE_DAYS.get(customer.name)
+            if overdue_days is not None:
+                customer.renewal_date = today - timedelta(days=overdue_days)
+                overdue += 1
+            else:
+                next_date = upcoming_anniversary(customer.renewal_date, today)
+                if next_date == customer.renewal_date:
+                    continue
+                customer.renewal_date = next_date
+                rolled += 1
+            customer.save(update_fields=["renewal_date"])
+
+        return rolled, overdue

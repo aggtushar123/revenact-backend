@@ -70,7 +70,7 @@ expects.
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Headlines (`ActivityFeed`'s "Headlines" sub-tab on both Details pages) | `customers` (`Headline` model) | 🟢 API-complete — see below. Model + two scoped list-create endpoints (per-Customer, per-Account), a flat detail view (GET/PATCH/DELETE by id), and a real generation endpoint that summarises the parent's own Notes/Emails/Tickets/Activities through `services.copilot`'s Anthropic client. Seeded. `HeadlinesTab.tsx` fetches real data through `fetchHeadlinesForCustomer`/`fetchHeadlinesForAccount`; the group pill and the "Data sources" footer now reflect real values rather than stored/decorative text. |
-| Dashboards — Health Overview | `customers` | 🟢 All four tabs (Triage/Divergence/Movement/Controls) run on `GET /api/v1/customers/health/` — see that endpoint and `HealthSnapshot` below. |
+| Dashboards — Health Overview | `customers` | 🟢 All five tabs (Triage/Divergence/Movement/Renewal Date/Controls) run on one `GET /api/v1/customers/health/` — see that endpoint and `HealthSnapshot` below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
@@ -948,6 +948,85 @@ soonest-first — a real drill-down, not just a count/value pair, same
   }
 }
 ```
+
+### `GET /api/v1/customers/health/`
+
+Auth: `IsAuthenticated`. The whole book with its health history, for every
+tab of the Health Overview dashboard — Triage, Divergence, Movement,
+Renewal Date and Controls.
+
+**One request for five tabs.** They read the same rows differently —
+ranked by risk, plotted CSM-pulse against AI-pulse, counted as
+transitions between months, summed as renewal ARR — so an endpoint each
+would fetch the same book five times and let the tabs disagree with each
+other mid-render.
+
+**Unpaginated on purpose.** Every tab aggregates over the entire book: a
+triage queue that ranked only page one would rank nothing. Capped at 500
+rows, with `truncated` in the payload rather than a silent cut. Archived
+customers are excluded, matching the list endpoint — they are hidden from
+the working views, and health is a working view.
+
+Query params: `history_months` (default 12, the most any tab offers)
+trims how much history comes back. It is for keeping the payload down,
+not for the UI — Movement's own window selector re-slices client-side.
+
+**Response `200`**
+
+```json
+{
+  "results": [
+    {
+      "id": 9,
+      "name": "Hyatt Hotels Corporation",
+      "owner_name": "Gerry Hill",
+      "lifecycle_stage": "customer_active",
+      "lifecycle_stage_display": "Customer - Active",
+      "renewal_date": "2027-02-02",
+      "arr": 59500.0,
+      "days_since_touch": 56,
+      "health_score": "5.4",
+      "health_category": "average",
+      "csm_pulse_score": 4,
+      "csm_pulse_modified_at": "2026-02-04T09:12:00Z",
+      "ai_pulse_value": 2,
+      "ai_pulse_reason": "Seat utilisation at 41% of contract",
+      "total_active_seats": 822,
+      "history": [
+        {"captured_on": "2026-08-31", "health_score": "6.1",
+         "health_category": "average", "csm_pulse_score": 4, "ai_pulse_value": 3}
+      ]
+    }
+  ],
+  "count": 12,
+  "history_months": 12,
+  "truncated": false,
+  "currency": "USD",
+  "unconverted_count": 0
+}
+```
+
+Notes on the shape:
+
+* `csm_pulse_score` and `ai_pulse_value` stay **nullable all the way to
+  the browser**. "Not rated yet" is a real state, and the Divergence tab
+  must not read an unrated account as one both parties agree is terrible.
+* **`arr` is converted**, into the organisation's own reporting currency
+  (`currency`), through the same `convert_to_org_currency` hook
+  `CustomerStatsView` uses — and is **null** where that customer's
+  contract currency has no `FxRate` configured. `unconverted_count` says
+  how many. The Renewal tab adds money up across the whole book; treating
+  an unconverted figure as though it were already in the reporting
+  currency produces a confident wrong number, which is worse than an
+  incomplete one. The rate table is fetched once per request
+  (`fx_rates.conversion.rates_for`), not per row.
+* `days_since_touch` is the same number the health rubric's own Customer
+  Touch component is built from — not a second definition of "touched".
+  An account nobody has ever touched is measured from when it arrived, so
+  a logo onboarded last week doesn't read as neglected.
+* This is a **Customer-level** endpoint. Accounts carry their own health
+  and renewal dates, and no tab reads them yet; adding them would change
+  what "the book" means on every tab at once.
 
 ### Models — `HealthSnapshot`
 

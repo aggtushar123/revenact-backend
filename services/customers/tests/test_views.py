@@ -5780,15 +5780,85 @@ class CustomerHealthViewTests(APITestCase):
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_does_not_query_per_customer(self):
-        # Each row carries its owner and a year of snapshots; without
-        # select_related/prefetch that is two more queries per customer.
+        # Each row carries its owner, a year of snapshots, a last-touch date
+        # and an ARR conversion; without the annotations and the pre-fetched
+        # rate table that is four more queries per customer.
         for i in range(10):
             other = Customer.objects.create(organisation=self.org, name=f"Co {i}")
             HealthSnapshot.objects.create(
                 customer=other, captured_on=date(2026, 1, 31), health_score="7.0"
             )
 
-        # One SELECT for the customers (owners joined), one for every
-        # snapshot at once. Nothing per row.
-        with self.assertNumQueries(2):
+        # Four, none of them per row: the customers (owners joined,
+        # touch/tickets annotated as subqueries), every CSAT survey at once
+        # (with_health_inputs prefetches those), every snapshot at once, and
+        # one FX rate table for the whole page.
+        with self.assertNumQueries(4):
             self.client.get(self.url)
+
+    # ── money and staleness, for the Renewal Date tab ─────────────────
+
+    def test_arr_comes_back_in_the_organisations_own_currency(self):
+        from services.fx_rates.models import FxRate
+
+        self.org.currency = "USD"
+        self.org.save(update_fields=["currency"])
+        FxRate.objects.create(
+            organisation=self.org, currency="EUR", rate_to_org_currency=Decimal("1.10")
+        )
+        Customer.objects.create(
+            organisation=self.org,
+            name="Berlin GmbH",
+            currency="EUR",
+            arr_billed_at_account=Decimal("100000"),
+        )
+
+        rows = {r["name"]: r for r in self.client.get(self.url).data["results"]}
+
+        self.assertEqual(rows["Berlin GmbH"]["arr"], 110000.0)
+
+    def test_an_unconvertible_arr_is_null_and_counted_rather_than_summed_as_is(self):
+        # Treating 100,000 JPY as 100,000 USD is the one outcome worse than
+        # leaving the row out of the total.
+        Customer.objects.create(
+            organisation=self.org,
+            name="Tokyo KK",
+            currency="JPY",
+            arr_billed_at_account=Decimal("100000"),
+        )
+
+        data = self.client.get(self.url).data
+        rows = {r["name"]: r for r in data["results"]}
+
+        self.assertIsNone(rows["Tokyo KK"]["arr"])
+        self.assertEqual(data["unconverted_count"], 1)
+        self.assertEqual(data["currency"], self.org.currency)
+
+    def test_days_since_touch_is_the_same_number_the_health_score_uses(self):
+        Activity.objects.create(
+            customer=self.customer,
+            type=Activity.ActivityType.HEALTH_CHECK_REVIEW,
+            occurred_at=timezone.localdate() - timedelta(days=21),
+        )
+
+        row = next(
+            r for r in self.client.get(self.url).data["results"] if r["name"] == "Hyatt"
+        )
+
+        self.assertEqual(row["days_since_touch"], 21)
+        self.assertEqual(
+            row["days_since_touch"], self.customer.health_inputs()["days_since_touch"]
+        )
+
+    def test_an_untouched_customer_is_measured_from_when_it_arrived(self):
+        # A logo onboarded last week hasn't been neglected for a decade.
+        new = Customer.objects.create(
+            organisation=self.org,
+            name="Fresh",
+            joined_date=timezone.localdate() - timedelta(days=5),
+        )
+
+        row = next(r for r in self.client.get(self.url).data["results"] if r["name"] == "Fresh")
+
+        self.assertEqual(row["days_since_touch"], 5)
+        self.assertEqual(new.health_inputs()["days_since_touch"], 5)
