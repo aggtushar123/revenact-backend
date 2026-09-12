@@ -3662,6 +3662,57 @@ cut the metric doesn't have (naming the ones it does), a member not in
 that cut, a past `target_by` on create, and an owner from another
 organisation.
 
+### Models — `Proposal`
+
+An action an agent proposed, waiting for a person to decide — the review
+queue. `kind` is `task` (on an account) or `initiative` (on a number);
+`title`, `rationale` and `evidence` (the figures cited, as given to the
+agent) are the case; `action` is exactly what approving will do,
+validated when the proposal is written rather than at the click;
+`initiative` links the open decision it serves, if any; `status` is
+`proposed`/`approved`/`rejected` with `decided_by`/`decided_at`/
+`decision_note`; `result` is what approval created; `batch` groups one
+generation run.
+
+### `GET /api/v1/metrics/proposals/`, `POST …/generate/`, `POST …/<id>/approve/`, `POST …/<id>/reject/`
+
+Auth: `CanViewAllAccounts`. The Ops agent (`services/metrics/proposals.py`)
+reads what the brain knows — the metric layer, what moved, the cuts, the
+accounts carrying the downside (`forecast.exposure_list`, with owner,
+renewal and the churn rule's factors), the team, the open decisions — and
+proposes 2–5 next actions. Two kinds only, both things a person could do
+by hand in the app: a task on an account, an initiative on a number. No
+emails, campaigns or anything outward-facing; **an agent's reach is
+exactly a person's, and a person still has to say yes.**
+
+**Validated before stored.** The prompt gives the agent account ids,
+member names, metric keys, cuts and member ids; an answer naming
+anything outside that set is dropped at generation with a log line, an
+unknown assignee falls back to the account's owner, a link to a decision
+that isn't open is dropped. The reviewer sees only actions that will
+work.
+
+`GET` returns `{"pending": n, "proposals": [...]}`, proposed first then
+newest; `?status=` narrows. `generate/` is a real, paid call (`503`
+unconfigured, `502` failed/unreadable, `422` no live customers).
+`approve/` executes: a Task is created on the customer, or an Initiative
+through `initiatives.create_initiative` (the same path the Initiatives
+API uses, starting line included) — and records `result`; `reject/`
+takes an optional `note`. A proposal is decided once: a second decision
+is a `409`.
+
+```json
+{"pending": 1, "proposals": [{
+  "id": 7, "kind": "task", "kind_display": "Task on an account",
+  "title": "Run a save play on Pizza Hut before renewal",
+  "rationale": "Pizza Hut carries USD 42,000 of downside and renews in 34 days…",
+  "evidence": ["Pizza Hut: USD 42,000 downside, renews in 34 days, health poor"],
+  "action": {"customer_id": 12, "customer_name": "Pizza Hut", "title": "Save play: Pizza Hut",
+             "assignee_name": "Carl CSM", "due_date": "2026-09-19", "priority": "high"},
+  "initiative": {"id": 1, "title": "Halve the ARR at risk on Product B"},
+  "status": "proposed", "decided_by": null, "result": {}, "generated_by": "Alice"}]}
+```
+
 ### `GET /api/v1/metrics/<key>/history/`
 
 The month-end series for one metric, oldest first, this organisation

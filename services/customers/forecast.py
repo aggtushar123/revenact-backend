@@ -382,6 +382,13 @@ def _row_payload(row):
     }
 
 
+def exposure_list(rows, limit=LIST_LIMIT):
+    """The accounts carrying the downside, largest first — the names behind
+    the at-risk figure, for anyone deciding where to act."""
+    ranked = sorted((row for row in rows if row.downside > 0), key=lambda row: -row.downside)
+    return [_row_payload(row) for row in ranked[:limit]]
+
+
 def bridge_by(rows, key):
     """The bridge for each group of rows, keyed by `key(row)`.
 

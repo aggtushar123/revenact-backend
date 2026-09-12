@@ -148,3 +148,67 @@ class Initiative(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class Proposal(models.Model):
+    """An action an agent proposed, waiting for a person to decide.
+
+    The review queue. The Ops agent reads the metric layer, the signals, the
+    cuts and the accounts carrying the downside, and proposes concrete
+    actions — a task on an account, an initiative on a number. Nothing it
+    proposes runs until someone approves it here, and approval executes
+    through the same paths a person would use (a Task, an Initiative), so an
+    agent can never do anything a person couldn't do by hand.
+
+    `evidence` is the figures the proposal cites, kept so the reviewer can
+    check the reasoning against the numbers; `action` is exactly what
+    approving will do, validated when the proposal is written rather than
+    when it is approved — a proposal that names an account that doesn't
+    exist is dropped at generation, not discovered at the click.
+    """
+
+    class Kind(models.TextChoices):
+        TASK = "task", "Task on an account"
+        INITIATIVE = "initiative", "Initiative"
+
+    class Status(models.TextChoices):
+        PROPOSED = "proposed", "Proposed"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="proposals", on_delete=models.CASCADE
+    )
+    batch = models.CharField(max_length=32, help_text="One generation run; proposals share it.")
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    title = models.CharField(max_length=255)
+    rationale = models.TextField(help_text="Why, in the agent's words, citing the evidence.")
+    evidence = models.JSONField(default=list, help_text="The figures cited, as given to the agent.")
+    action = models.JSONField(help_text="Exactly what approving does, validated at generation.")
+    initiative = models.ForeignKey(
+        Initiative,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="proposals",
+        help_text="The open initiative this serves, if the agent linked one.",
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PROPOSED)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_note = models.TextField(blank=True)
+    result = models.JSONField(
+        default=dict, blank=True, help_text="What approval created, e.g. a task id."
+    )
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[{self.get_kind_display()}] {self.title}"

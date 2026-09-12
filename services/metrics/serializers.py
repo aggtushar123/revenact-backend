@@ -140,20 +140,11 @@ class InitiativeSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         request = self.context["request"]
-        organisation = request.user.organisation
-        validated_data["organisation"] = organisation
-        validated_data["created_by"] = request.user
-        # The starting line: the number as it stands on the day the decision
-        # is written, from the registry — the same figure the overview shows.
-        probe = Initiative(
-            organisation=organisation,
-            **{k: v for k, v in validated_data.items() if k in ("metric", "dimension", "member")},
+        # The starting line is captured inside create_initiative, from the
+        # registry as it stands today — the same figure the overview shows.
+        return initiatives.create_initiative(
+            request.user.organisation, request.user, **validated_data
         )
-        validated_data["baseline_value"] = initiatives.as_decimal(
-            initiatives.Figures(organisation).value_of(probe)
-        )
-        validated_data["baseline_as_of"] = timezone.localdate()
-        return super().create(validated_data)
 
     def update(self, instance, validated_data):
         closing = {Initiative.Status.DONE, Initiative.Status.ABANDONED}

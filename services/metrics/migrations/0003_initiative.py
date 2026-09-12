@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("accounts", "0007_grant_view_all_accounts"),
         ("metrics", "0002_brief"),
@@ -67,9 +66,7 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "baseline_value",
-                    models.DecimalField(
-                        blank=True, decimal_places=4, max_digits=18, null=True
-                    ),
+                    models.DecimalField(blank=True, decimal_places=4, max_digits=18, null=True),
                 ),
                 ("baseline_as_of", models.DateField()),
                 ("created_at", models.DateTimeField(auto_now_add=True)),

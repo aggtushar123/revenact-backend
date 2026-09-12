@@ -94,3 +94,22 @@ def history(initiative):
 
 def as_decimal(value):
     return None if value is None else Decimal(str(value))
+
+
+def create_initiative(organisation, created_by, **fields):
+    """Write an initiative with its starting line captured from the registry
+    as it stands today. The one place this happens — the API serializer and
+    an approved agent proposal both come through here."""
+    from .models import Initiative
+
+    probe = Initiative(
+        organisation=organisation,
+        **{k: v for k, v in fields.items() if k in ("metric", "dimension", "member")},
+    )
+    return Initiative.objects.create(
+        organisation=organisation,
+        created_by=created_by,
+        baseline_value=as_decimal(Figures(organisation).value_of(probe)),
+        baseline_as_of=timezone.localdate(),
+        **fields,
+    )

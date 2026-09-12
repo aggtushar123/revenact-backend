@@ -259,3 +259,109 @@ class InitiativeListCreateView(_InitiativeViewMixin, generics.ListCreateAPIView)
 class InitiativeDetailView(_InitiativeViewMixin, generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/metrics/initiatives/<id>/. Closing one
     (status done or abandoned) stamps closed_at; reopening clears it."""
+
+
+def _proposal_payload(proposal):
+    return {
+        "id": proposal.id,
+        "batch": proposal.batch,
+        "kind": proposal.kind,
+        "kind_display": proposal.get_kind_display(),
+        "title": proposal.title,
+        "rationale": proposal.rationale,
+        "evidence": proposal.evidence,
+        "action": proposal.action,
+        "initiative": (
+            {"id": proposal.initiative.id, "title": proposal.initiative.title}
+            if proposal.initiative_id
+            else None
+        ),
+        "status": proposal.status,
+        "status_display": proposal.get_status_display(),
+        "decided_by": proposal.decided_by.name if proposal.decided_by else None,
+        "decided_at": proposal.decided_at.isoformat() if proposal.decided_at else None,
+        "decision_note": proposal.decision_note,
+        "result": proposal.result,
+        "generated_by": proposal.generated_by.name if proposal.generated_by else None,
+        "created_at": proposal.created_at.isoformat(),
+    }
+
+
+class ProposalListView(views.APIView):
+    """GET /api/v1/metrics/proposals/ — the review queue: proposed first,
+    newest first within a status. `?status=proposed` narrows."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def get(self, request):
+        from .models import Proposal
+
+        queryset = Proposal.objects.filter(organisation=request.user.organisation).select_related(
+            "initiative", "decided_by", "generated_by"
+        )
+        wanted = request.query_params.get("status")
+        if wanted in Proposal.Status.values:
+            queryset = queryset.filter(status=wanted)
+        rows = sorted(
+            queryset,
+            key=lambda p: (p.status != Proposal.Status.PROPOSED, -p.created_at.timestamp()),
+        )
+        return Response(
+            {
+                "pending": sum(1 for p in rows if p.status == Proposal.Status.PROPOSED),
+                "proposals": [_proposal_payload(p) for p in rows],
+            }
+        )
+
+
+class ProposalGenerateView(views.APIView):
+    """POST /api/v1/metrics/proposals/generate/ — ask the Ops agent for
+    proposals. A real, paid model call; error mapping as the brief's."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def post(self, request):
+        from rest_framework import status
+
+        from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
+
+        from .proposals import NothingToProposeFrom, generate_proposals
+
+        try:
+            stored = generate_proposals(request.user.organisation, generated_by=request.user)
+        except NothingToProposeFrom as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except CopilotNotConfigured as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except (CopilotRequestFailed, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(
+            {"proposals": [_proposal_payload(p) for p in stored]}, status=status.HTTP_201_CREATED
+        )
+
+
+class ProposalDecisionView(views.APIView):
+    """POST /api/v1/metrics/proposals/<id>/approve/ and .../reject/ — a
+    person's decision. Approving executes the action through the same path
+    they would use by hand and records what it created; a proposal is
+    decided once."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def post(self, request, pk, decision):
+        from django.shortcuts import get_object_or_404
+        from rest_framework import status
+
+        from .models import Proposal
+        from .proposals import AlreadyDecided, approve, reject
+
+        proposal = get_object_or_404(Proposal, organisation=request.user.organisation, pk=pk)
+        note = str(request.data.get("note") or "")
+        try:
+            if decision == "approve":
+                approve(proposal, request.user, note)
+            else:
+                reject(proposal, request.user, note)
+        except AlreadyDecided as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response({"proposal": _proposal_payload(proposal)})
