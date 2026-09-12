@@ -128,6 +128,9 @@ class Question(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     answered_at = models.DateTimeField(null=True, blank=True)
+    last_nudged_at = models.DateTimeField(
+        null=True, blank=True, help_text="When the assignee was last reminded — see aging.py."
+    )
 
     class Meta:
         ordering = ["-created_at", "-id"]

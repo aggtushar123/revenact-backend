@@ -166,6 +166,25 @@ def _usage(actor):
     return usage.build_stats(usage.rows_for(customers, actor.organisation))
 
 
+def _knowledge(actor):
+    """What the company is asking and telling itself — services.knowledge.
+    Questions waiting on people, how many have waited too long, and how much
+    the functions have written down lately."""
+    from datetime import timedelta
+
+    from services.knowledge.aging import STALE_DAYS, open_questions, stale_open_questions
+    from services.knowledge.models import Contribution
+
+    organisation = actor.organisation
+    return {
+        "open_questions": open_questions(organisation).count(),
+        "stale_questions": stale_open_questions(organisation, STALE_DAYS).count(),
+        "contributions_30d": Contribution.objects.filter(
+            organisation=organisation, created_at__gte=timezone.now() - timedelta(days=30)
+        ).count(),
+    }
+
+
 #: Each source is computed once per `compute_all`, however many metrics read it.
 SOURCES = {
     "portfolio": lambda actor: portfolio.build_stats(actor, {}),
@@ -175,6 +194,7 @@ SOURCES = {
     "activity": lambda actor: activity_tracking.build_stats(actor, {}),
     "health": _health,
     "support": _support,
+    "knowledge": _knowledge,
 }
 
 
@@ -375,6 +395,33 @@ METRICS = [
         "support",
         lambda s: s["open_tickets"],
         "Tickets not resolved or closed, across the organisation's customers and their accounts.",
+    ),
+    Metric(
+        "open_questions",
+        "Questions waiting",
+        COUNT,
+        DOWN,
+        "knowledge",
+        lambda s: s["open_questions"],
+        "Questions routed to a person that have not been answered yet.",
+    ),
+    Metric(
+        "stale_questions",
+        "Questions waiting over 3 days",
+        COUNT,
+        DOWN,
+        "knowledge",
+        lambda s: s["stale_questions"],
+        "Open questions older than three days — where the company is slow to answer itself.",
+    ),
+    Metric(
+        "contributions_30d",
+        "Contributions, last 30 days",
+        COUNT,
+        UP,
+        "knowledge",
+        lambda s: s["contributions_30d"],
+        "What every function wrote down about customers in the last thirty days, answers included.",
     ),
 ]
 

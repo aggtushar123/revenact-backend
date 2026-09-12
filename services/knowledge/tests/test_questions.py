@@ -202,3 +202,53 @@ class CopilotRoutingTests(Fixture):
         self.assertEqual(question.customer, self.pizza)
         self.assertEqual(question.message_id, user_turn["id"])
         self.assertEqual(response.data["messages"][1]["questions"], [])
+
+
+class AgingTests(Fixture):
+    def _old_question(self, days):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        q = Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.mei,
+            text="Still waiting?",
+        )
+        Question.objects.filter(pk=q.pk).update(created_at=timezone.now() - timedelta(days=days))
+        return Question.objects.get(pk=q.pk)
+
+    def test_stale_questions_are_counted_listed_and_nudged_once_a_day(self):
+        from services.knowledge import aging
+        from services.metrics.registry import compute_all
+
+        fresh = self._old_question(1)
+        stale = self._old_question(5)
+
+        values = compute_all(self.org)
+        self.assertEqual((values["open_questions"], values["stale_questions"]), (2, 1))
+
+        self.client.force_authenticate(self.alice)
+        listed = self.client.get("/api/v1/questions/?stale=true").data
+        self.assertEqual([q["id"] for q in listed], [stale.id])
+        self.assertEqual(listed[0]["days_open"], 5)
+
+        first = aging.nudge(self.org)
+        self.assertEqual([q.id for q in first], [stale.id])
+        note = Notification.objects.get(recipient=self.mei)
+        self.assertIn(
+            "Still waiting: Alice Admin asked you about Pizza Hut 5 days ago", note.message
+        )
+        self.assertEqual(aging.nudge(self.org), [])  # not again today
+        self.assertEqual(Notification.objects.filter(recipient=self.mei).count(), 1)
+        self.assertIsNone(Question.objects.get(pk=fresh.pk).last_nudged_at)
+
+    def test_dry_run_changes_nothing(self):
+        from services.knowledge import aging
+
+        stale = self._old_question(4)
+        self.assertEqual([q.id for q in aging.nudge(self.org, dry_run=True)], [stale.id])
+        self.assertEqual(Notification.objects.count(), 0)
+        self.assertIsNone(Question.objects.get(pk=stale.pk).last_nudged_at)

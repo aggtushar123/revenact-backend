@@ -214,6 +214,12 @@ class QuestionListView(generics.ListAPIView):
             rows = rows.filter(asked_by=self.request.user)
         if params.get("status") in Question.Status.values:
             rows = rows.filter(status=params["status"])
+        if params.get("stale") == "true":
+            from .aging import STALE_DAYS, stale_open_questions
+
+            rows = rows.filter(
+                pk__in=stale_open_questions(self.request.user.organisation, STALE_DAYS)
+            )
         rows = list(rows)
         rows.sort(key=lambda q: (q.status != Question.Status.OPEN, -q.created_at.timestamp()))
         return rows

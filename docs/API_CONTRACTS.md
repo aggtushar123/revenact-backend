@@ -3311,6 +3311,19 @@ is stored as a contribution whose body opens `In answer to <asker>'s
 question "<text>": …`, the question closes, and the asker gets a
 `question_answered` notification.
 
+### Questions that age
+
+After three days an open question is **stale** (`services/knowledge/
+aging.py`). The registry gains `open_questions`, `stale_questions` and
+`contributions_30d` (source `knowledge`), so the Brain counts them and a
+month-end records them; `GET /questions/?stale=true` lists the stale
+ones and every question payload carries `days_open`.
+`run_health_maintenance` (and `nudge_open_questions` alone) reminds each
+assignee of their stale questions — a `question_asked` notification
+reading "Still waiting: … asked you about X 5 days ago" — at most once
+a day (`Question.last_nudged_at`). Answering is the only thing that
+clears it.
+
 ### @mentions in the Copilot
 
 A message to `POST /copilot/messages/` that @mentions members routes a

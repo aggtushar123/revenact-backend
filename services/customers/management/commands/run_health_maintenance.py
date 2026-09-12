@@ -113,6 +113,18 @@ class Command(BaseCommand):
             )
         )
 
+        # Questions that have waited too long — the person asked is reminded,
+        # at most once a day (services.knowledge.aging). Same cron entry.
+        from services.knowledge.aging import nudge
+
+        nudged = sum(len(nudge(o, dry_run=options["dry_run"])) for o in organisations)
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{'would remind' if options['dry_run'] else 'reminded'} {nudged} "
+                "assignee(s) of stale questions."
+            )
+        )
+
     def _capture(self, queryset, captured_on, dry_run):
         """Record one snapshot per customer for `captured_on`, skipping any that
         already have one.

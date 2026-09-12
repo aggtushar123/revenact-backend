@@ -39,6 +39,7 @@ class QuestionSerializer(serializers.ModelSerializer):
     assignee = serializers.SerializerMethodField()
     answer = ContributionSerializer(read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
+    days_open = serializers.SerializerMethodField()
 
     class Meta:
         model = Question
@@ -52,6 +53,7 @@ class QuestionSerializer(serializers.ModelSerializer):
             "status_display",
             "answer",
             "message_id",
+            "days_open",
             "created_at",
             "answered_at",
         ]
@@ -68,3 +70,9 @@ class QuestionSerializer(serializers.ModelSerializer):
 
     def get_assignee(self, obj):
         return self._person(obj.assignee)
+
+    def get_days_open(self, obj):
+        from django.utils import timezone
+
+        end = obj.answered_at or timezone.now()
+        return (end - obj.created_at).days
