@@ -24,7 +24,7 @@ from services.customers.models import Customer
 
 SECOND_OWNER = {"email": "dana@acme.io", "name": "Dana CSM", "password": "supersecret1"}
 
-#: Moved to Dana. Spotify and Zoom are on Product B, Hyatt, Arista, Stripe
+#: Moved to Dana. Spotify and Zoom are on Analytics Suite, Hyatt, Arista, Stripe
 #: and Shopify on the others, so both products end up shared between owners.
 DANA_BOOK = (
     "Hyatt Hotels Corporation",

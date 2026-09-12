@@ -133,7 +133,7 @@ DEMO_ACCOUNT_HEADLINES = [
         "users), £135K ARR, and 91 health score with consistent positive "
         "sentiment. December focused heavily on renewal preparation and "
         "expansion planning, with multiple stakeholders coordinating on "
-        "Product B expansion and Integrations Module evaluation. January "
+        "Analytics Suite expansion and Integrations Module evaluation. January "
         "shifted to renewal execution and advanced optimization discussions. "
         "No risks identified - account positioned for successful renewal with "
         "significant growth opportunities.",
@@ -147,7 +147,7 @@ DEMO_ACCOUNT_HEADLINES = [
         "content": "Comprehensive renewal process for Apple's EMEA Retail "
         "Operations showing exceptional account health with 96% utilization "
         "and strong expansion interest. Daniel from Revenact coordinated "
-        "renewal documentation and expansion modeling for Product B and "
+        "renewal documentation and expansion modeling for Analytics Suite and "
         "Integrations Module, while Priya and Leo from Apple consolidated "
         "usage trends and conducted internal reviews. The account "
         "demonstrates consistent positive metrics with £135K ARR, 91 health "
