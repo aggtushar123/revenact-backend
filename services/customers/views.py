@@ -17,7 +17,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from . import forecast, interactions, usage
+from . import activity_tracking, forecast, interactions, usage
 from .headline_generation import NothingToSummarise, generate_headlines
 from .models import (
     Account,
@@ -255,6 +255,34 @@ class CustomerHealthView(generics.ListAPIView):
                 # than one that says how many it dropped.
                 "currency": request.user.organisation.currency,
                 "unconverted_count": sum(1 for row in rows if row["arr"] is None),
+            }
+        )
+
+
+class ActivityTrackingView(views.APIView):
+    """GET /api/v1/customers/activity/ — the operations review behind the
+    Activity Tracking dashboard: is the team working the book, and where
+    isn't it?
+
+    Not the same question as AI Trending Topics, which counts what
+    *customers* are talking about. This counts what we did — touches
+    logged, accounts covered, cadence kept, follow-through on tasks. See
+    services/customers/activity_tracking.py, which owns the definitions
+    and states the two that could mislead: what counts as a touch, and
+    why per-CSM figures are by account owner rather than by the free-text
+    name on a record.
+
+    `?days=` sets the window (default 90, clamped 7–730). `owner`,
+    `lifecycle` and `customer` match every other dashboard.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(
+            {
+                **activity_tracking.build_stats(request.user, request.query_params),
+                "filters": activity_tracking.filter_options(request.user),
             }
         )
 

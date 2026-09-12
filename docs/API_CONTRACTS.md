@@ -71,6 +71,7 @@ expects.
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Headlines (`ActivityFeed`'s "Headlines" sub-tab on both Details pages) | `customers` (`Headline` model) | 🟢 API-complete — see below. Model + two scoped list-create endpoints (per-Customer, per-Account), a flat detail view (GET/PATCH/DELETE by id), and a real generation endpoint that summarises the parent's own Notes/Emails/Tickets/Activities through `services.copilot`'s Anthropic client. Seeded. `HeadlinesTab.tsx` fetches real data through `fetchHeadlinesForCustomer`/`fetchHeadlinesForAccount`; the group pill and the "Data sources" footer now reflect real values rather than stored/decorative text. |
 | Dashboards — Health Overview | `customers` | 🟢 All five tabs (Triage/Divergence/Movement/Renewal Date/Controls) run on one `GET /api/v1/customers/health/` — see that endpoint and `HealthSnapshot` below. |
+| Dashboards — Activity Tracking | `customers` | 🟢 Runs on `GET /api/v1/customers/activity/` — coverage, cadence and follow-through. See below. |
 | Dashboards — Revenue Forecast | `customers` | 🟢 Runs on `GET /api/v1/customers/forecast/` — the ARR bridge, with churn weighted by the shared rule in `churn.py`. See below. |
 | Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
@@ -1039,6 +1040,59 @@ Notes on the shape:
 * This is a **Customer-level** endpoint. Accounts carry their own health
   and renewal dates, and no tab reads them yet; adding them would change
   what "the book" means on every tab at once.
+
+### `GET /api/v1/customers/activity/`
+
+Auth: `IsAuthenticated`. The operations review behind the Activity
+Tracking dashboard: **is the team working the book, and where isn't it?**
+
+Not the same question as AI Trending Topics, which counts what
+*customers* are talking about. This counts what we did — touches logged,
+accounts covered, cadence kept, follow-through on tasks.
+
+`?days=` sets the window (default 90, **clamped** 7–730), plus the usual
+`owner` / `lifecycle` / `customer`.
+
+**Response `200`** — `kpis`, `timeline`, `sources`, `cadence`,
+`by_owner`, `going_dark`, `going_dark_threshold`, `window_days`,
+`currency`, `filters`.
+
+Three definitions decide what these numbers mean, and all three are
+places a screen like this can mislead:
+
+* **A touch is work we logged**: activities, calls, emails, notes and
+  meetings. **Tickets are not touches** — a customer raising one is not
+  evidence anyone called them back, and counting it would let a screen
+  full of complaints read as a screen full of coverage. They come back
+  as `kpis.inbound` beside the touches, because the ratio between the
+  two is itself worth seeing. (Email has no direction flag, so an
+  inbound reply does count as a touch: a named overstatement, taken
+  because dropping email would remove the largest source of real contact
+  from a coverage metric.)
+* **"Last contact" here is broader than the health rubric's.**
+  `Customer.health_inputs()` measures days-since-touch from `Activity`
+  rows only — that is what the Customer Touch component scores and what
+  the renewal churn rule reads. This module measures across every kind
+  of logged contact. They can differ, so each `going_dark` row returns
+  both (`days_since_contact` and `days_since_activity`) rather than
+  quietly picking one. Broadening the rubric itself is defensible and
+  deliberately **not** done here: it would move every health score and
+  every snapshot of history already recorded.
+* **Per-CSM figures are by account owner, never by the name on a
+  record.** `sender_name`, `host_name`, `assignee_name` and
+  `author_name` are all free text; grouping a team-performance view on
+  those would split "J. Smith" from "John Smith" and invent a person.
+  `by_owner` therefore answers "is this book being worked", not "who did
+  the work".
+
+Smaller decisions worth knowing: a touch on an *account* counts for its
+parent company (otherwise a worked account reads as neglected because
+the work was logged a level down); an account with no contact at all is
+its own `never` bucket rather than "90+ days", which would imply a date
+nobody has, and it sorts **above** merely-stale accounts in
+`going_dark`; `going_dark_threshold` is imported from `churn.py` so this
+screen and the renewal risk agree on what stale means; and `coverage` is
+null rather than 0 on an empty book.
 
 ### `GET /api/v1/customers/forecast/`
 

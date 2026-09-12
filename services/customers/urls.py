@@ -13,6 +13,9 @@ urlpatterns = [
     # Revenue Forecast's ARR bridge. Alongside usage/ and health/ for the same
     # reason: it is a rollup of customers, not of a thing with its own model.
     path("forecast/", views.CustomerForecastView.as_view(), name="customer-forecast"),
+    # Activity Tracking's coverage and cadence rollups. Same reasoning as
+    # health/, usage/ and forecast/: a rollup of customers.
+    path("activity/", views.ActivityTrackingView.as_view(), name="customer-activity"),
     path(
         "<int:customer_id>/accounts/",
         views.AccountListCreateView.as_view(),
