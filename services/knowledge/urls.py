@@ -18,4 +18,11 @@ urlpatterns = [
         views.ContributionDetailView.as_view(),
         name="contribution-detail",
     ),
+    path(
+        "customers/<int:pk>/questions/",
+        views.CustomerQuestionListCreateView.as_view(),
+        name="customer-questions",
+    ),
+    path("questions/", views.QuestionListView.as_view(), name="question-list"),
+    path("questions/<int:pk>/answer/", views.QuestionAnswerView.as_view(), name="question-answer"),
 ]

@@ -3287,6 +3287,39 @@ read from the customer's owner. `PATCH {"function", "user_id" | null}`
 sets or clears one (CS writes `Customer.owner`) and needs
 `view_all_accounts`; an unknown function is a `400`.
 
+### Models — `Question`
+
+A question routed to a person, on the record: `customer` (optional),
+`asked_by`, `assignee`, `text`, `status` (`open`/`answered`), `answer`
+(the `Contribution` the answer was stored as), `message` (the Copilot
+turn that asked it, if any), `answered_at`. **A question answered once is
+knowledge**: the answer is a contribution from the answerer's function,
+so the Copilot has it from then on.
+
+### `GET/POST /api/v1/customers/<id>/questions/`, `GET /api/v1/questions/`, `POST /api/v1/questions/<id>/answer/`
+
+`POST {"text", "assignee_id"?}` — with an assignee the question goes to
+them; otherwise to whoever the text **@mentions** (`@Mei` by first name
+when unique, `@Mei Tanaka` by full name; two Meis and a bare `@Mei`
+resolve to nobody rather than the wrong one; never yourself). `400`
+when nobody is asked. Each person asked gets a `question_asked`
+notification linking to the customer. Lists are open first, newest
+first; `/questions/` takes `?mine=true` (waiting on the caller),
+`?asked=true` (asked by the caller), `?status=`. `answer/ {"body"}`:
+the assignee (or `manage_users`) answers once (`409` after); the answer
+is stored as a contribution whose body opens `In answer to <asker>'s
+question "<text>": …`, the question closes, and the asker gets a
+`question_answered` notification.
+
+### @mentions in the Copilot
+
+A message to `POST /copilot/messages/` that @mentions members routes a
+question to each of them — on the customer the message was found to be
+about, if any — attached to the user turn (`messages[].questions`:
+`[{id, assignee, status}]`). The model is told the question has been
+routed, acknowledges it in a sentence, and answers what the summary
+already covers rather than answering for the person asked.
+
 ### The Copilot reads all of it
 
 `copilot.retrieval` adds each customer's contributions as candidates —

@@ -9,8 +9,9 @@ from services.accounts.models import User
 from services.accounts.permissions import CanViewAllAccounts
 from services.customers.models import Customer
 
-from .models import Contribution, FunctionOwner
-from .serializers import ContributionSerializer
+from . import mentions
+from .models import Contribution, FunctionOwner, Question
+from .serializers import ContributionSerializer, QuestionSerializer
 
 
 def _company_customer(request, pk):
@@ -127,3 +128,102 @@ class CustomerResponsibleView(APIView):
                     customer=customer, function=function, defaults={"user": user}
                 )
         return Response(self._payload(customer))
+
+
+def _question_queryset(request):
+    return Question.objects.filter(organisation=request.user.organisation).select_related(
+        "customer", "asked_by", "assignee", "answer__author", "answer__customer"
+    )
+
+
+class CustomerQuestionListCreateView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/customers/<id>/questions/ — the questions on this
+    customer, open first; and a new one. POST `{"text", "assignee_id"?}`:
+    with an assignee it goes to them, otherwise to whoever the text
+    @mentions (`400` if nobody). One notification per person asked."""
+
+    serializer_class = QuestionSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        customer = _company_customer(self.request, self.kwargs["pk"])
+        rows = list(_question_queryset(self.request).filter(customer=customer))
+        rows.sort(key=lambda q: (q.status != Question.Status.OPEN, -q.created_at.timestamp()))
+        return rows
+
+    def create(self, request, pk):
+        customer = _company_customer(request, pk)
+        text = str(request.data.get("text") or "").strip()
+        if not text:
+            return Response({"detail": "Ask something."}, status=status.HTTP_400_BAD_REQUEST)
+        assignees = None
+        if request.data.get("assignee_id") is not None:
+            person = get_object_or_404(
+                User, pk=request.data["assignee_id"], organisation=request.user.organisation
+            )
+            if person.id == request.user.id:
+                return Response(
+                    {"detail": "You can't route a question to yourself."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            assignees = [person]
+        created = mentions.route_questions(
+            organisation=request.user.organisation,
+            asked_by=request.user,
+            text=text,
+            customer=customer,
+            assignees=assignees,
+        )
+        if not created:
+            return Response(
+                {"detail": "Say who should answer — @mention them, or pick a person."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(QuestionSerializer(created, many=True).data, status=status.HTTP_201_CREATED)
+
+
+class QuestionListView(generics.ListAPIView):
+    """GET /api/v1/questions/ — every question in the organisation, open
+    first. `?mine=true` narrows to the ones waiting on the caller;
+    `?asked=true` to the ones they asked; `?status=` narrows."""
+
+    serializer_class = QuestionSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        rows = _question_queryset(self.request)
+        params = self.request.query_params
+        if params.get("mine") == "true":
+            rows = rows.filter(assignee=self.request.user)
+        if params.get("asked") == "true":
+            rows = rows.filter(asked_by=self.request.user)
+        if params.get("status") in Question.Status.values:
+            rows = rows.filter(status=params["status"])
+        rows = list(rows)
+        rows.sort(key=lambda q: (q.status != Question.Status.OPEN, -q.created_at.timestamp()))
+        return rows
+
+
+class QuestionAnswerView(APIView):
+    """POST /api/v1/questions/<id>/answer/ `{"body"}` — the person asked
+    (or someone who manages users) answers. The answer is stored as a
+    contribution from their function, so it is knowledge from then on;
+    the asker is told. A question is answered once (`409`)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        question = get_object_or_404(_question_queryset(request), pk=pk)
+        user = request.user
+        if question.assignee_id != user.id and not user.has_capability("manage_users"):
+            raise PermissionDenied("This question was asked of someone else.")
+        if question.status == Question.Status.ANSWERED:
+            return Response({"detail": "Already answered."}, status=status.HTTP_409_CONFLICT)
+        body = str(request.data.get("body") or "").strip()
+        if not body:
+            return Response({"detail": "Say something."}, status=status.HTTP_400_BAD_REQUEST)
+        mentions.answer_question(question, user, body)
+        question.refresh_from_db()
+        return Response(QuestionSerializer(question).data)

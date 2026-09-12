@@ -74,3 +74,63 @@ class Contribution(models.Model):
 
     def __str__(self):
         return f"[{self.get_function_display()}] {self.author}: {self.body[:40]}"
+
+
+class Question(models.Model):
+    """A question routed to a person, on the record.
+
+    "@Mei, why is their usage down?" — asked in the Copilot or on the
+    Company View — becomes one of these: who asked, who must answer, about
+    which customer, and whether it has been answered. The answer is stored
+    as a `Contribution` from the answerer's function, so the next person who
+    asks gets it from the Copilot without asking Mei again. That is the
+    whole point: a question answered once is knowledge, not a thread.
+    """
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        ANSWERED = "answered", "Answered"
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="questions", on_delete=models.CASCADE
+    )
+    customer = models.ForeignKey(
+        Customer,
+        related_name="questions",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="The customer the question is about, when it names one.",
+    )
+    asked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="questions_asked", on_delete=models.CASCADE
+    )
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="questions_to_answer", on_delete=models.CASCADE
+    )
+    text = models.TextField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
+    answer = models.OneToOneField(
+        Contribution,
+        related_name="answers_question",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="The contribution the answer was stored as.",
+    )
+    message = models.ForeignKey(
+        "copilot.Message",
+        related_name="questions",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="The Copilot message that asked it, when it was asked there.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    answered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.asked_by} → {self.assignee}: {self.text[:40]}"

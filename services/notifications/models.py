@@ -27,6 +27,8 @@ class Notification(models.Model):
         COPILOT_HANDOFF = "copilot_handoff", "Copilot hand-off"
         CUSTOMER_ASSIGNED = "customer_assigned", "Customer assigned"
         ACCOUNT_ASSIGNED = "account_assigned", "Account assigned"
+        QUESTION_ASKED = "question_asked", "Question asked"
+        QUESTION_ANSWERED = "question_answered", "Question answered"
 
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL, related_name="notifications", on_delete=models.CASCADE

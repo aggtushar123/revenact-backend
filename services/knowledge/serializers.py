@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Contribution
+from .models import Contribution, Question
 
 
 class ContributionSerializer(serializers.ModelSerializer):
@@ -31,3 +31,40 @@ class ContributionSerializer(serializers.ModelSerializer):
         if not value:
             raise serializers.ValidationError("Say something.")
         return value
+
+
+class QuestionSerializer(serializers.ModelSerializer):
+    customer = serializers.SerializerMethodField()
+    asked_by = serializers.SerializerMethodField()
+    assignee = serializers.SerializerMethodField()
+    answer = ContributionSerializer(read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = Question
+        fields = [
+            "id",
+            "customer",
+            "asked_by",
+            "assignee",
+            "text",
+            "status",
+            "status_display",
+            "answer",
+            "message_id",
+            "created_at",
+            "answered_at",
+        ]
+
+    @staticmethod
+    def _person(user):
+        return {"id": user.id, "name": user.name, "function": user.function}
+
+    def get_customer(self, obj):
+        return {"id": obj.customer.id, "name": obj.customer.name} if obj.customer_id else None
+
+    def get_asked_by(self, obj):
+        return self._person(obj.asked_by)
+
+    def get_assignee(self, obj):
+        return self._person(obj.assignee)

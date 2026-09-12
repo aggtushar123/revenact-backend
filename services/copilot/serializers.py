@@ -14,9 +14,23 @@ class MessageSerializer(serializers.ModelSerializer):
     """`sources` is always present but empty on user turns, so the
     client can render citations without branching on role first."""
 
+    questions = serializers.SerializerMethodField()
+
     class Meta:
         model = Message
-        fields = ["id", "role", "content", "sources", "created_at"]
+        fields = ["id", "role", "content", "sources", "questions", "created_at"]
+
+    def get_questions(self, obj):
+        # The people this turn routed a question to (services.knowledge) —
+        # empty on assistant turns and on turns that mentioned nobody.
+        return [
+            {
+                "id": q.id,
+                "assignee": {"id": q.assignee.id, "name": q.assignee.name},
+                "status": q.status,
+            }
+            for q in obj.questions.select_related("assignee").order_by("id")
+        ]
 
 
 class ConversationListSerializer(serializers.ModelSerializer):

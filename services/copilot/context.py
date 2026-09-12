@@ -65,6 +65,9 @@ class Grounding:
 
     summary: str
     sources: list = field(default_factory=list)
+    #: The customer or account the question was found to be about, if any —
+    #: so a caller can attach things (a routed question) to it.
+    company: object = None
 
 
 def build_org_context_summary(organisation, user, query: str = "") -> str:
@@ -221,4 +224,4 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
                 lines.extend(f"  - {item.line}" for item in comms)
                 sources.extend(item.source for item in comms)
 
-    return Grounding("\n".join(lines), sources)
+    return Grounding("\n".join(lines), sources, mentioned)
