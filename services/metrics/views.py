@@ -227,6 +227,76 @@ class BriefGenerateView(views.APIView):
         return Response({"brief": _brief_payload(brief)}, status=status.HTTP_201_CREATED)
 
 
+def _explanation_payload(row):
+    from .signals import number
+
+    return {
+        "id": row.id,
+        "metric": row.metric,
+        "metric_label": row.inputs.get("metric", {}).get("label", row.metric),
+        "as_of": row.as_of.isoformat(),
+        "baseline": row.baseline.isoformat() if row.baseline else None,
+        "value": number(row.value),
+        "previous_value": number(row.previous_value),
+        "text": row.text,
+        "evidence": row.evidence,
+        "generated_at": row.generated_at.isoformat(),
+        "generated_by": row.generated_by.name if row.generated_by else None,
+    }
+
+
+class MetricExplanationView(views.APIView):
+    """GET /api/v1/metrics/<key>/explanation/ — the latest explanation of
+    one metric, or `{"explanation": null}` before one is written. Reading
+    is free; an unknown key is a 404."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def get(self, request, key):
+        from django.http import Http404
+
+        from .models import Explanation
+        from .registry import BY_KEY
+
+        if key not in BY_KEY:
+            raise Http404(f"No metric called {key!r}.")
+        row = Explanation.objects.filter(organisation=request.user.organisation, metric=key).first()
+        return Response({"explanation": _explanation_payload(row) if row else None})
+
+
+class MetricExplainView(views.APIView):
+    """POST /api/v1/metrics/<key>/explain/ — ask why this number is where
+    it is. A real, paid model call; error mapping as the brief's, and a
+    404 for a key the registry lacks."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def post(self, request, key):
+        from rest_framework import status
+
+        from services.copilot.anthropic_client import (
+            BudgetExceeded,
+            CopilotNotConfigured,
+            CopilotRequestFailed,
+        )
+
+        from .explain import NothingToExplain, UnknownMetric, explain
+
+        try:
+            row = explain(request.user.organisation, key, generated_by=request.user)
+        except UnknownMetric as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        except NothingToExplain as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except BudgetExceeded as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        except CopilotNotConfigured as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except (CopilotRequestFailed, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"explanation": _explanation_payload(row)}, status=status.HTTP_201_CREATED)
+
+
 class _InitiativeViewMixin:
     """Shared by the list and detail: the organisation's own initiatives,
     with one `Figures` per request so a page of them runs the rollups once."""

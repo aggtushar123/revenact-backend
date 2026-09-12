@@ -270,7 +270,7 @@ class ModelCall(models.Model):
     )
     purpose = models.CharField(
         max_length=32,
-        help_text='"copilot", "headlines", "classification", "brief", "proposals", "facilitator".',
+        help_text='"copilot", "headlines", "classification", "brief", "proposals", "facilitator", "explain".',
     )
     provider = models.CharField(max_length=16, blank=True)
     model = models.CharField(max_length=128, blank=True)

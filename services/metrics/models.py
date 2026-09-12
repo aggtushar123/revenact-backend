@@ -83,6 +83,42 @@ class Brief(models.Model):
         return f"Brief for {self.organisation} as of {self.as_of}"
 
 
+class Explanation(models.Model):
+    """Why one metric is where it is, in the model's words, as of one day.
+
+    The latest per metric is what the Brain shows beside the number; older
+    ones stay as a record of what was said about the figure then. `inputs`
+    is exactly what the prompt carried — the definition, the value and its
+    month-end, the cuts, the accounts — so any sentence can be checked, and
+    `evidence` the lines the model chose to cite.
+    """
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="explanations", on_delete=models.CASCADE
+    )
+    metric = models.CharField(max_length=64, help_text="A key in the metric registry.")
+    as_of = models.DateField(help_text="The day the figures describe.")
+    baseline = models.DateField(
+        null=True, blank=True, help_text="The month-end the figures were compared against, if any."
+    )
+    value = models.DecimalField(max_digits=16, decimal_places=4, null=True, blank=True)
+    previous_value = models.DecimalField(max_digits=16, decimal_places=4, null=True, blank=True)
+    text = models.TextField()
+    evidence = models.JSONField(default=list, blank=True, help_text="The figures cited.")
+    inputs = models.JSONField(help_text="What the model was given — the figures, verbatim.")
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    generated_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-generated_at"]
+        indexes = [models.Index(fields=["organisation", "metric", "-generated_at"])]
+
+    def __str__(self):
+        return f"Why {self.metric} for {self.organisation} as of {self.as_of}"
+
+
 class Initiative(models.Model):
     """A decision, with a number attached.
 

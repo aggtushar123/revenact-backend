@@ -19,5 +19,9 @@ urlpatterns = [
     path("initiatives/", views.InitiativeListCreateView.as_view(), name="initiative-list"),
     path("initiatives/<int:pk>/", views.InitiativeDetailView.as_view(), name="initiative-detail"),
     path("<str:key>/history/", views.MetricHistoryView.as_view(), name="metric-history"),
+    path(
+        "<str:key>/explanation/", views.MetricExplanationView.as_view(), name="metric-explanation"
+    ),
+    path("<str:key>/explain/", views.MetricExplainView.as_view(), name="metric-explain"),
     path("<str:key>/by/<str:dimension>/", views.MetricSliceView.as_view(), name="metric-slice"),
 ]

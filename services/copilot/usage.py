@@ -20,6 +20,7 @@ PURPOSES = {
     "brief": "Management brief",
     "proposals": "Ops agent proposals",
     "facilitator": "Session facilitator",
+    "explain": "Metric explanations",
 }
 
 

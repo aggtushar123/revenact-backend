@@ -3145,7 +3145,7 @@ budgeted.
 
 ### `GET /api/v1/copilot/usage/`
 
-Purposes: `copilot`, `headlines`, `classification`, `brief`, `proposals`, `facilitator`.
+Purposes: `copilot`, `headlines`, `classification`, `brief`, `proposals`, `facilitator`, `explain`.
 
 Auth: `CanViewAllAccounts`. This month per purpose (`calls`, `ok`,
 `failed`, `input_tokens`, `output_tokens`, `spent`, `budget`,
@@ -3655,6 +3655,36 @@ configured, `502` when the call fails or the answer isn't readable,
            "body": "…3-5 paragraphs, blank-line separated…",
            "watch": ["…2-4 things, each citing a figure…"],
            "generated_at": "2026-09-12T15:40:02Z", "generated_by": "Alice"}}
+```
+
+### Models — `Explanation`
+
+Why one metric is where it is, in the model's words, as of one day. The
+latest per metric is what the Brain shows beside the number; older rows
+stay as a record of what was said about the figure then. `inputs` is
+exactly what the prompt carried — the definition, the value and its
+month-end, every cut with each member's own move, the accounts carrying
+the downside, open decisions on the number — and `evidence` the lines
+the model chose to cite.
+
+### `GET /api/v1/metrics/<key>/explanation/`, `POST /api/v1/metrics/<key>/explain/`
+
+Auth: `CanViewAllAccounts`; a key the registry lacks is a `404`.
+`GET` returns `{"explanation": {...}}` or `{"explanation": null}` before
+one is written — reading is free. `POST` (`services/metrics/explain.py`)
+is a real, paid call under the `explain` purpose: 2–4 sentences on why
+the number is where it is and, when a month-end exists, what moved it,
+naming the members and accounts with their figures; no advice. Every
+figure must come from the input; "unmeasured" stays unmeasured. `201`
+with the new row; `422` with no live customers; `429`/`503`/`502` as the
+brief's. The frontend offers it as **Why?** on every metric tile and
+every signal row.
+
+```json
+{"explanation": {"id": 3, "metric": "at_risk_arr", "metric_label": "ARR at risk",
+  "as_of": "2026-09-13", "baseline": "2026-09-12", "value": 114540, "previous_value": 80000,
+  "text": "ARR at risk rose because …", "evidence": ["Product B: USD 64,090 (was USD 34,090)"],
+  "generated_at": "2026-09-13T06:10:00Z", "generated_by": "Alice"}}
 ```
 
 ### Models — `Initiative`
