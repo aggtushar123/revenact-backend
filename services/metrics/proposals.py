@@ -344,6 +344,9 @@ def generate_proposals(organisation, *, generated_by=None):
         system=SYSTEM_PROMPT.format(max_proposals=MAX_PROPOSALS),
         messages=[{"role": "user", "content": build_prompt(evidence)}],
         max_tokens=OUTPUT_TOKENS,
+        purpose="proposals",
+        organisation=organisation,
+        user=generated_by,
     )
     batch = uuid.uuid4().hex
     open_ids = {i["id"] for i in evidence["initiatives"]}

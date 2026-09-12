@@ -257,6 +257,9 @@ def generate_brief(organisation, *, generated_by=None):
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": build_prompt(evidence)}],
         max_tokens=OUTPUT_TOKENS,
+        purpose="brief",
+        organisation=organisation,
+        user=generated_by,
     )
     headline, body, watch = _parse(raw)
     # Real dates, not the ISO strings the evidence carries: the instance is

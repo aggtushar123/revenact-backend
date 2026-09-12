@@ -119,7 +119,7 @@ class CorrectionTests(TestCase):
 
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=lambda batch: {},
+            side_effect=lambda batch, **_kw: {},
         ) as classify:
             call_command(
                 "classify_interactions", reclassify=True, stdout=StringIO(), stderr=StringIO()
@@ -131,7 +131,7 @@ class CorrectionTests(TestCase):
 
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=lambda batch: {},
+            side_effect=lambda batch, **_kw: {},
         ) as classify:
             call_command(
                 "classify_interactions",

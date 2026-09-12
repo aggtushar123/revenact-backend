@@ -13,7 +13,11 @@ from rest_framework.response import Response
 from services.accounts.models import User
 from services.accounts.permissions import CanManageOrgSettings
 from services.connectors.models import Connector
-from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
+from services.copilot.anthropic_client import (
+    BudgetExceeded,
+    CopilotNotConfigured,
+    CopilotRequestFailed,
+)
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
@@ -2081,6 +2085,8 @@ class HeadlineGenerateView(views.APIView):
             built = generate_headlines(parent, **kwargs)
         except NothingToSummarise as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except BudgetExceeded as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         except CopilotNotConfigured as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except CopilotRequestFailed as exc:

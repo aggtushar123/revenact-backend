@@ -313,7 +313,7 @@ class ClassifyCommandTests(TestCase):
     def test_it_classifies_the_unclassified(self):
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=lambda batch: self._batch_answer(batch),
+            side_effect=lambda batch, **_kw: self._batch_answer(batch),
         ):
             out, _ = self._run()
 
@@ -325,7 +325,7 @@ class ClassifyCommandTests(TestCase):
 
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=lambda batch: self._batch_answer(batch),
+            side_effect=lambda batch, **_kw: self._batch_answer(batch),
         ) as classify:
             self._run()
 
@@ -339,7 +339,7 @@ class ClassifyCommandTests(TestCase):
 
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=lambda batch: self._batch_answer(batch),
+            side_effect=lambda batch, **_kw: self._batch_answer(batch),
         ):
             self._run(reclassify=True)
 
@@ -364,7 +364,7 @@ class ClassifyCommandTests(TestCase):
 
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=all_but_the_first,
+            side_effect=lambda batch, **_kw: all_but_the_first(batch),
         ):
             out, _ = self._run(reclassify=True)
 
@@ -380,7 +380,7 @@ class ClassifyCommandTests(TestCase):
         # Nothing to clear: it was blank, and stays retryable.
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=lambda batch: {},
+            side_effect=lambda batch, **_kw: {},
         ):
             self._run()
 
@@ -390,7 +390,7 @@ class ClassifyCommandTests(TestCase):
     def test_limit_caps_the_spend(self):
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=lambda batch: self._batch_answer(batch),
+            side_effect=lambda batch, **_kw: self._batch_answer(batch),
         ):
             self._run(limit=1)
 
@@ -408,7 +408,7 @@ class ClassifyCommandTests(TestCase):
 
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
-            side_effect=lambda batch: self._batch_answer(batch),
+            side_effect=lambda batch, **_kw: self._batch_answer(batch),
         ):
             self._run(only=["ticket"])
 
@@ -425,7 +425,7 @@ class ClassifyCommandTests(TestCase):
     def test_one_failing_batch_does_not_abandon_the_rest(self):
         calls = {"n": 0}
 
-        def flaky(batch):
+        def flaky(batch, **_kw):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise CopilotRequestFailed("rate limited")

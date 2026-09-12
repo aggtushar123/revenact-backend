@@ -3121,6 +3121,42 @@ Replayed history to the model is capped to the conversation's own last
 must be resent every turn; unbounded replay would grow cost/latency
 without limit).
 
+### Models — `ModelCall`, `ModelBudget`
+
+The audit trail and the budget for every model call the codebase makes.
+Every path that reaches Claude — the Copilot, Headlines, the classifier,
+the brief, the Ops agent — goes through one function,
+`anthropic_client.get_completion`, which now takes `purpose`,
+`organisation` and `user` and writes one `ModelCall` per call: purpose,
+provider, model, input/output tokens (from the SDK's own `usage`),
+latency, `outcome` (`ok`/`failed`/`unconfigured`/`over_budget`) and the
+error. Failures are rows too; a brain whose calls quietly fail is worse
+than one whose calls are visible. Logging is best-effort and can never
+break a working call.
+
+`ModelBudget` is tokens (input + output) per organisation per purpose
+per calendar month; absent a row, `settings.MODEL_BUDGET_DEFAULT_TOKENS`
+(default 2,000,000) applies. `get_completion` checks it **before** the
+call: over budget, the call is logged as `over_budget`, never sent, and
+`BudgetExceeded` is raised — the views turn that into a `429`, and
+`classify_interactions` stops the run rather than failing every batch.
+A call with no organisation (none of ours today) is logged but not
+budgeted.
+
+### `GET /api/v1/copilot/usage/`
+
+Auth: `CanViewAllAccounts`. This month per purpose (`calls`, `ok`,
+`failed`, `input_tokens`, `output_tokens`, `spent`, `budget`,
+`remaining`, `custom_budget`), the `default_budget`, and the last fifty
+calls with who made them.
+
+### `PATCH /api/v1/copilot/usage/budgets/`
+
+Auth: `CanManageOrgSettings` — spend is organisation configuration. Body
+`{"purpose": "proposals", "monthly_tokens": 50000}` sets a budget;
+`monthly_tokens: null` clears it back to the default. Unknown purpose,
+non-integer or negative → `400`. Returns the summary.
+
 ### `GET /api/v1/copilot/conversations/`
 
 Auth: `IsAuthenticated`. Every Conversation the caller has started —

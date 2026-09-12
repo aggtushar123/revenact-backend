@@ -251,6 +251,11 @@ FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")
 # real model id from that same console, not the "anthropic"-provider one above
 # (they use different id formats).
 COPILOT_LLM_PROVIDER = env("COPILOT_LLM_PROVIDER", default="anthropic")
+# Tokens (input + output) any one purpose may spend per organisation per
+# calendar month before get_completion refuses the call, unless a
+# copilot.ModelBudget row says otherwise. Generous by default — the point is
+# that a runaway agent stops, not that a busy team is throttled.
+MODEL_BUDGET_DEFAULT_TOKENS = env.int("MODEL_BUDGET_DEFAULT_TOKENS", default=2_000_000)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 ANTHROPIC_MODEL = env("ANTHROPIC_MODEL", default="claude-sonnet-5")
 AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default="")

@@ -204,7 +204,11 @@ class BriefGenerateView(views.APIView):
     def post(self, request):
         from rest_framework import status
 
-        from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
+        from services.copilot.anthropic_client import (
+            BudgetExceeded,
+            CopilotNotConfigured,
+            CopilotRequestFailed,
+        )
 
         from .brief import NothingToBrief, generate_brief
 
@@ -212,6 +216,8 @@ class BriefGenerateView(views.APIView):
             brief = generate_brief(request.user.organisation, generated_by=request.user)
         except NothingToBrief as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except BudgetExceeded as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         except CopilotNotConfigured as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except CopilotRequestFailed as exc:
@@ -334,7 +340,11 @@ class ProposalGenerateView(views.APIView):
     def post(self, request):
         from rest_framework import status
 
-        from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
+        from services.copilot.anthropic_client import (
+            BudgetExceeded,
+            CopilotNotConfigured,
+            CopilotRequestFailed,
+        )
 
         from .proposals import NothingToProposeFrom, generate_proposals
 
@@ -342,6 +352,8 @@ class ProposalGenerateView(views.APIView):
             stored = generate_proposals(request.user.organisation, generated_by=request.user)
         except NothingToProposeFrom as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except BudgetExceeded as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         except CopilotNotConfigured as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except (CopilotRequestFailed, ValueError) as exc:

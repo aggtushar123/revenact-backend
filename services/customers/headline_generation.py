@@ -211,6 +211,14 @@ def _clean_status(value):
     return value if value in valid else Headline.Status.OPEN
 
 
+def _organisation_of(parent):
+    organisation = getattr(parent, "organisation", None)
+    if organisation is not None:
+        return organisation
+    customer = parent.customers.first()
+    return customer.organisation if customer is not None else None
+
+
 def generate_headlines(parent, *, window_days=DEFAULT_WINDOW_DAYS, time_period_label=None):
     """Reads `parent`'s records, asks the model for cards, and returns
     unsaved Headline instances — saving is the view's job, so the
@@ -234,6 +242,8 @@ def generate_headlines(parent, *, window_days=DEFAULT_WINDOW_DAYS, time_period_l
     raw = get_completion(
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
+        purpose="headlines",
+        organisation=_organisation_of(parent),
     )
     payload = _parse(raw)
 

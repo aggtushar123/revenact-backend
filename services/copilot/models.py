@@ -238,3 +238,78 @@ class SessionEvent(models.Model):
 
     def __str__(self):
         return f"{self.kind} on session {self.session_id}"
+
+
+class ModelCall(models.Model):
+    """One call to a real model, whatever asked for it.
+
+    The audit trail. Every path that reaches Claude — the Copilot, Headlines,
+    the classifier, the brief, the Ops agent — goes through one function
+    (`anthropic_client.get_completion`), and that function writes one of
+    these per call: who asked, on whose behalf, for what purpose, how many
+    tokens in and out, how long it took, and whether it worked. Failures and
+    "not configured" are rows too, because a brain whose calls quietly fail
+    is worse than one whose calls are visible.
+    """
+
+    class Outcome(models.TextChoices):
+        OK = "ok", "OK"
+        FAILED = "failed", "Failed"
+        UNCONFIGURED = "unconfigured", "Not configured"
+        OVER_BUDGET = "over_budget", "Over budget"
+
+    organisation = models.ForeignKey(
+        "accounts.Organisation",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="model_calls",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    purpose = models.CharField(
+        max_length=32, help_text='"copilot", "headlines", "classification", "brief", "proposals".'
+    )
+    provider = models.CharField(max_length=16, blank=True)
+    model = models.CharField(max_length=128, blank=True)
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    max_tokens = models.PositiveIntegerField(default=0)
+    latency_ms = models.PositiveIntegerField(default=0)
+    outcome = models.CharField(max_length=16, choices=Outcome.choices)
+    error = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["organisation", "purpose", "created_at"])]
+
+    def __str__(self):
+        return f"{self.purpose} {self.outcome} ({self.input_tokens}+{self.output_tokens})"
+
+
+class ModelBudget(models.Model):
+    """How many tokens one purpose may spend per calendar month, per
+    organisation. Absent, the default from settings applies. Checked before
+    every call; a call that would start over budget is refused and logged
+    as `over_budget`, never made."""
+
+    organisation = models.ForeignKey(
+        "accounts.Organisation", on_delete=models.CASCADE, related_name="model_budgets"
+    )
+    purpose = models.CharField(max_length=32)
+    monthly_tokens = models.PositiveIntegerField(
+        help_text="Input plus output tokens, per calendar month."
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "purpose"], name="modelbudget_one_per_purpose"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.organisation} {self.purpose}: {self.monthly_tokens:,}/month"

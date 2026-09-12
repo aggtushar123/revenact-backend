@@ -22,6 +22,8 @@ just the return value of one blocking API call, same shape as
 send_campaign_email's own single outbound call.
 """
 
+import time
+
 from django.conf import settings
 
 
@@ -29,6 +31,12 @@ class CopilotNotConfigured(Exception):
     """Raised when the selected provider's real credentials aren't set —
     SendMessageView turns this into a clear 503, never a crash or a
     silent fake answer."""
+
+
+class BudgetExceeded(Exception):
+    """Raised before the call is made when this organisation has spent its
+    monthly token budget for the purpose — the views turn it into a 429.
+    The call is logged as over_budget and never sent."""
 
 
 class CopilotRequestFailed(Exception):
@@ -77,7 +85,15 @@ def _build_client_and_model():
     return client, settings.ANTHROPIC_MODEL
 
 
-def get_completion(system: str, messages: list[dict], *, max_tokens: int = 1024) -> str:
+def get_completion(
+    system: str,
+    messages: list[dict],
+    *,
+    max_tokens: int = 1024,
+    purpose: str = "copilot",
+    organisation=None,
+    user=None,
+) -> str:
     """`messages` is a list of `{"role": "user"|"assistant", "content": str}`
     dicts — the Anthropic Messages API's own shape (identical whether the
     real call ends up going to Anthropic directly or through Bedrock), so
@@ -85,13 +101,50 @@ def get_completion(system: str, messages: list[dict], *, max_tokens: int = 1024)
     `.values()`-style reshape (see SendMessageView._history_for), no
     translation layer needed.
 
-    `max_tokens` is the output budget. 1024 suits a chat turn or a headline;
-    a caller that asks for a list must size it to the list — the classifier
-    sends twenty records a call, and twenty pretty-printed answers do not fit
-    in 1024, which cut every answer off at line ~128 and read as "the model's
-    answer wasn't JSON" on batch after batch."""
+    `max_tokens` is the output budget for this call. 1024 suits a chat turn
+    or a headline; a caller that asks for a list must size it to the list.
 
-    client, model = _build_client_and_model()
+    `purpose`, `organisation` and `user` are the audit trail: every call —
+    made, failed, refused — becomes one `ModelCall` row saying who asked, for
+    what, and what it cost. `organisation` also selects the monthly budget
+    (`ModelBudget`, else `settings.MODEL_BUDGET_DEFAULT_TOKENS`); a call that
+    would start over it raises BudgetExceeded before anything is sent.
+    """
+
+    from . import usage
+
+    provider = settings.COPILOT_LLM_PROVIDER
+    started = time.monotonic()
+
+    def log(outcome, *, model="", input_tokens=0, output_tokens=0, error=""):
+        usage.record_call(
+            organisation=organisation,
+            user=user,
+            purpose=purpose,
+            provider=provider,
+            model=model,
+            max_tokens=max_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            outcome=outcome,
+            error=str(error)[:500],
+        )
+
+    if organisation is not None:
+        remaining = usage.remaining_tokens(organisation, purpose)
+        if remaining <= 0:
+            log("over_budget", error="Monthly token budget spent.")
+            raise BudgetExceeded(
+                f"This organisation has spent its monthly model budget for {purpose!r}. "
+                "Raise it under Brain > Agents, or wait for next month."
+            )
+
+    try:
+        client, model = _build_client_and_model()
+    except CopilotNotConfigured as exc:
+        log("unconfigured", error=exc)
+        raise
 
     try:
         response = client.messages.create(
@@ -104,6 +157,14 @@ def get_completion(system: str, messages: list[dict], *, max_tokens: int = 1024)
         # failure from the SDK (auth, rate limit, network, no Bedrock
         # model access granted, ...) becomes a clear 502 for the caller,
         # never a raw 500.
+        log("failed", model=model, error=exc)
         raise CopilotRequestFailed(str(exc)) from exc
 
+    used = getattr(response, "usage", None)
+    log(
+        "ok",
+        model=model,
+        input_tokens=getattr(used, "input_tokens", 0) or 0,
+        output_tokens=getattr(used, "output_tokens", 0) or 0,
+    )
     return "".join(block.text for block in response.content if block.type == "text")

@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -7,11 +8,17 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from services.accounts.models import Organisation, User
+from services.accounts.permissions import CanManageOrgSettings, CanViewAllAccounts
 from services.customers.models import Account, Customer
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from .anthropic_client import CopilotNotConfigured, CopilotRequestFailed, get_completion
+from .anthropic_client import (
+    BudgetExceeded,
+    CopilotNotConfigured,
+    CopilotRequestFailed,
+    get_completion,
+)
 from .context import build_grounding
 from .models import (
     Conversation,
@@ -194,7 +201,15 @@ class SendMessageView(APIView):
         history = [*prior_history, {"role": Message.Role.USER, "content": content}]
 
         try:
-            reply = get_completion(system=system, messages=history)
+            reply = get_completion(
+                system=system,
+                messages=history,
+                purpose="copilot",
+                organisation=request.user.organisation,
+                user=request.user,
+            )
+        except BudgetExceeded as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         except CopilotNotConfigured as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except CopilotRequestFailed as exc:
@@ -577,3 +592,79 @@ class RespondToInviteView(APIView):
             broadcast_session_update(invite.session)
 
         return Response(SessionInviteSerializer(invite).data)
+
+
+class ModelUsageView(APIView):
+    """GET /api/v1/copilot/usage/ — what the brain has spent this month, per
+    purpose, against its budget, plus the last fifty calls. The audit trail
+    for every model call the codebase makes. Management-facing."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def get(self, request):
+        from . import usage
+        from .models import ModelCall
+
+        organisation = request.user.organisation
+        recent = (
+            ModelCall.objects.filter(organisation=organisation)
+            .select_related("user")
+            .order_by("-created_at")[:50]
+        )
+        return Response(
+            {
+                **usage.summary(organisation),
+                "default_budget": settings.MODEL_BUDGET_DEFAULT_TOKENS,
+                "recent": [
+                    {
+                        "id": call.id,
+                        "purpose": call.purpose,
+                        "purpose_label": usage.PURPOSES.get(call.purpose, call.purpose),
+                        "user": call.user.name if call.user else None,
+                        "model": call.model,
+                        "input_tokens": call.input_tokens,
+                        "output_tokens": call.output_tokens,
+                        "latency_ms": call.latency_ms,
+                        "outcome": call.outcome,
+                        "error": call.error,
+                        "created_at": call.created_at.isoformat(),
+                    }
+                    for call in recent
+                ],
+            }
+        )
+
+
+class ModelBudgetView(APIView):
+    """PATCH /api/v1/copilot/usage/budgets/ — set one purpose's monthly token
+    budget for this organisation (`{"purpose": ..., "monthly_tokens": n}`),
+    or clear it back to the default with `monthly_tokens: null`. Spend is
+    organisation configuration, so `manage_org_settings`."""
+
+    permission_classes = [CanManageOrgSettings]
+
+    def patch(self, request):
+        from . import usage
+        from .models import ModelBudget
+
+        purpose = request.data.get("purpose")
+        if purpose not in usage.PURPOSES:
+            return Response(
+                {"detail": f"No purpose {purpose!r}; one of {', '.join(usage.PURPOSES)}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        organisation = request.user.organisation
+        raw = request.data.get("monthly_tokens")
+        if raw is None:
+            ModelBudget.objects.filter(organisation=organisation, purpose=purpose).delete()
+        else:
+            try:
+                tokens = int(raw)
+            except (TypeError, ValueError):
+                return Response({"detail": "monthly_tokens must be a whole number."}, status=400)
+            if tokens < 0:
+                return Response({"detail": "monthly_tokens cannot be negative."}, status=400)
+            ModelBudget.objects.update_or_create(
+                organisation=organisation, purpose=purpose, defaults={"monthly_tokens": tokens}
+            )
+        return Response(usage.summary(organisation))

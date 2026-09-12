@@ -226,12 +226,28 @@ def _parse(raw):
     return payload
 
 
+def _organisation_of(records):
+    """The tenant a batch belongs to, off its first record — every model here
+    hangs off a Customer or an Account, and a batch never mixes tenants."""
+    for record in records:
+        parent = record.customer or record.account
+        if parent is None:
+            continue
+        organisation = getattr(parent, "organisation", None)
+        if organisation is not None:
+            return organisation
+        customer = parent.customers.first()
+        if customer is not None:
+            return customer.organisation
+    return None
+
+
 def output_budget(record_count):
     """Output tokens to allow for a batch of this size."""
     return OUTPUT_TOKENS_PER_RECORD * record_count + OUTPUT_TOKENS_OVERHEAD
 
 
-def classify_batch(records):
+def classify_batch(records, *, organisation=None, user=None):
     """One model call for up to BATCH_SIZE records.
 
     Returns `{ref: fields}` for the records the model placed, which may be
@@ -250,6 +266,9 @@ def classify_batch(records):
         system=SYSTEM_PROMPT.format(options=_options_block()),
         messages=[{"role": "user", "content": build_prompt(prompt_records)}],
         max_tokens=output_budget(len(records)),
+        purpose="classification",
+        organisation=organisation or _organisation_of(records),
+        user=user,
     )
 
     sent = {ref for ref, _, _ in prompt_records}

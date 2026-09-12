@@ -10,6 +10,8 @@ urlpatterns = [
         name="copilot-conversation-detail",
     ),
     path("messages/", views.SendMessageView.as_view(), name="copilot-send-message"),
+    path("usage/", views.ModelUsageView.as_view(), name="copilot-model-usage"),
+    path("usage/budgets/", views.ModelBudgetView.as_view(), name="copilot-model-budget"),
     path(
         "conversations/<int:pk>/session/",
         views.SessionView.as_view(),

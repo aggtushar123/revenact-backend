@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("accounts", "0007_grant_view_all_accounts"),
         ("metrics", "0004_proposal"),

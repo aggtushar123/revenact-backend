@@ -38,7 +38,11 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 
 from services.accounts.models import User
-from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
+from services.copilot.anthropic_client import (
+    BudgetExceeded,
+    CopilotNotConfigured,
+    CopilotRequestFailed,
+)
 from services.customers.classification import (
     BATCH_SIZE,
     apply_classification,
@@ -151,7 +155,9 @@ class Command(BaseCommand):
         for start in range(0, len(pending), BATCH_SIZE):
             batch = pending[start : start + BATCH_SIZE]
             try:
-                results = classify_batch(batch)
+                results = classify_batch(batch, organisation=organisation)
+            except BudgetExceeded as exc:
+                raise CommandError(f"{exc}") from exc
             except CopilotNotConfigured as exc:
                 # Nothing downstream can succeed either, so stop rather than
                 # burning through every remaining batch to fail identically.
