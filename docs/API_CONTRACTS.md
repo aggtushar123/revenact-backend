@@ -3324,6 +3324,15 @@ reading "Still waiting: … asked you about X 5 days ago" — at most once
 a day (`Question.last_nudged_at`). Answering is the only thing that
 clears it.
 
+### `GET /api/v1/knowledge/activity/?days=30` — is the company writing things down?
+
+Auth: `CanViewAllAccounts`. Per function (`services/knowledge/activity.py`):
+`members`, `contributors` (distinct authors in the window),
+`contributions` (answers included), `questions_asked` of that
+function, `questions_answered` by it, `questions_waiting` on it (open,
+any age), `avg_days_to_answer` (null with nothing answered). No model
+call. Shown on the Brain overview as "Knowledge by function".
+
 ### @mentions in the Copilot
 
 A message to `POST /copilot/messages/` that @mentions members routes a

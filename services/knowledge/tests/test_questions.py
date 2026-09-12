@@ -252,3 +252,77 @@ class AgingTests(Fixture):
         self.assertEqual([q.id for q in aging.nudge(self.org, dry_run=True)], [stale.id])
         self.assertEqual(Notification.objects.count(), 0)
         self.assertIsNone(Question.objects.get(pk=stale.pk).last_nudged_at)
+
+
+class ActivityTests(Fixture):
+    def test_each_function_shows_what_it_wrote_asked_answered_and_still_owes(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from services.knowledge import mentions
+
+        Contribution.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            author=self.mei,
+            function="analytics",
+            body="a",
+        )
+        Contribution.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            author=self.mei,
+            function="analytics",
+            body="b",
+        )
+        old = Contribution.objects.create(
+            organisation=self.org, customer=self.pizza, author=self.carl, function="cs", body="old"
+        )
+        Contribution.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=40)
+        )
+        answered = Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.mei,
+            text="q1",
+        )
+        Question.objects.filter(pk=answered.pk).update(
+            created_at=timezone.now() - timedelta(days=2)
+        )
+        mentions.answer_question(Question.objects.get(pk=answered.pk), self.mei, "done")
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.mei,
+            text="q2",
+        )
+
+        self.client.force_authenticate(self.alice)
+        payload = self.client.get("/api/v1/knowledge/activity/?days=30").data
+        by = {r["function"]: r for r in payload["functions"]}
+        analytics = by["analytics"]
+        # Two notes plus the stored answer.
+        self.assertEqual(
+            (analytics["members"], analytics["contributors"], analytics["contributions"]), (1, 1, 3)
+        )
+        self.assertEqual(
+            (
+                analytics["questions_asked"],
+                analytics["questions_answered"],
+                analytics["questions_waiting"],
+            ),
+            (2, 1, 1),
+        )
+        self.assertEqual(analytics["avg_days_to_answer"], 2.0)
+        # Carl's note is outside the window; sales has two members and nothing written.
+        self.assertEqual(by["cs"]["contributions"], 0)
+        self.assertEqual((by["sales"]["members"], by["sales"]["contributions"]), (1, 0))
+
+        self.client.force_authenticate(self.carl)
+        self.assertEqual(
+            self.client.get("/api/v1/knowledge/activity/").status_code, status.HTTP_403_FORBIDDEN
+        )

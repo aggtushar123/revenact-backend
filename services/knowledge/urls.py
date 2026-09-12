@@ -24,5 +24,6 @@ urlpatterns = [
         name="customer-questions",
     ),
     path("questions/", views.QuestionListView.as_view(), name="question-list"),
+    path("knowledge/activity/", views.KnowledgeActivityView.as_view(), name="knowledge-activity"),
     path("questions/<int:pk>/answer/", views.QuestionAnswerView.as_view(), name="question-answer"),
 ]

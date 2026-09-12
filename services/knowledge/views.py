@@ -246,3 +246,21 @@ class QuestionAnswerView(APIView):
         mentions.answer_question(question, user, body)
         question.refresh_from_db()
         return Response(QuestionSerializer(question).data)
+
+
+class KnowledgeActivityView(APIView):
+    """GET /api/v1/knowledge/activity/?days=30 — per function: members,
+    contributors, contributions, questions asked of them, answered by them,
+    waiting on them, and how long they take. Organisation-wide, so gated
+    like the Brain."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def get(self, request):
+        from .activity import by_function
+
+        try:
+            days = max(1, min(365, int(request.query_params.get("days", 30))))
+        except (TypeError, ValueError):
+            days = 30
+        return Response(by_function(request.user.organisation, days))
