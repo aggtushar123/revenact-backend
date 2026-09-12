@@ -843,9 +843,7 @@ class AIPulseCategoryTests(TestCase):
         self.org = Organisation.objects.create(name="Acme Inc")
 
     def _customer(self, value):
-        return Customer.objects.create(
-            organisation=self.org, name="Some Co", ai_pulse_value=value
-        )
+        return Customer.objects.create(organisation=self.org, name="Some Co", ai_pulse_value=value)
 
     def test_maps_each_value_to_its_category(self):
         self.assertEqual(self._customer(5).ai_pulse_score, Customer.AIPulseScore.VERY_SATISFIED)
@@ -905,15 +903,20 @@ class HealthSnapshotTests(TestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(
-            organisation=self.org, name="Some Co", health_score="8.0", csm_pulse_score=4,
+            organisation=self.org,
+            name="Some Co",
+            health_score="8.0",
+            csm_pulse_score=4,
             ai_pulse_value=5,
         )
         self.account = create_account(self.customer, name="EMEA", health_score="3.0")
 
     def test_derives_its_categories_from_its_own_stored_numbers(self):
         snapshot = HealthSnapshot.objects.create(
-            customer=self.customer, captured_on=date(2026, 1, 31),
-            health_score="2.5", ai_pulse_value=1,
+            customer=self.customer,
+            captured_on=date(2026, 1, 31),
+            health_score="2.5",
+            ai_pulse_value=1,
         )
         # A snapshot reports the past, not the parent's current 8.0/5.
         self.assertEqual(snapshot.health_category, Customer.HealthCategory.POOR)
@@ -960,8 +963,11 @@ class CaptureHealthSnapshotTests(TestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
         self.customer = Customer.objects.create(
-            organisation=self.org, name="Some Co", health_score="7.5",
-            csm_pulse_score=3, ai_pulse_value=4,
+            organisation=self.org,
+            name="Some Co",
+            health_score="7.5",
+            csm_pulse_score=3,
+            ai_pulse_value=4,
         )
 
     def test_records_the_parents_current_readings(self):
@@ -1007,8 +1013,9 @@ class HealthCategoryCoercionTests(TestCase):
 
     def test_applies_to_snapshots_too(self):
         customer = Customer.objects.create(organisation=self.org, name="Some Co")
-        snapshot = HealthSnapshot(customer=customer, captured_on=date(2026, 1, 31),
-                                  health_score="3.9")
+        snapshot = HealthSnapshot(
+            customer=customer, captured_on=date(2026, 1, 31), health_score="3.9"
+        )
         self.assertEqual(snapshot.health_category, Customer.HealthCategory.POOR)
 
 
@@ -1034,11 +1041,18 @@ class CsatBreakdownTests(TestCase):
         return {b["key"]: b for b in self.customer.csat_breakdown["bands"]}
 
     def test_buckets_scores_into_equal_fifths(self):
-        for score, expected in ((0, "very_dissatisfied"), (20, "very_dissatisfied"),
-                                (21, "dissatisfied"), (40, "dissatisfied"),
-                                (41, "neutral"), (60, "neutral"),
-                                (61, "satisfied"), (80, "satisfied"),
-                                (81, "very_satisfied"), (100, "very_satisfied")):
+        for score, expected in (
+            (0, "very_dissatisfied"),
+            (20, "very_dissatisfied"),
+            (21, "dissatisfied"),
+            (40, "dissatisfied"),
+            (41, "neutral"),
+            (60, "neutral"),
+            (61, "satisfied"),
+            (80, "satisfied"),
+            (81, "very_satisfied"),
+            (100, "very_satisfied"),
+        ):
             self.assertEqual(csat_band(score), expected, msg=f"score {score}")
 
     def test_counts_and_shares_the_answered_surveys(self):

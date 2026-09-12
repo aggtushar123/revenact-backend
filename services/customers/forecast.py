@@ -57,7 +57,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 
 from . import churn
 from .models import Customer, Opportunity, Risk, with_health_inputs
-from .scoping import visible_customers
+from .scoping import live_customers
 
 #: The forecast window. Twelve months is the horizon an ARR forecast is quoted
 #: over, and it is long enough to contain every account's renewal exactly once.
@@ -105,9 +105,7 @@ def filtered_customers(user, params):
     """The caller's visible book, narrowed by the bar's filters. Visibility
     first, then the filters narrow from there."""
 
-    queryset = with_health_inputs(
-        visible_customers(user).filter(is_archived=False).select_related("owner")
-    )
+    queryset = with_health_inputs(live_customers(user).select_related("owner"))
 
     owner = params.get("owner")
     if owner == "unassigned":
@@ -454,7 +452,7 @@ def pipeline_by_stage(customers, organisation):
 def filter_options(user):
     """The bar's dropdowns, scoped exactly as the numbers are."""
 
-    customers = visible_customers(user).filter(is_archived=False)
+    customers = live_customers(user)
     owners = (
         customers.exclude(owner__isnull=True)
         .values_list("owner_id", "owner__name")

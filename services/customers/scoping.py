@@ -73,6 +73,26 @@ def visible_customers(user):
     return base.filter(Q(owner=user) | Q(accounts__owner=user) | Q(owner__isnull=True)).distinct()
 
 
+def live_customers(user):
+    """The book as it stands: visible, not archived, **and not churned**.
+
+    What every dashboard means by "the book". A customer with a `churn_date`
+    has left — they do not belong in a triage queue, a seat-utilisation rate,
+    or an ARR forecast's opening balance. Archiving alone was the filter for a
+    while, which let a churned-but-unarchived customer keep contributing live
+    ARR to the Revenue Forecast; churn and archive are separate actions by
+    design (you can wind an account down while keeping it visible), so
+    excluding one is not excluding the other.
+
+    Deliberately **not** used by the Organizations list, which is a list of
+    records rather than a rollup — hiding a churned row there would make it
+    unreachable — nor by the Customer Overview, whose whole subject is logo
+    retention and churn reasons, and which would compute 100% retention over
+    survivors only.
+    """
+    return visible_customers(user).filter(is_archived=False, churn_date__isnull=True)
+
+
 def visible_accounts(user):
     """Every Account this user may open, as a queryset.
 

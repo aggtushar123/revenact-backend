@@ -7,9 +7,11 @@ chart can lie confidently: a data gap must never read as 0% used, and a
 book-wide rate must never be the average of per-account percentages.
 """
 
+from datetime import timedelta
 from decimal import Decimal
 
 from django.test import SimpleTestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -41,6 +43,7 @@ class UsageStatsTests(APITestCase):
     url = "/api/v1/customers/usage/"
 
     def setUp(self):
+        self.today = timezone.localdate()
         self.org = Organisation.objects.create(name="Acme Inc", currency="USD")
         self.csm = User.objects.create_user(
             email="carl@acme.io",
@@ -263,6 +266,15 @@ class UsageStatsTests(APITestCase):
 
         self.assertEqual([o["name"] for o in options["customers"]], ["Mine"])
         self.assertEqual([o["name"] for o in options["owners"]], ["Carl"])
+
+    def test_churned_customers_are_left_out(self):
+        """A customer who has left has no seats to utilise. Archiving alone was
+        the filter for a while, which let a churned-but-unarchived customer keep
+        contributing to the rate."""
+        self._customer("Live", 50, 100)
+        self._customer("Gone", 50, 100, churn_date=self.today - timedelta(days=10))
+
+        self.assertEqual(self.client.get(self.url).data["kpis"]["accounts"], 1)
 
     def test_archived_customers_are_left_out(self):
         self._customer("Live", 50, 100)

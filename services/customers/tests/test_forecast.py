@@ -158,6 +158,14 @@ class ForecastViewTests(APITestCase):
 
         self.assertEqual(self.client.get(self.url).data["bridge"]["opening_arr"], 100_000.0)
 
+    def test_a_churned_customer_is_not_in_the_opening_balance(self):
+        """The bug this filter exists for: a churned-but-unarchived customer
+        was contributing live ARR to the forecast's opening balance."""
+        self._customer("Live", 100_000)
+        self._customer("Left", 500_000, churn_date=self.today - timedelta(days=30))
+
+        self.assertEqual(self.client.get(self.url).data["bridge"]["opening_arr"], 100_000.0)
+
     # ── the bridge ───────────────────────────────────────────────────
 
     def test_the_bridge_weights_churn_by_the_same_rule_the_renewal_tab_prints(self):

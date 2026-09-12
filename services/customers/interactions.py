@@ -29,7 +29,7 @@ default.
 from django.db.models import Count, Q
 from django.db.models.functions import TruncWeek
 
-from . import taxonomy
+from . import segments, taxonomy
 from .models import Call, Email, Ticket
 from .scoping import visible_accounts, visible_children_q, visible_customers
 
@@ -49,22 +49,11 @@ SOURCES = {
     "ticket": {"model": Ticket, "date_field": "opened_at", "label": "Ticket", "is_datetime": False},
 }
 
-#: The "Revenue Bracket" filter's own brackets, in dollars of the parent's ARR,
-#: as `(value, label, floor, ceiling_exclusive_or_None)`.
-#:
-#: Defined here rather than in the frontend so the bracket a user picks and the
-#: rows it selects can't disagree, and shipped to the client as options — the
-#: same arrangement the Ticket dashboard's own filter options use.
-#: Sized to the book this product actually holds — mid-market ARR, tens of
-#: thousands to low hundreds. Wider brackets reading "$250K-$1M" and "$1M+"
-#: would look more impressive and be permanently empty, and a filter whose top
-#: two options always return nothing reads as broken rather than as precise.
-REVENUE_BRACKETS = (
-    ("under_25k", "Under $25K", 0, 25_000),
-    ("25k_50k", "$25K – $50K", 25_000, 50_000),
-    ("50k_100k", "$50K – $100K", 50_000, 100_000),
-    ("over_100k", "$100K and above", 100_000, None),
-)
+#: The "Revenue Bracket" filter's own brackets, shared with the Customer
+#: Overview's composition chart — see segments.py. Two screens disagreeing
+#: about what a mid-size account is would be worse than neither offering the
+#: cut.
+REVENUE_BRACKETS = segments.REVENUE_BRACKETS
 
 #: How many rows the Detailed Activity Breakdown table gets. It is a "recent
 #: examples" table, not a record browser — the mock it replaces showed fifteen

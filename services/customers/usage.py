@@ -31,7 +31,7 @@ screen starts one.
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
 
 from .models import Customer
-from .scoping import visible_customers
+from .scoping import live_customers
 
 #: Utilisation bands, low to high. `to` is exclusive; the last is open-ended.
 #:
@@ -101,7 +101,7 @@ def filtered_customers(user, params):
     is a question about the book you have, not the one you had.
     """
 
-    queryset = visible_customers(user).filter(is_archived=False).select_related("owner")
+    queryset = live_customers(user).select_related("owner")
 
     owner = params.get("owner")
     if owner == "unassigned":
@@ -337,7 +337,7 @@ def filter_options(user):
     """The bar's dropdowns, scoped exactly as the numbers are, so a CSM can't
     filter by a company they can't see."""
 
-    customers = visible_customers(user).filter(is_archived=False)
+    customers = live_customers(user)
     owners = (
         customers.exclude(owner__isnull=True)
         .values_list("owner_id", "owner__name")

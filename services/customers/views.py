@@ -17,7 +17,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from . import activity_tracking, forecast, interactions, usage
+from . import activity_tracking, forecast, interactions, portfolio, usage
 from .headline_generation import NothingToSummarise, generate_headlines
 from .models import (
     Account,
@@ -36,6 +36,7 @@ from .models import (
 from .scoping import (
     get_visible_account,
     get_visible_customer,
+    live_customers,
     visible_accounts,
     visible_children_q,
     visible_customers,
@@ -218,8 +219,7 @@ class CustomerHealthView(generics.ListAPIView):
             # Annotated: every row serialises `days_since_touch`, which the
             # Renewal tab ranks by. Without this each row runs its own
             # aggregate — 500 extra queries on a full book.
-            with_health_inputs(visible_customers(self.request.user))
-            .filter(is_archived=False)
+            with_health_inputs(live_customers(self.request.user))
             .select_related("owner")
             .prefetch_related(Prefetch("health_snapshots", queryset=snapshots))
             # One past the cap, so `list` can tell "exactly MAX_ROWS rows"
@@ -255,6 +255,36 @@ class CustomerHealthView(generics.ListAPIView):
                 # than one that says how many it dropped.
                 "currency": request.user.organisation.currency,
                 "unconverted_count": sum(1 for row in rows if row["arr"] is None),
+            }
+        )
+
+
+class CustomerOverviewView(views.APIView):
+    """GET /api/v1/customers/overview/ — what the book is made of, for the
+    Customer Overview dashboard.
+
+    Every other dashboard asks how the customers you have are *doing*.
+    This asks what they *are*: how many, how big, how concentrated, how
+    long they stayed, and why the ones who left left. See
+    services/customers/portfolio.py.
+
+    **The one endpoint that counts customers you no longer have.**
+    Everything else filters archived rows out and never reads a
+    `churn_date`, which is right for a working view. Logo retention,
+    cohort survival and churn reasons are questions about exactly those
+    rows, and computing retention over survivors would return 100% every
+    time.
+
+    `owner`, `lifecycle` and `customer` match every other dashboard.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(
+            {
+                **portfolio.build_stats(request.user, request.query_params),
+                "filters": portfolio.filter_options(request.user),
             }
         )
 
@@ -426,7 +456,7 @@ class CustomerStatsView(views.APIView):
 
     def get(self, request):
         organisation = request.user.organisation
-        customers = visible_customers(request.user).filter(is_archived=False)
+        customers = live_customers(request.user)
 
         health = {
             cat: {"count": 0, "mrr": 0.0, "arr": 0.0} for cat in Customer.HealthCategory.values

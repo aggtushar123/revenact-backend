@@ -105,16 +105,12 @@ class AdoptionTests(SimpleTestCase):
         )
 
     def test_caps_at_the_target_breadth(self):
-        self.assertEqual(
-            ratio("adoption", primary_product="A", additional_products_count=99), 1.0
-        )
+        self.assertEqual(ratio("adoption", primary_product="A", additional_products_count=99), 1.0)
 
     def test_is_unmeasurable_only_when_neither_field_is_filled_in(self):
         self.assertIsNone(ratio("adoption", primary_product="", additional_products_count=None))
         # A recorded zero really does mean no extra products, so it scores.
-        self.assertEqual(
-            ratio("adoption", primary_product="", additional_products_count=0), 0.0
-        )
+        self.assertEqual(ratio("adoption", primary_product="", additional_products_count=0), 0.0)
 
 
 class SupportTicketTests(SimpleTestCase):

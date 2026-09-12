@@ -93,6 +93,21 @@ class ActivityTrackingViewTests(APITestCase):
 
         self.assertEqual(self.client.get(self.url).data["kpis"]["accounts"], 1)
 
+    def test_a_churned_customer_is_not_in_the_coverage_denominator(self):
+        # Nobody should be marked down for not calling an account that left.
+        Customer.objects.create(
+            organisation=self.org,
+            name="Left",
+            owner=self.csm,
+            churn_date=self.today - timedelta(days=10),
+        )
+        self._activity(3)
+
+        kpis = self.client.get(self.url).data["kpis"]
+
+        self.assertEqual(kpis["accounts"], 1)
+        self.assertEqual(kpis["coverage"], 100.0)
+
     # ── what counts as a touch ───────────────────────────────────────
 
     def test_every_kind_of_logged_work_counts_as_a_touch(self):

@@ -16,6 +16,9 @@ urlpatterns = [
     # Activity Tracking's coverage and cadence rollups. Same reasoning as
     # health/, usage/ and forecast/: a rollup of customers.
     path("activity/", views.ActivityTrackingView.as_view(), name="customer-activity"),
+    # Customer Overview's portfolio rollups. The one dashboard endpoint that
+    # includes archived and churned customers — see its own docstring.
+    path("overview/", views.CustomerOverviewView.as_view(), name="customer-overview"),
     path(
         "<int:customer_id>/accounts/",
         views.AccountListCreateView.as_view(),

@@ -5574,9 +5574,7 @@ class HealthRubricAPITests(APITestCase):
         data = self._get(customer)
         measured = [r for r in data["health_breakdown"] if r["available"]]
         self.assertEqual(len(measured), len(data["health_breakdown"]))
-        self.assertEqual(
-            sum(Decimal(r["points"]) for r in measured), Decimal(data["health_score"])
-        )
+        self.assertEqual(sum(Decimal(r["points"]) for r in measured), Decimal(data["health_score"]))
 
     def test_marks_a_component_it_cannot_measure(self):
         # No seat figures recorded — the component is reported unavailable
@@ -5730,9 +5728,20 @@ class CustomerHealthViewTests(APITestCase):
     def test_carries_the_fields_the_dashboard_reads(self):
         row = self.client.get(self.url).data["results"][0]
         for field in (
-            "id", "name", "owner_id", "owner_name", "lifecycle_stage_display", "renewal_date",
-            "health_score", "health_category", "csm_pulse_score", "csm_pulse_modified_at",
-            "ai_pulse_value", "ai_pulse_reason", "total_active_seats", "history",
+            "id",
+            "name",
+            "owner_id",
+            "owner_name",
+            "lifecycle_stage_display",
+            "renewal_date",
+            "health_score",
+            "health_category",
+            "csm_pulse_score",
+            "csm_pulse_modified_at",
+            "ai_pulse_value",
+            "ai_pulse_reason",
+            "total_active_seats",
+            "history",
         ):
             self.assertIn(field, row)
 
@@ -5811,9 +5820,7 @@ class CustomerHealthViewTests(APITestCase):
 
         expected, factors = churn.risk_of_loss(self.customer, days_since_touch=120)
         self.assertEqual(row["risk_of_loss"], expected)
-        self.assertEqual(
-            [f["label"] for f in row["risk_factors"]], [f["label"] for f in factors]
-        )
+        self.assertEqual([f["label"] for f in row["risk_factors"]], [f["label"] for f in factors])
         self.assertIn("No contact in 120 days", [f["label"] for f in row["risk_factors"]])
 
     def test_the_owner_comes_back_as_an_id_as_well_as_a_name(self):
@@ -5882,14 +5889,10 @@ class CustomerHealthViewTests(APITestCase):
             occurred_at=timezone.localdate() - timedelta(days=21),
         )
 
-        row = next(
-            r for r in self.client.get(self.url).data["results"] if r["name"] == "Hyatt"
-        )
+        row = next(r for r in self.client.get(self.url).data["results"] if r["name"] == "Hyatt")
 
         self.assertEqual(row["days_since_touch"], 21)
-        self.assertEqual(
-            row["days_since_touch"], self.customer.health_inputs()["days_since_touch"]
-        )
+        self.assertEqual(row["days_since_touch"], self.customer.health_inputs()["days_since_touch"])
 
     def test_an_untouched_customer_is_measured_from_when_it_arrived(self):
         # A logo onboarded last week hasn't been neglected for a decade.

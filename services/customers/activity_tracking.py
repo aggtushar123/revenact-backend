@@ -51,7 +51,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 
 from . import churn
 from .models import Activity, CalendarEvent, Call, Customer, Email, Note, Task, Ticket
-from .scoping import visible_customers
+from .scoping import live_customers
 
 #: The analysis window, in days. A quarter: long enough that a weekly trend has
 #: shape, short enough that "did we work it" is still a live question.
@@ -114,7 +114,7 @@ def window_days(params):
 def filtered_customers(user, params):
     """The visible book, narrowed by the bar's filters. Visibility first."""
 
-    queryset = visible_customers(user).filter(is_archived=False).select_related("owner")
+    queryset = live_customers(user).select_related("owner")
 
     owner = params.get("owner")
     if owner == "unassigned":
@@ -344,7 +344,7 @@ def build_stats(user, params):
 def filter_options(user):
     """The bar's dropdowns, scoped exactly as the numbers are."""
 
-    customers = visible_customers(user).filter(is_archived=False)
+    customers = live_customers(user)
     owners = (
         customers.exclude(owner__isnull=True)
         .values_list("owner_id", "owner__name")
