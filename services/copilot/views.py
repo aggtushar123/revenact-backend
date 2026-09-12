@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db.models import Q
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
@@ -536,6 +537,56 @@ class SessionCloseView(APIView):
 
         session._events_page = session.events.all()
         return Response(CopilotSessionSerializer(session).data)
+
+
+class SessionDecisionsView(APIView):
+    """GET/POST /api/v1/copilot/conversations/<id>/session/decisions/ —
+    the facilitator. POST reads the session (transcript with authors,
+    participants, hand-offs) beside the Ops agent's figures and writes what
+    the people decided into the review queue as proposals tagged with this
+    session; GET lists the ones already written. Anyone who can read the
+    conversation may ask — the decisions were theirs — but approving still
+    happens in the review queue, under its own permission. A real, paid
+    call; error mapping as the Ops agent's, plus `422` for a session where
+    nobody has said anything."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _session(self, request, pk):
+        conversation = get_object_or_404(conversations_visible_to(request.user), pk=pk)
+        session = getattr(conversation, "session", None)
+        if session is None:
+            raise Http404("This conversation has no live session.")
+        return session
+
+    def get(self, request, pk):
+        from services.metrics.views import _proposal_payload
+
+        session = self._session(request, pk)
+        rows = session.proposals.select_related(
+            "initiative", "decided_by", "generated_by", "session__conversation"
+        ).order_by("id")
+        return Response({"proposals": [_proposal_payload(p) for p in rows]})
+
+    def post(self, request, pk):
+        from services.metrics.facilitator import NothingToDecideFrom, capture_decisions
+        from services.metrics.proposals import NothingToProposeFrom
+        from services.metrics.views import _proposal_payload
+
+        session = self._session(request, pk)
+        try:
+            stored = capture_decisions(session, requested_by=request.user)
+        except (NothingToDecideFrom, NothingToProposeFrom) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except BudgetExceeded as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        except CopilotNotConfigured as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except (CopilotRequestFailed, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(
+            {"proposals": [_proposal_payload(p) for p in stored]}, status=status.HTTP_201_CREATED
+        )
 
 
 class MyInvitesView(generics.ListAPIView):

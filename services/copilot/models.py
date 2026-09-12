@@ -269,7 +269,8 @@ class ModelCall(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
     purpose = models.CharField(
-        max_length=32, help_text='"copilot", "headlines", "classification", "brief", "proposals".'
+        max_length=32,
+        help_text='"copilot", "headlines", "classification", "brief", "proposals", "facilitator".',
     )
     provider = models.CharField(max_length=16, blank=True)
     model = models.CharField(max_length=128, blank=True)

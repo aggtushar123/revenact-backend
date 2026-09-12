@@ -28,6 +28,11 @@ urlpatterns = [
         name="copilot-session-handoff",
     ),
     path(
+        "conversations/<int:pk>/session/decisions/",
+        views.SessionDecisionsView.as_view(),
+        name="copilot-session-decisions",
+    ),
+    path(
         "conversations/<int:pk>/session/close/",
         views.SessionCloseView.as_view(),
         name="copilot-session-close",

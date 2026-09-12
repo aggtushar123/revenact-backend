@@ -19,6 +19,7 @@ PURPOSES = {
     "classification": "Interaction classifier",
     "brief": "Management brief",
     "proposals": "Ops agent proposals",
+    "facilitator": "Session facilitator",
 }
 
 

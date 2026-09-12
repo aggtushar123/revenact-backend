@@ -348,10 +348,18 @@ def generate_proposals(organisation, *, generated_by=None):
         organisation=organisation,
         user=generated_by,
     )
+    return store_answer(organisation, evidence, raw, limit=MAX_PROPOSALS, generated_by=generated_by)
+
+
+def store_answer(organisation, evidence, raw, *, limit, generated_by=None, session=None):
+    """Parse one answer, validate each item against what the prompt offered,
+    and store the survivors as one batch. Shared with the facilitator, which
+    asks a different question of the same evidence and stores the same
+    kind of answer — tagged with the session it came from."""
     batch = uuid.uuid4().hex
     open_ids = {i["id"] for i in evidence["initiatives"]}
     stored = []
-    for item in _parse(raw)[:MAX_PROPOSALS]:
+    for item in _parse(raw)[:limit]:
         action = _validate(organisation, evidence, item)
         if action is None:
             continue
@@ -367,6 +375,7 @@ def generate_proposals(organisation, *, generated_by=None):
                 action=action,
                 initiative_id=linked if linked in open_ids else None,
                 generated_by=generated_by,
+                session=session,
             )
         )
     return stored

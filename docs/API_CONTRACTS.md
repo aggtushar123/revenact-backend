@@ -3145,6 +3145,8 @@ budgeted.
 
 ### `GET /api/v1/copilot/usage/`
 
+Purposes: `copilot`, `headlines`, `classification`, `brief`, `proposals`, `facilitator`.
+
 Auth: `CanViewAllAccounts`. This month per purpose (`calls`, `ok`,
 `failed`, `input_tokens`, `output_tokens`, `spent`, `budget`,
 `remaining`, `custom_budget`), the `default_budget`, and the last fifty
@@ -3749,6 +3751,34 @@ is a `409`.
   "initiative": {"id": 1, "title": "Halve the ARR at risk on Product B"},
   "status": "proposed", "decided_by": null, "result": {}, "generated_by": "Alice"}]}
 ```
+
+### `GET/POST /api/v1/copilot/conversations/<id>/session/decisions/` — the facilitator
+
+Auth: `IsAuthenticated`, and the conversation must be visible to the
+caller (`conversations_visible_to`: owner, or an accepted, still-present
+participant) and have a session — otherwise `404`. The facilitator
+(`services/metrics/facilitator.py`) reads the session — the transcript
+with each human turn's author (the owner sent the opening query; every
+later human turn is tagged by its `redirected` event), who took part, who
+handed off to whom and why — beside the Ops agent's own evidence, and
+writes **what the people decided** into the review queue as proposals
+tagged with the session (`Proposal.session`, surfaced as `source`
+`{session_id, conversation_id, title}` on every proposal payload).
+
+Decisions, not suggestions: the prompt admits only what a person decided
+or agreed to; an idea the assistant floated that nobody took up is not a
+decision, and an empty array is the right answer for a session where
+nothing was settled. The session's own account is added to the accounts
+the agent may target even when it carries no measurable downside, so a
+task on it validates; everything else is validated exactly as the Ops
+agent's answers are (`proposals.store_answer`), and approval runs through
+the same review-queue endpoints under their own permission.
+
+`POST` is a real, paid call under the `facilitator` purpose (`201` with
+`{"proposals": [...]}`; `422` when nobody has spoken in the session or
+the book has no live customers; `429`/`503`/`502` as the Ops agent's).
+`GET` lists the proposals already written from this session, oldest
+first.
 
 ### Models — `Feedback`
 

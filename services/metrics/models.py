@@ -205,6 +205,15 @@ class Proposal(models.Model):
     generated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
+    session = models.ForeignKey(
+        "copilot.CopilotSession",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="proposals",
+        help_text="Set when the facilitator wrote this from a multiplayer session's "
+        "decisions rather than the Ops agent from the figures alone.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

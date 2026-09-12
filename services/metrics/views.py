@@ -290,6 +290,15 @@ def _proposal_payload(proposal):
         "decision_note": proposal.decision_note,
         "result": proposal.result,
         "generated_by": proposal.generated_by.name if proposal.generated_by else None,
+        "source": (
+            {
+                "session_id": proposal.session.id,
+                "conversation_id": proposal.session.conversation_id,
+                "title": proposal.session.conversation.title,
+            }
+            if proposal.session_id
+            else None
+        ),
         "created_at": proposal.created_at.isoformat(),
     }
 
@@ -304,7 +313,7 @@ class ProposalListView(views.APIView):
         from .models import Proposal
 
         queryset = Proposal.objects.filter(organisation=request.user.organisation).select_related(
-            "initiative", "decided_by", "generated_by"
+            "initiative", "decided_by", "generated_by", "session__conversation"
         )
         wanted = request.query_params.get("status")
         if wanted in Proposal.Status.values:
