@@ -3159,6 +3159,19 @@ Auth: `CanManageOrgSettings` — spend is organisation configuration. Body
 `monthly_tokens: null` clears it back to the default. Unknown purpose,
 non-integer or negative → `400`. Returns the summary.
 
+### `GET /api/v1/copilot/skills/`
+
+Auth: `CanViewAllAccounts`. The catalogue of what the brain's agents may
+do — `services/copilot/skills.py`, one `Skill` per model-call purpose:
+`name`, `summary`, `reads` (what the agent is given; nothing else can
+reach it), `may`, `never`, `trigger`, `gate`, `surface`. The catalogue is
+code beside the prompts, and a purpose without an entry fails a test.
+Each skill carries `usage` (this month: `calls`, `ok`, `failed`, `spent`,
+`budget`, `remaining`, `custom_budget` — the same figures as `usage/`),
+`last_run` (`{at, outcome, user}` or null) and `produced` (`{label,
+count}` all-time, plus `approved` for the two proposing skills; null
+where no exact count exists). Frontend: `/brain/skills`.
+
 ### `GET /api/v1/copilot/conversations/`
 
 Auth: `IsAuthenticated`. Every Conversation the caller may read

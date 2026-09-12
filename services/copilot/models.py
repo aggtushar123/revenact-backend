@@ -270,7 +270,7 @@ class ModelCall(models.Model):
     )
     purpose = models.CharField(
         max_length=32,
-        help_text='"copilot", "headlines", "classification", "brief", "proposals", "facilitator", "explain".',
+        help_text="A key in services.copilot.usage.PURPOSES — one per skill.",
     )
     provider = models.CharField(max_length=16, blank=True)
     model = models.CharField(max_length=128, blank=True)

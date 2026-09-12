@@ -12,6 +12,7 @@ urlpatterns = [
     path("messages/", views.SendMessageView.as_view(), name="copilot-send-message"),
     path("usage/", views.ModelUsageView.as_view(), name="copilot-model-usage"),
     path("usage/budgets/", views.ModelBudgetView.as_view(), name="copilot-model-budget"),
+    path("skills/", views.SkillsView.as_view(), name="copilot-skills"),
     path(
         "conversations/<int:pk>/session/",
         views.SessionView.as_view(),

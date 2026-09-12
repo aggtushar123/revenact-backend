@@ -691,6 +691,20 @@ class ModelUsageView(APIView):
         )
 
 
+class SkillsView(APIView):
+    """GET /api/v1/copilot/skills/ — the catalogue of what the brain's
+    agents may do (`services/copilot/skills.py`), each with this month's
+    usage against its budget, its last run and what it has produced.
+    Organisation-wide, so gated like the usage view."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def get(self, request):
+        from .skills import catalogue
+
+        return Response(catalogue(request.user.organisation))
+
+
 class ModelBudgetView(APIView):
     """PATCH /api/v1/copilot/usage/budgets/ — set one purpose's monthly token
     budget for this organisation (`{"purpose": ..., "monthly_tokens": n}`),
