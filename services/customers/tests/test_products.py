@@ -60,6 +60,13 @@ class ProductAPITests(APITestCase):
 
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc", currency="USD")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
         self.csm = User.objects.create_user(
             email="carl@acme.io",
             password="supersecret1",
@@ -68,7 +75,9 @@ class ProductAPITests(APITestCase):
             role=User.Role.CSM,
         )
         self.other_org = Organisation.objects.create(name="Other Inc", currency="USD")
-        self.client.force_authenticate(self.csm)
+        # Writes are org configuration, so the default caller here holds
+        # manage_org_settings; the CSM tests below say what a CSM gets.
+        self.client.force_authenticate(self.admin)
 
     def _product(self, name, **overrides):
         return Product.objects.create(organisation=self.org, name=name, **overrides)
@@ -97,8 +106,37 @@ class ProductAPITests(APITestCase):
         """Not scoped by ownership, unlike the customer lists: a product
         nobody in your book is on is still one you can put a customer on."""
         self._product("Product nobody here sells")
+        self.client.force_authenticate(self.csm)
 
         self.assertEqual(len(self.client.get(self.url).data), 1)
+
+    def test_a_csm_can_read_the_catalogue_but_not_change_it(self):
+        """Reads for everyone — the pickers need the list. Writes are
+        organisation configuration: a CSM able to add "Prodcut A" from a
+        form is the free-text problem this table replaced, back through a
+        different door."""
+        product = self._product("Product A")
+        self.client.force_authenticate(self.csm)
+
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.get(f"{self.url}{product.id}/").status_code, status.HTTP_200_OK
+        )
+        self.assertEqual(
+            self.client.post(self.url, {"name": "Prodcut A"}, format="json").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.patch(
+                f"{self.url}{product.id}/", {"name": "Renamed"}, format="json"
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.delete(f"{self.url}{product.id}/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(Product.objects.get(pk=product.pk).name, "Product A")
 
     def test_retired_products_are_listed_so_they_can_be_brought_back(self):
         self._product("Legacy", is_active=False)

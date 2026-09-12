@@ -7,10 +7,11 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status, views
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import SAFE_METHODS, IsAuthenticated
 from rest_framework.response import Response
 
 from services.accounts.models import User
+from services.accounts.permissions import CanManageOrgSettings
 from services.connectors.models import Connector
 from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
@@ -282,11 +283,21 @@ class ProductListView(generics.ListCreateAPIView):
 
     Unpaginated: a product catalogue is tens of rows, and every consumer
     is a dropdown that needs all of them.
+
+    **Reads for everyone, writes for `manage_org_settings`.** The pickers
+    need the list, so any member can GET it. Adding, renaming and
+    retiring are organisation configuration: a CSM able to add "Prodcut
+    A" from a form would be the free-text problem this table replaced,
+    back through a different door.
     """
 
     serializer_class = ProductSerializer
-    permission_classes = [IsAuthenticated]
     pagination_class = None
+
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [IsAuthenticated()]
+        return [CanManageOrgSettings()]
 
     def get_queryset(self):
         # `.order_by` explicitly: Product.Meta.ordering does not survive the
@@ -319,7 +330,13 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
 
     serializer_class = ProductSerializer
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        # Same split as the list: anyone may read one, only org settings
+        # managers may change or delete it.
+        if self.request.method in SAFE_METHODS:
+            return [IsAuthenticated()]
+        return [CanManageOrgSettings()]
 
     def get_queryset(self):
         return Product.objects.filter(organisation=self.request.user.organisation).annotate(

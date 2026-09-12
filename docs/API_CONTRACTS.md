@@ -75,7 +75,7 @@ expects.
 | Dashboards — Activity Tracking | `customers` | 🟢 Runs on `GET /api/v1/customers/activity/` — coverage, cadence and follow-through. See below. |
 | Dashboards — Revenue Forecast | `customers` | 🟢 Runs on `GET /api/v1/customers/forecast/` — the ARR bridge, with churn weighted by the shared rule in `churn.py`. See below. |
 | Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
-| Products (catalogue behind `primary_product`) | `customers` (`Product` model) | 🟢 Full CRUD, API-complete — see below. `GET/POST /api/v1/products/` and `GET/PATCH/DELETE /api/v1/products/<id>/`, mounted at their own top-level prefix (a product is org configuration, and `/customers/products/` already means the Product Usage rollup). Case-insensitively unique per organisation, deliberately **not** scoped by ownership, retirable via `is_active`, and un-deletable while customers are on it. No Settings UI yet — the Product Usage filter bar and the customer write path use it; adding/renaming/retiring is API-only for now. |
+| Products (catalogue behind `primary_product`) | `customers` (`Product` model) | 🟢 Full CRUD, API-complete — see below. `GET/POST /api/v1/products/` and `GET/PATCH/DELETE /api/v1/products/<id>/`, mounted at their own top-level prefix (a product is org configuration, and `/customers/products/` already means the Product Usage rollup). Case-insensitively unique per organisation, deliberately **not** scoped by ownership, retirable via `is_active`, and un-deletable while customers are on it. Reads for any member, writes gated on `manage_org_settings`. Managed from Settings > Products (`ProductsPage.tsx`). |
 | Dashboards — Product Usage | `customers` | 🟢 Runs on `GET /api/v1/customers/products/` — one row per product: ARR led, health mix, utilisation, satisfaction, support burden and churn. Attribution is by `primary_product` only, and the response says so. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
@@ -1387,9 +1387,13 @@ caller gets the count and the alternative instead of a 500.
 
 ### `GET /api/v1/products/`, `POST /api/v1/products/`
 
-Auth: `IsAuthenticated`. The tenant's own product catalogue, ordered by
-name, unpaginated (a catalogue is tens of rows and every consumer is a
-dropdown that wants all of them).
+Auth: `IsAuthenticated` to read, `CanManageOrgSettings` to write — the
+pickers need the list, so any member may GET it; adding, renaming and
+retiring are organisation configuration, because a CSM able to add
+"Prodcut A" from a form would be the free-text problem this table
+replaced, back through a different door. The tenant's own product
+catalogue, ordered by name, unpaginated (a catalogue is tens of rows and
+every consumer is a dropdown that wants all of them).
 
 Mounted at its own top-level prefix rather than under `/customers/`, for
 two reasons: a product is organisation configuration rather than one
@@ -1419,7 +1423,8 @@ name is refused.
 
 ### `GET/PATCH/DELETE /api/v1/products/<id>/`
 
-Auth: `IsAuthenticated`, scoped to the caller's own organisation (another
+Auth: same split as the list — any member may GET, `CanManageOrgSettings`
+to PATCH or DELETE — scoped to the caller's own organisation (another
 tenant's product is a `404`, not a `403`).
 
 **Renaming is cheap and deliberately so**: the customers point at the
