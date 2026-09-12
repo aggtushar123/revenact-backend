@@ -196,11 +196,12 @@ def build_prompt(evidence):
     if not evidence["accounts"]:
         lines.append("- none: no account carries measurable downside right now")
     for a in evidence["accounts"]:
-        renewal = (
-            f"renews in {a['days_to_renewal']} days"
-            if a["days_to_renewal"] is not None
-            else "no renewal date"
-        )
+        if a["days_to_renewal"] is None:
+            renewal = "no renewal date"
+        elif a["days_to_renewal"] < 0:
+            renewal = f"renewal overdue by {-a['days_to_renewal']} days"
+        else:
+            renewal = f"renews in {a['days_to_renewal']} days"
         factors = ", ".join(a["factors"]) or "no named factors"
         lines.append(
             f"- {a['id']}: {a['name']} — owner {a['owner']}, "
@@ -246,11 +247,18 @@ def _parse(raw):
 def _validate(organisation, evidence, item):
     """One answer → a stored `action`, or None (logged) if it names anything
     outside what the agent was given."""
-    kind = item.get("kind")
+    kind = str(item.get("kind") or "").strip().lower()
     action = item.get("action") or {}
     title = str(item.get("title") or "").strip()[:255]
     if not title or kind not in Proposal.Kind.values or not isinstance(action, dict):
+        logger.warning(
+            "proposal dropped: kind=%r title=%r action_is_dict=%s",
+            kind,
+            title,
+            isinstance(action, dict),
+        )
         return None
+    item["kind"] = kind
     today = timezone.localdate()
 
     if kind == Proposal.Kind.TASK:
