@@ -35,6 +35,7 @@ OUTPUT_TOKENS = 2000
 MAX_DECISIONS = 5
 TRANSCRIPT_TURNS = 60
 TURN_CHARS = 1200
+KNOWLEDGE_LIMIT = 10
 
 
 class NothingToDecideFrom(Exception):
@@ -48,9 +49,10 @@ can approve.
 
 You will be given the organisation's figures (headline metrics, what moved, \
 cuts, the accounts carrying the most revenue at risk, team members, open \
-decisions) and then the session itself: which account it was about, who took \
-part, who handed off to whom and why, and the transcript with each turn's \
-author.
+decisions), what the rest of the company has written down about the account \
+(engineering, sales, analytics notes, each with its author), and then the \
+session itself: which account it was about, who took part, who handed off to \
+whom and why, and the transcript with each turn's author.
 
 Return a JSON array of 0 to {max_decisions} decisions and nothing else — your \
 reply starts with "[" and ends with "]", no preamble. Each is an object with:
@@ -59,7 +61,8 @@ reply starts with "[" and ends with "]", no preamble. Each is an object with:
   "rationale": 1-3 sentences saying who decided it and why, quoting the \
 transcript or the figures.
   "evidence": an array of 1-4 short strings — a line from the transcript \
-(prefixed with the author's name) or a figure from the input, quoted as given.
+(prefixed with the author's name), a note from another function (prefixed \
+with the function and author), or a figure from the input, quoted as given.
   "initiative_id": the id of an open decision this serves, or null.
   "action": for a task — {{"customer_id": <id from the accounts list>, \
 "title": <task title>, "assignee": <a team member's exact name — the person \
@@ -147,6 +150,26 @@ def build_evidence(session):
         )
         evidence["accounts"].append(_account_row(customer, organisation))
 
+    # What the rest of the company has said about this account — an
+    # engineer's, a sales rep's, an analyst's notes (services.knowledge) —
+    # so a decision is not captured blind to the context other functions
+    # already wrote down.
+    company_knowledge = []
+    if session.customer_id:
+        from services.knowledge.models import Contribution
+
+        company_knowledge = [
+            {
+                "function": c.get_function_display(),
+                "author": c.author.name,
+                "date": c.created_at.date().isoformat(),
+                "text": c.body[:TURN_CHARS],
+            }
+            for c in Contribution.objects.filter(customer_id=session.customer_id)
+            .select_related("author")
+            .order_by("-created_at")[:KNOWLEDGE_LIMIT]
+        ]
+
     participants = sorted(
         {owner, *(p.user.name for p in session.participants.select_related("user"))}
     )
@@ -178,6 +201,7 @@ def build_evidence(session):
         "status": session.status,
         "participants": participants,
         "handoffs": handoffs,
+        "company_knowledge": company_knowledge,
         "transcript": transcript,
     }
     return evidence
@@ -198,6 +222,12 @@ def build_prompt(evidence):
         for h in s["handoffs"]:
             note = f' — "{h["note"]}"' if h["note"] else ""
             lines.append(f"- {h['from']} handed off to {h['to']}{note}")
+    if s["company_knowledge"]:
+        lines.append(
+            f"\nWHAT THE COMPANY KNOWS ABOUT {s['subject'].upper()} (function, person, date):"
+        )
+        for k in s["company_knowledge"]:
+            lines.append(f"- {k['function']} ({k['author']}, {k['date']}): {k['text']}")
     if s["already_captured"]:
         lines.append("\nALREADY CAPTURED FROM THIS SESSION (do not repeat):")
         for a in s["already_captured"]:

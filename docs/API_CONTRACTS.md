@@ -4009,6 +4009,11 @@ writes **what the people decided** into the review queue as proposals
 tagged with the session (`Proposal.session`, surfaced as `source`
 `{session_id, conversation_id, title}` on every proposal payload).
 
+The prompt also carries **what the rest of the company has written about
+the account** — the last ten contributions (function, author, date), so a
+decision is not captured blind to engineering, sales or analytics context
+— and the agent may cite them as evidence.
+
 Decisions, not suggestions: the prompt admits only what a person decided
 or agreed to; an idea the assistant floated that nobody took up is not a
 decision, and an empty array is the right answer for a session where

@@ -111,6 +111,40 @@ class EvidenceTests(TestCase):
         self.assertIn("ALREADY CAPTURED FROM THIS SESSION (do not repeat):", prompt)
         self.assertIn("- [task] Book the exec sponsor call with Fine (proposed)", prompt)
 
+    def test_the_prompt_carries_what_other_functions_wrote_about_the_account(self):
+        from services.knowledge.models import Contribution
+
+        priya = User.objects.create_user(
+            email="priya@acme.io",
+            password="x",
+            name="Priya",
+            organisation=self.org,
+            role=User.Role.CSM,
+            function=User.Function.ENGINEERING,
+        )
+        Contribution.objects.create(
+            organisation=self.org,
+            customer=self.fine,
+            author=priya,
+            function="engineering",
+            body="Their SSO breaks on token refresh; fix ships 25 Sep.",
+        )
+        other = Customer.objects.get(organisation=self.org, name="Pizza Hut")
+        Contribution.objects.create(
+            organisation=self.org,
+            customer=other,
+            author=priya,
+            function="engineering",
+            body="Unrelated account note.",
+        )
+
+        prompt = facilitator.build_prompt(facilitator.build_evidence(self.session))
+
+        self.assertIn("WHAT THE COMPANY KNOWS ABOUT FINE (function, person, date):", prompt)
+        self.assertIn("- Engineering (Priya,", prompt)
+        self.assertIn("SSO breaks on token refresh", prompt)
+        self.assertNotIn("Unrelated account note", prompt)
+
     def test_a_session_nobody_has_spoken_in_has_nothing_to_decide(self):
         Message.objects.filter(conversation=self.session.conversation).delete()
 
