@@ -222,7 +222,11 @@ def _parse(raw):
         if text.lstrip().startswith("json"):
             text = text.lstrip()[4:]
     try:
-        payload = json.loads(text)
+        # strict=False: the body is paragraphs separated by blank lines, and
+        # the model writes those as real newlines inside the string. Strict
+        # JSON forbids that; the first live brief came back with 385
+        # characters of good prose and a parse error.
+        payload = json.loads(text, strict=False)
     except json.JSONDecodeError as exc:
         raise ValueError(f"The model's answer wasn't JSON: {exc}") from exc
     if not isinstance(payload, dict):

@@ -102,6 +102,15 @@ class EvidenceAndPromptTests(TestCase):
         self.assertIn("\n\n", body)
         self.assertEqual(len(watch), 4)
 
+    def test_real_newlines_inside_the_body_string_are_accepted(self):
+        # The first live brief: good prose, raw newlines between paragraphs,
+        # and a strict parser calling it "invalid control character".
+        raw = '{"headline": "h", "body": "First.\n\nSecond.", "watch": ["w"]}'
+
+        _headline, body, _watch = brief._parse(raw)
+
+        self.assertEqual(body, "First.\n\nSecond.")
+
     def test_an_answer_without_a_headline_is_refused(self):
         with self.assertRaises(ValueError):
             brief._parse('{"body": "x", "watch": []}')

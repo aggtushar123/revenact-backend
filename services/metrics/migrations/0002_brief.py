@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("accounts", "0007_grant_view_all_accounts"),
         ("metrics", "0001_metric_snapshot"),
@@ -50,9 +49,7 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "evidence",
-                    models.JSONField(
-                        help_text="What the model was given — the figures, verbatim."
-                    ),
+                    models.JSONField(help_text="What the model was given — the figures, verbatim."),
                 ),
                 ("generated_at", models.DateTimeField()),
                 (
