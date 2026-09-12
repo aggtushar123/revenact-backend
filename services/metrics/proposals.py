@@ -410,6 +410,8 @@ def approve(proposal, user, note=""):
             assignee_name=action["assignee_name"],
             due_date=action["due_date"],
             priority=action["priority"],
+            # The decision this work serves, so the initiative shows it.
+            initiative=proposal.initiative,
         )
         result = {"task_id": task.id, "customer_id": customer.id}
     else:

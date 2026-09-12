@@ -3701,6 +3701,17 @@ configured, `502` when the call fails or the answer isn't readable,
            "generated_at": "2026-09-12T15:40:02Z", "generated_by": "Alice"}}
 ```
 
+### Initiative `work` — the tasks under a decision
+
+`Task.initiative` (customers migration 0035, SET_NULL) links a to-do to
+the decision it serves. `proposals.approve` sets it when a task proposal
+carries `initiative`, so approving from the review queue is the
+follow-through, not a separate step. Every initiative payload carries
+`work` `{open, done, tasks: [{id, title, parent_name, parent_type,
+parent_id, assignee_name, due_date, priority, status}]}`, open first and
+soonest due first; task payloads carry `initiative` `{id, title}` or
+null.
+
 ### `GET /api/v1/metrics/graph/` — the knowledge graph
 
 Auth: `CanViewAllAccounts`. The brain's real relations as one graph

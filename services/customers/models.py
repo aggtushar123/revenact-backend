@@ -1179,6 +1179,16 @@ class Task(models.Model):
     due_date = models.DateField()
     priority = models.CharField(max_length=8, choices=Priority.choices)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    initiative = models.ForeignKey(
+        "metrics.Initiative",
+        related_name="tasks",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="The decision this work serves, if any — set when a proposal linked to "
+        "an initiative is approved, so the initiative can show the work under it. "
+        "SET_NULL: closing or deleting a decision does not delete the to-do.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

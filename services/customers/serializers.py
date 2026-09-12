@@ -615,9 +615,17 @@ class TaskSerializer(serializers.ModelSerializer):
     the frontend derives the Overdue/This Week/Next Week/Later bucket
     from `due_date` at render time."""
 
+    initiative = serializers.SerializerMethodField()
+
     class Meta:
         model = Task
-        fields = ["id", "title", "assignee_name", "due_date", "priority", "status"]
+        fields = ["id", "title", "assignee_name", "due_date", "priority", "status", "initiative"]
+
+    def get_initiative(self, task):
+        # The decision this work serves — see Task.initiative.
+        if task.initiative_id is None:
+            return None
+        return {"id": task.initiative.id, "title": task.initiative.title}
 
 
 class TaskListSerializer(serializers.ModelSerializer):

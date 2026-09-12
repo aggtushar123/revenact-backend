@@ -126,6 +126,24 @@ class GenerationTests(TestCase):
 
         self.assertEqual(stored[0].action["assignee_name"], "Carl")
 
+    def test_approving_a_task_that_serves_a_decision_links_the_work_to_it(self):
+        open_one = Initiative.objects.create(
+            organisation=self.org,
+            title="Open",
+            metric="at_risk_arr",
+            target_value=1,
+            target_by=timezone.localdate() + timedelta(days=30),
+            baseline_as_of=timezone.localdate(),
+        )
+        with patch(PATH, return_value=_answer(self.shaky.id, self.b.id, initiative_id=open_one.id)):
+            with self.assertLogs("services.metrics.proposals", "WARNING"):
+                stored = proposals.generate_proposals(self.org)
+
+        proposals.approve(stored[0], self.admin)
+
+        task = Task.objects.get(customer=self.shaky)
+        self.assertEqual(task.initiative, open_one)
+
     def test_a_link_to_an_open_decision_is_kept_and_a_bogus_one_dropped(self):
         open_one = Initiative.objects.create(
             organisation=self.org,

@@ -8,7 +8,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Customer, Product
+from services.customers.models import Customer, Product, Task
 from services.metrics.models import Initiative
 
 
@@ -129,6 +129,57 @@ class InitiativeAPITests(APITestCase):
         )
 
         self.assertEqual(self._post(owner_id=stranger.pk).status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_an_initiative_shows_the_work_under_it_open_first(self):
+        initiative = Initiative.objects.create(
+            organisation=self.org,
+            title="Halve it",
+            metric="at_risk_arr",
+            target_value=1,
+            target_by=timezone.localdate() + timedelta(days=30),
+            baseline_as_of=timezone.localdate(),
+        )
+        today = timezone.localdate()
+        Task.objects.create(
+            customer=self.shaky,
+            title="Later",
+            assignee_name="Carl",
+            due_date=today + timedelta(days=9),
+            priority="low",
+            initiative=initiative,
+        )
+        Task.objects.create(
+            customer=self.shaky,
+            title="Soon",
+            assignee_name="Carl",
+            due_date=today + timedelta(days=2),
+            priority="high",
+            initiative=initiative,
+        )
+        Task.objects.create(
+            customer=self.shaky,
+            title="Finished",
+            assignee_name="Carl",
+            due_date=today,
+            priority="high",
+            status="completed",
+            initiative=initiative,
+        )
+        Task.objects.create(
+            customer=self.shaky,
+            title="Unrelated",
+            assignee_name="Carl",
+            due_date=today,
+            priority="low",
+        )
+
+        self.client.force_authenticate(self.admin)
+        work = self.client.get(f"/api/v1/metrics/initiatives/{initiative.id}/").data["work"]
+
+        self.assertEqual((work["open"], work["done"]), (2, 1))
+        self.assertEqual([t["title"] for t in work["tasks"]], ["Soon", "Later", "Finished"])
+        self.assertEqual(work["tasks"][0]["parent_name"], "Shaky")
+        self.assertEqual(work["tasks"][0]["status"], "pending")
 
     def test_closing_stamps_the_time_and_reopening_clears_it(self):
         created = self._post().data

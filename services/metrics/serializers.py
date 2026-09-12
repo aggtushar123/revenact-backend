@@ -25,6 +25,7 @@ class InitiativeSerializer(serializers.ModelSerializer):
     member_label = serializers.SerializerMethodField()
     progress = serializers.SerializerMethodField()
     history = serializers.SerializerMethodField()
+    work = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
 
     class Meta:
@@ -50,6 +51,7 @@ class InitiativeSerializer(serializers.ModelSerializer):
             "baseline_as_of",
             "progress",
             "history",
+            "work",
             "created_at",
             "updated_at",
             "closed_at",
@@ -71,6 +73,36 @@ class InitiativeSerializer(serializers.ModelSerializer):
         if initiative.owner is None:
             return None
         return {"id": initiative.owner.id, "name": initiative.owner.name}
+
+    def get_work(self, initiative):
+        """The tasks under this decision — open first, soonest due first —
+        so an initiative shows the work being done on it, not only the
+        number. Approving a proposal that serves the initiative links its
+        task here (see proposals.approve)."""
+        tasks = list(initiative.tasks.select_related("customer", "account"))
+        done = [t for t in tasks if t.status == t.Status.COMPLETED]
+        open_ = [t for t in tasks if t.status != t.Status.COMPLETED]
+        ordered = sorted(open_, key=lambda t: (t.due_date, -t.id)) + sorted(
+            done, key=lambda t: (-t.id,)
+        )
+        return {
+            "open": len(open_),
+            "done": len(done),
+            "tasks": [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "parent_name": (t.customer or t.account).name,
+                    "parent_type": "customer" if t.customer_id else "account",
+                    "parent_id": t.customer_id or t.account_id,
+                    "assignee_name": t.assignee_name,
+                    "due_date": t.due_date.isoformat(),
+                    "priority": t.priority,
+                    "status": t.status,
+                }
+                for t in ordered
+            ],
+        }
 
     def get_metric_label(self, initiative):
         metric = BY_KEY.get(initiative.metric)
