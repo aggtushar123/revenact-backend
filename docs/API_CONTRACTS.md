@@ -3283,7 +3283,11 @@ turns that mention them, their own, and the Copilot's replies to those
 carry `visibility: "full" | "partial"` and each turn its `author`
 (`Message.author`, backfilled for older turns from the session's
 redirect events). A follow-up posted by a mentioned person is grounded
-and given history from their slice only.
+and given history from their slice only. **A Copilot reply is withheld
+from a sliced viewer when it cites a record they may not read** — a
+contribution outside their scope, a customer they may not open — and
+shows as "This reply isn't shared with you…" instead (`copilot.views.
+_reply_readable_by`); the stored turn is untouched.
 
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei
 report to her; Dana to Carl.

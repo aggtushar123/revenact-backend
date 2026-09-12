@@ -124,8 +124,52 @@ def visible_messages(conversation, user):
             if previous_kept:
                 kept.append(turn)
         elif previous_kept:
-            kept.append(turn)
+            kept.append(turn if _reply_readable_by(turn, user) else _redacted(turn))
     return kept
+
+
+REDACTED_REPLY = "This reply isn't shared with you: it draws on records outside what you may see."
+
+
+def _reply_readable_by(turn, user):
+    """A Copilot reply was written from the asker's scope, not the viewer's.
+    It is shown to a viewer who sees only a slice when every record it
+    cites is one they could read themselves — a contribution within their
+    scope, a customer's record on a customer they may open — and withheld
+    otherwise, so a reply cannot quote what its reader may not read."""
+    from services.customers.scoping import visible_customers
+    from services.knowledge.models import Contribution
+    from services.knowledge.views import visible_contributions
+
+    for source in turn.sources or []:
+        if source.get("type") == "contribution":
+            rows = Contribution.objects.filter(pk=source.get("id"))
+            if rows.exists() and not visible_contributions(user, rows).exists():
+                return False
+        elif source.get("company_type") == "customer":
+            if not visible_customers(user).filter(pk=source.get("company_id")).exists():
+                return False
+        elif source.get("company_type") == "account":
+            from services.customers.models import Account
+
+            if not Account.objects.filter(
+                pk=source.get("company_id"), customers__in=visible_customers(user)
+            ).exists():
+                return False
+    return True
+
+
+def _redacted(turn):
+    """The same turn, with its words withheld — unsaved, never written back."""
+    return Message(
+        id=turn.id,
+        conversation=turn.conversation,
+        role=turn.role,
+        content=REDACTED_REPLY,
+        sources=[],
+        ask_suggestions=[],
+        created_at=turn.created_at,
+    )
 
 
 class ConversationListView(generics.ListAPIView):

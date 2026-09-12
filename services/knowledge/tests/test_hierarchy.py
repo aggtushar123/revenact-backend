@@ -296,3 +296,62 @@ class CustomerPageTests(ChartFixture):
         self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
         FunctionOwner.objects.create(customer=self.pizza, function="sales", user=self.raj)
         self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+
+
+class ReplyRedactionTests(ChartFixture):
+    def test_a_reply_that_quotes_records_outside_the_viewers_scope_is_withheld(self):
+        from services.copilot.views import REDACTED_REPLY, visible_messages
+
+        sales_note = self.note(self.raj, "SALES-ONLY procurement stalled")
+        conversation = Conversation.objects.create(
+            organisation=self.org, user=self.alice, title="Pizza Hut"
+        )
+        asked = Message.objects.create(
+            conversation=conversation,
+            role="user",
+            content="@Priya Nair what is going on?",
+            author=self.alice,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.priya,
+            text=asked.content,
+            message=asked,
+        )
+        Message.objects.create(
+            conversation=conversation,
+            role="assistant",
+            content="Raj says procurement stalled.",
+            sources=[
+                {
+                    "type": "contribution",
+                    "id": sales_note.id,
+                    "label": "Sales · Raj Mehta",
+                    "date": "2026-09-13",
+                    "company": "Pizza Hut",
+                    "company_type": "customer",
+                    "company_id": self.pizza.id,
+                }
+            ],
+        )
+
+        # Priya is mentioned but not responsible: the reply quotes a note she may not read.
+        kept = visible_messages(conversation, self.priya)
+        self.assertEqual([m.content for m in kept], [asked.content, REDACTED_REPLY])
+        self.assertEqual(
+            Message.objects.get(role="assistant").content, "Raj says procurement stalled."
+        )
+
+        # Once responsible for Pizza Hut she may read the note, so the reply is hers too.
+        from services.knowledge.models import FunctionOwner
+
+        FunctionOwner.objects.create(customer=self.pizza, function="engineering", user=self.priya)
+        kept = visible_messages(conversation, self.priya)
+        self.assertEqual(kept[1].content, "Raj says procurement stalled.")
+
+        # The owner always sees her own conversation whole.
+        self.assertEqual(
+            visible_messages(conversation, self.alice)[1].content, "Raj says procurement stalled."
+        )
