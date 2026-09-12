@@ -6,6 +6,8 @@ urlpatterns = [
     path("", views.MetricListView.as_view(), name="metric-list"),
     # Before the keyed routes: "signals" is not a metric key.
     path("signals/", views.MetricSignalsView.as_view(), name="metric-signals"),
+    path("brief/", views.BriefView.as_view(), name="metric-brief"),
+    path("brief/generate/", views.BriefGenerateView.as_view(), name="metric-brief-generate"),
     path("<str:key>/history/", views.MetricHistoryView.as_view(), name="metric-history"),
     path("<str:key>/by/<str:dimension>/", views.MetricSliceView.as_view(), name="metric-slice"),
 ]

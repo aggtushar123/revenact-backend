@@ -5,8 +5,6 @@ the whole organisation's, and a CSM whose book is scoped to their own
 customers would otherwise read the company's ARR off this endpoint.
 """
 
-from decimal import Decimal
-
 from rest_framework import views
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -15,27 +13,9 @@ from services.accounts.permissions import CanViewAllAccounts
 
 from .models import MetricSnapshot
 from .registry import BY_KEY, METRICS, as_of, compute_all
-
-
-def _number(value):
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
-
-
-def _describe(metric):
-    return {
-        "key": metric.key,
-        "label": metric.label,
-        "unit": metric.unit,
-        "better": metric.better,
-        "note": metric.note,
-        # The cuts this metric has, so a screen can offer them without a
-        # round of 404s.
-        "dimensions": sorted(metric.slices),
-    }
+from .signals import describe as _describe
+from .signals import latest_by_member as _latest_by_member
+from .signals import number as _number
 
 
 class MetricListView(views.APIView):
@@ -110,16 +90,6 @@ class MetricHistoryView(views.APIView):
         )
 
 
-def _latest_by_member(organisation, metric_key, dimension):
-    """The most recent month-end row per member for one cut."""
-    latest = {}
-    for row in MetricSnapshot.objects.filter(
-        organisation=organisation, metric=metric_key, dimension=dimension
-    ).order_by("member", "-period_end"):
-        latest.setdefault(row.member, row)
-    return latest
-
-
 def _members_payload(organisation, metric, dimension):
     from .registry import compute_slice
 
@@ -180,105 +150,71 @@ class MetricSliceView(views.APIView):
         )
 
 
-#: What counts as a material move since the last month-end. Percent-unit
-#: metrics move in points; money and counts move relative to where they were.
-#: Deliberately blunt — the point is a short list a manager reads, not a
-#: statistical test over one month of history.
-SIGNAL_POINTS = 5.0
-SIGNAL_RELATIVE = 0.10
-
-
-def _material(metric, now, previous):
-    if now is None or previous is None:
-        return False
-    if metric.unit == "percent":
-        return abs(now - previous) >= SIGNAL_POINTS
-    if previous == 0:
-        return now != 0
-    return abs(now - previous) / abs(previous) >= SIGNAL_RELATIVE
-
-
 class MetricSignalsView(views.APIView):
     """GET /api/v1/metrics/signals/ — the metrics that moved materially since
     the last month-end, worst first, each naming the member that moved it
     most. Empty until a second month-end exists to compare against; the
-    response says so rather than inventing a baseline."""
+    response says so rather than inventing a baseline. The rule lives in
+    signals.py, shared with the management brief."""
 
     permission_classes = [CanViewAllAccounts]
 
     def get(self, request):
-        from .registry import DIMENSION_LABELS, compute_all, compute_slices
+        from .signals import signals_for
 
-        organisation = request.user.organisation
-        values = compute_all(organisation)
+        return Response(signals_for(request.user.organisation))
 
-        latest = {}
-        for row in MetricSnapshot.objects.filter(
-            organisation=organisation, dimension="", member=""
-        ).order_by("metric", "-period_end"):
-            latest.setdefault(row.metric, row)
-        baseline = max((row.period_end for row in latest.values()), default=None)
 
-        signals = []
-        slices = None
-        for metric in METRICS:
-            previous = latest.get(metric.key)
-            now = _number(values[metric.key])
-            previous_value = _number(previous.value) if previous else None
-            if not _material(metric, now, previous_value):
-                continue
-            change = round(now - previous_value, 4)
-            improved = None if metric.better == "none" else (change > 0) == (metric.better == "up")
+def _brief_payload(brief):
+    return {
+        "id": brief.id,
+        "as_of": brief.as_of.isoformat(),
+        "baseline": brief.baseline.isoformat() if brief.baseline else None,
+        "headline": brief.headline,
+        "body": brief.body,
+        "watch": brief.watch,
+        "generated_at": brief.generated_at.isoformat(),
+        "generated_by": brief.generated_by.name if brief.generated_by else None,
+    }
 
-            drivers = []
-            if metric.slices:
-                if slices is None:
-                    slices = compute_slices(organisation)
-                for dimension, members in slices[metric.key].items():
-                    by_member = _latest_by_member(organisation, metric.key, dimension)
-                    for member, label, value in members:
-                        was = by_member.get(member)
-                        if value is None or was is None or was.value is None:
-                            continue
-                        move = round(_number(value) - _number(was.value), 4)
-                        if move:
-                            drivers.append(
-                                {
-                                    "dimension": dimension,
-                                    "dimension_label": DIMENSION_LABELS[dimension],
-                                    "member": member,
-                                    "label": label,
-                                    "value": _number(value),
-                                    "change": move,
-                                }
-                            )
-                drivers.sort(key=lambda d: -abs(d["change"]))
 
-            signals.append(
-                {
-                    **_describe(metric),
-                    "value": now,
-                    "previous": {
-                        "period_end": previous.period_end.isoformat(),
-                        "value": previous_value,
-                    },
-                    "change": change,
-                    "improved": improved,
-                    "drivers": drivers[:5],
-                }
-            )
+class BriefView(views.APIView):
+    """GET /api/v1/metrics/brief/ — the latest management brief, or
+    `{"brief": null}` before one has been written. Reading is free."""
 
-        # Bad news first, biggest relative move first within it.
-        def rank(signal):
-            rel = abs(signal["change"]) / abs(signal["previous"]["value"] or 1)
-            return (signal["improved"] is not False, -rel)
+    permission_classes = [CanViewAllAccounts]
 
-        signals.sort(key=rank)
-        return Response(
-            {
-                "as_of": as_of().isoformat(),
-                "baseline": baseline.isoformat() if baseline else None,
-                "currency": organisation.currency,
-                "signals": signals,
-            }
-        )
+    def get(self, request):
+        from .models import Brief
+
+        brief = Brief.objects.filter(organisation=request.user.organisation).first()
+        return Response({"brief": _brief_payload(brief) if brief else None})
+
+
+class BriefGenerateView(views.APIView):
+    """POST /api/v1/metrics/brief/generate/ — write a new brief from the
+    metric layer as it stands. A real, paid model call, so an explicit
+    action rather than a side effect of viewing. Error mapping matches
+    HeadlineGenerateView's: 503 when the provider isn't configured, 502
+    when the call fails, 422 when there is nothing to write about."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def post(self, request):
+        from rest_framework import status
+
+        from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
+
+        from .brief import NothingToBrief, generate_brief
+
+        try:
+            brief = generate_brief(request.user.organisation, generated_by=request.user)
+        except NothingToBrief as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except CopilotNotConfigured as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except CopilotRequestFailed as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"brief": _brief_payload(brief)}, status=status.HTTP_201_CREATED)

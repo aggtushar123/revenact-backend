@@ -3583,6 +3583,38 @@ inventing a baseline.
 the five biggest absolute moves across every cut the metric has, and is
 empty for a metric with no cuts.
 
+### `GET /api/v1/metrics/brief/`, `POST /api/v1/metrics/brief/generate/`
+
+The management brief: the metric layer read out loud by Claude. The
+per-customer Headlines generator writes one account's story from its
+records; this writes the organisation's from the metric layer — the
+numbers, what moved since the last month-end, and what the cuts say
+drove it — through the same `anthropic_client`.
+
+**Grounded, and checkably so.** The prompt carries exactly the figures
+the screen shows (`brief.build_prompt`) — no records, no customer names,
+nothing the snapshots don't hold — and the evidence is stored beside the
+text (`Brief.evidence`), so any sentence can be checked against the
+numbers it was written from. "Unmeasured" is written as unmeasured,
+never zero.
+
+**Stored, not regenerated on view.** A brief costs a real model call,
+and last month's brief is itself a record. `GET` returns the latest
+(`{"brief": null}` before one exists); `POST .../generate/` writes a new
+one — an explicit action, never a side effect of loading the page.
+Error mapping matches `HeadlineGenerateView`: `503` when no provider is
+configured, `502` when the call fails or the answer isn't readable,
+`422` for an organisation with no customers. Both gated on
+`view_all_accounts`.
+
+```json
+{"brief": {"id": 3, "as_of": "2026-09-12", "baseline": "2026-08-31",
+           "headline": "…one sentence, a fact…",
+           "body": "…3-5 paragraphs, blank-line separated…",
+           "watch": ["…2-4 things, each citing a figure…"],
+           "generated_at": "2026-09-12T15:40:02Z", "generated_by": "Alice"}}
+```
+
 ### `GET /api/v1/metrics/<key>/history/`
 
 The month-end series for one metric, oldest first, this organisation

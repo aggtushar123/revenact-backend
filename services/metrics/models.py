@@ -7,6 +7,7 @@ in this first slice, with `dimension`/`member` reserved so a slice by owner
 or product later is a row, not a migration.
 """
 
+from django.conf import settings
 from django.db import models
 
 from services.accounts.models import Organisation
@@ -49,3 +50,34 @@ class MetricSnapshot(models.Model):
 
     def __str__(self):
         return f"{self.metric} @ {self.period_end} = {self.value}"
+
+
+class Brief(models.Model):
+    """One management brief, written by the model from the metric layer.
+
+    Stored rather than regenerated on view: a brief costs a real model call,
+    and last week's brief is itself a record — what the figures said then,
+    and what was worth watching. `evidence` is the exact data the prompt was
+    built from, kept beside the text so any sentence can be checked against
+    the numbers it was written from.
+    """
+
+    organisation = models.ForeignKey(Organisation, related_name="briefs", on_delete=models.CASCADE)
+    as_of = models.DateField(help_text="The day the figures describe.")
+    baseline = models.DateField(
+        null=True, blank=True, help_text="The month-end the figures were compared against, if any."
+    )
+    headline = models.CharField(max_length=255)
+    body = models.TextField(help_text="Paragraphs separated by blank lines.")
+    watch = models.JSONField(default=list, blank=True, help_text="2-4 things to watch next month.")
+    evidence = models.JSONField(help_text="What the model was given — the figures, verbatim.")
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    generated_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-generated_at"]
+
+    def __str__(self):
+        return f"Brief for {self.organisation} as of {self.as_of}"
