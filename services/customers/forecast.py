@@ -105,7 +105,7 @@ def filtered_customers(user, params):
     """The caller's visible book, narrowed by the bar's filters. Visibility
     first, then the filters narrow from there."""
 
-    queryset = with_health_inputs(live_customers(user).select_related("owner"))
+    queryset = with_health_inputs(live_customers(user).select_related("owner", "primary_product"))
 
     owner = params.get("owner")
     if owner == "unassigned":
@@ -380,6 +380,20 @@ def _row_payload(row):
         "net": round(row.net, 2),
         "health_category": customer.health_category,
     }
+
+
+def bridge_by(rows, key):
+    """The bridge for each group of rows, keyed by `key(row)`.
+
+    Reuses `build_bridge` per group rather than re-summing, so a slice by
+    owner or product can never disagree with the whole — the groups' opening
+    ARRs add up to the book's, and their downsides to its downside, because
+    the same capped-per-row arithmetic produced both.
+    """
+    groups = {}
+    for row in rows:
+        groups.setdefault(key(row), []).append(row)
+    return {member: build_bridge(group) for member, group in groups.items()}
 
 
 def swing_list(rows):

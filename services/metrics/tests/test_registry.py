@@ -139,10 +139,13 @@ class RecordingTests(TestCase):
     def test_records_one_row_per_metric_for_the_period(self):
         written, had = record_period_end(self.org, self.period_end)
 
-        self.assertEqual((written, had), (len(registry.METRICS), 0))
-        row = MetricSnapshot.objects.get(
-            organisation=self.org, metric="active_arr", period_end=self.period_end
+        whole = MetricSnapshot.objects.filter(
+            organisation=self.org, period_end=self.period_end, dimension=""
         )
+        self.assertEqual((whole.count(), had), (len(registry.METRICS), 0))
+        # The cuts come too, beside the whole-org rows.
+        self.assertGreater(written, whole.count())
+        row = whole.get(metric="active_arr")
         self.assertEqual(row.value, Decimal("120000"))
         self.assertEqual((row.dimension, row.member), ("", ""))
 
@@ -156,13 +159,16 @@ class RecordingTests(TestCase):
         for key in ("nrr", "logo_retention", "coverage", "healthy_share"):
             self.assertIsNone(
                 MetricSnapshot.objects.get(
-                    organisation=empty, metric=key, period_end=self.period_end
+                    organisation=empty, metric=key, period_end=self.period_end, dimension=""
                 ).value,
                 key,
             )
         self.assertEqual(
             MetricSnapshot.objects.get(
-                organisation=empty, metric="active_customers", period_end=self.period_end
+                organisation=empty,
+                metric="active_customers",
+                period_end=self.period_end,
+                dimension="",
             ).value,
             Decimal("0"),
         )
@@ -176,12 +182,14 @@ class RecordingTests(TestCase):
         written, had = record_period_end(self.org, self.period_end)
 
         self.assertEqual((written, had), (0, len(registry.METRICS)))
-        self.assertEqual(MetricSnapshot.objects.get(metric="active_arr").value, Decimal("1"))
+        self.assertEqual(
+            MetricSnapshot.objects.get(metric="active_arr", dimension="").value, Decimal("1")
+        )
 
     def test_dry_run_writes_nothing(self):
         written, _ = record_period_end(self.org, self.period_end, dry_run=True)
 
-        self.assertEqual(written, len(registry.METRICS))
+        self.assertGreaterEqual(written, len(registry.METRICS))
         self.assertFalse(MetricSnapshot.objects.exists())
 
     def test_a_metric_added_later_is_filled_in_without_touching_the_rest(self):
@@ -191,3 +199,17 @@ class RecordingTests(TestCase):
         written, had = record_period_end(self.org, self.period_end)
 
         self.assertEqual((written, had), (1, len(registry.METRICS) - 1))
+
+    def test_a_cut_added_later_is_filled_in_for_a_recorded_period(self):
+        # The live case: the whole-org rows were recorded before any cut
+        # existed. The next run must add the cuts, not stop at "already had".
+        record_period_end(self.org, self.period_end)
+        MetricSnapshot.objects.filter(organisation=self.org).exclude(dimension="").delete()
+
+        written, had = record_period_end(self.org, self.period_end)
+
+        self.assertGreater(written, 0)
+        self.assertEqual(had, len(registry.METRICS))
+        self.assertTrue(
+            MetricSnapshot.objects.filter(organisation=self.org).exclude(dimension="").exists()
+        )

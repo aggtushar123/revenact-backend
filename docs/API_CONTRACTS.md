@@ -76,7 +76,7 @@ expects.
 | Dashboards — Revenue Forecast | `customers` | 🟢 Runs on `GET /api/v1/customers/forecast/` — the ARR bridge, with churn weighted by the shared rule in `churn.py`. See below. |
 | Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
 | Products (catalogue behind `primary_product`) | `customers` (`Product` model) | 🟢 Full CRUD, API-complete — see below. `GET/POST /api/v1/products/` and `GET/PATCH/DELETE /api/v1/products/<id>/`, mounted at their own top-level prefix (a product is org configuration, and `/customers/products/` already means the Product Usage rollup). Case-insensitively unique per organisation, deliberately **not** scoped by ownership, retirable via `is_active`, and un-deletable while customers are on it. Reads for any member, writes gated on `manage_org_settings`. Managed from Settings > Products (`ProductsPage.tsx`). |
-| Metric layer (`/api/v1/metrics/`) | `metrics` | 🟢 Every headline number defined once (`services/metrics/registry.py`), read through the same rollups the dashboards draw, whole-organisation via `SystemActor`, with month-end history in `MetricSnapshot` recorded by `run_health_maintenance`. Gated on `view_all_accounts`. Phase 1 of the company-brain work; the Brain dashboard's Business metrics panel (`MetricLayerPanel.tsx`) reads it. See below. |
+| Metric layer (`/api/v1/metrics/`) | `metrics` | 🟢 Every headline number defined once (`services/metrics/registry.py`), read through the same rollups the dashboards draw, whole-organisation via `SystemActor`, with month-end history in `MetricSnapshot` recorded by `run_health_maintenance`. Gated on `view_all_accounts`. Phases 1–2 of the company-brain work: the Brain dashboard's Business metrics panel (`MetricLayerPanel.tsx`) reads it, and `<key>/by/<dimension>/` + `signals/` are the "why" layer — cuts by owner/product/segment/lifecycle and the material moves with their drivers. See below. |
 | Dashboards — Product Usage | `customers` | 🟢 Runs on `GET /api/v1/customers/products/` — one row per product: ARR led, health mix, utilisation, satisfaction, support burden and churn. Attribution is by `primary_product` only, and the response says so. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
@@ -3532,6 +3532,55 @@ The eighteen metrics in this slice: `active_customers`, `active_arr`,
 `forecast_arr`, `nrr`, `at_risk_arr`, `seat_utilisation`,
 `shelfware_arr`, `at_capacity_arr`, `coverage`, `dark_accounts`,
 `dark_arr`, `healthy_share`, `poor_health_count`, `open_tickets`.
+
+### `GET /api/v1/metrics/<key>/by/<dimension>/`
+
+One metric, cut one way — the "why" layer's raw material. `dimension` is
+`owner`, `product`, `segment` or `lifecycle`; each metric declares which
+cuts it has (`registry.Metric.slices`), and a cut is only ever one the
+underlying rollup already draws or a plain regrouping of rows it scored
+— never a new rule. Forecast metrics by owner/product go through
+`forecast.bridge_by`, which reuses `build_bridge` per group so the
+groups' opening ARR, downside and forecast add up to the whole's. A
+metric asked for a cut it doesn't have is a `404` that names the cuts
+it does.
+
+```json
+{"metric": {"key": "at_risk_arr", ...},
+ "dimension": {"key": "product", "label": "Product"},
+ "currency": "USD",
+ "members": [{"member": "4", "label": "Product B", "value": 64090.0,
+              "previous": {"period_end": "2026-08-31", "value": 64090.0}, "change": 0.0}]}
+```
+
+Members are largest first, unmeasured last; `member` is a stable id (an
+owner or product pk, `unassigned`/`none`, a segment key, a lifecycle
+value) so the same member's month-end row is found again next month.
+`record_period_end` writes these cuts beside the whole-org rows, on the
+same keep-don't-overwrite rule.
+
+### `GET /api/v1/metrics/signals/`
+
+The metrics that moved materially since the last month-end, bad news
+first, each naming the members that moved it most. "Material" is
+deliberately blunt: 5 points for a percent metric, 10% relative for
+money and counts — a short list a manager reads, not a statistical test
+over one month of history. Empty, with `baseline: null`, until a
+month-end exists to compare against; the response says so rather than
+inventing a baseline.
+
+```json
+{"as_of": "2026-09-12", "baseline": "2026-08-31", "currency": "USD",
+ "signals": [{"key": "at_risk_arr", "label": "ARR at risk", ..., "value": 114540.0,
+              "previous": {"period_end": "2026-08-31", "value": 80000.0}, "change": 34540.0,
+              "improved": false,
+              "drivers": [{"dimension": "product", "dimension_label": "Product", "member": "4",
+                           "label": "Product B", "value": 64090.0, "change": 30000.0}]}]}
+```
+
+`improved` is null for a metric whose `better` is `none`. `drivers` is
+the five biggest absolute moves across every cut the metric has, and is
+empty for a metric with no cuts.
 
 ### `GET /api/v1/metrics/<key>/history/`
 
