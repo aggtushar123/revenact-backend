@@ -164,6 +164,32 @@ class ClassifyBatchTests(TestCase):
         self.assertEqual(fields["ai_area"], "")
         self.assertEqual(fields["ai_category"], "bug_report")
 
+    def test_a_ref_echoed_with_the_prompts_brackets_still_matches(self):
+        """The first real run: the model answered every ticket as
+        "[ticket:401]", brackets and all, and every one was discarded as a
+        ref nobody sent — 600 correct answers reported as "unplaced"."""
+        answer = (
+            '[{"ref": "[email:%d]", "area": "product_growth", "category": "bug_report",'
+            ' "subcategory": "ui_bug", "sentiment": "neutral"}]' % self.email.pk
+        )
+
+        with self._answer(answer):
+            results = classify_batch([self.email])
+
+        self.assertIn(f"email:{self.email.pk}", results)
+
+    def test_an_unmatched_ref_is_logged_not_swallowed(self):
+        answer = """[{"ref": "email:999999", "category": "bug_report",
+            "subcategory": "ui_bug"}]"""
+
+        with (
+            self._answer(answer),
+            self.assertLogs("services.customers.classification", "WARNING") as logs,
+        ):
+            classify_batch([self.email])
+
+        self.assertIn("email:999999", logs.output[0])
+
     def test_a_ref_that_was_not_sent_is_discarded(self):
         """Otherwise a hallucinated id lets one batch write a classification
         onto a record nobody asked about."""

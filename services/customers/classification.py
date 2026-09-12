@@ -26,12 +26,15 @@ mean one unusual email blocking a nightly run for everything behind it.
 """
 
 import json
+import logging
 
 from django.utils import timezone
 
 from services.copilot.anthropic_client import get_completion
 
 from . import taxonomy
+
+logger = logging.getLogger(__name__)
 
 #: How many records go up in one request. Twenty fits comfortably inside one
 #: prompt alongside the taxonomy, and keeps a single bad reply cheap to redo.
@@ -102,7 +105,11 @@ def build_prompt(records):
     lines = []
     for ref, kind, text in records:
         lines.append(f"[{ref}] {kind}: {text[:MAX_TEXT_CHARS]}")
-    return "Classify these interactions:\n\n" + "\n\n".join(lines)
+    return (
+        "Classify these interactions. Each starts with its ref in square "
+        'brackets; answer with the ref alone, e.g. "email:41", not "[email:41]".'
+        "\n\n" + "\n\n".join(lines)
+    )
 
 
 def _ref_for(record):
@@ -247,19 +254,41 @@ def classify_batch(records):
 
     sent = {ref for ref, _, _ in prompt_records}
     out = {}
+    unmatched = []
     for item in _parse(raw):
         if not isinstance(item, dict):
             continue
-        ref = item.get("ref")
+        ref = _normalise_ref(item.get("ref"))
         # A ref that wasn't in this batch is discarded rather than looked up:
         # a hallucinated id would otherwise let one batch write a
         # classification onto a record nobody asked about.
         if ref not in sent:
+            unmatched.append(item.get("ref"))
             continue
         fields = _coerce(item)
         if fields:
             out[ref] = fields
+    if unmatched:
+        # Loudly. The first real run threw away 600 correct answers because
+        # the model echoed "[ticket:401]" with the brackets the prompt had
+        # drawn around it, and the loss was reported as "left unplaced by the
+        # model" — which is what a bug in this loop looks like from outside.
+        logger.warning(
+            "classify_batch: %d answer(s) carried a ref not in the batch and were dropped: %s",
+            len(unmatched),
+            unmatched[:5],
+        )
     return out
+
+
+def _normalise_ref(raw):
+    """The ref as the batch knows it, whatever punctuation the model wrapped
+    it in. The prompt draws brackets around each ref so the model can find
+    it, and a model told to echo the ref "exactly" will sometimes echo the
+    brackets too. Stripping them is cheaper than losing the answer."""
+    if not isinstance(raw, str):
+        return None
+    return raw.strip().strip("[]()\"'`").strip().lower()
 
 
 def clear_classification(record):
