@@ -6,6 +6,10 @@ urlpatterns = [
     path("", views.CustomerListCreateView.as_view(), name="customer-list-create"),
     path("stats/", views.CustomerStatsView.as_view(), name="customer-stats"),
     path("health/", views.CustomerHealthView.as_view(), name="customer-health"),
+    # Usage Overview's own rollups. Alongside health/ rather than under a
+    # top-level /usage/ prefix: seats belong to a Customer, and this is a
+    # rollup of customers, not of a thing with its own model.
+    path("usage/", views.CustomerUsageView.as_view(), name="customer-usage"),
     path(
         "<int:customer_id>/accounts/",
         views.AccountListCreateView.as_view(),

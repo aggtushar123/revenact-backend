@@ -71,6 +71,7 @@ expects.
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Headlines (`ActivityFeed`'s "Headlines" sub-tab on both Details pages) | `customers` (`Headline` model) | 🟢 API-complete — see below. Model + two scoped list-create endpoints (per-Customer, per-Account), a flat detail view (GET/PATCH/DELETE by id), and a real generation endpoint that summarises the parent's own Notes/Emails/Tickets/Activities through `services.copilot`'s Anthropic client. Seeded. `HeadlinesTab.tsx` fetches real data through `fetchHeadlinesForCustomer`/`fetchHeadlinesForAccount`; the group pill and the "Data sources" footer now reflect real values rather than stored/decorative text. |
 | Dashboards — Health Overview | `customers` | 🟢 All five tabs (Triage/Divergence/Movement/Renewal Date/Controls) run on one `GET /api/v1/customers/health/` — see that endpoint and `HealthSnapshot` below. |
+| Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
@@ -1032,6 +1033,89 @@ Notes on the shape:
 * This is a **Customer-level** endpoint. Accounts carry their own health
   and renewal dates, and no tab reads them yet; adding them would change
   what "the book" means on every tab at once.
+
+### `GET /api/v1/customers/usage/`
+
+Auth: `IsAuthenticated`. Every rollup the Usage Overview dashboard's
+Controls tab draws.
+
+The screen answers one question — **are customers using what they pay
+for?** — and the answer has two commercial halves: shelfware below the
+line (seats billed and not used, which is a renewal argument being built
+for you), and capacity above it (an account with no room left is an
+expansion conversation nobody has started). Both are measured off
+`Customer.seat_utilization_percentage`, which the model has always
+computed and nothing had ever charted.
+
+Rollups are computed server-side, like `/tickets/stats/` and
+`/interactions/stats/`. The Health endpoint ships rows instead, and the
+difference is deliberate: five Health tabs slice one book five ways,
+while this screen has one view and asks the server one thing. `scatter`
+is the exception — per-account by nature, capped at 500 points.
+
+**Customer-level only.** Seats live on `Customer`; `Account` has no seat
+fields at all, so an account-grain usage view would have nothing to
+count.
+
+Query params, each ignored when unparseable (the house convention):
+`owner` (a user id, or the literal `unassigned`), `lifecycle` (a
+`LifecycleStage` value), `customer` (an id).
+
+**Response `200`** — `kpis`, `bands`, `adoption`, `scatter`,
+`shelfware`, `at_capacity`, `currency`, `filters`.
+
+```json
+{
+  "kpis": {
+    "accounts": 12, "contracted_seats": 8055, "active_seats": 5228,
+    "utilisation": 64.9, "idle_seats": 2827,
+    "shelfware_arr": 275014.42, "at_capacity_arr": 175000.0,
+    "at_capacity_count": 1,
+    "unmeasured_count": 1, "measured_count": 11, "unpriced_count": 0
+  },
+  "bands": [{"key": "dormant", "name": "Dormant (<25%)", "accounts": 3,
+             "arr": 135600.0, "idle_seats": 1141}],
+  "adoption": [{"key": "4+", "name": "4+ products", "accounts": 2, "arr": 287000.0}],
+  "scatter": [{"id": 9, "name": "Shopify", "utilisation": 92.0, "arr": 175000.0,
+               "active_seats": 1380, "contracted_seats": 1500, "idle_seats": 120,
+               "shelfware_arr": 0.0, "products": 6, "band": "at_capacity",
+               "owner": "Carl CSM", "lifecycle_stage": "Live",
+               "health_category": "good", "renewal_date": "2027-05-15"}],
+  "shelfware": [], "at_capacity": [],
+  "currency": "USD",
+  "filters": {"owners": [], "lifecycles": [], "customers": []}
+}
+```
+
+The rules worth knowing before reading any of those numbers:
+
+* **Unmeasured is not zero.** A customer with no contracted seats
+  recorded has *no* utilisation. Those rows are excluded from every
+  average, left out of `bands` and out of `scatter` — a point on the
+  axis is a claim, and "we don't know" isn't one — and counted in
+  `unmeasured_count`. Scoring a data gap as the worst possible number
+  invents the most alarming reading available and then charts it. Same
+  rule the health rubric follows for a component it can't measure.
+* **`utilisation` is seats over seats**, not the mean of each account's
+  percentage: otherwise a ten-seat pilot weighs as much as a
+  fifteen-hundred-seat rollout.
+* **`shelfware_arr` is a proxy, deliberately.** `arr × (1 −
+  utilisation)`, counted only below 75% — a customer using four fifths
+  of what they bought is using what they bought. Contracts are rarely
+  priced purely per seat, so this estimates exposure rather than
+  calculating a refund. It is worth having because it is the only number
+  on the screen that starts a QBR.
+* **Over 100% is its own band**, not an error to clamp. More actives
+  than the contract allows is real, common, and an expansion (sometimes
+  compliance) trigger. Such an account has no idle seats and no
+  shelfware.
+* The two lists rank by **money, not by percentage**: a dormant ten-seat
+  pilot is a worse ratio and a smaller problem than a half-used
+  enterprise rollout, and only one of them is worth a call this week.
+* `arr` is converted into `currency` through the same
+  `convert_to_org_currency` hook everything else uses, and is null when
+  no rate is configured — those rows still count in every *seat* figure
+  and are counted in `unpriced_count`.
 
 ### Models — `HealthSnapshot`
 

@@ -17,7 +17,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from . import interactions
+from . import interactions, usage
 from .headline_generation import NothingToSummarise, generate_headlines
 from .models import (
     Account,
@@ -257,6 +257,51 @@ class CustomerHealthView(generics.ListAPIView):
                 # than one that says how many it dropped.
                 "currency": request.user.organisation.currency,
                 "unconverted_count": sum(1 for row in rows if row["arr"] is None),
+            }
+        )
+
+
+class CustomerUsageView(views.APIView):
+    """GET /api/v1/customers/usage/ — every rollup the Usage Overview
+    dashboard's Controls tab needs, in one response.
+
+    The screen answers one question — are customers using what they pay
+    for? — and the answer has two commercial halves: shelfware below the
+    line, expansion capacity above it. See services/customers/usage.py,
+    which owns the arithmetic and the thresholds.
+
+    Rollups computed server-side, like /tickets/stats/ and
+    /interactions/stats/, rather than shipping the book for the client to
+    aggregate. The Health endpoint ships rows instead, and that
+    difference is deliberate: five Health tabs slice the same book five
+    ways, while this screen has one view and asks the server one thing.
+    The scatter is the exception — it is per-account by nature, capped at
+    MAX_POINTS.
+
+    Unfiltered by default, same trap and same choice as the other two
+    dashboards: a rolling default window empties every chart the moment
+    real time moves past the seeded demo dates.
+
+    Customer-level only. Seats live on Customer (`total_active_seats` /
+    `total_contracted_seats`); Account has no seat fields at all, so an
+    account-grain usage view would have nothing to count.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        organisation = request.user.organisation
+        customers = usage.filtered_customers(request.user, request.query_params)
+        rows = usage.rows_for(customers, organisation)
+
+        return Response(
+            {
+                **usage.build_stats(rows),
+                "scatter": usage.scatter_points(rows),
+                "shelfware": usage.shelfware_list(rows),
+                "at_capacity": usage.capacity_list(rows),
+                "currency": organisation.currency,
+                "filters": usage.filter_options(request.user),
             }
         )
 
