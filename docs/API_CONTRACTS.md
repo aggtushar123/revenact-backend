@@ -71,6 +71,7 @@ expects.
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Headlines (`ActivityFeed`'s "Headlines" sub-tab on both Details pages) | `customers` (`Headline` model) | 🟢 API-complete — see below. Model + two scoped list-create endpoints (per-Customer, per-Account), a flat detail view (GET/PATCH/DELETE by id), and a real generation endpoint that summarises the parent's own Notes/Emails/Tickets/Activities through `services.copilot`'s Anthropic client. Seeded. `HeadlinesTab.tsx` fetches real data through `fetchHeadlinesForCustomer`/`fetchHeadlinesForAccount`; the group pill and the "Data sources" footer now reflect real values rather than stored/decorative text. |
 | Dashboards — Health Overview | `customers` | 🟢 All five tabs (Triage/Divergence/Movement/Renewal Date/Controls) run on one `GET /api/v1/customers/health/` — see that endpoint and `HealthSnapshot` below. |
+| Dashboards — Customer Overview | `customers` | 🟢 Runs on `GET /api/v1/customers/overview/` — composition, concentration, cohorts and churn reasons. The one dashboard that counts churned customers. See below. |
 | Dashboards — Activity Tracking | `customers` | 🟢 Runs on `GET /api/v1/customers/activity/` — coverage, cadence and follow-through. See below. |
 | Dashboards — Revenue Forecast | `customers` | 🟢 Runs on `GET /api/v1/customers/forecast/` — the ARR bridge, with churn weighted by the shared rule in `churn.py`. See below. |
 | Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
@@ -1040,6 +1041,87 @@ Notes on the shape:
 * This is a **Customer-level** endpoint. Accounts carry their own health
   and renewal dates, and no tab reads them yet; adding them would change
   what "the book" means on every tab at once.
+
+### `GET /api/v1/customers/overview/`
+
+Auth: `IsAuthenticated`. What the book is made of, for the Customer
+Overview dashboard: how many customers, how big, how concentrated, how
+long they stayed, and why the ones who left left.
+
+Every other dashboard asks how the customers you have are *doing* —
+health, usage, revenue, voice, coverage. This asks what they **are**.
+
+**The one endpoint that counts customers you no longer have.** Every
+other rollup goes through `scoping.live_customers` (visible, not
+archived, not churned), which is right for a working view — nobody
+triages an account that left. Logo retention, cohort survival and churn
+reasons are questions about exactly those rows, and computing retention
+over survivors returns 100% every time. So this reads the whole visible
+book, and every figure says which population it speaks for.
+
+Params: `owner`, `lifecycle`, `customer` — and its filter options
+include churned customers, unlike every other dashboard's, because being
+unable to filter to one here would be strange.
+
+**Response `200`** — `kpis`, `concentration`, `cohorts`,
+`churn_reasons`, `segments`, `lifecycle`, `currency`, `filters`.
+
+```json
+{
+  "kpis": {"active": 9, "active_arr": 688600.0, "average_arr": 76511.11,
+           "churned": 4, "churned_arr": 236100.0,
+           "churned_12m": 3, "churned_arr_12m": 212100.0,
+           "logo_retention": 69.2, "unpriced": 0},
+  "concentration": {
+    "rows": [{"rank": 1, "id": 9, "name": "Shopify", "arr": 175000.0,
+              "share": 25.4, "cumulative_share": 25.4,
+              "owner": "Carl CSM", "health_category": "good"}],
+    "total_arr": 688600.0, "counted": 9,
+    "rest_count": 0, "rest_arr": 0.0, "top_three_share": 55.5
+  },
+  "cohorts": {"rows": [{"year": 2023, "joined": 5, "retained": 4,
+                        "churned": 1, "retention": 80.0}], "undated": 1},
+  "churn_reasons": [{"reason": "Budget cuts", "customers": 2,
+                     "arr": 212100.0, "spellings": 1}],
+  "segments": {"rows": [{"key": "over_100k", "name": "$100K and above",
+                         "customers": 2, "arr": 287000.0}], "unplaced": 0},
+  "lifecycle": [{"key": "live", "name": "Live", "customers": 1, "arr": 67200.0}]
+}
+```
+
+The decisions behind those numbers:
+
+* **Churn means a `churn_date`, not an archive flag.** Archiving is a
+  filing decision — a duplicate row gets archived — and counting it as
+  churn would pad every retention denominator with housekeeping. The two
+  are separate actions by design.
+* **Concentration is the number no other screen states.** If the largest
+  three customers are 55% of ARR, that is the most important fact about
+  the business. The rows carry a running share so the Pareto is readable
+  rather than asserted, and the tail beyond the top ten is *folded* into
+  `rest_count`/`rest_arr` rather than dropped — a reader needs to see how
+  little of the book it is. An account with no convertible ARR is not
+  ranked at all: unknown size can't be placed in a ranking by size.
+* **Churn reasons are free text and reported as such.**
+  `Customer.churn_reason` is a CharField somebody types into. Rows are
+  folded on case and surrounding whitespace — all that can be done
+  honestly; "Budget Cut" and "Budget cuts" differ by more than case and
+  stay separate, and nothing can tell "Price" from "Too expensive".
+  `spellings` reports how many raw strings went into each row, so a
+  reader can see when the grouping is doing heavy lifting and the field
+  deserves choices instead of a text box.
+* **A customer with no `joined_date` is counted apart**, not dropped into
+  the earliest cohort — which would make the oldest cohort look larger
+  and its retention worse.
+* `segments` reports **counts and ARR together**, because the two tell
+  opposite stories on most books: the smallest band is usually the most
+  accounts and the least money. Every band is present even when empty;
+  empty *lifecycle* stages are dropped, because there are eight of those
+  and most books use four.
+* `logo_retention` and `average_arr` are null rather than flattering on
+  an empty book, and the twelve-month churn figures are separate from
+  all-time — all-time churn is a fact about history, not about how this
+  year is going.
 
 ### `GET /api/v1/customers/activity/`
 
