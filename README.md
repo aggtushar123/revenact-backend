@@ -137,6 +137,27 @@ do; `--org-email` limits it to one tenant.
 `python manage.py recalculate_health` does the scores alone, without recording
 a snapshot.
 
+### Classifying interactions (costs money)
+
+```bash
+python manage.py classify_interactions --limit 300
+```
+
+Reads emails, calls and tickets that carry no AI classification yet and asks
+Claude where each sits in the taxonomy (`services/customers/taxonomy.py`), which
+is what fills the AI Trending Topics dashboard's Area / Category / Subcategory
+charts. Every batch of 20 is a **real, paid** call through the same provider
+Copilot uses, so this one is deliberately separate from the free health job
+above: schedule it less often, and with `--limit`.
+
+`--dry-run` counts the work without calling anything. It skips anything already
+classified, so it's safe to re-run and won't overwrite a correction made in
+admin; `--reclassify` redoes them anyway.
+
+For a demo database, `python manage.py seed_demo_classifications --org-email ...`
+fills the same fields from a keyword table instead — free, instant, and no API
+key needed.
+
 ## Workflow for adding a feature
 
 This backend grows in lockstep with the frontend, one feature at a time:

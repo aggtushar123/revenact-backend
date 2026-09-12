@@ -70,7 +70,9 @@ expects.
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Headlines (`ActivityFeed`'s "Headlines" sub-tab on both Details pages) | `customers` (`Headline` model) | 🟢 API-complete — see below. Model + two scoped list-create endpoints (per-Customer, per-Account), a flat detail view (GET/PATCH/DELETE by id), and a real generation endpoint that summarises the parent's own Notes/Emails/Tickets/Activities through `services.copilot`'s Anthropic client. Seeded. `HeadlinesTab.tsx` fetches real data through `fetchHeadlinesForCustomer`/`fetchHeadlinesForAccount`; the group pill and the "Data sources" footer now reflect real values rather than stored/decorative text. |
-| Dashboards (Health/Ticket/AI Trending) | — | ⏳ Not started |
+| Dashboards — Health Overview | `customers` | 🟢 All four tabs (Triage/Divergence/Movement/Controls) run on `GET /api/v1/customers/health/` — see that endpoint and `HealthSnapshot` below. |
+| Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
+| Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
@@ -1231,6 +1233,14 @@ See `seed_demo_tickets` management command for demo data (run after
 `seed_demo_accounts`) — `links` and `priority` both vary across their
 full range on purpose, to exercise every card state.
 
+`Ticket` also carries `sentiment` and the AI taxonomy, which it shares
+with `Email` and `Call` — see **Models — the AI taxonomy** below.
+`sentiment` used to be declared on `Ticket` itself; `Ticket.Sentiment`
+still resolves, through the shared abstract model. It additionally has
+`connector` (where the ticket came from), `resolved_at`, and an
+`on-hold` status, none of which are documented above yet — see the
+model's own docstring.
+
 ### `GET /api/v1/customers/<customer_id>/tickets/`
 
 Auth: `IsAuthenticated`. Every organization-level `Ticket` for one
@@ -1249,6 +1259,191 @@ organisation — same reasoning as the Activity account-level endpoint.
 Powers ActivityFeed's "Tickets" filter on the standalone Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
+
+### Models — the AI taxonomy (`Email`, `Call`, `Ticket`)
+
+Mirrors: `src/pages/dashboard/tabs/ai-trending/ControlsView.tsx` — the
+AI Trending Topics dashboard's seven charts.
+
+Three fields plus a timestamp, declared once on an abstract model
+(`AIClassified` in `services/customers/models.py`) and shared by the
+three record types that dashboard counts — what the backend calls an
+**interaction**. One definition rather than three, because the whole
+point is to chart all three together: a donut slicing emails, calls and
+tickets by sentiment is only meaningful if "negative" means the same
+thing in all three.
+
+* `sentiment` — `positive`/`neutral`/`negative`, defaults to `neutral`.
+  The same three values as `Contact.sentiment`, deliberately.
+* `ai_area` — `product_growth`/`support_operations`/`customer_success`.
+  Which side of the business owns the conversation. Blank until
+  something classifies it.
+* `ai_category` — ten values (`onboarding`, `bug_report`,
+  `workflow_automation`, `integration_support`, `system_notification`,
+  `account_management`, `feature_request`, `customer_feedback`,
+  `reporting_analytics`, `security_compliance`).
+* `ai_subcategory` — twenty-five values, each belonging to **exactly
+  one** category. Enforced in `clean()`: "API Issue" under "Onboarding"
+  is a contradiction, not a judgement call, and the dashboard's Category
+  and Subcategory bars are read together. A category with no
+  subcategory is fine; a subcategory with no category is not.
+* `ai_classified_at` — read-only in practice. Null means nothing has
+  ever classified this row, which is what `classify_interactions` looks
+  for and what separates "no opinion yet" from a deliberate blank.
+
+The vocabulary lives in `services/customers/taxonomy.py`, including the
+category → subcategory map, and it is closed on purpose: free text
+would let a model invent a new bucket per call and the Category bar
+would grow a tail of synonyms nobody can chart. Area is **not** derived
+from category — who owns a conversation and what it is about are two
+different questions, and the mock this replaced showed the same
+category under two different areas.
+
+`Activity`, `Note` and `Task` deliberately don't carry any of this. An
+Activity is something *we* did, with no customer voice in it to read a
+sentiment from.
+
+**Who writes it.** `manage.py classify_interactions` — a real, paid
+Claude call per batch of 20, through the same
+`services/copilot/anthropic_client.py` the Copilot and Headlines use.
+It only touches rows with no `ai_classified_at` unless `--reclassify` is
+given, so it is safe on a schedule and won't overwrite a hand
+correction; `--dry-run` counts the work without calling anything and
+`--limit` caps the spend. It is deliberately **not** bundled into
+`run_health_maintenance`, which is free and idempotent.
+`manage.py seed_demo_classifications` fills the same fields from a
+keyword table instead, so a demo database has full charts with no API
+key configured.
+
+### Models — `Call`
+
+Mirrors: `src/components/organizations/activity/CallSenseTab.tsx` (that
+tab still reads its own `CALLSENSE_DATA` mock — this model exists for
+the dashboard, and wiring CallSense to it is a separate piece of work).
+
+A call that happened. Same "belongs to exactly one of `Customer` or
+`Account`" shape as `Activity`/`Email`/`Ticket`, and read-only — there
+is no create/update endpoint.
+
+Distinct from `CalendarEvent`, which is a *scheduled* meeting: that one
+is a plan and can be in the future, this one took place and has a
+duration and a sentiment to read.
+
+Fields: `title`, `host_name` (plain text, not a FK — same reasoning as
+`Ticket.assignee_name`, and the host is as often external as ours),
+`occurred_at` (a **datetime**, unlike `Activity`/`Ticket`'s plain
+dates — the CallSense card renders a time, and two calls in a day are
+ordinary), `duration_minutes` (nullable — "the recorder didn't say" is
+not a zero-minute call), `summary` (the recap the card shows; blank for
+an unsummarised call), `connector` (the recorder — `Connector.Provider`
+gained `zoom` for this; null means logged by hand in Revenact, a real
+case), `links`, plus the shared taxonomy above. No transcript field —
+it would be megabytes per row, nothing renders one, and a copy we
+can't keep in sync is a liability.
+
+`Call.clean()` enforces that the recorder actually covers the call's
+own company, the same invariant `Ticket.clean()` enforces for the same
+reason and in the same place.
+
+See `seed_demo_calls` (run after `seed_demo_connectors`) for demo data.
+
+### `GET /api/v1/interactions/stats/`
+
+Auth: `IsAuthenticated`. Every rollup the AI Trending Topics
+dashboard's Controls tab draws, in one response — counted across
+`Email`, `Call` and `Ticket` together.
+
+Its own top-level prefix rather than a nest under `/customers/` or
+`/tickets/`: an interaction spans three models and every
+Customer/Account at once, so it belongs under neither. Stats-only, with
+no matching list — each record type already has its own scoped list
+endpoint for the Activity Feed.
+
+One endpoint rather than seven for the same reason `/tickets/stats/` is
+one: the seven charts are seven projections of the same filtered set,
+and splitting them would apply the same filters seven times and let the
+charts disagree with each other mid-render. Internally it is **one
+grouped query per model**, not one per chart.
+
+**Unfiltered by default**, same deliberate choice and same trap as
+`/tickets/stats/`: a rolling "last 30 days" default renders every chart
+empty once real time moves past the seeded demo dates, which looks like
+a broken integration rather than an empty window.
+
+Query params — every one ignores a value it doesn't understand rather
+than returning `400`, the house convention for dashboard filters:
+
+| Param | Meaning |
+|---|---|
+| `type` | `email`/`call`/`ticket`. **Repeatable**; drops whole record types. |
+| `sentiment` | `positive`/`neutral`/`negative`. |
+| `area`, `category`, `subcategory` | Taxonomy values (not labels). |
+| `customer` | Customer id. Includes that customer's accounts' interactions. |
+| `account` | Account id. |
+| `revenue_bracket` | `under_25k`/`25k_50k`/`50k_100k`/`over_100k`, read off the parent's ARR (`Customer.arr_billed_at_account` or `Account.arr`). |
+| `from`, `to` | `YYYY-MM-DD`, inclusive, against each model's own "when it happened" field. |
+
+**Response `200`**
+
+```json
+{
+  "total": 2090,
+  "classified": 1832,
+  "by_type":     [{"key": "email", "name": "Email", "value": 876}],
+  "sentiment":   [{"key": "positive", "name": "Positive", "value": 1200}],
+  "areas":       [{"key": "product_growth", "name": "Product & Growth", "value": 57}],
+  "categories":  [{"key": "onboarding", "name": "Onboarding", "value": 20}],
+  "subcategories": [{"key": "setup_assistance", "name": "Setup Assistance", "value": 9}],
+  "sentiment_timeline": [
+    {"date": "Jun 15, 2025", "positive": 5, "neutral": 2, "negative": 1}
+  ],
+  "recent": [
+    {
+      "id": "ticket:41",
+      "source": "Ticket",
+      "account": "Hyatt Regency Brand Portfolio",
+      "title": "Export to CSV not including all columns",
+      "sentiment": "Neutral",
+      "area": "Product & Growth",
+      "category": "Reporting & Analytics",
+      "subcategory": "Export Problem",
+      "occurred_on": "2026-03-03"
+    }
+  ],
+  "filters": { "customers": [], "accounts": [], "types": [], "sentiments": [],
+               "areas": [], "categories": [], "subcategories": [],
+               "revenue_brackets": [] }
+}
+```
+
+Notes on the shape:
+
+* `{key, name, value}` everywhere — `name` is the label a chart renders,
+  `key` the value its filter sends back. No colours: every real-data
+  chart in this frontend maps a name to a CSS variable itself.
+* `by_type`, `sentiment` and `areas` keep **every** bucket, at zero if
+  empty, in the vocabulary's own order — a donut whose segment vanishes
+  is harder to read than one with an empty segment, and a legend that
+  reorders itself between refreshes is harder still. `categories` and
+  `subcategories` are ranked biggest-first with empties dropped,
+  because they are horizontal bars where the ranking *is* the reading.
+* **`total` counts everything; the three taxonomy breakdowns count only
+  classified rows.** An unclassified interaction is left out of them
+  rather than bucketed as "Unknown" — `classified` is there so the
+  screen can say how much of the book it is describing.
+* `sentiment_timeline` is bucketed by **week**, on each model's own
+  "when it happened" field (`sent_at`/`occurred_at`/`opened_at`), never
+  `created_at` — that is `auto_now_add`, so every seeded row shares one
+  timestamp and a trend over it is a single spike. Weeks with nothing
+  in them are left out rather than zero-filled.
+* `recent` is capped at 50 rows, newest first across all three models.
+  It is a "recent examples" table, not a record browser. An
+  unclassified row still appears, with its taxonomy columns blank —
+  unlike the charts, the table is a list of what happened.
+* `filters` ships alongside the numbers so the filter bar needs no
+  second round trip and its options are scoped exactly as the numbers
+  are. Each `subcategories` entry carries its parent `category`, so the
+  bar can narrow that dropdown to the category already chosen.
 
 ### Models — `CalendarEvent`
 

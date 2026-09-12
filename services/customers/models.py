@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import OuterRef, Subquery
@@ -8,6 +9,7 @@ from django.db.models.functions import Coalesce
 
 from services.accounts.models import Organisation
 
+from . import taxonomy
 from .health import breakdown_from, score_from
 
 #: CSAT bands, worst first, as `(upper_bound_inclusive, label)`.
@@ -356,9 +358,7 @@ class Customer(models.Model):
         if hasattr(self, "_open_ticket_count"):
             open_ticket_count = self._open_ticket_count
         else:
-            open_ticket_count = self.tickets.exclude(
-                status__in=Ticket.RESOLVED_STATUSES
-            ).count()
+            open_ticket_count = self.tickets.exclude(status__in=Ticket.RESOLVED_STATUSES).count()
 
         # An untouched customer is measured from when it arrived, not from
         # never — a logo onboarded last week hasn't been neglected.
@@ -617,9 +617,7 @@ def with_health_inputs(queryset):
     return queryset.annotate(
         _last_touch_on=Subquery(last_touch, output_field=models.DateField()),
         # No open tickets at all means the subquery returns nothing, not 0.
-        _open_ticket_count=Coalesce(
-            Subquery(open_tickets, output_field=models.IntegerField()), 0
-        ),
+        _open_ticket_count=Coalesce(Subquery(open_tickets, output_field=models.IntegerField()), 0),
     ).prefetch_related(
         # `csat_breakdown` buckets these in Python. A prefetch rather than five
         # more subqueries: one query for the page either way, and the banding
@@ -764,6 +762,85 @@ def capture_health_snapshot(parent, captured_on=None):
     return snapshot
 
 
+class AIClassified(models.Model):
+    """What the AI Trending Topics dashboard needs from an interaction:
+    how it felt, and where it sits in the taxonomy (see taxonomy.py).
+
+    Abstract, shared by Email/Call/Ticket — the three record types that
+    dashboard counts. One definition rather than three, because its
+    whole job is to group all three together in one chart: a donut
+    slicing emails, calls and tickets by sentiment is only meaningful if
+    "negative" means the same thing in all three, and three separate
+    copies of these fields is exactly how that stops being true.
+
+    Not on Activity/Note/Task. An Activity is something *we* did (a
+    health check, a QBR), with no customer voice in it to read a
+    sentiment from, and the dashboard is about inbound conversations.
+
+    `ai_classified_at` is null for a row nothing has looked at yet, and
+    that matters: it's how `classify_interactions` finds its work, and
+    it's what separates "no opinion yet" from a deliberate blank. The
+    charts count only what's classified, so an unclassified row is
+    absent from the AI breakdowns rather than lumped into a bucket it
+    was never put in."""
+
+    #: Aliased rather than redefined: the vocabulary lives in taxonomy.py
+    #: with the rest of it. Keeping the name here is what lets the ~30
+    #: existing `Ticket.Sentiment.POSITIVE` call sites go on working.
+    Sentiment = taxonomy.Sentiment
+
+    sentiment = models.CharField(
+        max_length=16,
+        choices=Sentiment.choices,
+        default=Sentiment.NEUTRAL,
+        help_text="How the customer sounds here. Backs the AI Trending Topics "
+        "dashboard's sentiment donut and trend line, and (for tickets) the "
+        "Ticket Overview dashboard's own positive/negative counts.",
+    )
+    ai_area = models.CharField(
+        max_length=32,
+        choices=taxonomy.AIArea.choices,
+        blank=True,
+        help_text="Which side of the business owns this conversation. Blank "
+        "until something classifies it.",
+    )
+    ai_category = models.CharField(
+        max_length=32,
+        choices=taxonomy.AICategory.choices,
+        blank=True,
+        help_text="What kind of conversation this is.",
+    )
+    ai_subcategory = models.CharField(
+        max_length=32,
+        choices=taxonomy.AISubcategory.choices,
+        blank=True,
+        help_text="The specific flavour. Must belong to ai_category — see "
+        "taxonomy.SUBCATEGORIES_BY_CATEGORY.",
+    )
+    ai_classified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the taxonomy above was last written. Null means this "
+        "row has never been classified, which is what classify_interactions "
+        "looks for.",
+    )
+
+    class Meta:
+        abstract = True
+
+    @property
+    def is_classified(self):
+        return self.ai_classified_at is not None
+
+    def clean(self):
+        super().clean()
+        error = taxonomy.validate_classification(
+            ai_category=self.ai_category, ai_subcategory=self.ai_subcategory
+        )
+        if error:
+            raise ValidationError({"ai_subcategory": error})
+
+
 class Activity(models.Model):
     """A timeline entry — a CSM-visible event belonging to either a
     Customer (organization-level) or one of its Accounts (account-
@@ -844,7 +921,7 @@ class Activity(models.Model):
         return f"{self.get_type_display()} — {parent}"
 
 
-class Email(models.Model):
+class Email(AIClassified):
     """A logged email — same "belongs to exactly one of Customer or
     Account" shape as Activity above (see that model's own docstring
     for why two nullable FKs + a CheckConstraint rather than a
@@ -1073,7 +1150,7 @@ class Note(models.Model):
         return f"{self.title} — {parent}"
 
 
-class Ticket(models.Model):
+class Ticket(AIClassified):
     """A support ticket — same "belongs to exactly one of Customer or
     Account" shape as Activity/Email/Task/Note above, backing the
     "Tickets" filter within ActivityFeed on both the Organization
@@ -1116,16 +1193,6 @@ class Ticket(models.Model):
         MEDIUM = "medium", "Medium"
         LOW = "low", "Low"
 
-    class Sentiment(models.TextChoices):
-        """Same three values as Contact.Sentiment. Deliberately the
-        identical vocabulary rather than a second one for the same
-        idea — "how does this feel" means the same thing about a
-        support ticket as about a person."""
-
-        POSITIVE = "positive", "Positive"
-        NEUTRAL = "neutral", "Neutral"
-        NEGATIVE = "negative", "Negative"
-
     # Terminal statuses — the ones that mean the work is finished.
     # Named once because the resolution-rate KPI and `resolved_at`'s
     # own meaning both depend on the same answer.
@@ -1154,13 +1221,6 @@ class Ticket(models.Model):
     assignee_name = models.CharField(max_length=150)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     priority = models.CharField(max_length=8, choices=Priority.choices)
-    sentiment = models.CharField(
-        max_length=16,
-        choices=Sentiment.choices,
-        default=Sentiment.NEUTRAL,
-        help_text="How the customer sounds in this ticket. Backs the Ticket "
-        "Overview dashboard's positive/negative counts and its sentiment trend.",
-    )
     connector = models.ForeignKey(
         "connectors.Connector",
         related_name="tickets",
@@ -1215,7 +1275,132 @@ class Ticket(models.Model):
         M2M traversal (see Connector.covers), which SQL-level
         constraints can't express."""
 
-        from django.core.exceptions import ValidationError
+        super().clean()
+        if self.connector_id is None:
+            return
+
+        parent_org_id = (
+            self.customer.organisation_id
+            if self.customer_id
+            else self.account.customers.values_list("organisation_id", flat=True).first()
+        )
+        if self.connector.organisation_id != parent_org_id:
+            raise ValidationError(
+                {"connector": "That connector belongs to a different organisation."}
+            )
+        if not self.connector.covers(customer=self.customer, account=self.account):
+            raise ValidationError(
+                {
+                    "connector": f"{self.connector.name} isn't connected for "
+                    f"{self.customer or self.account}."
+                }
+            )
+
+
+class Call(AIClassified):
+    """A customer call that happened — the record CallSense is about.
+
+    Third of the three interaction types the AI Trending Topics dashboard
+    counts (Email and Ticket are the other two), and the one that had no
+    model at all: the dashboard's source donut has always had a "Call"
+    slice, and CallSenseTab.tsx has always rendered a hardcoded
+    CALLSENSE_DATA array behind it.
+
+    Same "belongs to exactly one of Customer or Account" shape as
+    Activity/Email/Ticket above — see Activity's own docstring for why
+    two nullable FKs and a CheckConstraint rather than a
+    GenericForeignKey.
+
+    Distinct from CalendarEvent below, which is a *scheduled* meeting:
+    that one is a plan and can be in the future, this one is a
+    conversation that took place and has a recording, a duration and a
+    sentiment to read. A scheduled call that happened produces both, the
+    same way a calendar invite and a meeting recording are two different
+    objects in every tool this product integrates with.
+
+    `occurred_at` is a DateTimeField, unlike Activity/Ticket's plain
+    dates: the CallSense card renders a time ("Jan 21st 5:12 PM") and
+    two calls on one day are ordinary, so the time is real data here
+    rather than display sugar.
+
+    `host_name` is plain text, not a FK to Contact or User — same
+    reasoning as Ticket.assignee_name and Email.sender_name, and the
+    host is as often an external facilitator as one of ours.
+
+    No transcript field. A transcript is the one piece of this that
+    genuinely lives in the recorder (tl;dv, Zoom, Gong) and would be
+    megabytes per row; nothing in the UI renders one, and storing a copy
+    we can't keep in sync would be a liability rather than a feature.
+    `summary` is what the cards actually show."""
+
+    customer = models.ForeignKey(
+        Customer,
+        related_name="calls",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an organization-level call. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    account = models.ForeignKey(
+        Account,
+        related_name="calls",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Set for an account-level call. Exactly one of "
+        "customer/account is set, never both — see the model's own CheckConstraint.",
+    )
+    title = models.CharField(max_length=255, help_text='e.g. "EMEA Retail - Renewal Readiness".')
+    host_name = models.CharField(max_length=150, help_text="Who ran the call.")
+    occurred_at = models.DateTimeField()
+    duration_minutes = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Null when the recorder didn't report one — an unknown "
+        "length, which is not the same as a zero-minute call.",
+    )
+    summary = models.TextField(
+        blank=True,
+        help_text="The recap shown on the CallSense card. Blank for a call nobody has summarised.",
+    )
+    connector = models.ForeignKey(
+        "connectors.Connector",
+        related_name="calls",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="The recorder this call came from. Null means it was logged "
+        "by hand in Revenact, a real case rather than missing data — and "
+        "SET_NULL so removing a connector doesn't delete call history.",
+    )
+    links = models.PositiveIntegerField(
+        default=0, help_text="Count shown on the card's link line — only rendered when > 0."
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-occurred_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="call_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        parent = self.customer or self.account
+        return f"{self.title} — {parent}"
+
+    def clean(self):
+        """A call can't come from a recorder that isn't connected for its
+        own company — the same invariant Ticket.clean() enforces, for the
+        same reason and in the same place. See that method's own
+        docstring for why this is model-level rather than in a serializer
+        or a CheckConstraint."""
 
         super().clean()
         if self.connector_id is None:

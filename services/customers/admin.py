@@ -4,6 +4,7 @@ from .models import (
     Account,
     Activity,
     CalendarEvent,
+    Call,
     Canvas,
     Contact,
     Customer,
@@ -82,7 +83,10 @@ class ActivityAdmin(admin.ModelAdmin):
 @admin.register(Email)
 class EmailAdmin(admin.ModelAdmin):
     list_display = ["subject", "sender_name", "recipient_name", "customer", "account", "sent_at"]
-    list_filter = ["is_starred"]
+    # The AI taxonomy is filterable here because admin is where a CSM
+    # corrects one: classify_interactions writes a best guess, and a wrong
+    # area on a handful of emails is worth finding by filtering to it.
+    list_filter = ["is_starred", "sentiment", "ai_area", "ai_category"]
     search_fields = ["subject", "sender_name", "recipient_name", "customer__name", "account__name"]
     readonly_fields = ["created_at"]
 
@@ -122,9 +126,25 @@ class TicketAdmin(admin.ModelAdmin):
         "priority",
         "opened_at",
     ]
-    list_filter = ["status", "priority"]
+    list_filter = ["status", "priority", "sentiment", "ai_area", "ai_category"]
     search_fields = ["ticket_number", "title", "assignee_name", "customer__name", "account__name"]
     readonly_fields = ["created_at"]
+
+
+@admin.register(Call)
+class CallAdmin(admin.ModelAdmin):
+    list_display = [
+        "title",
+        "host_name",
+        "customer",
+        "account",
+        "occurred_at",
+        "duration_minutes",
+        "sentiment",
+    ]
+    list_filter = ["sentiment", "ai_area", "ai_category", "connector"]
+    search_fields = ["title", "host_name", "summary", "customer__name", "account__name"]
+    readonly_fields = ["created_at", "ai_classified_at"]
 
 
 @admin.register(CalendarEvent)

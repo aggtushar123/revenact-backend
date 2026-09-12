@@ -61,6 +61,12 @@ class Connector(models.Model):
         SLACK = "slack", "Slack"
         GMAIL = "gmail", "Gmail"
         MS_TEAMS = "ms_teams", "Microsoft Teams"
+        # Added when Call arrived: a recorded call has to be able to say which
+        # meeting platform it came from, and Zoom was already advertised on the
+        # Integrations page this list mirrors. tl;dv and Gong — what the
+        # CallSense mock names — are deliberately absent, because that page
+        # doesn't offer them and this list follows it rather than leading it.
+        ZOOM = "zoom", "Zoom"
         GITHUB = "github", "GitHub"
         FIGMA = "figma", "Figma"
 

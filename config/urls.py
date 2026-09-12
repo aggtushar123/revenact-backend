@@ -27,6 +27,7 @@ from services.customers.views import (
     ContactListView,
     ContactStatsView,
     HeadlineDetailView,
+    InteractionStatsView,
     OpportunityDetailView,
     OpportunityListView,
     RiskDetailView,
@@ -147,6 +148,14 @@ urlpatterns = [
     # endpoint with no matching list — a flat "every ticket" list has
     # no consumer, and the dashboard only ever wants the aggregates.
     path("api/v1/tickets/stats/", TicketStatsView.as_view(), name="ticket-stats"),
+    # Interaction rollups for the AI Trending Topics dashboard. Its own
+    # top-level prefix rather than a nest under /customers/ or /tickets/:
+    # an "interaction" spans three models (Email, Call, Ticket) and every
+    # Customer/Account at once, so it belongs under neither. Stats-only,
+    # same reasoning as tickets above — the dashboard wants aggregates,
+    # and each record type already has its own scoped list endpoint for
+    # the Activity Feed.
+    path("api/v1/interactions/stats/", InteractionStatsView.as_view(), name="interaction-stats"),
     # Cockpit — its own top-level endpoint, not nested under any one app:
     # a real-data rollup spanning both Customer and Account, scoped to
     # the caller's own owned book of business. Powers Cockpit's own

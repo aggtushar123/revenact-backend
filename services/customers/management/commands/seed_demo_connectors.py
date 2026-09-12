@@ -14,6 +14,9 @@ visible in the demo rather than only in the tests:
   organisation.
 * **Intercom** is scoped to a single Account rather than a whole
   company, showing the finer grain.
+* **Zoom** covers the whole organisation too — it's where seeded Calls
+  come from (see seed_demo_calls), and a meeting platform that only some
+  companies could dial into wouldn't be a realistic demo.
 
 Idempotent: matched by (organisation, provider, name), so re-running
 updates the scope instead of duplicating connectors.
@@ -59,6 +62,13 @@ DEMO_CONNECTORS = [
         # No scope at all — covers every company in the organisation.
         "provider": Connector.Provider.SLACK,
         "name": "Slack",
+        "customer_names": [],
+    },
+    {
+        # No scope at all, like Slack above — the recorder for every seeded
+        # Call (see seed_demo_calls).
+        "provider": Connector.Provider.ZOOM,
+        "name": "Zoom",
         "customer_names": [],
     },
     {

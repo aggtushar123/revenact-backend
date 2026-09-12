@@ -17,6 +17,7 @@ from services.fx_rates.conversion import convert_to_org_currency
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
+from . import interactions
 from .headline_generation import NothingToSummarise, generate_headlines
 from .models import (
     Account,
@@ -1794,6 +1795,45 @@ class HeadlineGenerateView(views.APIView):
         return Response(
             HeadlineSerializer(parent.headlines.all(), many=True).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+class InteractionStatsView(views.APIView):
+    """GET /api/v1/interactions/stats/ — every rollup the AI Trending Topics
+    dashboard's Controls tab needs, in one response.
+
+    An *interaction* is an Email, a Call or a Ticket (see
+    services/customers/interactions.py, which owns the aggregation). One
+    endpoint rather than seven for the same reason TicketStatsView is
+    one: the seven charts are seven views of the same filtered set, and
+    splitting them would apply the same filters seven times and let the
+    charts disagree with each other mid-render.
+
+    **Unfiltered by default**, same deliberate choice and same trap as
+    TicketStatsView: a rolling "last 30 days" default renders every chart
+    empty once real time moves past the seeded demo dates, which looks
+    like a broken integration rather than an empty window.
+
+    Every filter ignores a bad value rather than 400ing — the house
+    convention for dashboard filters. `?type=` is repeatable and drops
+    whole record types; the rest narrow rows.
+
+    Three of the seven charts count only *classified* interactions, and
+    `total`/`classified` come back so the screen can say so rather than
+    implying an empty AI Area donut means nobody talked about anything.
+    Nothing classifies on write — `manage.py classify_interactions` does,
+    and it costs a real model call per batch."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        querysets = interactions.filtered_querysets(request.user, request.query_params)
+        return Response(
+            {
+                **interactions.build_stats(querysets),
+                "recent": interactions.recent_rows(querysets),
+                "filters": interactions.filter_options(request.user),
+            }
         )
 
 
