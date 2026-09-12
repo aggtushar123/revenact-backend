@@ -30,7 +30,7 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from services.accounts.models import User
+from services.accounts.models import Organisation, User
 from services.customers.models import Customer, HealthSnapshot, with_health_inputs
 
 
@@ -89,6 +89,27 @@ class Command(BaseCommand):
             self.style.SUCCESS(
                 f"{verb} {written} snapshot(s) for {captured_on}; "
                 f"{already_had} customer(s) already had one."
+            )
+        )
+
+        # The metric layer's month-end, after the health scores it reads are
+        # fresh. Same job because it is the same kind of work — free,
+        # idempotent, one row per period — and one cron entry is easier to
+        # keep running than two.
+        from services.metrics.recording import record_period_end
+
+        organisations = Organisation.objects.filter(
+            pk__in=queryset.values_list("organisation_id", flat=True).distinct()
+        )
+        metric_rows, metrics_had = 0, 0
+        for organisation in organisations:
+            rows, had = record_period_end(organisation, captured_on, dry_run=options["dry_run"])
+            metric_rows += rows
+            metrics_had += had
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{verb} {metric_rows} metric snapshot(s) for {captured_on} across "
+                f"{organisations.count()} organisation(s); {metrics_had} already recorded."
             )
         )
 

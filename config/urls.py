@@ -137,6 +137,9 @@ urlpatterns = [
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).
     path("api/v1/fx-rates/", include("services.fx_rates.urls")),
+    # The metric layer: every headline number defined once, whole-org, with
+    # month-end history. Gated on view_all_accounts — see services/metrics.
+    path("api/v1/metrics/", include("services.metrics.urls")),
     # Connectors — the external systems an organisation has hooked up
     # (Zendesk, Jira, ...). Same "tenant-wide config, not owned by one
     # Customer/Account" reasoning as Webhooks and FX rates above, with

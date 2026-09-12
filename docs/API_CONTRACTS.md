@@ -76,6 +76,7 @@ expects.
 | Dashboards — Revenue Forecast | `customers` | 🟢 Runs on `GET /api/v1/customers/forecast/` — the ARR bridge, with churn weighted by the shared rule in `churn.py`. See below. |
 | Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
 | Products (catalogue behind `primary_product`) | `customers` (`Product` model) | 🟢 Full CRUD, API-complete — see below. `GET/POST /api/v1/products/` and `GET/PATCH/DELETE /api/v1/products/<id>/`, mounted at their own top-level prefix (a product is org configuration, and `/customers/products/` already means the Product Usage rollup). Case-insensitively unique per organisation, deliberately **not** scoped by ownership, retirable via `is_active`, and un-deletable while customers are on it. Reads for any member, writes gated on `manage_org_settings`. Managed from Settings > Products (`ProductsPage.tsx`). |
+| Metric layer (`/api/v1/metrics/`) | `metrics` | 🟢 Every headline number defined once (`services/metrics/registry.py`), read through the same rollups the dashboards draw, whole-organisation via `SystemActor`, with month-end history in `MetricSnapshot` recorded by `run_health_maintenance`. Gated on `view_all_accounts`. Phase 1 of the company-brain work; the Brain dashboard's Business metrics panel (`MetricLayerPanel.tsx`) reads it. See below. |
 | Dashboards — Product Usage | `customers` | 🟢 Runs on `GET /api/v1/customers/products/` — one row per product: ARR led, health mix, utilisation, satisfaction, support burden and churn. Attribution is by `primary_product` only, and the response says so. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
@@ -3452,6 +3453,96 @@ definition's own fields.
 
 <!--
 Template for each new feature section below:
+
+## `metrics` — The metric layer (`/api/v1/metrics/`)
+
+Nine dashboards each compute their own rollup, and they agree because the
+rules they share (`churn.py`, `contact.py`, `segments.py`) have one home.
+A management question cuts across them — "NRR, coverage and shelfware
+this quarter against last" — and nothing could answer it, because there
+was no list of what the numbers *are*. This app is that list, and the
+memory to go with it. It is Phase 1 of turning the product into a
+company brain: facts first, then explanations, then decisions.
+
+### Models — `MetricSnapshot`
+
+One number, for one organisation, as a month ended: `organisation`,
+`metric` (a registry key), `dimension`/`member` (both empty for the
+whole organisation — reserved so a slice by owner or product later is a
+row, not a migration), `period_end`, `value` (null when unmeasured that
+month — **not zero**), `captured_at`. Unique per
+(organisation, metric, dimension, member, period_end).
+
+**Recorded by `run_health_maintenance`**, after the health scores it
+reads are fresh, on the same "last completed month" rule as
+`HealthSnapshot`, and with the same discipline: an existing row is kept,
+never overwritten — it is how the month ended, and upserting it a week
+later would replace it with the next month's values so the history
+drifted forward every run. A metric added to the registry later is
+filled in for a period without touching the rows already there.
+
+### Conventions specific to this app
+
+* **`services/customers/scoping.SystemActor`** — an organisation acting
+  as itself. Every rollup takes a `user` and asks scoping what they may
+  see; a scheduled job has no user, and impersonating "some admin" would
+  tie the job to whoever happens to hold a role. The actor exposes only
+  what scoping reads (`organisation`, `has_capability` → True), so a
+  rollup that started depending on anything else about a person fails
+  loudly rather than seeing something odd.
+* **Values are the dashboards' own numbers.** `registry.compute_all`
+  runs each source rollup once (`portfolio.build_stats`, the forecast
+  bridge, `activity_tracking.build_stats`, a health-mix count over the
+  rubric's own `health_category`, an open-ticket count) and each metric
+  reads a key out of it. Never a second computation that can drift.
+* **Unmeasured stays `None`.** An empty book has no logo retention, no
+  NRR and no coverage; it has zero customers and zero open tickets.
+* **A source that raises takes its metrics down loudly.** A metric layer
+  that swallowed errors and reported `None` would be reporting
+  "unmeasured" for what is actually "broken".
+
+### `GET /api/v1/metrics/`
+
+Auth: `CanViewAllAccounts` — every figure is whole-org, and a CSM whose
+book is scoped to their own customers would otherwise read the company's
+ARR here. `401` unauthenticated, `403` without the capability.
+
+```json
+{
+  "as_of": "2026-09-12", "currency": "USD",
+  "metrics": [{
+    "key": "nrr", "label": "Net revenue retention", "unit": "percent", "better": "up",
+    "note": "Forecast ARR as a share of opening ARR, before any new logos. ...",
+    "value": 99.6,
+    "previous": {"period_end": "2026-08-31", "value": 97.1},
+    "change": 2.5
+  }]
+}
+```
+
+`unit` is `money` (in `currency`), `percent` or `count`; `better` is
+`up`, `down` or `none` (context, not a target — a customer count is
+neither good nor bad on its own). `previous` is the most recent
+month-end snapshot, null when none exists; `change` is null whenever
+either side is unmeasured — a move from "unknown" to 40 is not a rise
+of 40.
+
+The eighteen metrics in this slice: `active_customers`, `active_arr`,
+`average_arr`, `logo_retention`, `churned_arr_12m`, `top_three_share`,
+`forecast_arr`, `nrr`, `at_risk_arr`, `seat_utilisation`,
+`shelfware_arr`, `at_capacity_arr`, `coverage`, `dark_accounts`,
+`dark_arr`, `healthy_share`, `poor_health_count`, `open_tickets`.
+
+### `GET /api/v1/metrics/<key>/history/`
+
+The month-end series for one metric, oldest first, this organisation
+only. A month with no row is absent, not zero. Unknown key → `404`.
+
+```json
+{"metric": {"key": "active_arr", "label": "ARR", "unit": "money", "better": "up", "note": "..."},
+ "currency": "USD",
+ "points": [{"period_end": "2026-07-31", "value": 640200.0}, {"period_end": "2026-08-31", "value": 688600.0}]}
+```
 
 ## `<app_name>` — <Frontend feature name>
 

@@ -53,6 +53,34 @@ from services.accounts.capabilities import Capability
 from .models import Account, Customer
 
 
+class SystemActor:
+    """An organisation acting as itself: the principal a scheduled job uses.
+
+    Every rollup in this app takes a `user` and asks scoping what that user
+    may see. A nightly metric snapshot has no user, and picking "some admin"
+    to impersonate would tie a job to whichever person happens to hold a
+    role. This is the honest alternative: a principal that *is* the
+    organisation, sees all of it, and can never be confused with a person.
+    Only the two things scoping reads exist on it — `organisation` and
+    `has_capability` — so a rollup that quietly started depending on
+    anything else about a user would fail loudly here rather than see
+    something odd.
+    """
+
+    is_authenticated = True
+    pk = None
+    id = None
+
+    def __init__(self, organisation):
+        self.organisation = organisation
+
+    def has_capability(self, capability):
+        return True
+
+    def __repr__(self):
+        return f"SystemActor({self.organisation!r})"
+
+
 def sees_everything(user) -> bool:
     """Superusers are covered by `User.has_capability` itself, which
     returns True for them before it ever looks at a Role."""
