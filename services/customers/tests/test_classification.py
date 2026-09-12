@@ -16,8 +16,9 @@ from django.utils import timezone
 
 from services.accounts.models import Organisation, User
 from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
-from services.customers import taxonomy
+from services.customers import classification, taxonomy
 from services.customers.classification import (
+    BATCH_SIZE,
     MAX_TEXT_CHARS,
     _options_block,
     apply_classification,
@@ -201,6 +202,31 @@ class ClassifyBatchTests(TestCase):
             fields = classify_batch([self.email])[f"email:{self.email.pk}"]
 
         self.assertEqual(fields["sentiment"], taxonomy.Sentiment.NEUTRAL)
+
+    def test_the_output_budget_grows_with_the_batch(self):
+        """The first real run: 1024 output tokens for twenty pretty-printed
+        answers cut every reply off around line 128, and eight consecutive
+        batches failed as "not JSON". The budget has to be sized to the list."""
+        self.assertGreater(classification.output_budget(BATCH_SIZE), 1024)
+        self.assertGreater(
+            classification.output_budget(BATCH_SIZE), classification.output_budget(1)
+        )
+
+    def test_a_batch_call_passes_its_budget_to_the_model(self):
+        records = [
+            Email(pk=n, subject="s", body="b", sender_name="a", recipient_name="b")
+            for n in range(BATCH_SIZE)
+        ]
+        with patch(PATH, return_value="[]") as completion:
+            classification.classify_batch(records)
+
+        self.assertEqual(
+            completion.call_args.kwargs["max_tokens"], classification.output_budget(BATCH_SIZE)
+        )
+
+    def test_the_prompt_asks_for_one_line_per_answer(self):
+        # Half the reason the budget ran out was indentation.
+        self.assertIn("single line", classification.SYSTEM_PROMPT)
 
     def test_apply_classification_stamps_the_time(self):
         apply_classification(self.email, {"ai_category": "bug_report"})

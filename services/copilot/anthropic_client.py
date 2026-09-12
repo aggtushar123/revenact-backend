@@ -77,20 +77,26 @@ def _build_client_and_model():
     return client, settings.ANTHROPIC_MODEL
 
 
-def get_completion(system: str, messages: list[dict]) -> str:
+def get_completion(system: str, messages: list[dict], *, max_tokens: int = 1024) -> str:
     """`messages` is a list of `{"role": "user"|"assistant", "content": str}`
     dicts — the Anthropic Messages API's own shape (identical whether the
     real call ends up going to Anthropic directly or through Bedrock), so
     Message rows from the DB can be passed through with only a
     `.values()`-style reshape (see SendMessageView._history_for), no
-    translation layer needed."""
+    translation layer needed.
+
+    `max_tokens` is the output budget. 1024 suits a chat turn or a headline;
+    a caller that asks for a list must size it to the list — the classifier
+    sends twenty records a call, and twenty pretty-printed answers do not fit
+    in 1024, which cut every answer off at line ~128 and read as "the model's
+    answer wasn't JSON" on batch after batch."""
 
     client, model = _build_client_and_model()
 
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=max_tokens,
             system=system,
             messages=messages,
         )

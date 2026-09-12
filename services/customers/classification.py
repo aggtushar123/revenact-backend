@@ -37,6 +37,14 @@ from . import taxonomy
 #: prompt alongside the taxonomy, and keeps a single bad reply cheap to redo.
 BATCH_SIZE = 20
 
+#: Output budget per record, plus a fixed allowance for the array itself.
+#: One answer object is five short keys and five short values — under 60
+#: tokens even pretty-printed — so 120 is twice what any record needs. The
+#: number to get wrong upward: an unused token costs nothing, and a budget one
+#: record too small cuts the array off mid-object and loses the whole batch.
+OUTPUT_TOKENS_PER_RECORD = 120
+OUTPUT_TOKENS_OVERHEAD = 200
+
 #: How much of a record's text the model sees. A long email thread's first few
 #: hundred characters carry the subject matter; the rest is quoted history, and
 #: sending it would multiply the bill for no extra signal.
@@ -76,8 +84,8 @@ whether the news is good for us. A calm bug report is neutral; an apology for \
 a late reply is not negative.
 
 Answer with a JSON array and nothing else. One object per interaction, each \
-with keys "ref", "area", "category", "subcategory", "sentiment". Echo "ref" \
-back exactly as given.
+with keys "ref", "area", "category", "subcategory", "sentiment", written on a \
+single line with no indentation. Echo "ref" back exactly as given.
 
 Use only the values listed below, exactly as spelled. If an interaction is too \
 thin to place, omit it from the array rather than guessing — a missing tag is \
@@ -211,6 +219,11 @@ def _parse(raw):
     return payload
 
 
+def output_budget(record_count):
+    """Output tokens to allow for a batch of this size."""
+    return OUTPUT_TOKENS_PER_RECORD * record_count + OUTPUT_TOKENS_OVERHEAD
+
+
 def classify_batch(records):
     """One model call for up to BATCH_SIZE records.
 
@@ -229,6 +242,7 @@ def classify_batch(records):
     raw = get_completion(
         system=SYSTEM_PROMPT.format(options=_options_block()),
         messages=[{"role": "user", "content": build_prompt(prompt_records)}],
+        max_tokens=output_budget(len(records)),
     )
 
     sent = {ref for ref, _, _ in prompt_records}
