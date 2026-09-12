@@ -3701,6 +3701,35 @@ configured, `502` when the call fails or the answer isn't readable,
            "generated_at": "2026-09-12T15:40:02Z", "generated_by": "Alice"}}
 ```
 
+### `GET /api/v1/metrics/graph/` — the knowledge graph
+
+Auth: `CanViewAllAccounts`. The brain's real relations as one graph
+(`services/metrics/graph.py`): `nodes` of five kinds — `owner`,
+`customer`, `product`, `initiative` (planned/active), `proposal`
+(pending) — and `edges` `{from, to, kind}` only where a real relation
+exists: `owns` (owner → customer), `runs_on` (customer → primary
+product), `targets` (initiative → the product or owner its cut names),
+`acts_on` (task proposal → customer), `serves` (proposal → linked
+initiative). Every figure is the dashboards' own: customer `arr`,
+`downside`, `risk`, `days_to_renewal` from the forecast rows,
+`health_category`/`health_score`, `open_tasks`; product and owner nodes
+sum `customers`, `arr`, `downside` over their customers. Node ids are
+`kind:pk`. Customers are capped at 200, largest ARR first. Frontend:
+`/brain/graph`.
+
+```json
+{"as_of": "2026-09-13", "currency": "USD",
+ "nodes": [{"id": "customer:7", "kind": "customer", "label": "Pizza Hut", "arr": 69600,
+            "downside": 17400, "risk": 0.25, "health_category": "average", "health_score": 5.1,
+            "days_to_renewal": -34, "open_tasks": 1},
+           {"id": "product:4", "kind": "product", "label": "Product B", "customers": 3, "arr": 180000, "downside": 64090},
+           {"id": "initiative:1", "kind": "initiative", "label": "Halve the ARR at risk on Product B", "status": "active",
+            "metric": "at_risk_arr", "metric_label": "ARR at risk", "member_label": "Product B",
+            "target_value": 32000, "target_by": "2026-11-30", "owner": "Carl CSM"}],
+ "edges": [{"from": "customer:7", "to": "product:4", "kind": "runs_on"},
+           {"from": "initiative:1", "to": "product:4", "kind": "targets"}]}
+```
+
 ### Models — `Explanation`
 
 Why one metric is where it is, in the model's words, as of one day. The

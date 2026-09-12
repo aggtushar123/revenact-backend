@@ -179,6 +179,20 @@ def _brief_payload(brief):
     }
 
 
+class GraphView(views.APIView):
+    """GET /api/v1/metrics/graph/ — the knowledge graph: owners, customers,
+    products, open initiatives and pending proposals, with the real
+    relations between them and the figures the dashboards already draw.
+    Organisation-wide, so gated like the rest of the brain."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def get(self, request):
+        from .graph import build_graph
+
+        return Response(build_graph(request.user.organisation))
+
+
 class BriefView(views.APIView):
     """GET /api/v1/metrics/brief/ — the latest management brief, or
     `{"brief": null}` before one has been written. Reading is free."""
