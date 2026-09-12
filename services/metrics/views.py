@@ -302,9 +302,19 @@ class ProposalListView(views.APIView):
         wanted = request.query_params.get("status")
         if wanted in Proposal.Status.values:
             queryset = queryset.filter(status=wanted)
-        rows = sorted(
-            queryset,
-            key=lambda p: (p.status != Proposal.Status.PROPOSED, -p.created_at.timestamp()),
+        # Proposed first; newest batch first; within a batch, the order the
+        # agent proposed them in — that order carries its priority, and the
+        # microseconds between two rows of one run do not.
+        rows = list(queryset)
+        batch_started = {}
+        for p in rows:
+            batch_started[p.batch] = min(batch_started.get(p.batch, p.created_at), p.created_at)
+        rows.sort(
+            key=lambda p: (
+                p.status != Proposal.Status.PROPOSED,
+                -batch_started[p.batch].timestamp(),
+                p.id,
+            )
         )
         return Response(
             {
