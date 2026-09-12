@@ -25,7 +25,8 @@ from django.utils import timezone
 from services.accounts.models import Organisation, User
 from services.customers.models import Customer, Product
 
-# One entry per company. `owner_email` is resolved to a same-organisation
+# One entry per company. Carl and Dana split the book (see seed_demo_owners
+# for why a second owner exists). `owner_email` is resolved to a same-organisation
 # User at runtime (None leaves the customer unassigned, same as the mock's
 # own "Unassigned" rows).
 DEMO_CUSTOMERS = [
@@ -139,7 +140,7 @@ DEMO_CUSTOMERS = [
         "address": "Chicago, IL",
         "email": "contact@hyatt.com",
         "phone": "+1 (312) 750-1234",
-        "owner_email": "carl@acme.io",
+        "owner_email": "dana@acme.io",
         "lifecycle_stage": "live",
         "health_score": "8.8",
         "pulse": [3, 3, 3, 0, 0],
@@ -173,7 +174,7 @@ DEMO_CUSTOMERS = [
         "address": "Santa Clara, CA",
         "email": "contact@arista.com",
         "phone": "+1 (408) 547-5500",
-        "owner_email": "carl@acme.io",
+        "owner_email": "dana@acme.io",
         "lifecycle_stage": "onboarding",
         "health_score": "10.0",
         "pulse": [1, 1, 1, 1, 1],
@@ -278,7 +279,7 @@ DEMO_CUSTOMERS = [
         "address": "Stockholm, SE",
         "email": "contact@spotify.com",
         "phone": "+46 8 452 30 00",
-        "owner_email": "carl@acme.io",
+        "owner_email": "dana@acme.io",
         "lifecycle_stage": "adoption",
         "health_score": "6.5",
         "pulse": [1, 3, 1, 0, 0],
@@ -313,7 +314,7 @@ DEMO_CUSTOMERS = [
         "address": "South San Francisco, CA",
         "email": "contact@stripe.com",
         "phone": "+1 (888) 926-2289",
-        "owner_email": "carl@acme.io",
+        "owner_email": "dana@acme.io",
         "lifecycle_stage": "renewal",
         "health_score": "8.1",
         "pulse": [1, 1, 1, 1, 0],
@@ -384,7 +385,7 @@ DEMO_CUSTOMERS = [
         "address": "Ottawa, ON",
         "email": "contact@shopify.com",
         "phone": "+1 (613) 241-2828",
-        "owner_email": "carl@acme.io",
+        "owner_email": "dana@acme.io",
         "lifecycle_stage": "expansion",
         "health_score": "9.5",
         "pulse": [1, 1, 1, 1, 1],
@@ -454,7 +455,7 @@ DEMO_CUSTOMERS = [
         "address": "San Jose, CA",
         "email": "contact@zoom.us",
         "phone": "+1 (888) 799-9666",
-        "owner_email": "carl@acme.io",
+        "owner_email": "dana@acme.io",
         "lifecycle_stage": "adoption",
         "health_score": "7.8",
         "pulse": [1, 1, 1, 3, 0],
