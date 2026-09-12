@@ -210,6 +210,10 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
     ai_pulse_score = AIPulseScoreField(source="*", required=False)
     seat_utilization_percentage = serializers.FloatField(read_only=True)
     currency_display = serializers.CharField(source="get_currency_display", read_only=True)
+    # The label beside the stored value, so screens don't each keep their own
+    # copy of the taxonomy and drift from it. Blank stays blank: "nobody
+    # recorded why" is not a reason.
+    churn_reason_display = serializers.CharField(source="get_churn_reason_display", read_only=True)
 
     owner = UserSerializer(read_only=True)
     owner_id = serializers.PrimaryKeyRelatedField(
@@ -274,6 +278,7 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
             "ces_percentage",
             "churn_date",
             "churn_reason",
+            "churn_reason_display",
             "churn_comment",
             "is_archived",
         ]

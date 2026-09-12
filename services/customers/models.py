@@ -129,6 +129,35 @@ class Customer(models.Model):
         MODERATE = "moderate", "Moderate"
         HIGH_RISK = "high_risk", "High Risk"
 
+    class ChurnReason(models.TextChoices):
+        """Why a customer left.
+
+        A closed list, because the free-text field it replaces could not be
+        counted. "Budget cuts", "budget CUTS " and "Budget Cut" were three
+        rows on the Customer Overview, and no amount of folding in the
+        dashboard could merge the last one honestly — while "Price" and "Too
+        expensive" stayed apart forever. The nuance a CSM wants to record
+        still has a home: `churn_comment`, right below this.
+
+        These eleven are the reasons a CS team can act on differently. Price
+        and budget are separate because the answer differs — one is a
+        discount conversation, the other is waiting for their next fiscal
+        year. `OTHER` exists so nobody is forced to lie, and a rising `OTHER`
+        count is the signal that this list needs another entry.
+        """
+
+        PRICE = "price", "Price"
+        BUDGET = "budget", "Budget cut"
+        PRODUCT_GAP = "product_gap", "Missing capability"
+        ADOPTION = "adoption", "Never adopted"
+        COMPETITOR = "competitor", "Switched to a competitor"
+        CHAMPION_LEFT = "champion_left", "Champion left"
+        ACQUIRED = "acquired", "Acquired or merged"
+        SHUT_DOWN = "shut_down", "Went out of business"
+        CONSOLIDATION = "consolidation", "Vendor consolidation"
+        SUPPORT = "support", "Service or support"
+        OTHER = "other", "Other"
+
     # --- Identity, ownership, provenance -------------------------------------
 
     organisation = models.ForeignKey(
@@ -278,7 +307,14 @@ class Customer(models.Model):
     # --- Churn ---------------------------------------------------------------------
 
     churn_date = models.DateField(null=True, blank=True)
-    churn_reason = models.CharField(max_length=255, blank=True)
+    churn_reason = models.CharField(
+        max_length=32,
+        choices=ChurnReason.choices,
+        blank=True,
+        help_text="Why they left, from a closed list — blank means nobody "
+        "recorded it, which is not the same as ChurnReason.OTHER. The detail "
+        "goes in churn_comment; this field exists to be counted.",
+    )
     churn_comment = models.TextField(blank=True)
 
     # score >= 7.0 -> good, 4.0-6.9 -> average, < 4.0 -> poor.

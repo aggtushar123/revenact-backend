@@ -18,6 +18,8 @@ from services.accounts.models import Organisation, User
 from services.customers import portfolio, segments
 from services.customers.models import Customer
 
+Reason = Customer.ChurnReason
+
 
 class SegmentTests(TestCase):
     def test_bands_are_floor_inclusive_and_open_at_the_top(self):
@@ -61,6 +63,9 @@ class CustomerOverviewTests(APITestCase):
             arr_billed_at_account=Decimal(arr),
             **overrides,
         )
+
+    def _reasons(self):
+        return {row["value"]: row for row in self.client.get(self.url).data["churn_reasons"]}
 
     def test_unauthenticated_is_refused(self):
         self.client.force_authenticate(None)
@@ -192,43 +197,76 @@ class CustomerOverviewTests(APITestCase):
 
     # ── churn reasons ────────────────────────────────────────────────
 
-    def test_reasons_are_grouped_on_case_and_whitespace(self):
-        self._customer("A", 10_000, churn_date=self.today, churn_reason="Budget cuts")
-        self._customer("B", 20_000, churn_date=self.today, churn_reason="  budget CUTS ")
+    def test_two_customers_leaving_for_the_same_reason_are_one_row(self):
+        """The free-text field this replaced could not do it: "Budget cuts",
+        "budget CUTS " and "Budget Cut" were three rows, and folding could
+        honestly merge only the first two."""
+        self._customer("A", 10_000, churn_date=self.today, churn_reason=Reason.BUDGET)
+        self._customer("B", 20_000, churn_date=self.today, churn_reason=Reason.BUDGET)
 
-        reasons = self.client.get(self.url).data["churn_reasons"]
+        rows = self._reasons()
 
-        self.assertEqual(len(reasons), 1)
-        self.assertEqual(reasons[0]["customers"], 2)
-        self.assertEqual(reasons[0]["arr"], 30_000.0)
-        # Two raw spellings folded into one row — reported, so a reader can see
-        # the grouping working and give the field choices instead.
-        self.assertEqual(reasons[0]["spellings"], 2)
+        self.assertEqual(rows[Reason.BUDGET]["customers"], 2)
+        self.assertEqual(rows[Reason.BUDGET]["arr"], 30_000.0)
 
-    def test_reasons_that_only_a_human_would_merge_stay_separate(self):
-        # "Budget Cut" and "Budget cuts" differ by more than case. Nothing here
-        # can merge them honestly, so the screen shows both.
-        self._customer("A", 10_000, churn_date=self.today, churn_reason="Budget Cut")
-        self._customer("B", 20_000, churn_date=self.today, churn_reason="Budget cuts")
+    def test_every_reason_on_the_list_gets_a_row_even_at_zero(self):
+        """Impossible on free text, where an absent string and a reason nobody
+        thought to type look identical. "Nothing lost to a missing capability"
+        is a finding about the product."""
+        self._customer("A", 10_000, churn_date=self.today, churn_reason=Reason.BUDGET)
 
-        self.assertEqual(len(self.client.get(self.url).data["churn_reasons"]), 2)
+        rows = self._reasons()
 
-    def test_a_missing_reason_is_named_rather_than_dropped(self):
+        self.assertEqual(len(rows), len(Reason.choices))
+        self.assertEqual(rows[Reason.PRODUCT_GAP]["customers"], 0)
+        self.assertEqual(rows[Reason.PRODUCT_GAP]["arr"], 0.0)
+
+    def test_the_row_carries_the_label_as_well_as_the_stored_value(self):
+        # So no screen keeps its own copy of the taxonomy.
+        self._customer("A", 10_000, churn_date=self.today, churn_reason=Reason.CHAMPION_LEFT)
+
+        self.assertEqual(self._reasons()[Reason.CHAMPION_LEFT]["reason"], "Champion left")
+
+    def test_an_unrecorded_reason_is_its_own_row_not_folded_into_other(self):
+        """ "We don't know" is a gap in the CRM; "Other" is a CSM saying none of
+        the eleven fit. Counting the first as the second would hide the gap."""
         self._customer("Silent", 10_000, churn_date=self.today, churn_reason="")
 
-        reasons = self.client.get(self.url).data["churn_reasons"]
+        rows = self._reasons()
 
-        self.assertEqual(reasons[0]["reason"], "No reason recorded")
-        self.assertEqual(reasons[0]["spellings"], 0)
+        self.assertEqual(rows[""]["reason"], portfolio.NO_REASON)
+        self.assertEqual(rows[""]["customers"], 1)
+        self.assertEqual(rows[Reason.OTHER]["customers"], 0)
+
+    def test_an_unrecorded_reason_earns_no_row_when_it_never_happened(self):
+        # Unlike the eleven real reasons, which are always listed.
+        self._customer("A", 10_000, churn_date=self.today, churn_reason=Reason.PRICE)
+
+        self.assertNotIn("", self._reasons())
 
     def test_reasons_are_ranked_by_the_money_that_left(self):
-        self._customer("Small but common", 1_000, churn_date=self.today, churn_reason="Price")
-        self._customer("Also price", 1_000, churn_date=self.today, churn_reason="Price")
-        self._customer("One big one", 500_000, churn_date=self.today, churn_reason="Acquired")
+        self._customer("Small but common", 1_000, churn_date=self.today, churn_reason=Reason.PRICE)
+        self._customer("Also price", 1_000, churn_date=self.today, churn_reason=Reason.PRICE)
+        self._customer("One big one", 500_000, churn_date=self.today, churn_reason=Reason.ACQUIRED)
 
-        reasons = self.client.get(self.url).data["churn_reasons"]
+        self.assertEqual(
+            self.client.get(self.url).data["churn_reasons"][0]["reason"], "Acquired or merged"
+        )
 
-        self.assertEqual(reasons[0]["reason"], "Acquired")
+    def test_a_reason_the_list_no_longer_has_is_counted_as_unrecorded(self):
+        """A value left behind by an older release is not silently dropped —
+        every churned customer has to appear in the reason counts, or they
+        stop adding up to the churn figure above them."""
+        customer = self._customer("Legacy", 10_000, churn_date=self.today)
+        Customer.objects.filter(pk=customer.pk).update(churn_reason="retired_value")
+
+        rows = self._reasons()
+
+        self.assertEqual(rows[""]["customers"], 1)
+        self.assertEqual(
+            sum(row["customers"] for row in rows.values()),
+            self.client.get(self.url).data["kpis"]["churned"],
+        )
 
     # ── composition ──────────────────────────────────────────────────
 

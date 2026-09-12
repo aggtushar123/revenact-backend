@@ -26,14 +26,15 @@ important fact about the business and no other screen states it. `concentration`
 returns the ranked accounts with a running share, so the Pareto is readable
 rather than asserted.
 
-## Churn reasons are free text, and are reported as such
+## Churn reasons group themselves now
 
-`churn_reason` is a CharField somebody types into. "Budget cuts" and "Budget
-Cut" are the same reason and will not group themselves. They are folded on case
-and surrounding whitespace here — that is all that can be done honestly. The
-response returns the count of distinct raw spellings alongside the grouped
-figure, so a reader can see when the grouping is doing heavy lifting and the
-field deserves choices instead.
+`churn_reason` is a closed list (`Customer.ChurnReason`), so this screen counts
+reasons rather than spellings of reasons. It used to fold free text on case and
+whitespace and report how many raw strings went into each row, because "Budget
+cuts" and "Budget Cut" would not group themselves and "Price" and "Too
+expensive" never could. Every stage of the list is returned even when nobody
+left for it — a zero against "Missing capability" is a fact about the product,
+and it is only sayable now that the reasons are a list.
 """
 
 from collections import defaultdict
@@ -242,42 +243,45 @@ def _cohorts(customers):
     }
 
 
-def _churn_reasons(churned, priced):
-    """Why the ones who left, left — grouped as well as free text allows.
+#: The label for churned customers whose reason nobody recorded. Its own row
+#: rather than folded into "Other": "we don't know" is a gap in the CRM, and
+#: "Other" is a CSM saying none of the eleven fit.
+NO_REASON = "No reason recorded"
 
-    Folded on case and surrounding space, which is the only honest
-    normalisation available: "Budget cuts" and "Budget Cut" are one reason,
-    "Budget cuts" and "Lost exec sponsor" are two, and nothing here can tell
-    "Price" from "Too expensive". `spellings` reports how many distinct raw
-    strings went into each row, so a reader can see when the grouping is doing
-    heavy lifting and the field wants choices instead of a text box.
+
+def _churn_reasons(churned, priced):
+    """Why the ones who left, left — one row per reason on the list.
+
+    Reasons that nobody left for are returned too, with zeroes. On a free-text
+    field that was impossible: an absent string is indistinguishable from a
+    reason nobody thought to type. With a closed list, "nought lost to a
+    missing capability this year" is a real finding, and the chart can show
+    the whole shape of the list rather than only its populated half.
+
+    Ranked by the money that left, so the reason to fix first is first.
     """
 
-    grouped = {}
+    labels = dict(Customer.ChurnReason.choices)
+    grouped = {
+        value: {"value": value, "reason": label, "customers": 0, "arr": 0.0}
+        for value, label in labels.items()
+    }
+    grouped[""] = {"value": "", "reason": NO_REASON, "customers": 0, "arr": 0.0}
+
     for customer in churned:
-        raw = (customer.churn_reason or "").strip()
-        key = raw.casefold() or "__blank__"
-        entry = grouped.setdefault(
-            key,
-            {"reason": raw or "No reason recorded", "customers": 0, "arr": 0.0, "spellings": set()},
-        )
+        value = customer.churn_reason if customer.churn_reason in grouped else ""
+        entry = grouped[value]
         entry["customers"] += 1
         entry["arr"] += priced[customer.pk] or 0.0
-        if raw:
-            entry["spellings"].add(raw)
 
-    return sorted(
-        (
-            {
-                "reason": entry["reason"],
-                "customers": entry["customers"],
-                "arr": round(entry["arr"], 2),
-                "spellings": len(entry["spellings"]),
-            }
-            for entry in grouped.values()
-        ),
-        key=lambda row: (-row["arr"], -row["customers"]),
-    )
+    rows = [
+        {**entry, "arr": round(entry["arr"], 2)}
+        for entry in grouped.values()
+        # An unrecorded reason only earns a row when it happened; the eleven
+        # real reasons earn one either way.
+        if entry["value"] != "" or entry["customers"] > 0
+    ]
+    return sorted(rows, key=lambda row: (-row["arr"], -row["customers"], row["reason"]))
 
 
 def _segments(active, priced):

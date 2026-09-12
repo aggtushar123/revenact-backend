@@ -375,7 +375,7 @@ DEMO_CUSTOMERS = [
         "scope_web_app": "N/A",
         "ces_percentage": "18.00",
         "churn_date": "2025-01-31",
-        "churn_reason": "Budget Cut",
+        "churn_reason": "budget",
         "churn_comment": "Leadership restructuring led to budget realignment.",
     },
     {

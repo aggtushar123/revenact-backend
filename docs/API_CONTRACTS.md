@@ -559,7 +559,19 @@ system, hence two different names — never call a `Customer` an
   pure function of its inputs with no independent real-world meaning, so
   deriving it is safe, unlike the financial fields), `total_hires`,
   `scope_web_app`, `ces_percentage`.
-- **Churn**: `churn_date`, `churn_reason`, `churn_comment` — all nullable/blank.
+- **Churn**: `churn_date`, `churn_reason`, `churn_comment` — all
+  nullable/blank. `churn_reason` is a **closed list**
+  (`Customer.ChurnReason`): `price`, `budget`, `product_gap`, `adoption`,
+  `competitor`, `champion_left`, `acquired`, `shut_down`,
+  `consolidation`, `support`, `other`, served alongside a read-only
+  `churn_reason_display` label so no screen keeps its own copy of the
+  taxonomy. It was free text until migration `0028`, which is why the
+  Customer Overview used to report how many spellings it had folded
+  together; the nuance a CSM wants to write down belongs in
+  `churn_comment`, and `other` exists so nobody has to lie — a rising
+  `other` count is the signal the list needs another entry. Blank is
+  distinct from `other`: nobody recorded a reason, which is a gap in the
+  CRM rather than a CSM's judgement.
 
 **Why the financials aren't derived**: in the mock data, `total_contract_value`
 happens to equal `arr_billed_at_account + arr_billed_at_hq` in every
@@ -1082,8 +1094,8 @@ unable to filter to one here would be strange.
   },
   "cohorts": {"rows": [{"year": 2023, "joined": 5, "retained": 4,
                         "churned": 1, "retention": 80.0}], "undated": 1},
-  "churn_reasons": [{"reason": "Budget cuts", "customers": 2,
-                     "arr": 212100.0, "spellings": 1}],
+  "churn_reasons": [{"value": "budget", "reason": "Budget cut",
+                     "customers": 2, "arr": 24000.0}],
   "segments": {"rows": [{"key": "over_100k", "name": "$100K and above",
                          "customers": 2, "arr": 287000.0}], "unplaced": 0},
   "lifecycle": [{"key": "live", "name": "Live", "customers": 1, "arr": 67200.0}]
@@ -1103,14 +1115,16 @@ The decisions behind those numbers:
   `rest_count`/`rest_arr` rather than dropped — a reader needs to see how
   little of the book it is. An account with no convertible ARR is not
   ranked at all: unknown size can't be placed in a ranking by size.
-* **Churn reasons are free text and reported as such.**
-  `Customer.churn_reason` is a CharField somebody types into. Rows are
-  folded on case and surrounding whitespace — all that can be done
-  honestly; "Budget Cut" and "Budget cuts" differ by more than case and
-  stay separate, and nothing can tell "Price" from "Too expensive".
-  `spellings` reports how many raw strings went into each row, so a
-  reader can see when the grouping is doing heavy lifting and the field
-  deserves choices instead of a text box.
+* **Churn reasons group themselves**, because `churn_reason` is a closed
+  list now (see the field above). Each row carries the stored `value` and
+  its `reason` label, and **every reason on the list is returned even at
+  zero** — which free text could not do, since an absent string and a
+  reason nobody thought to type are indistinguishable. "Nothing lost to a
+  missing capability this year" is a fact about the product, and it is
+  only sayable now. A churned customer with no reason recorded gets a
+  `"No reason recorded"` row of its own, separate from `other`, and a
+  value left behind by an older release is counted there too rather than
+  dropped — the reason counts have to add up to `kpis.churned`.
 * **A customer with no `joined_date` is counted apart**, not dropped into
   the earliest cohort — which would make the oldest cohort look larger
   and its retention worse.
