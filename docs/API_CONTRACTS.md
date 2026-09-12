@@ -1916,7 +1916,12 @@ Claude call per batch of 20, through the same
 It only touches rows with no `ai_classified_at` unless `--reclassify` is
 given, so it is safe on a schedule and won't overwrite a hand
 correction; `--dry-run` counts the work without calling anything and
-`--limit` caps the spend. It is deliberately **not** bundled into
+`--limit` caps the spend. On a `--reclassify` pass a row the model
+declines to place has its previous tags **cleared** (and is stamped, so
+a scheduled pass doesn't pay to retry it): the first real run over the
+demo book declined two calls that had a title and no summary, and
+without this they would have kept the seeder's invented category under
+a fresh stamp. It is deliberately **not** bundled into
 `run_health_maintenance`, which is free and idempotent.
 `manage.py seed_demo_classifications` fills the same fields from a
 keyword table instead, so a demo database has full charts with no API

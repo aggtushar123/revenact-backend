@@ -248,6 +248,22 @@ def classify_batch(records):
     return out
 
 
+def clear_classification(record):
+    """Blanks a record's tags and stamps `ai_classified_at` anyway.
+
+    For a reclassify pass where the model declined to place a record it had
+    placed before: "looked at, could not say" is the honest state, and leaving
+    the previous answer in place would keep a category nobody stands behind on
+    the dashboard. Stamped rather than nulled so a scheduled default pass
+    doesn't pay to retry a record whose text hasn't changed."""
+
+    record.ai_area = ""
+    record.ai_category = ""
+    record.ai_subcategory = ""
+    record.ai_classified_at = timezone.now()
+    record.save(update_fields=["ai_area", "ai_category", "ai_subcategory", "ai_classified_at"])
+
+
 def apply_classification(record, fields):
     """Writes one record's tags and stamps `ai_classified_at`.
 

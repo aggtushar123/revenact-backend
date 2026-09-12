@@ -15,7 +15,10 @@ can be a hundred records rather than fifty thousand.
 **Only unclassified rows, unless asked otherwise.** The default pass skips
 anything with an `ai_classified_at`, which makes it safe to run on a schedule and
 keeps a hand correction from being overwritten by the next run. `--reclassify`
-re-does everything in scope, for when the taxonomy itself has changed.
+re-does everything in scope, for when the taxonomy itself has changed — and a
+record the model then declines to place has its old answer cleared rather than
+kept, because "looked at, could not say" is the honest state and the previous
+answer may have been the demo seed's.
 
 Not wired into `run_health_maintenance`, deliberately. That job is free,
 idempotent and safe to run hourly; this one spends money per row, and bundling
@@ -36,7 +39,12 @@ from django.db.models import Q
 
 from services.accounts.models import User
 from services.copilot.anthropic_client import CopilotNotConfigured, CopilotRequestFailed
-from services.customers.classification import BATCH_SIZE, apply_classification, classify_batch
+from services.customers.classification import (
+    BATCH_SIZE,
+    apply_classification,
+    classify_batch,
+    clear_classification,
+)
 from services.customers.models import Call, Email, Ticket
 
 #: The three interaction types the dashboard counts, by the name `--only` takes.
@@ -150,6 +158,13 @@ class Command(BaseCommand):
                 fields = results.get(f"{record._meta.model_name}:{record.pk}")
                 if fields is None:
                     unplaced += 1
+                    # On a reclassify pass the record already carries an
+                    # answer — possibly the demo seed's, possibly a stale one.
+                    # The model has now looked and could not place it, and a
+                    # dashboard should not keep counting a category nobody
+                    # stands behind. A default pass leaves it as it was: blank.
+                    if options["reclassify"]:
+                        clear_classification(record)
                     continue
                 apply_classification(record, fields)
                 classified += 1

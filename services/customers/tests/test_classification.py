@@ -294,6 +294,47 @@ class ClassifyCommandTests(TestCase):
         self.emails[0].refresh_from_db()
         self.assertEqual(self.emails[0].ai_category, "bug_report")
 
+    def test_reclassify_clears_a_record_the_model_can_no_longer_place(self):
+        """The first real run against the demo book: two calls with no summary
+        were declined, and without this they kept the seeder's invented
+        category with a fresh-looking stamp."""
+        apply_classification(
+            self.emails[0], {"ai_category": "onboarding", "ai_area": "customer_success"}
+        )
+        stale_stamp = self.emails[0].ai_classified_at
+
+        def all_but_the_first(batch):
+            return {
+                k: v
+                for k, v in self._batch_answer(batch).items()
+                if k != f"email:{self.emails[0].pk}"
+            }
+
+        with patch(
+            "services.customers.management.commands.classify_interactions.classify_batch",
+            side_effect=all_but_the_first,
+        ):
+            out, _ = self._run(reclassify=True)
+
+        self.assertIn("1 left unplaced", out)
+        self.emails[0].refresh_from_db()
+        self.assertEqual(self.emails[0].ai_category, "")
+        self.assertEqual(self.emails[0].ai_area, "")
+        # Looked at, so a scheduled default pass won't pay to retry it.
+        self.assertIsNotNone(self.emails[0].ai_classified_at)
+        self.assertGreater(self.emails[0].ai_classified_at, stale_stamp)
+
+    def test_a_default_pass_leaves_an_unplaced_record_untouched(self):
+        # Nothing to clear: it was blank, and stays retryable.
+        with patch(
+            "services.customers.management.commands.classify_interactions.classify_batch",
+            side_effect=lambda batch: {},
+        ):
+            self._run()
+
+        self.emails[0].refresh_from_db()
+        self.assertIsNone(self.emails[0].ai_classified_at)
+
     def test_limit_caps_the_spend(self):
         with patch(
             "services.customers.management.commands.classify_interactions.classify_batch",
