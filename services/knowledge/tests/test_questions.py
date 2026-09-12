@@ -131,6 +131,55 @@ class QuestionFlowTests(Fixture):
         self.assertEqual([r["text"] for r in listed], ["Status?"])
 
 
+class SuggestionTests(Fixture):
+    def test_an_answer_about_a_customer_offers_the_responsible_people_but_not_the_asker(self):
+        from services.knowledge.models import FunctionOwner
+
+        FunctionOwner.objects.create(customer=self.pizza, function="analytics", user=self.mei)
+        FunctionOwner.objects.create(customer=self.pizza, function="leadership", user=self.alice)
+        self.client.force_authenticate(self.alice)
+        with patch("services.copilot.views.get_completion", return_value="Here is what I know."):
+            response = self.client.post(
+                "/api/v1/copilot/messages/",
+                {"content": "What is up with Pizza Hut?"},
+                format="json",
+            )
+
+        reply = response.data["messages"][1]
+        self.assertEqual(
+            [
+                (s["name"], s["function_display"], s["customer_name"])
+                for s in reply["ask_suggestions"]
+            ],
+            [
+                ("Carl CSM", "Customer Success", "Pizza Hut"),
+                ("Mei Tanaka", "Analytics", "Pizza Hut"),
+            ],
+        )
+        self.assertEqual(response.data["messages"][0]["ask_suggestions"], [])
+
+        # One click on the suggestion: a question on the turn it came from.
+        asked = self.client.post(
+            f"/api/v1/customers/{self.pizza.id}/questions/",
+            {
+                "text": "What is up with Pizza Hut?",
+                "assignee_id": self.mei.id,
+                "message_id": response.data["messages"][0]["id"],
+            },
+            format="json",
+        )
+        self.assertEqual(asked.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(asked.data[0]["message_id"], response.data["messages"][0]["id"])
+
+    def test_a_question_about_no_company_offers_nobody(self):
+        self.client.force_authenticate(self.alice)
+        with patch("services.copilot.views.get_completion", return_value="Hi."):
+            response = self.client.post(
+                "/api/v1/copilot/messages/", {"content": "Hello there"}, format="json"
+            )
+        self.assertEqual(response.data["messages"][1]["ask_suggestions"], [])
+
+
 class CopilotRoutingTests(Fixture):
     def test_a_mention_in_the_copilot_routes_a_question_on_the_named_customer(self):
         self.client.force_authenticate(self.alice)

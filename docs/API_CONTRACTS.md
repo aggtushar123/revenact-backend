@@ -3320,6 +3320,17 @@ about, if any — attached to the user turn (`messages[].questions`:
 routed, acknowledges it in a sentence, and answers what the summary
 already covers rather than answering for the person asked.
 
+### The Copilot suggests whom to ask
+
+Every assistant turn carries `ask_suggestions`: the people responsible
+for the customer the question was about — `[{user_id, name, function,
+function_display, customer_id, customer_name}]`, the asker left out,
+empty when no customer was identified — a snapshot of who was
+responsible when the answer was given. The screen offers them as one
+click under the reply; the click is `POST /customers/<id>/questions/`
+with `assignee_id` and `message_id` (the user turn), so the question
+keeps the turn it came from and the chat shows whom it asked.
+
 ### The Copilot reads all of it
 
 `copilot.retrieval` adds each customer's contributions as candidates —

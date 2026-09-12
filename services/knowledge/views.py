@@ -168,11 +168,24 @@ class CustomerQuestionListCreateView(generics.ListCreateAPIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             assignees = [person]
+        # Asked from under a Copilot answer: the question keeps the turn it
+        # came from, so the chat can show whom that turn ended up asking.
+        message = None
+        if request.data.get("message_id") is not None:
+            from services.copilot.models import Message
+            from services.copilot.views import conversations_visible_to
+
+            message = get_object_or_404(
+                Message,
+                pk=request.data["message_id"],
+                conversation__in=conversations_visible_to(request.user),
+            )
         created = mentions.route_questions(
             organisation=request.user.organisation,
             asked_by=request.user,
             text=text,
             customer=customer,
+            message=message,
             assignees=assignees,
         )
         if not created:

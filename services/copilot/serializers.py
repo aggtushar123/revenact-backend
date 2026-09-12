@@ -18,7 +18,7 @@ class MessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Message
-        fields = ["id", "role", "content", "sources", "questions", "created_at"]
+        fields = ["id", "role", "content", "sources", "questions", "ask_suggestions", "created_at"]
 
     def get_questions(self, obj):
         # The people this turn routed a question to (services.knowledge) —

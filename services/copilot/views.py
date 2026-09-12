@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 from services.accounts.models import Organisation, User
 from services.accounts.permissions import CanManageOrgSettings, CanViewAllAccounts
 from services.customers.models import Account, Customer
-from services.knowledge.mentions import resolve_mentions, route_questions
+from services.knowledge.mentions import ask_suggestions_for, resolve_mentions, route_questions
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
@@ -254,6 +254,7 @@ class SendMessageView(APIView):
             # and re-running retrieval later would cite whatever is
             # relevant now instead.
             sources=grounding.sources,
+            ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
         )
         conversation.save(update_fields=["updated_at"])
 

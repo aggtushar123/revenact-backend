@@ -93,3 +93,30 @@ def answer_question(question, answerer, body):
         link=f"/organizations/{question.customer_id}" if question.customer_id else "/copilot",
     )
     return question
+
+
+def ask_suggestions_for(company, *, exclude=None):
+    """Who could be asked about `company`, for a screen to offer in one
+    click: the people responsible for it in each function, the asker
+    left out. Empty for an account (responsibility hangs off the
+    customer) and for a question about no company in particular."""
+    if company is None or company.__class__.__name__ != "Customer":
+        return []
+    people = {}
+    if company.owner_id and (exclude is None or company.owner_id != exclude.id):
+        people[company.owner_id] = (company.owner, User.Function.CS)
+    for fo in company.function_owners.select_related("user"):
+        if exclude is not None and fo.user_id == exclude.id:
+            continue
+        people.setdefault(fo.user_id, (fo.user, fo.function))
+    return [
+        {
+            "user_id": user.id,
+            "name": user.name,
+            "function": function,
+            "function_display": User.Function(function).label,
+            "customer_id": company.id,
+            "customer_name": company.name,
+        }
+        for user, function in people.values()
+    ]

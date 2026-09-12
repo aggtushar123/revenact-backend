@@ -63,6 +63,15 @@ class Message(models.Model):
         "for why a snapshot rather than a foreign key. Empty on user turns, "
         "and on assistant turns where retrieval found nothing to quote.",
     )
+    ask_suggestions = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Assistant turns only: the people responsible for the customer the "
+        "question was about, as {user_id, name, function, function_display, "
+        "customer_id, customer_name} — so the screen can offer 'ask Mei' in one "
+        "click when the answer runs out (services.knowledge). A snapshot of who "
+        "was responsible when the answer was given.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
