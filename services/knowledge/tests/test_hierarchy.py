@@ -272,3 +272,27 @@ class ChatSliceTests(ChartFixture):
         self.assertIn("@Priya Nair fix date?", history)
         self.assertEqual(response.data["visibility"], "partial")
         self.assertEqual(Message.objects.get(content="It ships 25 Sep.").author, self.priya)
+
+
+class CustomerPageTests(ChartFixture):
+    def test_a_responsible_or_asked_person_can_open_the_customer_page(self):
+        from services.knowledge.models import FunctionOwner
+
+        url = f"/api/v1/customers/{self.pizza.id}/"
+        # Priya owns nothing and is not a CSM: without a reason, no page.
+        self.client.force_authenticate(self.priya)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+        # Asked about it: the notification's link must open.
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.priya,
+            text="?",
+        )
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+        # Responsible for it, likewise.
+        self.client.force_authenticate(self.raj)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+        FunctionOwner.objects.create(customer=self.pizza, function="sales", user=self.raj)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)

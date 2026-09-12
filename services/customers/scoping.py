@@ -98,7 +98,19 @@ def visible_customers(user):
     base = Customer.objects.filter(organisation=user.organisation)
     if sees_everything(user):
         return base
-    return base.filter(Q(owner=user) | Q(accounts__owner=user) | Q(owner__isnull=True)).distinct()
+    # Beyond the CSM's own book: a customer someone answers for in another
+    # function, or was asked or asked about in — the knowledge layer
+    # (services.knowledge) brings engineers, sales and analysts to an
+    # account's page, and a notification that links there must open it.
+    return base.filter(
+        Q(owner=user)
+        | Q(accounts__owner=user)
+        | Q(owner__isnull=True)
+        | Q(function_owners__user=user)
+        | Q(questions__assignee=user)
+        | Q(questions__asked_by=user)
+        | Q(contributions__author=user)
+    ).distinct()
 
 
 def live_customers(user):
