@@ -3268,7 +3268,11 @@ customer, whatever the chart says (`knowledge.views.responsible_for_q`). The rul
 *say*: contributions (`visible_contributions`, plus answers to the
 reader's own questions), questions (`visible_questions`), the Copilot's
 retrieval (scoped to the asker), and chat turns (below). Customer and
-account records keep their capability scoping.
+account records keep their capability scoping, with one addition: a
+customer's page also opens for anyone responsible for it in any function,
+or asked / asked about it, or who wrote about it
+(`customers.scoping.visible_customers`) — so a notification that links
+there opens for the person it was sent to.
 
 **A mentioned person sees a slice of a chat, not the chat.** A
 conversation is visible to its owner, to accepted session participants,
