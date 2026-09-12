@@ -102,6 +102,15 @@ class EvidenceTests(TestCase):
         self.assertIn(self.fine.id, {a["id"] for a in evidence["accounts"]})
         self.assertIn(f"- {self.fine.id}: Fine — owner Carl", prompt)
 
+    def test_decisions_already_captured_are_shown_so_they_are_not_repeated(self):
+        with patch(PATH, return_value=_answer(self.fine.id)):
+            facilitator.capture_decisions(self.session)
+
+        prompt = facilitator.build_prompt(facilitator.build_evidence(self.session))
+
+        self.assertIn("ALREADY CAPTURED FROM THIS SESSION (do not repeat):", prompt)
+        self.assertIn("- [task] Book the exec sponsor call with Fine (proposed)", prompt)
+
     def test_a_session_nobody_has_spoken_in_has_nothing_to_decide(self):
         Message.objects.filter(conversation=self.session.conversation).delete()
 

@@ -78,6 +78,8 @@ given. Anything else will be discarded.
 - The session's own account is in the accounts list; prefer it for tasks.
 - Do not propose an initiative that duplicates one already open; link to it \
 instead and propose a task.
+- Decisions already captured from this session are listed; do not repeat \
+them. Only what is new since.
 - Never propose emails, campaigns, price changes or anything sent to a \
 customer. Tasks and decisions only.
 - Never invent a figure, a name or a commitment nobody made.
@@ -156,8 +158,13 @@ def build_evidence(session):
         }
         for e in session.events.filter(kind=SessionEvent.Kind.HANDED_OFF).select_related("actor")
     ]
+    already = [
+        {"kind": p.kind, "title": p.title, "status": p.status}
+        for p in session.proposals.order_by("id")
+    ]
     evidence["session"] = {
         "id": session.id,
+        "already_captured": already,
         "conversation_id": conversation.id,
         "title": conversation.title,
         "customer_id": session.customer_id,
@@ -191,6 +198,10 @@ def build_prompt(evidence):
         for h in s["handoffs"]:
             note = f' — "{h["note"]}"' if h["note"] else ""
             lines.append(f"- {h['from']} handed off to {h['to']}{note}")
+    if s["already_captured"]:
+        lines.append("\nALREADY CAPTURED FROM THIS SESSION (do not repeat):")
+        for a in s["already_captured"]:
+            lines.append(f"- [{a['kind']}] {a['title']} ({a['status']})")
     lines.append("\nTRANSCRIPT:")
     for turn in s["transcript"]:
         lines.append(f"{turn['author']}: {turn['text']}")
