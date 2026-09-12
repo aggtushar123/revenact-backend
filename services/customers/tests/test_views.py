@@ -5796,6 +5796,26 @@ class CustomerHealthViewTests(APITestCase):
         with self.assertNumQueries(4):
             self.client.get(self.url)
 
+    def test_each_row_carries_the_shared_churn_rule_and_its_reasons(self):
+        """Served rather than computed in the browser, so the Renewal tab and
+        the Revenue Forecast can't drift apart about the same account."""
+        Activity.objects.create(
+            customer=self.customer,
+            type=Activity.ActivityType.HEALTH_CHECK_REVIEW,
+            occurred_at=timezone.localdate() - timedelta(days=120),
+        )
+
+        row = next(r for r in self.client.get(self.url).data["results"] if r["name"] == "Hyatt")
+
+        from services.customers import churn
+
+        expected, factors = churn.risk_of_loss(self.customer, days_since_touch=120)
+        self.assertEqual(row["risk_of_loss"], expected)
+        self.assertEqual(
+            [f["label"] for f in row["risk_factors"]], [f["label"] for f in factors]
+        )
+        self.assertIn("No contact in 120 days", [f["label"] for f in row["risk_factors"]])
+
     def test_the_owner_comes_back_as_an_id_as_well_as_a_name(self):
         """The Primary Owner filter keys on the id: two CSMs sharing a name is
         ordinary, and filtering by label would silently merge their books."""

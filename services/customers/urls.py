@@ -10,6 +10,9 @@ urlpatterns = [
     # top-level /usage/ prefix: seats belong to a Customer, and this is a
     # rollup of customers, not of a thing with its own model.
     path("usage/", views.CustomerUsageView.as_view(), name="customer-usage"),
+    # Revenue Forecast's ARR bridge. Alongside usage/ and health/ for the same
+    # reason: it is a rollup of customers, not of a thing with its own model.
+    path("forecast/", views.CustomerForecastView.as_view(), name="customer-forecast"),
     path(
         "<int:customer_id>/accounts/",
         views.AccountListCreateView.as_view(),

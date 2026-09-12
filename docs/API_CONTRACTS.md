@@ -71,6 +71,7 @@ expects.
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Headlines (`ActivityFeed`'s "Headlines" sub-tab on both Details pages) | `customers` (`Headline` model) | 🟢 API-complete — see below. Model + two scoped list-create endpoints (per-Customer, per-Account), a flat detail view (GET/PATCH/DELETE by id), and a real generation endpoint that summarises the parent's own Notes/Emails/Tickets/Activities through `services.copilot`'s Anthropic client. Seeded. `HeadlinesTab.tsx` fetches real data through `fetchHeadlinesForCustomer`/`fetchHeadlinesForAccount`; the group pill and the "Data sources" footer now reflect real values rather than stored/decorative text. |
 | Dashboards — Health Overview | `customers` | 🟢 All five tabs (Triage/Divergence/Movement/Renewal Date/Controls) run on one `GET /api/v1/customers/health/` — see that endpoint and `HealthSnapshot` below. |
+| Dashboards — Revenue Forecast | `customers` | 🟢 Runs on `GET /api/v1/customers/forecast/` — the ARR bridge, with churn weighted by the shared rule in `churn.py`. See below. |
 | Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
@@ -1010,6 +1011,11 @@ not for the UI — Movement's own window selector re-slices client-side.
 
 Notes on the shape:
 
+* `risk_of_loss` / `risk_factors` are the shared churn rule
+  (`services/customers/churn.py`) applied to that row — the probability
+  the renewal is lost, and every contribution that produced it. Served
+  rather than computed in the browser so the Renewal Date tab and the
+  Revenue Forecast can't drift apart about the same account.
 * `owner_id` accompanies `owner_name` because the dashboard's Primary
   Owner filter keys on it. Two CSMs sharing a name is ordinary in a real
   org, and a filter keyed on the label would merge their books. Both are
@@ -1033,6 +1039,72 @@ Notes on the shape:
 * This is a **Customer-level** endpoint. Accounts carry their own health
   and renewal dates, and no tab reads them yet; adding them would change
   what "the book" means on every tab at once.
+
+### `GET /api/v1/customers/forecast/`
+
+Auth: `IsAuthenticated`. The ARR bridge behind the Revenue Forecast
+dashboard: **what is this book worth a year from now, and what moves
+it?**
+
+    opening ARR − expected churn − expected contraction + expected
+    expansion = forecast ARR
+
+Deliberately a different question from the Health Overview's Renewal
+Date tab. That one is operational (which renewals do I work this week,
+inside ninety days); this is financial, over a year, and it is the only
+place that reads renewals, open Risks and open Opportunities together.
+
+Query params: `horizon_days` (default 365, **clamped** to 30–1095 rather
+than rejected), plus the usual `owner` / `lifecycle` / `customer`.
+
+**Response `200`** — `bridge`, `scenarios`, `pipeline`, `swing`,
+`horizon_days`, `accounts`, `renewing_count`, `unpriced_count`,
+`currency`, `filters`.
+
+```json
+{
+  "bridge": {"opening_arr": 924700.0, "churn": 175430.0, "contraction": 33120.0,
+             "expansion": 131880.0, "forecast_arr": 848030.0,
+             "net_change": -76670.0, "nrr": 91.7},
+  "scenarios": {"worst": 150200.0, "likely": 848030.0, "best": 1189900.0},
+  "pipeline": [{"key": "negotiation", "name": "Negotiation", "open": 68400.0,
+                "weighted": 54720.0, "count": 3}],
+  "swing": [{"id": 14, "name": "Uber", "arr": 95000.0, "risk": 0.6,
+             "factors": [{"label": "Poor health", "points": 0.5}],
+             "churn_exposure": 57000.0, "risk_exposure": 0.0, "downside": 57000.0,
+             "expansion": 13440.0, "net": -43560.0, "renews_in_horizon": true}]
+}
+```
+
+The rules behind those numbers, each of which is a decision someone can
+disagree with in one place:
+
+* **Churn is weighted by `churn.py`** — the same rule the Renewal Date
+  tab prints on its own rows (served on the health payload as
+  `risk_of_loss` / `risk_factors`). A forecast that disagrees with the
+  work list is a forecast nobody trusts twice. It is a stated business
+  rule, not a fitted model: this product has no churn history to fit to.
+* **Only renewals inside the horizon can churn.** However bad an account
+  looks, it cannot be lost at a renewal that doesn't happen this year.
+  An overdue renewal *is* inside the window — the date passed and the
+  question is still open.
+* **Expansion is weighted by sales stage** (discovery 10% → negotiation
+  80% → closed won 100%) and **contraction by risk priority** (high 60%,
+  medium 30%, low 10%). Ordinary ladders, stated as assumptions.
+* **The same ARR is never lost twice.** An account both renewing badly
+  and carrying an open Risk contributes the *larger* of the two, never
+  the sum.
+* **The downside is capped at what the account pays.** A risk can be
+  logged with any MRR on it; without the cap the worst case came out
+  negative, which is a forecast saying the book will owe money.
+* **`worst` only loses what can be lost this year** — not every account,
+  because a floor nobody believes is a floor nobody uses. `best` closes
+  the whole open pipeline and loses nothing.
+* `nrr` is null rather than a fake 100% on an empty book.
+* **Not a time series.** `Opportunity` and `Risk` carry no close date, so
+  expansion can't be placed in a quarter; spreading pipeline evenly
+  across the year would be inventing the one thing a forecast is asked
+  for. The scenario range is how uncertainty is shown instead.
 
 ### `GET /api/v1/customers/usage/`
 

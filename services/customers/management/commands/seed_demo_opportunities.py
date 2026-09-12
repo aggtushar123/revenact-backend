@@ -159,6 +159,46 @@ DEMO_ACCOUNT_OPPORTUNITIES = [
 ]
 
 
+#: What an expansion is worth, as a share of what the account already pays per
+#: month. A land-and-expand deal is a slice of the existing contract, not a
+#: multiple of it — the literal MRRs below were written as standalone deal
+#: sizes and produced a book forecasting 277% net revenue retention, which
+#: reads as a broken dashboard rather than a good year.
+#:
+#: Keyed by stage so the pipeline has shape: early-stage deals are the ones
+#: people dream biggest about, late-stage ones have been negotiated down to
+#: what will actually sign.
+EXPANSION_SHARE_OF_ARR = {
+    "discovery": 0.35,
+    "qualification": 0.30,
+    "solution_validation": 0.25,
+    "proposal_price_review": 0.20,
+    "negotiation": 0.18,
+    "closed_won": 0.15,
+}
+
+#: For an account with no ARR recorded, since a share of nothing is nothing
+#: and a pipeline of zero teaches the demo nothing.
+FALLBACK_MRR = 1_500
+
+
+def scaled_mrr(parent, stage):
+    """Monthly value of an expansion on this parent, to the nearest hundred.
+
+    Takes a Customer or an Account and reads whichever ARR field that one
+    carries — an account-level expansion scales off the account's own contract,
+    not its parent company's.
+
+    Deterministic: the same parent and stage always produce the same figure, so
+    re-running the seed doesn't move every number on the Revenue Forecast.
+    """
+    annual = float(getattr(parent, "arr_billed_at_account", None) or getattr(parent, "arr", 0) or 0)
+    if annual <= 0:
+        return FALLBACK_MRR
+    monthly = annual / 12
+    return round(monthly * EXPANSION_SHARE_OF_ARR.get(stage, 0.25) / 100) * 100
+
+
 class Command(BaseCommand):
     help = "Seeds demo Opportunity rows under existing demo Customers/Accounts."
 
@@ -192,7 +232,9 @@ class Command(BaseCommand):
                 customer=customer,
                 title=row["title"],
                 defaults={
-                    "mrr": row["mrr"],
+                    # The literal in the row is ignored in favour of a figure
+                    # scaled to this account — see EXPANSION_SHARE_OF_ARR.
+                    "mrr": scaled_mrr(customer, row["stage"]),
                     "stage": row["stage"],
                     "priority": row["priority"],
                 },
@@ -223,7 +265,9 @@ class Command(BaseCommand):
                 account=account,
                 title=row["title"],
                 defaults={
-                    "mrr": row["mrr"],
+                    # The literal in the row is ignored in favour of a figure
+                    # scaled to this account — see EXPANSION_SHARE_OF_ARR.
+                    "mrr": scaled_mrr(account, row["stage"]),
                     "stage": row["stage"],
                     "priority": row["priority"],
                 },

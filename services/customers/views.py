@@ -17,7 +17,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from . import interactions, usage
+from . import forecast, interactions, usage
 from .headline_generation import NothingToSummarise, generate_headlines
 from .models import (
     Account,
@@ -213,9 +213,7 @@ class CustomerHealthView(generics.ListAPIView):
         # what the flow chart's columns depend on.
         earliest = timezone.localdate() - timedelta(days=31 * months)
 
-        snapshots = HealthSnapshot.objects.filter(captured_on__gte=earliest).order_by(
-            "captured_on"
-        )
+        snapshots = HealthSnapshot.objects.filter(captured_on__gte=earliest).order_by("captured_on")
         return (
             # Annotated: every row serialises `days_since_touch`, which the
             # Renewal tab ranks by. Without this each row runs its own
@@ -257,6 +255,54 @@ class CustomerHealthView(generics.ListAPIView):
                 # than one that says how many it dropped.
                 "currency": request.user.organisation.currency,
                 "unconverted_count": sum(1 for row in rows if row["arr"] is None),
+            }
+        )
+
+
+class CustomerForecastView(views.APIView):
+    """GET /api/v1/customers/forecast/ — the ARR bridge behind the Revenue
+    Forecast dashboard.
+
+    What is this book worth a year from now, and what moves it: opening
+    ARR, minus expected churn at renewal, minus expected contraction from
+    open risks, plus expected expansion from open opportunities. See
+    services/customers/forecast.py, which owns the arithmetic and states
+    every assumption in it.
+
+    Deliberately a different question from the Health Overview's Renewal
+    Date tab. That one is operational — which renewals do I work this
+    week, inside ninety days. This is financial, over a year, and it is
+    the only screen that reads renewals, risks and pipeline together.
+
+    The churn weighting comes from `churn.risk_of_loss`, the same rule
+    the Renewal tab prints on its own rows. A forecast that disagrees
+    with the work list is a forecast nobody trusts twice.
+
+    `?horizon_days=` moves the window (default 365, clamped to 30–1095).
+    The other three params match every other dashboard: `owner`,
+    `lifecycle`, `customer`.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        organisation = request.user.organisation
+        customers = list(forecast.filtered_customers(request.user, request.query_params))
+        horizon = forecast.horizon_days(request.query_params)
+        rows = forecast.build_rows(customers, organisation, horizon=horizon)
+
+        return Response(
+            {
+                "horizon_days": horizon,
+                "bridge": forecast.build_bridge(rows),
+                "scenarios": forecast.build_scenarios(rows),
+                "pipeline": forecast.pipeline_by_stage(customers, organisation),
+                "swing": forecast.swing_list(rows),
+                "accounts": len(rows),
+                "unpriced_count": sum(1 for row in rows if row.arr is None),
+                "renewing_count": sum(1 for row in rows if row.renews_in_horizon),
+                "currency": organisation.currency,
+                "filters": forecast.filter_options(request.user),
             }
         )
 

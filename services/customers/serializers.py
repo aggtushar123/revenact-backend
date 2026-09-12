@@ -5,6 +5,7 @@ from services.accounts.models import User
 from services.accounts.serializers import UserSerializer
 from services.fx_rates.conversion import convert_to_org_currency
 
+from . import churn
 from .models import (
     Account,
     Activity,
@@ -84,9 +85,7 @@ class HealthScoreField(serializers.Field):
 
     #: Bounds live on a real DecimalField so the range is enforced by the same
     #: machinery as everywhere else, rather than a hand-rolled comparison.
-    _override = serializers.DecimalField(
-        max_digits=3, decimal_places=1, min_value=0, max_value=10
-    )
+    _override = serializers.DecimalField(max_digits=3, decimal_places=1, min_value=0, max_value=10)
 
     def validate_empty_values(self, data):
         """Accept an explicit null as "clear the override".
@@ -180,9 +179,9 @@ class PulseWritesMixin:
     def _stamp_csm_pulse(self, validated_data, instance=None):
         if "csm_pulse_score" not in validated_data:
             return validated_data
-        unchanged = instance is not None and instance.csm_pulse_score == validated_data[
-            "csm_pulse_score"
-        ]
+        unchanged = (
+            instance is not None and instance.csm_pulse_score == validated_data["csm_pulse_score"]
+        )
         if not unchanged:
             validated_data["csm_pulse_modified_at"] = timezone.now()
         return validated_data
@@ -320,8 +319,13 @@ class HealthSnapshotSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HealthSnapshot
-        fields = ["captured_on", "health_score", "health_category", "csm_pulse_score",
-                  "ai_pulse_value"]
+        fields = [
+            "captured_on",
+            "health_score",
+            "health_category",
+            "csm_pulse_score",
+            "ai_pulse_value",
+        ]
 
 
 class CustomerHealthRowSerializer(serializers.ModelSerializer):
@@ -346,6 +350,34 @@ class CustomerHealthRowSerializer(serializers.ModelSerializer):
     history = HealthSnapshotSerializer(source="health_snapshots", many=True, read_only=True)
     arr = serializers.SerializerMethodField()
     days_since_touch = serializers.SerializerMethodField()
+    risk_of_loss = serializers.SerializerMethodField()
+    risk_factors = serializers.SerializerMethodField()
+
+    def _risk(self, customer):
+        """Computed once per row, cached on the instance: the field pair below
+        would otherwise run the same rule twice for every customer."""
+        if not hasattr(customer, "_risk_of_loss"):
+            customer._risk_of_loss = churn.risk_of_loss(
+                customer, days_since_touch=customer.health_inputs()["days_since_touch"]
+            )
+        return customer._risk_of_loss
+
+    def get_risk_of_loss(self, customer):
+        """Probability this renewal is lost, from `churn.py`.
+
+        Served rather than computed in the browser so the Renewal Date tab and
+        the Revenue Forecast cannot drift apart — they are the same claim about
+        the same account, and two implementations of it is a discrepancy with a
+        date on it. See that module on why this is a stated business rule and
+        not a fitted model.
+        """
+        return self._risk(customer)[0]
+
+    def get_risk_factors(self, customer):
+        """What produced that number, each with its own contribution. The
+        Renewal tab prints them on the row: a ranking nobody can interrogate is
+        a ranking nobody acts on."""
+        return self._risk(customer)[1]
 
     def get_arr(self, customer):
         """`arr_billed_at_account`, converted into the organisation's own
@@ -399,6 +431,8 @@ class CustomerHealthRowSerializer(serializers.ModelSerializer):
             # and calls out renewals nobody has touched.
             "arr",
             "days_since_touch",
+            "risk_of_loss",
+            "risk_factors",
             "health_score",
             "health_category",
             "csm_pulse_score",

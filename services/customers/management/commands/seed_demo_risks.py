@@ -120,6 +120,31 @@ DEMO_ACCOUNT_RISKS = [
 ]
 
 
+#: What a logged risk puts at stake, as a share of what the account pays per
+#: month, by how serious someone called it. A high-priority risk threatens most
+#: of the contract; a low one is a line item.
+#:
+#: Scaled rather than literal for the same reason the opportunity seeder is:
+#: the standalone figures here were larger than the accounts they hung off, and
+#: the Revenue Forecast's worst case came out **negative** — a forecast saying
+#: the book will owe money.
+RISK_SHARE_OF_ARR = {"high": 0.7, "medium": 0.35, "low": 0.15}
+
+#: For an account with no ARR recorded.
+FALLBACK_MRR = 800
+
+
+def scaled_mrr(parent, priority):
+    """Monthly ARR at stake, to the nearest hundred. Deterministic, and never
+    more than the account is worth — the forecast caps it anyway, but a seed
+    that needs capping is a seed that teaches the wrong shape."""
+    annual = float(getattr(parent, "arr_billed_at_account", None) or getattr(parent, "arr", 0) or 0)
+    if annual <= 0:
+        return FALLBACK_MRR
+    monthly = annual / 12
+    return round(monthly * RISK_SHARE_OF_ARR.get(priority, 0.35) / 100) * 100
+
+
 class Command(BaseCommand):
     help = "Seeds demo Risk rows under existing demo Customers/Accounts."
 
@@ -153,7 +178,9 @@ class Command(BaseCommand):
                 customer=customer,
                 title=row["title"],
                 defaults={
-                    "mrr": row["mrr"],
+                    # The literal is ignored in favour of a figure scaled to
+                    # this account — see RISK_SHARE_OF_ARR.
+                    "mrr": scaled_mrr(customer, row["priority"]),
                     "stage": row["stage"],
                     "priority": row["priority"],
                 },
@@ -184,7 +211,8 @@ class Command(BaseCommand):
                 account=account,
                 title=row["title"],
                 defaults={
-                    "mrr": row["mrr"],
+                    # See RISK_SHARE_OF_ARR — scaled to the account itself.
+                    "mrr": scaled_mrr(account, row["priority"]),
                     "stage": row["stage"],
                     "priority": row["priority"],
                 },
