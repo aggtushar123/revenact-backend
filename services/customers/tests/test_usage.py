@@ -17,7 +17,7 @@ from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
 from services.customers import usage
-from services.customers.models import Customer
+from services.customers.models import Customer, Product
 
 
 class BandTests(SimpleTestCase):
@@ -204,8 +204,9 @@ class UsageStatsTests(APITestCase):
         self.assertEqual(names, [key for key, _l, _f, _c in usage.BANDS])
 
     def test_adoption_counts_primary_plus_additional_products(self):
-        self._customer("Single", 50, 100, primary_product="Product A")
-        self._customer("Broad", 50, 100, primary_product="Product A", additional_products_count=3)
+        product = Product.objects.create(organisation=self.org, name="Product A")
+        self._customer("Single", 50, 100, primary_product=product)
+        self._customer("Broad", 50, 100, primary_product=product, additional_products_count=3)
 
         adoption = {
             row["key"]: row["accounts"] for row in self.client.get(self.url).data["adoption"]

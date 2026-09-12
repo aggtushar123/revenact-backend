@@ -1,10 +1,15 @@
 """Product Usage: one row per product, compared against each other.
 
 The tests are mostly about *attribution* — which customers a product's figures
-speak for — because that is the only thing this screen can get badly wrong.
-`primary_product` names one product per customer, so every number here is "the
-customers this product leads", and a reader who takes it for "revenue split
-across products" will double-count nothing and under-count plenty.
+speak for — because that is the only thing this screen can get badly wrong. A
+customer records one product, so every number here is "the customers this
+product leads", and a reader who takes it for "revenue split across products"
+will double-count nothing and under-count plenty.
+
+Products became rows in migration 0030. What used to be tested here — folding
+"Product A" and "product a" together and counting the spellings — is now the
+database's job, and the tests for it sit on the catalogue endpoints in
+test_products.py instead.
 """
 
 from datetime import timedelta
@@ -17,7 +22,7 @@ from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
 from services.customers import product_usage
-from services.customers.models import Customer, Ticket
+from services.customers.models import Customer, Product, Ticket
 
 
 class AverageTests(TestCase):
@@ -50,12 +55,19 @@ class ProductUsageTests(APITestCase):
         self.today = timezone.localdate()
         self.client.force_authenticate(self.csm)
 
+    def _product(self, name, **overrides):
+        """A product on this tenant's own list, created once per name."""
+        existing = Product.objects.filter(organisation=self.org, name__iexact=name).first()
+        if existing:
+            return existing
+        return Product.objects.create(organisation=self.org, name=name, **overrides)
+
     def _customer(self, name, product="Product A", arr=100_000, **overrides):
         return Customer.objects.create(
             organisation=self.org,
             name=name,
             owner=overrides.pop("owner", self.csm),
-            primary_product=product,
+            primary_product=self._product(product) if product else None,
             arr_billed_at_account=Decimal(arr),
             **overrides,
         )
@@ -78,11 +90,22 @@ class ProductUsageTests(APITestCase):
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_another_owners_book_is_invisible(self):
+    def test_another_owners_customers_are_invisible_even_on_a_shared_product(self):
+        """The rows are the tenant's catalogue — every product the organisation
+        sells, because that list is not private to a book. The *customers* are
+        scoped, so another owner's product reads zero rather than vanishing,
+        and the screen calls that "nobody in this selection" rather than
+        "unsold"."""
         self._customer("Mine", "Product A")
         self._customer("Theirs", "Product B", owner=self.other)
 
-        self.assertEqual(list(self._rows()), ["Product A"])
+        data = self.client.get(self.url).data
+        rows = {row["product"]: row for row in data["rows"]}
+
+        self.assertEqual(rows["Product A"]["customers"], 1)
+        self.assertEqual(rows["Product B"]["customers"], 0)
+        self.assertEqual(data["kpis"]["customers"], 1)
+        self.assertEqual(data["kpis"]["without_customers"], ["Product B"])
 
     # ── attribution: the thing this screen must not hide ─────────────
 
@@ -119,31 +142,63 @@ class ProductUsageTests(APITestCase):
 
         self.assertIn(product_usage.NO_PRODUCT, rows)
         self.assertEqual(rows[product_usage.NO_PRODUCT]["customers"], 1)
-        self.assertEqual(rows[product_usage.NO_PRODUCT]["spellings"], 0)
+        self.assertIsNone(rows[product_usage.NO_PRODUCT]["id"])
         self.assertEqual(sum(row["share"] for row in rows.values()), 100.0)
 
-    # ── free text, the same problem as churn_reason ───────────────────
+    # ── products are rows now ────────────────────────────────────────
 
-    def test_spellings_of_one_product_fold_into_one_row(self):
+    def test_one_product_is_one_row_whatever_anybody_typed(self):
+        """What this replaced: the dashboard folded "Product A" and "product a"
+        at read time and reported how many spellings it had merged. The
+        database refuses the second spelling now, so there is nothing to
+        fold."""
         self._customer("A", "Product A", 10_000)
-        self._customer("B", "  product a ", 20_000)
+        self._customer("B", "product a", 20_000)
 
         rows = self.client.get(self.url).data["rows"]
 
         self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["product"], "Product A")
         self.assertEqual(rows[0]["customers"], 2)
         self.assertEqual(rows[0]["arr"], 30_000.0)
-        # Reported so a reader can see the folding happen, and argue for
-        # choices on the field.
-        self.assertEqual(rows[0]["spellings"], 2)
 
-    def test_names_only_a_human_would_merge_stay_separate(self):
-        # "Product A" and "Product A Pro" differ by more than case. Nothing
-        # here can merge them honestly.
+    def test_a_row_carries_its_product_id_so_the_screen_can_link_to_it(self):
+        customer = self._customer("A", "Product A")
+
+        rows = self._rows()
+
+        self.assertEqual(rows["Product A"]["id"], customer.primary_product_id)
+        self.assertIsNotNone(rows["Product A"]["id"])
+
+    def test_a_product_nobody_has_bought_still_gets_a_row(self):
+        """Only sayable because products are rows. A free-text field has no
+        entry for a product with no customers, so "we sell this and nobody is
+        on it" was invisible."""
         self._customer("A", "Product A")
-        self._customer("B", "Product A Pro")
+        self._product("Product Nobody Wants")
 
-        self.assertEqual(len(self.client.get(self.url).data["rows"]), 2)
+        data = self.client.get(self.url).data
+        rows = {row["product"]: row for row in data["rows"]}
+
+        self.assertEqual(rows["Product Nobody Wants"]["customers"], 0)
+        self.assertEqual(rows["Product Nobody Wants"]["arr"], 0.0)
+        # And no churn rate: no customers is not a perfect retention record.
+        self.assertIsNone(rows["Product Nobody Wants"]["churn_rate"])
+        self.assertEqual(data["kpis"]["without_customers"], ["Product Nobody Wants"])
+
+    def test_a_product_that_has_only_ever_lost_customers_is_not_listed_as_empty(self):
+        # It had customers. That is the opposite of nobody being on it, and
+        # the churn figures are the point of the row.
+        self._customer("Gone", "Dead Product", churn_date=self.today)
+
+        self.assertEqual(self.client.get(self.url).data["kpis"]["without_customers"], [])
+
+    def test_another_tenants_products_are_not_on_this_list(self):
+        other_org = Organisation.objects.create(name="Other Inc", currency="USD")
+        Product.objects.create(organisation=other_org, name="Their Product")
+        self._customer("Mine", "Product A")
+
+        self.assertEqual(list(self._rows()), ["Product A"])
 
     # ── churn is half the point ──────────────────────────────────────
 
@@ -297,44 +352,73 @@ class ProductUsageTests(APITestCase):
 
     # ── filters ──────────────────────────────────────────────────────
 
-    def test_filters_narrow_the_book(self):
+    def test_filters_narrow_the_customers_not_the_catalogue(self):
         self._customer("Target", "Product A", lifecycle_stage=Customer.LifecycleStage.LIVE)
         self._customer("Other", "Product B", owner=self.other)
 
-        self.assertEqual(
-            list(self._rows(lifecycle=Customer.LifecycleStage.LIVE)),
-            ["Product A"],
-        )
-        self.assertEqual(list(self._rows(owner=self.csm.id)), ["Product A"])
+        by_stage = self._rows(lifecycle=Customer.LifecycleStage.LIVE)
+        self.assertEqual(by_stage["Product A"]["customers"], 1)
+        self.assertEqual(by_stage["Product B"]["customers"], 0)
 
-    def test_the_product_filter_matches_whatever_spelling_was_typed(self):
-        self._customer("A", "Product A")
+        by_owner = self._rows(owner=self.csm.id)
+        self.assertEqual(by_owner["Product A"]["customers"], 1)
+        self.assertEqual(by_owner["Product B"]["customers"], 0)
+
+    def test_the_product_filter_takes_an_id(self):
+        target = self._customer("A", "Product A")
         self._customer("B", "Product B")
 
-        self.assertEqual(list(self._rows(product="product a")), ["Product A"])
+        rows = self._rows(product=target.primary_product_id)
+
+        # Only the selected product has customers; the rest of the catalogue
+        # still lists, at zero — the filter narrows the book, not the list of
+        # products the tenant sells.
+        self.assertEqual(rows["Product A"]["customers"], 1)
+        self.assertEqual(rows["Product B"]["customers"], 0)
 
     def test_customers_with_no_product_can_be_filtered_to(self):
         self._customer("Known", "Product A")
         self._customer("Unknown", "")
 
-        self.assertEqual(
-            list(self._rows(product=product_usage.NO_PRODUCT)), [product_usage.NO_PRODUCT]
-        )
+        rows = self._rows(product=product_usage.NO_PRODUCT_FILTER)
 
-    def test_the_product_dropdown_is_built_from_the_book_because_there_is_no_product_table(self):
+        self.assertEqual(rows[product_usage.NO_PRODUCT]["customers"], 1)
+        self.assertEqual(rows["Product A"]["customers"], 0)
+
+    def test_the_product_dropdown_comes_from_the_tenants_own_list(self):
+        """Not from the book, as it used to: the dashboard and the Add/Edit
+        form now offer the same products, so they cannot disagree about what
+        exists."""
         self._customer("A", "Product B")
-        self._customer("B", "Product A")
-        self._customer("C", "")
+        self._product("Product A")
 
         options = self.client.get(self.url).data["filters"]["products"]
 
-        self.assertEqual(
-            [row["name"] for row in options], ["Product A", "Product B", product_usage.NO_PRODUCT]
+        self.assertEqual([row["name"] for row in options], ["Product A", "Product B"])
+
+    def test_the_dropdown_offers_no_product_only_when_somebody_has_none(self):
+        self._customer("Known", "Product A")
+
+        self.assertNotIn(
+            product_usage.NO_PRODUCT,
+            [row["name"] for row in self.client.get(self.url).data["filters"]["products"]],
         )
 
-    def test_churned_customers_keep_their_product_in_the_dropdown(self):
-        self._customer("Gone", "Dead Product", churn_date=self.today)
+        self._customer("Unknown", "")
 
-        options = self.client.get(self.url).data["filters"]["products"]
+        self.assertIn(
+            product_usage.NO_PRODUCT,
+            [row["name"] for row in self.client.get(self.url).data["filters"]["products"]],
+        )
 
-        self.assertIn("Dead Product", [row["name"] for row in options])
+    def test_a_retired_product_stays_in_the_dropdown_while_anyone_is_on_it(self):
+        """Its history is still on this screen, so being unable to filter to it
+        would be strange. A retired product nobody is on drops out."""
+        self._customer("Still on it", "Legacy", churn_date=self.today)
+        Product.objects.filter(name="Legacy").update(is_active=False)
+        self._product("Retired and empty", is_active=False)
+
+        names = [row["name"] for row in self.client.get(self.url).data["filters"]["products"]]
+
+        self.assertIn("Legacy", names)
+        self.assertNotIn("Retired and empty", names)

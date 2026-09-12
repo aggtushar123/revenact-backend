@@ -22,6 +22,7 @@ from services.customers.models import (
     HealthSnapshot,
     Note,
     Opportunity,
+    Product,
     Risk,
     Survey,
     Task,
@@ -45,6 +46,7 @@ class CustomerListCreateTests(APITestCase):
 
     def setUp(self):
         self.org = Organisation.objects.create(name="Acme Inc")
+        self.product = Product.objects.create(organisation=self.org, name="Product A")
         self.admin = User.objects.create_user(
             email="alice@acme.io",
             password="supersecret1",
@@ -122,7 +124,9 @@ class CustomerListCreateTests(APITestCase):
                 "implementation_fee": "70000.00",
                 "total_contract_value": "179500.00",
                 "total_forecasted_renewal_revenue": "188475.00",
-                "primary_product": "Product A",
+                # An id now, not a name: products are the tenant's own rows
+                # (see Product's own docstring).
+                "primary_product": self.product.id,
                 "additional_products_count": 3,
                 "top_source_channel": "Talent Pool Re-engage",
                 "total_contracted_seats": 560,
@@ -5566,7 +5570,7 @@ class HealthRubricAPITests(APITestCase):
             ai_pulse_value=4,
             total_active_seats=80,
             total_contracted_seats=100,
-            primary_product="Product A",
+            primary_product=Product.objects.create(organisation=self.org, name="Product A"),
             additional_products_count=1,
         )
         customer.recalculate_health()
@@ -5595,7 +5599,7 @@ class HealthRubricAPITests(APITestCase):
     def test_score_is_recalculated_on_create(self):
         response = self.client.post(
             self.url,
-            {"name": "Initech", "ai_pulse_value": 1, "primary_product": ""},
+            {"name": "Initech", "ai_pulse_value": 1, "primary_product": None},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)

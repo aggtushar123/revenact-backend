@@ -160,7 +160,7 @@ class UsageRow:
         # Primary counts as one; `additional_products_count` is null when
         # nobody recorded it, which is not the same as "no extra products" —
         # but for a breadth count the honest floor is what we can see.
-        self.products = (1 if customer.primary_product else 0) + (
+        self.products = (1 if customer.primary_product_id else 0) + (
             customer.additional_products_count or 0
         )
 

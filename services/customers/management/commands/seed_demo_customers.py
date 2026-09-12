@@ -23,7 +23,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Customer
+from services.customers.models import Customer, Product
 
 # One entry per company. `owner_email` is resolved to a same-organisation
 # User at runtime (None leaves the customer unassigned, same as the mock's
@@ -598,6 +598,14 @@ class Command(BaseCommand):
                 continue
 
             data = {k: v for k, v in row.items() if k not in ("name", "owner_email")}
+            # The literals above still name a product as a string, because
+            # that is what reads well in a fixture. Products are rows since
+            # migration 0030, so the name is resolved to one here — created
+            # on first use, matched case-insensitively after that, which is
+            # the same rule the database enforces.
+            product_name = data.pop("primary_product", "")
+            if product_name:
+                data["primary_product"] = self._product(org, product_name)
             if data.get("csm_pulse_score") is not None:
                 data["csm_pulse_modified_at"] = csm_pulse_stamp(index)
             owner_email = row.get("owner_email")
@@ -624,6 +632,12 @@ class Command(BaseCommand):
                 f"rolled {rolled} renewal date(s) forward, left {overdue} overdue."
             )
         )
+
+    def _product(self, org, name):
+        existing = Product.objects.filter(organisation=org, name__iexact=name.strip()).first()
+        if existing:
+            return existing
+        return Product.objects.create(organisation=org, name=name.strip())
 
     def _spread_renewals(self, org):
         """Move every past renewal date to its next anniversary, keeping a

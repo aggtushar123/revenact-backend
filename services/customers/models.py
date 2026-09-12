@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import OuterRef, Subquery
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Lower
 
 from services.accounts.models import Organisation
 
@@ -75,6 +75,58 @@ def ai_pulse_category(value):
         if value >= threshold:
             return category
     return Customer.AIPulseScore.HIGH_RISK
+
+
+class Product(models.Model):
+    """What this tenant sells.
+
+    `Customer.primary_product` was free text until migration 0030, for the
+    same reason `churn_reason` was: nobody had decided where the list of
+    products lived. So the Product Usage dashboard grouped "Product A" and
+    "product a" by folding case, reported how many spellings it had folded,
+    and could never have merged "Integrations Module" with "Integrations
+    module (EU)".
+
+    Unlike churn reasons, products cannot be a `TextChoices` enum: every
+    tenant sells something different, and a list compiled into the code would
+    be this organisation's list imposed on all of them. So they are rows,
+    scoped to an organisation like everything else here.
+
+    Uniqueness is **case-insensitive per organisation**, which is the entire
+    point: "Product A" and "product a" cannot both exist, so they cannot both
+    appear on a dashboard.
+
+    Retire a product with `is_active=False` rather than deleting it.
+    `Customer.primary_product` is `PROTECT`ed, so a product customers are
+    still on cannot be deleted at all — the alternative is a dashboard that
+    quietly loses the history of what those customers bought.
+    """
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="products", on_delete=models.CASCADE
+    )
+    name = models.CharField(max_length=255)
+    is_active = models.BooleanField(
+        default=True,
+        help_text="False retires a product from the pickers without touching "
+        "the customers already on it, so last year's figures still say what "
+        "they said.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                Lower("name"),
+                "organisation",
+                name="product_name_unique_per_organisation_ci",
+            )
+        ]
+
+    def __str__(self):
+        return self.name
 
 
 class Customer(models.Model):
@@ -293,7 +345,21 @@ class Customer(models.Model):
 
     # --- Product & usage -----------------------------------------------------------
 
-    primary_product = models.CharField(max_length=255, blank=True)
+    primary_product = models.ForeignKey(
+        "Product",
+        related_name="primary_customers",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        help_text="The product this customer is led by, from the tenant's own "
+        "Product table — free text until migration 0030. Null means nobody "
+        "recorded one. PROTECT rather than SET_NULL: losing the record of what "
+        "a customer bought is worse than being made to retire the product "
+        "instead (Product.is_active). Only one product per customer is "
+        "recorded, which is the limit the Product Usage dashboard states on "
+        "screen; additional_products_count below counts the rest without "
+        "naming them.",
+    )
     additional_products_count = models.PositiveSmallIntegerField(null=True, blank=True)
     top_source_channel = models.CharField(max_length=255, blank=True)
     total_contracted_seats = models.PositiveIntegerField(null=True, blank=True)
@@ -405,7 +471,10 @@ class Customer(models.Model):
             "ai_pulse_value": self.ai_pulse_value,
             "active_seats": self.total_active_seats,
             "contracted_seats": self.total_contracted_seats,
-            "primary_product": self.primary_product,
+            # Only whether there is one, not which: the rubric counts breadth.
+            # Reading the id keeps a list page from fetching every Product row
+            # to ask a yes/no question.
+            "primary_product": bool(self.primary_product_id),
             "additional_products_count": self.additional_products_count,
             "open_ticket_count": open_ticket_count,
         }

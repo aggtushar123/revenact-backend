@@ -30,6 +30,8 @@ from services.customers.views import (
     InteractionStatsView,
     OpportunityDetailView,
     OpportunityListView,
+    ProductDetailView,
+    ProductListView,
     RiskDetailView,
     RiskListView,
     SurveyDetailView,
@@ -53,6 +55,13 @@ urlpatterns = [
     # `accounts` app, mounted at /auth/ to match the frontend's features/auth/.
     path("api/v1/auth/", include("services.accounts.urls")),
     path("api/v1/customers/", include("services.customers.urls")),
+    # Product lives in the `customers` app but is mounted at its own
+    # top-level prefix, for two reasons: it is organisation
+    # configuration rather than one customer's sub-resource, and
+    # /api/v1/customers/products/ already means the Product Usage
+    # dashboard's rollup. Same treatment as Contact below.
+    path("api/v1/products/<int:pk>/", ProductDetailView.as_view(), name="product-detail"),
+    path("api/v1/products/", ProductListView.as_view(), name="product-list"),
     # Contact lives in the `customers` app (services/customers/models.py)
     # but is mounted at its own top-level /api/v1/contacts/ prefix rather
     # than nested under /customers/ — it's the one Contact view that spans

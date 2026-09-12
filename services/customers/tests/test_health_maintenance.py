@@ -11,7 +11,7 @@ from services.accounts.models import Organisation, User
 from services.customers.management.commands.run_health_maintenance import (
     last_completed_month_end,
 )
-from services.customers.models import Customer, HealthSnapshot
+from services.customers.models import Customer, HealthSnapshot, Product
 
 
 class LastCompletedMonthEndTests(TestCase):
@@ -46,7 +46,7 @@ class RunHealthMaintenanceTests(TestCase):
             ai_pulse_value=2,
             total_active_seats=50,
             total_contracted_seats=100,
-            primary_product="Product A",
+            primary_product=Product.objects.create(organisation=self.org, name="Product A"),
         )
         self.month_end = last_completed_month_end()
 

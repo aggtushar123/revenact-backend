@@ -18,6 +18,7 @@ from .models import (
     HealthSnapshot,
     Note,
     Opportunity,
+    Product,
     Risk,
     Survey,
     Task,
@@ -214,6 +215,14 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
     # copy of the taxonomy and drift from it. Blank stays blank: "nobody
     # recorded why" is not a reason.
     churn_reason_display = serializers.CharField(source="get_churn_reason_display", read_only=True)
+    # Products are the tenant's own rows, so this is an id on write and a name
+    # on read — a screen that only wants to print what they bought shouldn't
+    # have to fetch the product list to find out. Validated against the
+    # caller's organisation in validate_primary_product, the same shape as
+    # owner_id: a PrimaryKeyRelatedField's queryset spans every tenant.
+    primary_product_name = serializers.CharField(
+        source="primary_product.name", read_only=True, default=""
+    )
 
     owner = UserSerializer(read_only=True)
     owner_id = serializers.PrimaryKeyRelatedField(
@@ -268,6 +277,7 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
             "total_contract_value",
             "total_forecasted_renewal_revenue",
             "primary_product",
+            "primary_product_name",
             "additional_products_count",
             "top_source_channel",
             "total_contracted_seats",
@@ -283,6 +293,12 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
             "is_archived",
         ]
         read_only_fields = ["created_at", "updated_at", "csm_pulse_modified_at"]
+
+    def validate_primary_product(self, product):
+        request = self.context["request"]
+        if product is not None and product.organisation_id != request.user.organisation_id:
+            raise serializers.ValidationError("Product must belong to your own organisation.")
+        return product
 
     def validate_owner_id(self, owner):
         request = self.context["request"]
@@ -1019,3 +1035,56 @@ class HeadlineSerializer(serializers.ModelSerializer):
                 {"period_start": "The period can't start after it ends."}
             )
         return attrs
+
+
+class ProductSerializer(serializers.ModelSerializer):
+    """One of the tenant's own products.
+
+    `customers` is the reason Delete is refused rather than cascading: it says
+    how many customers are recorded against this product, and the answer is
+    also the answer to "may I delete it?".
+    """
+
+    customers = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Product
+        fields = ["id", "name", "is_active", "customers", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
+
+    def get_customers(self, product):
+        """How many customers this product leads, annotation-first.
+
+        Counted in one query for a list page (see ProductListView) and by
+        asking for a single row, so neither path runs a query per product.
+        """
+        if hasattr(product, "customer_count"):
+            return product.customer_count
+        return product.primary_customers.count()
+
+    def validate_name(self, name):
+        """One product per name per organisation, case-insensitively.
+
+        The database enforces it too (Product's own constraint), but a 500 on a
+        duplicate is not an answer — this is the message that tells somebody
+        the product they are adding is the one already in the list under a
+        different capitalisation.
+        """
+        cleaned = name.strip()
+        if not cleaned:
+            raise serializers.ValidationError("A product needs a name.")
+
+        organisation = self.context["request"].user.organisation
+        clash = Product.objects.filter(organisation=organisation, name__iexact=cleaned)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(
+                f'"{clash.first().name}" already exists — products are unique per '
+                "organisation, ignoring case."
+            )
+        return cleaned
+
+    def create(self, validated_data):
+        validated_data["organisation"] = self.context["request"].user.organisation
+        return super().create(validated_data)

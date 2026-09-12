@@ -75,6 +75,7 @@ expects.
 | Dashboards — Activity Tracking | `customers` | 🟢 Runs on `GET /api/v1/customers/activity/` — coverage, cadence and follow-through. See below. |
 | Dashboards — Revenue Forecast | `customers` | 🟢 Runs on `GET /api/v1/customers/forecast/` — the ARR bridge, with churn weighted by the shared rule in `churn.py`. See below. |
 | Dashboards — Usage Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/customers/usage/` — seat utilisation, shelfware and expansion capacity. See below. |
+| Products (catalogue behind `primary_product`) | `customers` (`Product` model) | 🟢 Full CRUD, API-complete — see below. `GET/POST /api/v1/products/` and `GET/PATCH/DELETE /api/v1/products/<id>/`, mounted at their own top-level prefix (a product is org configuration, and `/customers/products/` already means the Product Usage rollup). Case-insensitively unique per organisation, deliberately **not** scoped by ownership, retirable via `is_active`, and un-deletable while customers are on it. No Settings UI yet — the Product Usage filter bar and the customer write path use it; adding/renaming/retiring is API-only for now. |
 | Dashboards — Product Usage | `customers` | 🟢 Runs on `GET /api/v1/customers/products/` — one row per product: ARR led, health mix, utilisation, satisfaction, support burden and churn. Attribution is by `primary_product` only, and the response says so. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
@@ -552,7 +553,15 @@ system, hence two different names — never call a `Customer` an
   `total_forecasted_renewal_revenue`.
 - **Product/usage**: `primary_product` + `additional_products_count` (the
   mock's combined `productsUtilized: {primary, additional}` object,
-  split into two real columns), `top_source_channel`,
+  split into two real columns). `primary_product` is a **FK to
+  `Product`** since migration 0030 — an id on write, with a read-only
+  `primary_product_name` beside it so a screen that only prints what
+  they bought needn't fetch the catalogue. It was free text before that,
+  which is why the Product Usage dashboard used to report how many
+  spellings it had folded. `PROTECT`ed: a product customers are on
+  cannot be deleted, only retired. `additional_products_count` stays a
+  bare integer — nobody records *which* other products a customer has,
+  which is the limit Product Usage states on screen. `top_source_channel`,
   `total_contracted_seats`, `total_active_seats`,
   `seat_utilization_percentage` (**derived** from those two — active ÷
   contracted × 100, `None` if contracted is 0/unset — this one *is* a
@@ -1341,6 +1350,90 @@ The rules worth knowing before reading any of those numbers:
   and are counted in `unpriced_count`.
 
 
+### Models — `Product`
+
+What this tenant sells. One row per product per organisation, **unique
+case-insensitively** — which is the entire point: "Product A" and
+"product a" cannot both exist, so they cannot both appear on a
+dashboard.
+
+`Customer.primary_product` was free text until migration 0030, for the
+same reason `churn_reason` was: nobody had decided where the list of
+products lived. So Product Usage grouped by folding case, reported how
+many spellings it had folded, and could never have merged "Integrations
+Module" with "Integrations module (EU)".
+
+**Why a table and not a `TextChoices` enum**, unlike `churn_reason`:
+every tenant sells something different. A list compiled into the code
+would be one organisation's product line imposed on all of them. Churn
+reasons are universal; products are not.
+
+Fields: `organisation`, `name`, `is_active`, `created_at`,
+`updated_at`. Migration `0030` creates the model, `0031` adds the FK
+beside the text column, `0032` fills it (one product per distinct name
+per organisation, folded on case, the **most common** spelling winning
+the row and ties broken alphabetically so the same database always
+migrates the same way), and `0033` drops the text column and renames the
+FK into its place. Four steps rather than one because a single
+`makemigrations` swap would drop the column and add an empty FK,
+silently losing every customer's product.
+
+**Retiring vs deleting**: `is_active=False` takes a product out of the
+pickers and leaves every figure ever reported against it intact.
+Deleting is for a product added by mistake, and is refused while any
+customer is recorded against it — `Customer.primary_product` is
+`PROTECT`ed, so the database refuses too; the view catches it so the
+caller gets the count and the alternative instead of a 500.
+
+### `GET /api/v1/products/`, `POST /api/v1/products/`
+
+Auth: `IsAuthenticated`. The tenant's own product catalogue, ordered by
+name, unpaginated (a catalogue is tens of rows and every consumer is a
+dropdown that wants all of them).
+
+Mounted at its own top-level prefix rather than under `/customers/`, for
+two reasons: a product is organisation configuration rather than one
+customer's sub-resource, and `/api/v1/customers/products/` already means
+the Product Usage dashboard's rollup. Same treatment as `Contact`.
+
+**Deliberately not scoped by ownership**, unlike every other list in
+this app. A product list is the shape of the business: a CSM who cannot
+see "Product C" cannot record a customer on it, and the pickers on the
+Add/Edit form would differ per user. Retired products are returned too —
+the caller needs to see one to bring it back, and the pickers filter on
+`is_active` rather than on the endpoint.
+
+**Response `200`** — a bare list. `customers` counts the customers led
+by that product, annotated in one query for the whole page:
+
+```json
+[{"id": 1, "name": "Product A", "is_active": true, "customers": 5,
+  "created_at": "2026-09-12T13:51:02Z", "updated_at": "2026-09-12T13:51:02Z"}]
+```
+
+**POST** takes `{"name": "..."}` (and optionally `is_active`). Names are
+trimmed, and a duplicate is refused with a `400` naming the product it
+clashes with — the message that tells somebody the product they're
+adding is already on the list under a different capitalisation. A blank
+name is refused.
+
+### `GET/PATCH/DELETE /api/v1/products/<id>/`
+
+Auth: `IsAuthenticated`, scoped to the caller's own organisation (another
+tenant's product is a `404`, not a `403`).
+
+**Renaming is cheap and deliberately so**: the customers point at the
+row, so fixing a typo fixes it everywhere at once. That is the whole
+difference from the free-text field this replaced, where a rename meant
+editing every customer and hoping. A rename that collides with another
+product is refused, case-insensitively; a product may of course keep its
+own name while something else about it changes.
+
+**DELETE is refused with a `400` while customers are recorded against
+it**, giving the count and pointing at `is_active=false` instead.
+Churned customers count — the Product Usage dashboard's churn figures
+are the reason that row exists.
+
 ### `GET /api/v1/customers/products/`
 
 Auth: `IsAuthenticated`. One row per product, behind the Product Usage
@@ -1355,18 +1448,20 @@ product manager opens, and it answers the question nothing else here asks
 — is one of these products quietly responsible for most of the churn?
 
 **The limitation that has to be on the screen, not just in this doc.**
-`Customer.primary_product` names **one** product.
+A customer records **one** product.
 `additional_products_count` is a bare integer — nobody recorded *which*
 other products a customer has, so there is nothing to attribute them to.
 Every figure below therefore counts customers this product **leads**, and
 a customer on three products is counted once, under their primary one.
 The response carries `attribution` so the UI states this above the
 numbers rather than leaving a reader to assume revenue has been split
-across products. Doing it properly needs a `Product` model and a
-per-customer join — worth having, and not something a dashboard can
-invent.
+across products. The `Product` model arrived in migration 0030; closing
+this gap needs the other half — a per-customer join naming the rest —
+and the data to fill it, which nobody has ever collected. A count is all
+that was recorded.
 
-Params: `owner`, `lifecycle`, `product`. Like the Customer Overview and
+Params: `owner`, `lifecycle`, `product` (a `Product` id, or `none` for
+customers with no product recorded). Like the Customer Overview and
 unlike the working dashboards, this reads the whole visible book
 including churned customers: churn by product is half of what the screen
 is for, and a product whose customers all left would otherwise read as a
@@ -1378,7 +1473,7 @@ product with no problems.
 ```json
 {
   "rows": [{
-    "product": "Product A", "spellings": 1,
+    "id": 1, "product": "Product A",
     "customers": 4, "arr": 443600.0, "share": 64.4, "unpriced": 0,
     "utilisation": 75.1, "contracted_seats": 1040, "active_seats": 781,
     "health": {"good": 4, "average": 0, "poor": 0},
@@ -1393,7 +1488,8 @@ product with no problems.
     "weakest": {"product": "Product B", "unhealthy_arr": 203000.0,
                 "healthy_share": 0.0, "customers": 3, "healthy": 0},
     "worst_churn": {"product": "Integrations Module",
-                    "churned": 1, "churned_arr": 152600.0}
+                    "churned": 1, "churned_arr": 152600.0},
+    "without_customers": []
   },
   "attribution": {"basis": "primary_product", "note": "Every figure counts customers whose *primary* product this is. ..."}
 }
@@ -1420,21 +1516,36 @@ The decisions behind those numbers:
   (`"No product recorded"`). "Nobody wrote down what they bought" is a
   finding about the CRM, and dropping those rows would make the shares
   add up to less than 100% with nothing on screen to explain it.
-* **`primary_product` is free text, and reported as such.** Rows fold on
-  case and surrounding whitespace, and `spellings` counts how many raw
-  strings went into each — the same treatment, and the same argument for
-  giving the field choices, as `churn_reason` in the Customer Overview.
-  "Product A" and "Product A Pro" differ by more than case and stay
-  separate, because nothing here can merge them honestly.
+* **Products are rows, not spellings.** Until migration 0030
+  `primary_product` was free text, this endpoint grouped by folding case
+  and whitespace, and each row carried a `spellings` count so a reader
+  could see the folding doing the work — "Product A" and "product a"
+  would not group themselves, and "Integrations Module" and
+  "Integrations module (EU)" never could. It groups by id now, and
+  `spellings` is gone. Each row carries the product `id` (null for the
+  unrecorded bucket).
+* **Every product in the tenant's catalogue gets a row, even at zero.**
+  A free-text field has no entry for a product nobody bought, so "we
+  sell this and nobody is on it" was unsayable; `kpis.without_customers`
+  names them. It is *not* called "unsold": the rows are the whole
+  catalogue while the customers are scoped to the caller's own book and
+  whatever filters are set, so under owner scoping a zero means "nobody
+  in this selection". A product with no active customers but some
+  churned ones is not in that list — it had customers, and the churn
+  figures are the point of its row.
 * **`churn_rate` is over everyone the product ever led** (active +
   churned), and a product with no active customers left still gets a row
   — that is the most important row on the screen when it happens, and
   both an ARR sort and a customer-count filter would have hidden it.
   Archiving is neither churn nor active, for the same reason as in the
   Customer Overview.
-* **The product dropdown is built from the book**, not from a table,
-  because there is no product table — which is the same limitation
-  `attribution` names. Churned customers keep their product in the list.
+* **The product dropdown comes from the tenant's own catalogue**, so the
+  dashboard and the Add/Edit form offer the same products and cannot
+  disagree about what exists. The filter takes a product **id**, or the
+  literal `none` for "no product recorded". A retired product stays in
+  the dropdown while anyone is still recorded against it, because its
+  history is still on this screen; a retired product nobody is on drops
+  out.
 * Tickets hang off a Customer or one of its Accounts and both count
   toward the product: support load on a division is support load on that
   product. Counted once for the whole page in a single annotated query.

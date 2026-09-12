@@ -13,30 +13,33 @@ products quietly responsible for most of the churn?
 
 ## The limit that has to be on the screen, not just in this docstring
 
-`Customer.primary_product` names **one** product. `additional_products_count`
-is a bare integer — nobody recorded *which* other products a customer has. So
-a customer on three products is attributed entirely to their primary one, and
-every figure below is therefore "customers **led by** this product", never
-"revenue split across products".
+A customer records **one** product. `additional_products_count` is a bare
+integer — nobody recorded *which* other products a customer has. So a customer
+on three products is attributed entirely to their primary one, and every figure
+below is therefore "customers **led by** this product", never "revenue split
+across products".
 
 That is the single most misleading thing this screen could hide, so the
-response carries `attribution` and the UI states it above the numbers. Doing
-this properly needs a Product model and a per-customer join — worth having, and
-not something a dashboard can invent.
+response carries `attribution` and the UI states it above the numbers. Closing
+it needs a per-customer join recording the rest, and the data to fill it: the
+Product table arrived in migration 0030, and what nobody has is the answer to
+"which others?" — a count is all that was ever collected.
 
-## Free text, again
+## Products are rows now, not spellings
 
-`primary_product` is a CharField somebody types. Rows fold on case and
-surrounding whitespace, and `spellings` reports how many raw strings went into
-each — the same treatment, and the same argument for choices, as
-`churn_reason` in portfolio.py.
+`Customer.primary_product` was free text until migration 0030. This module used
+to group by folding case and whitespace and report a `spellings` count per row,
+because "Product A" and "product a" would not group themselves and
+"Integrations Module" and "Integrations module (EU)" never could. It groups by
+id now, and every product in the tenant's table gets a row — including the ones
+nobody has bought, which is a finding a free-text field could not produce.
 """
 
 from django.db.models import Count, Q
 
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
 
-from .models import Customer, Ticket
+from .models import Customer, Product, Ticket
 from .scoping import visible_customers
 
 #: Label for customers with no product recorded. Its own row rather than
@@ -44,6 +47,10 @@ from .scoping import visible_customers
 #: hiding it would make every share-of-book figure add up to less than 100%
 #: with no explanation.
 NO_PRODUCT = "No product recorded"
+
+#: The filter value that means "no product recorded". A product id everywhere
+#: else, so the sentinel has to be something no id can be.
+NO_PRODUCT_FILTER = "none"
 
 
 def _parse_int(raw):
@@ -63,7 +70,7 @@ def filtered_customers(user, params):
     customers all left would otherwise look like a product with no problems.
     """
 
-    queryset = visible_customers(user).select_related("owner")
+    queryset = visible_customers(user).select_related("owner", "primary_product")
 
     owner = params.get("owner")
     if owner == "unassigned":
@@ -78,11 +85,12 @@ def filtered_customers(user, params):
         queryset = queryset.filter(lifecycle_stage=lifecycle)
 
     product = params.get("product")
-    if product:
-        if product == NO_PRODUCT:
-            queryset = queryset.filter(primary_product="")
-        else:
-            queryset = queryset.filter(primary_product__iexact=product.strip())
+    if product == NO_PRODUCT_FILTER:
+        queryset = queryset.filter(primary_product__isnull=True)
+    else:
+        product_id = _parse_int(product)
+        if product_id is not None:
+            queryset = queryset.filter(primary_product_id=product_id)
 
     return queryset
 
@@ -127,21 +135,17 @@ def build_rows(user, params):
     rates = rates_for(organisation)
     tickets = _open_tickets(customers)
 
-    grouped = {}
+    # Every product the tenant sells, not only the ones somebody bought. A
+    # product with no customers is the most interesting row on this screen
+    # when it happens, and until products were rows it could not be said.
+    grouped = {
+        product.pk: {"id": product.pk, "product": product.name, "active": [], "churned": []}
+        for product in Product.objects.filter(organisation=organisation)
+    }
+    unrecorded = {"id": None, "product": NO_PRODUCT, "active": [], "churned": []}
+
     for customer in customers:
-        raw = (customer.primary_product or "").strip()
-        key = raw.casefold() or "__none__"
-        entry = grouped.setdefault(
-            key,
-            {
-                "product": raw or NO_PRODUCT,
-                "spellings": set(),
-                "active": [],
-                "churned": [],
-            },
-        )
-        if raw:
-            entry["spellings"].add(raw)
+        entry = grouped.get(customer.primary_product_id, unrecorded)
         if customer.churn_date is not None:
             entry["churned"].append(customer)
         elif not customer.is_archived:
@@ -153,8 +157,13 @@ def build_rows(user, params):
         )
         return None if converted is None else float(converted)
 
+    entries = list(grouped.values())
+    # The unrecorded bucket earns a row only when somebody is in it.
+    if unrecorded["active"] or unrecorded["churned"]:
+        entries.append(unrecorded)
+
     rows = []
-    for entry in grouped.values():
+    for entry in entries:
         active = entry["active"]
         churned = entry["churned"]
 
@@ -168,8 +177,8 @@ def build_rows(user, params):
 
         rows.append(
             {
+                "id": entry["id"],
                 "product": entry["product"],
-                "spellings": len(entry["spellings"]),
                 "customers": len(active),
                 "arr": round(sum(a or 0.0 for a in arrs), 2),
                 "unpriced": sum(1 for a in arrs if a is None),
@@ -207,7 +216,8 @@ def build_rows(user, params):
                 "churned": len(churned),
                 "churned_arr": round(sum(arr_of(c) or 0.0 for c in churned), 2),
                 # Of everyone this product ever led, how many left. The figure
-                # the screen exists for.
+                # the screen exists for. None for a product nobody has bought:
+                # no customers is not a perfect record.
                 "churn_rate": (
                     round(len(churned) / (len(active) + len(churned)) * 100, 1)
                     if active or churned
@@ -242,6 +252,14 @@ def build_stats(user, params):
     worst_churn = max(
         (row for row in rows if row["churned"]), key=lambda row: row["churned_arr"], default=None
     )
+    # Products with nobody on them **in this selection** — not "unsold". The
+    # rows are the tenant's whole catalogue while the customers are scoped to
+    # the caller's own book and whatever filters are set, so a CSM sees a zero
+    # against a product another CSM's customers are on. The screen says "in
+    # this selection" for the same reason.
+    without_customers = [
+        row["product"] for row in rows if not row["customers"] and not row["churned"]
+    ]
 
     return {
         "rows": rows,
@@ -274,6 +292,7 @@ def build_stats(user, params):
                 if worst_churn
                 else None
             ),
+            "without_customers": without_customers,
         },
         # Carried in the payload so the screen states it rather than the docs
         # alone — see the module docstring.
@@ -291,20 +310,19 @@ def build_stats(user, params):
 
 
 def filter_options(user):
-    """The bar's dropdowns, including a product list built from the book.
+    """The bar's dropdowns.
 
-    Products come from the data rather than a table, because there is no
-    product table — which is the same limitation the attribution note names.
+    Products come from the tenant's own table, so the list is the same one the
+    Add/Edit form offers — the dashboard and the record can no longer disagree
+    about what exists. Retired products stay listed while anyone is still on
+    them, because their history is still on this screen.
     """
 
     customers = visible_customers(user)
-    products = sorted(
-        {
-            (customer.primary_product or "").strip()
-            for customer in customers
-            if (customer.primary_product or "").strip()
-        },
-        key=str.casefold,
+    products = (
+        Product.objects.filter(organisation=user.organisation)
+        .filter(Q(is_active=True) | Q(primary_customers__in=customers))
+        .distinct()
     )
     owners = (
         customers.exclude(owner__isnull=True)
@@ -314,10 +332,10 @@ def filter_options(user):
     )
 
     return {
-        "products": [{"value": name, "name": name} for name in products]
+        "products": [{"value": str(product.pk), "name": product.name} for product in products]
         + (
-            [{"value": NO_PRODUCT, "name": NO_PRODUCT}]
-            if customers.filter(primary_product="").exists()
+            [{"value": NO_PRODUCT_FILTER, "name": NO_PRODUCT}]
+            if customers.filter(primary_product__isnull=True).exists()
             else []
         ),
         "owners": [{"value": str(owner_id), "name": name} for owner_id, name in owners]

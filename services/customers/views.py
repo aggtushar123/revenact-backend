@@ -27,6 +27,7 @@ from .models import (
     Headline,
     HealthSnapshot,
     Opportunity,
+    Product,
     Risk,
     Survey,
     Task,
@@ -53,6 +54,7 @@ from .serializers import (
     HeadlineSerializer,
     NoteSerializer,
     OpportunitySerializer,
+    ProductSerializer,
     RiskSerializer,
     SurveySerializer,
     TaskListSerializer,
@@ -257,6 +259,83 @@ class CustomerHealthView(generics.ListAPIView):
                 "unconverted_count": sum(1 for row in rows if row["arr"] is None),
             }
         )
+
+
+class ProductListView(generics.ListCreateAPIView):
+    """GET/POST /api/v1/products/ — the tenant's own product catalogue.
+
+    Mounted at its own top-level prefix rather than under /customers/,
+    for two reasons: a product is organisation configuration rather than
+    a customer's sub-resource, and /customers/products/ already means
+    the Product Usage dashboard's rollup (ProductUsageView below).
+
+    **Not scoped by ownership.** Every other list here is filtered to
+    what the caller owns, because a CSM's book is their own. A product
+    list is the shape of the business: a CSM who cannot see "Product C"
+    cannot record a customer on it, and the pickers on the Add/Edit form
+    would differ per user. So this is the whole organisation's list,
+    ordered by name.
+
+    Retired products (`is_active=False`) are returned too — the caller
+    needs to see them to un-retire one, and the pickers filter on the
+    flag rather than on the endpoint.
+
+    Unpaginated: a product catalogue is tens of rows, and every consumer
+    is a dropdown that needs all of them.
+    """
+
+    serializer_class = ProductSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        # `.order_by` explicitly: Product.Meta.ordering does not survive the
+        # annotate() below (it folds into the GROUP BY instead), so without
+        # this the catalogue comes back in insertion order.
+        return (
+            Product.objects.filter(organisation=self.request.user.organisation)
+            .annotate(customer_count=Count("primary_customers", distinct=True))
+            .order_by("name")
+        )
+
+
+class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/v1/products/<id>/ — one product.
+
+    **DELETE is refused while customers are recorded against it**, with
+    the count and the alternative in the message. `Customer.primary_product`
+    is `PROTECT`ed so the database would refuse anyway; catching it here
+    is the difference between an answer and a 500.
+
+    Retiring (`PATCH {"is_active": false}`) is the operation people
+    actually want: it takes the product out of the pickers and leaves
+    every figure that was ever reported against it intact. Deleting is
+    for a product added by mistake.
+
+    Renaming is allowed and deliberately cheap — the customers point at
+    the row, so fixing a typo fixes it everywhere at once. That is the
+    whole difference from the free-text field this replaced, where a
+    rename meant editing every customer and hoping.
+    """
+
+    serializer_class = ProductSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Product.objects.filter(organisation=self.request.user.organisation).annotate(
+            customer_count=Count("primary_customers", distinct=True)
+        )
+
+    def perform_destroy(self, instance):
+        in_use = instance.primary_customers.count()
+        if in_use:
+            raise ValidationError(
+                f"{in_use} customer{'' if in_use == 1 else 's'} "
+                f"{'is' if in_use == 1 else 'are'} recorded against "
+                f'"{instance.name}". Retire it instead (is_active=false) so their '
+                "history keeps saying what they bought."
+            )
+        instance.delete()
 
 
 class ProductUsageView(views.APIView):

@@ -191,6 +191,10 @@ def _adoption(*, primary_product, additional_products_count):
     Counts the primary product plus any additional ones against a target
     breadth. Unmeasurable when neither field has been filled in — as opposed to
     a recorded zero, which really does mean no products.
+
+    Only the truthiness of `primary_product` is read — whether one is recorded,
+    never which — so callers can hand in a flag, an id or a name. It became a
+    Product row in migration 0030 and this rubric did not have to change.
     """
     if not primary_product and additional_products_count is None:
         return None
