@@ -225,8 +225,21 @@ class User(AbstractBaseUser, PermissionsMixin):
         ADMIN = "admin"
         CSM = "csm"
 
+    class Function(models.TextChoices):
+        """Which part of the company someone works in. Not a permission —
+        roles carry those — but what stamps their contributions and what
+        "the responsible person" is looked up by (see services.knowledge)."""
+
+        CS = "cs", "Customer Success"
+        ENGINEERING = "engineering", "Engineering"
+        SALES = "sales", "Sales"
+        ANALYTICS = "analytics", "Analytics"
+        LEADERSHIP = "leadership", "Leadership"
+        OTHER = "other", "Other"
+
     email = models.EmailField(unique=True)
     name = models.CharField(max_length=255)
+    function = models.CharField(max_length=16, choices=Function.choices, default=Function.CS)
     organisation = models.ForeignKey(
         Organisation,
         related_name="members",

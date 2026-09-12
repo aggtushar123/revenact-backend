@@ -3251,6 +3251,58 @@ SET_NULL.
   "last_record_at": "2026-09-10", "created_at": "2026-08-01T00:00:00Z"}]
 ```
 
+## `knowledge` — What the whole company knows (Organization Details › Company View, `CompanyViewTab.tsx`)
+
+### Models — `User.function`, `Contribution`, `FunctionOwner`
+
+`User.function` (`cs`, `engineering`, `sales`, `analytics`, `leadership`,
+`other`; default `cs`) is which part of the company someone works in — not
+a permission (roles carry those). It stamps their contributions and is
+what "the responsible person" is looked up by. Set on create/edit via
+`/auth/users/` (`function`), read everywhere a user is serialised
+(`function`, `function_display`).
+
+A `Contribution` is one person's knowledge about one customer from their
+function: `customer`, `author`, `function` (a snapshot of the author's
+function when written), `body`. **Company-wide by design**: every member
+of the organisation reads and writes them, whatever their book — the
+CSM's own-book scoping stays on the CSM dashboards, not on knowledge.
+`FunctionOwner` (`customer`, `function`, `user`; unique per customer and
+function) says who answers for the customer in each function; CS stays
+`Customer.owner`.
+
+### `GET/POST /api/v1/customers/<id>/contributions/`, `GET/PATCH/DELETE /api/v1/contributions/<id>/`
+
+Auth: `IsAuthenticated`, any customer in the caller's organisation
+(`404` outside it). `GET` lists newest first, `?function=` narrows.
+`POST {"body"}` stamps `author` and `function` from the caller. The
+author may edit or delete their own; `manage_users` may delete anyone's
+(`403` otherwise).
+
+### `GET/PATCH /api/v1/customers/<id>/responsible/`
+
+`GET` returns `{"customer_id", "responsible": [{function,
+function_display, user: {id, name} | null}]}` for every function; CS is
+read from the customer's owner. `PATCH {"function", "user_id" | null}`
+sets or clears one (CS writes `Customer.owner`) and needs
+`view_all_accounts`; an unknown function is a `400`.
+
+### The Copilot reads all of it
+
+`copilot.retrieval` adds each customer's contributions as candidates —
+prompt line `Engineering (Priya Nair, 2026-09-13): …`, source `type:
+"contribution"` with label `Engineering · Priya Nair` — and
+`copilot.context` looks the mentioned company up **across the whole
+organisation**, so an engineer, a sales rep or the CEO with no book of
+their own still gets an answer; their own-book figures are simply
+omitted. The digest ends with `Responsible for <customer>: Engineering —
+Priya; Customer Success — Carl` so the model can point at a person when
+the summary runs out, and the persona tells it to.
+
+Demo: `seed_demo_functions --org-email alice@acme.io` (Priya Nair /
+Raj Mehta / Mei Tanaka, responsibilities and contributions on the
+Analytics Suite accounts).
+
 ## `webhooks` — Outbound integrations (Settings > Webhooks, `WebhooksPage.tsx`)
 
 Mirrors: `src/pages/settings/WebhooksPage.tsx`. Its own top-level app,

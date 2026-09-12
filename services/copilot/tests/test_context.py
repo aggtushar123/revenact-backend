@@ -26,7 +26,9 @@ class BuildOrgContextSummaryTests(TestCase):
     def test_nothing_owned_yet(self):
         summary = build_org_context_summary(self.org, self.user)
         self.assertEqual(
-            summary, "You don't own any customers or accounts yet — nothing to summarize."
+            summary,
+            "You own no customers or accounts yourself; answering from what the company "
+            "knows about its customers.",
         )
 
     def test_includes_real_health_and_lifecycle_data_for_owned_customers_only(self):

@@ -75,18 +75,46 @@ def build_org_context_summary(organisation, user, query: str = "") -> str:
     return build_grounding(organisation, user, query).summary
 
 
+def _responsible_line(company) -> str:
+    """Who answers for this customer in each function, so the model can
+    point at a person when the summary runs out (services.knowledge)."""
+    if company.__class__.__name__ != "Customer":
+        return ""
+    people = {
+        fo.get_function_display(): fo.user.name
+        for fo in company.function_owners.select_related("user")
+    }
+    if company.owner_id:
+        people.setdefault("Customer Success", company.owner.name)
+    if not people:
+        return ""
+    return f"Responsible for {company.name}: " + "; ".join(
+        f"{function} — {name}" for function, name in people.items()
+    )
+
+
 def build_grounding(organisation, user, query: str = "") -> Grounding:
     customers = Customer.objects.filter(organisation=organisation, owner=user, is_archived=False)
     # `.distinct()` — same fan-out reasoning as AccountListView's own.
     accounts = Account.objects.filter(customers__organisation=organisation, owner=user).distinct()
+    # Knowledge is company-wide (see services.knowledge): the company a
+    # question is about is looked up across the whole organisation, so an
+    # engineer, a sales rep or the CEO — none of whom own a book — can ask
+    # about any customer. The digest's own figures stay about the asker's
+    # book, which is what "your customers" has always meant.
+    company_customers = Customer.objects.filter(organisation=organisation, is_archived=False)
+    company_accounts = Account.objects.filter(customers__organisation=organisation).distinct()
 
     customer_total = customers.count()
     account_total = accounts.count()
-    if customer_total == 0 and account_total == 0:
-        return Grounding("You don't own any customers or accounts yet — nothing to summarize.")
 
     lines = []
     top_at_risk: list[Customer] = []
+    if customer_total == 0 and account_total == 0:
+        lines.append(
+            "You own no customers or accounts yourself; answering from what the company "
+            "knows about its customers."
+        )
 
     if customer_total:
         arr_total = 0
@@ -129,7 +157,7 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
             lines.append(
                 f"  - {c.name}: health {c.health_score}/10, NPS {nps}, stage {c.lifecycle_stage}"
             )
-    else:
+    elif account_total:
         lines.append("You don't own any customers directly — only sub-accounts (see below).")
 
     if account_total:
@@ -139,21 +167,23 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
             f"average health score {avg_account_health:.1f}/10"
         )
 
-    my_scope = Q(customer__organisation=organisation, customer__owner=user) | Q(
-        account__customers__organisation=organisation, account__owner=user
-    )
-    open_opportunities = Opportunity.objects.filter(my_scope).exclude(
-        stage=Opportunity.Stage.CLOSED_WON
-    )
-    open_risks = Risk.objects.filter(my_scope).exclude(stage=Risk.Stage.ABANDONED)
-    open_tickets = Ticket.objects.filter(my_scope).exclude(
-        status__in=[Ticket.Status.RESOLVED, Ticket.Status.CLOSED]
-    )
+    # Own-book figures only make sense for someone with a book.
+    if customer_total or account_total:
+        my_scope = Q(customer__organisation=organisation, customer__owner=user) | Q(
+            account__customers__organisation=organisation, account__owner=user
+        )
+        open_opportunities = Opportunity.objects.filter(my_scope).exclude(
+            stage=Opportunity.Stage.CLOSED_WON
+        )
+        open_risks = Risk.objects.filter(my_scope).exclude(stage=Risk.Stage.ABANDONED)
+        open_tickets = Ticket.objects.filter(my_scope).exclude(
+            status__in=[Ticket.Status.RESOLVED, Ticket.Status.CLOSED]
+        )
 
-    lines.append(
-        f"Your pipeline: {open_opportunities.count()} open opportunities, "
-        f"{open_risks.count()} open risks, {open_tickets.count()} open tickets."
-    )
+        lines.append(
+            f"Your pipeline: {open_opportunities.count()} open opportunities, "
+            f"{open_risks.count()} open risks, {open_tickets.count()} open tickets."
+        )
 
     # Real retrieved content, not just aggregate numbers — see
     # retrieval.py's own docstring. A company identified from the
@@ -161,10 +191,12 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
     # second) gets its own fuller, relevance-ranked retrieval;
     # otherwise a smaller slice per top-at-risk company keeps the
     # digest from being pure stats even with none identified.
-    mentioned = find_mentioned_company(query, customers, accounts) if query else None
+    mentioned = (
+        find_mentioned_company(query, company_customers, company_accounts) if query else None
+    )
     match_label = "named in the question"
     if mentioned is None and query:
-        mentioned = find_relevant_company_semantic(query, customers, accounts)
+        mentioned = find_relevant_company_semantic(query, company_customers, company_accounts)
         match_label = "the account your question seems to be about"
 
     # Sources are collected from exactly the items appended to the
@@ -178,6 +210,9 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
             lines.append(f"Recent real communications for {mentioned.name} ({match_label}):")
             lines.extend(f"  - {item.line}" for item in comms)
             sources.extend(item.source for item in comms)
+        responsible = _responsible_line(mentioned)
+        if responsible:
+            lines.append(responsible)
     else:
         for company in top_at_risk[:3]:
             comms = retrieve_with_sources(company, limit=2, query=query)

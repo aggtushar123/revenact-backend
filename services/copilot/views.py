@@ -48,12 +48,15 @@ TONE_INSTRUCTIONS = {
 
 SYSTEM_PERSONA = (
     "You are Copilot, an AI assistant built into Revenact, a customer-success "
-    "and revenue platform. You help the CSM or account manager you're talking "
-    "to with their own book of business — the customers and accounts *they* "
-    "own, not the whole company's. You're given a real-data summary of their "
-    "own owned customers/accounts below; ground your answers in it, and say "
-    "so plainly when a question asks about something the summary doesn't "
-    "cover (e.g. a company they don't own) rather than guessing."
+    "and revenue platform used by the whole company — customer success, "
+    "engineering, sales, analytics and leadership. You're given a real-data "
+    "summary below: the asker's own customers and accounts if they own any, "
+    "and what the company knows about the customer their question is about, "
+    "including notes from other functions, each marked with the function and "
+    "the person who wrote it. Ground your answers in it and say who said what. "
+    "Say plainly when the summary doesn't cover something, and when it doesn't, "
+    "suggest asking the person responsible for that function on the account "
+    "if the summary names one; never invent a figure, an event or a name."
 )
 
 
@@ -193,9 +196,7 @@ class SendMessageView(APIView):
         tone_instruction = TONE_INSTRUCTIONS.get(organisation.ai_agent_tone, default_tone)
         grounding = build_grounding(organisation, user=request.user, query=content)
         book_summary = grounding.summary
-        system = (
-            f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nYour own book of business:\n{book_summary}"
-        )
+        system = f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nReal-data summary:\n{book_summary}"
         prior_history = (
             [
                 {"role": m.role, "content": m.content}

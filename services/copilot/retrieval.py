@@ -166,6 +166,7 @@ def _gather_candidates(company) -> list[RetrievedItem]:
     """Every real candidate item for `company` — see RetrievedItem."""
 
     scope = _scope_kwargs(company)
+    is_account = company.__class__.__name__ == "Account"
     candidates: list[RetrievedItem] = []
 
     for email in Email.objects.filter(**scope).order_by("-sent_at")[:CANDIDATE_POOL_PER_SOURCE]:
@@ -240,6 +241,34 @@ def _gather_candidates(company) -> list[RetrievedItem]:
                 ),
             )
         )
+
+    # What the rest of the company knows — an engineer's, a sales rep's, an
+    # analyst's note on this customer (services.knowledge). Organisation-
+    # level only: contributions hang off the Customer. Each line names the
+    # function and the person, so an answer can say who said so.
+    if not is_account:
+        from services.knowledge.models import Contribution
+
+        for row in (
+            Contribution.objects.filter(customer=company)
+            .select_related("author")
+            .order_by("-created_at")[:CANDIDATE_POOL_PER_SOURCE]
+        ):
+            when = row.created_at.date()
+            line = f"{row.get_function_display()} ({row.author.name}, {when}): {_snippet(row.body)}"
+            candidates.append(
+                RetrievedItem(
+                    line=line,
+                    embed_text=row.body,
+                    source=_source_ref(
+                        kind="contribution",
+                        record_id=row.id,
+                        label=f"{row.get_function_display()} · {row.author.name}",
+                        date=when,
+                        company=company,
+                    ),
+                )
+            )
 
     return candidates
 

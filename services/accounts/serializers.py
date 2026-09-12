@@ -62,6 +62,7 @@ class UserSerializer(serializers.ModelSerializer):
     role_id = serializers.PrimaryKeyRelatedField(source="role", read_only=True)
     role_name = serializers.CharField(source="role.name", read_only=True, default="")
     permissions = serializers.SerializerMethodField()
+    function_display = serializers.CharField(source="get_function_display", read_only=True)
 
     class Meta:
         model = User
@@ -74,6 +75,8 @@ class UserSerializer(serializers.ModelSerializer):
             "role_id",
             "role_name",
             "permissions",
+            "function",
+            "function_display",
             "organisation",
             "is_active",
         ]
@@ -210,6 +213,7 @@ class CreateOrgUserSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=8)
     role_id = serializers.IntegerField(required=False)
+    function = serializers.ChoiceField(choices=User.Function.choices, required=False)
 
     def validate_email(self, value):
         value = value.lower()
@@ -239,6 +243,7 @@ class CreateOrgUserSerializer(serializers.Serializer):
             name=validated_data["name"],
             organisation=organisation,
             role=role,
+            function=validated_data.get("function", User.Function.CS),
         )
 
 
@@ -359,7 +364,7 @@ class EditOrgUserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["name", "is_active", "role_id", "password"]
+        fields = ["name", "is_active", "role_id", "password", "function"]
 
     def validate_role_id(self, role):
         actor = self.context["request"].user

@@ -212,7 +212,7 @@ class SendMessageViewTests(APITestCase):
 
         system_prompt = mock_get_completion.call_args.kwargs["system"]
         self.assertIn("warm, friendly", system_prompt)
-        self.assertIn("Your own book of business", system_prompt)
+        self.assertIn("Real-data summary", system_prompt)
 
 
 class MessageSourcesTests(APITestCase):
