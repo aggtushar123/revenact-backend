@@ -3858,6 +3858,15 @@ is a `409`.
   "status": "proposed", "decided_by": null, "result": {}, "generated_by": "Alice"}]}
 ```
 
+### `POST /api/v1/copilot/conversations/<id>/session/close/` with `capture_decisions`
+
+Body `{"capture_decisions": true}` runs the facilitator in the same
+request once the session is closed, returning the closed session plus
+`decisions` (the proposals written, as the review queue shows them) and
+`decisions_error` (null, or why nothing was captured — nobody spoke,
+budget spent, provider down). **The close always stands**: a failed
+capture never undoes it. Without the flag the close makes no model call.
+
 ### `GET/POST /api/v1/copilot/conversations/<id>/session/decisions/` — the facilitator
 
 Auth: `IsAuthenticated`, and the conversation must be visible to the

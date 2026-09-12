@@ -310,6 +310,53 @@ class SessionViewTests(APITestCase):
         response = self.client.post(self._url("close/"))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_close_can_capture_the_sessions_decisions_in_the_same_request(self):
+        Message.objects.create(conversation=self.conversation, role="user", content="Let's do it")
+        session = CopilotSession.objects.create(
+            conversation=self.conversation, status=CopilotSession.Status.LIVE
+        )
+        self.client.force_authenticate(self.owner)
+        with patch("services.copilot.views.SessionCloseView._capture") as capture:
+            capture.return_value = {"decisions": [{"id": 1}], "decisions_error": None}
+            response = self.client.post(
+                self._url("close/"), {"capture_decisions": True}, format="json"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "closed")
+        self.assertEqual(response.data["decisions"], [{"id": 1}])
+        capture.assert_called_once_with(session, self.owner)
+
+    def test_a_failed_capture_leaves_the_session_closed_and_says_why(self):
+        CopilotSession.objects.create(
+            conversation=self.conversation, status=CopilotSession.Status.LIVE
+        )
+        self.client.force_authenticate(self.owner)
+        with patch("services.metrics.facilitator.get_completion") as call:
+            # No customers and no human turn: the facilitator refuses before
+            # any call, and the refusal travels back beside the closed session.
+            response = self.client.post(
+                self._url("close/"), {"capture_decisions": True}, format="json"
+            )
+
+        call.assert_not_called()
+        self.assertEqual(response.data["status"], "closed")
+        self.assertEqual(response.data["decisions"], [])
+        self.assertTrue(response.data["decisions_error"])
+        self.assertEqual(
+            CopilotSession.objects.get(conversation=self.conversation).status, "closed"
+        )
+
+    def test_close_without_the_flag_makes_no_model_call(self):
+        CopilotSession.objects.create(
+            conversation=self.conversation, status=CopilotSession.Status.LIVE
+        )
+        self.client.force_authenticate(self.owner)
+        with patch("services.copilot.views.SessionCloseView._capture") as capture:
+            response = self.client.post(self._url("close/"))
+        capture.assert_not_called()
+        self.assertNotIn("decisions", response.data)
+
     def test_close_sets_status_and_closed_at(self):
         self.client.force_authenticate(self.owner)
         self.client.post(self._url())

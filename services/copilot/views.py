@@ -519,7 +519,15 @@ class SessionCloseView(APIView):
     """POST /api/v1/copilot/conversations/<id>/session/close/ —
     owner-only. A closed session stops accepting new messages (see
     SendMessageView's own guard) but stays fully readable — real
-    history, not deleted."""
+    history, not deleted.
+
+    Body `{"capture_decisions": true}` runs the facilitator in the same
+    request once the session is closed, so the moment a session ends is
+    the moment its decisions reach the review queue rather than a button
+    someone has to remember. The close always stands: a capture that
+    fails (nothing said, budget spent, provider down) comes back as
+    `decisions_error` beside the closed session, never as an error that
+    undoes the close."""
 
     permission_classes = [IsAuthenticated]
 
@@ -541,7 +549,29 @@ class SessionCloseView(APIView):
         broadcast_session_update(session)
 
         session._events_page = session.events.all()
-        return Response(CopilotSessionSerializer(session).data)
+        payload = CopilotSessionSerializer(session).data
+        if request.data.get("capture_decisions"):
+            payload.update(self._capture(session, request.user))
+        return Response(payload)
+
+    @staticmethod
+    def _capture(session, user):
+        from services.metrics.facilitator import NothingToDecideFrom, capture_decisions
+        from services.metrics.proposals import NothingToProposeFrom
+        from services.metrics.views import _proposal_payload
+
+        try:
+            stored = capture_decisions(session, requested_by=user)
+        except (
+            NothingToDecideFrom,
+            NothingToProposeFrom,
+            BudgetExceeded,
+            CopilotNotConfigured,
+            CopilotRequestFailed,
+            ValueError,
+        ) as exc:
+            return {"decisions": [], "decisions_error": str(exc)}
+        return {"decisions": [_proposal_payload(p) for p in stored], "decisions_error": None}
 
 
 class SessionDecisionsView(APIView):
