@@ -5730,7 +5730,7 @@ class CustomerHealthViewTests(APITestCase):
     def test_carries_the_fields_the_dashboard_reads(self):
         row = self.client.get(self.url).data["results"][0]
         for field in (
-            "id", "name", "owner_name", "lifecycle_stage_display", "renewal_date",
+            "id", "name", "owner_id", "owner_name", "lifecycle_stage_display", "renewal_date",
             "health_score", "health_category", "csm_pulse_score", "csm_pulse_modified_at",
             "ai_pulse_value", "ai_pulse_reason", "total_active_seats", "history",
         ):
@@ -5795,6 +5795,27 @@ class CustomerHealthViewTests(APITestCase):
         # one FX rate table for the whole page.
         with self.assertNumQueries(4):
             self.client.get(self.url)
+
+    def test_the_owner_comes_back_as_an_id_as_well_as_a_name(self):
+        """The Primary Owner filter keys on the id: two CSMs sharing a name is
+        ordinary, and filtering by label would silently merge their books."""
+        owner = User.objects.create_user(
+            email="gerry@acme.io",
+            password="supersecret1",
+            name="Gerry Hill",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        Customer.objects.create(organisation=self.org, name="Owned", owner=owner)
+
+        rows = {r["name"]: r for r in self.client.get(self.url).data["results"]}
+
+        self.assertEqual(rows["Owned"]["owner_id"], owner.id)
+        self.assertEqual(rows["Owned"]["owner_name"], "Gerry Hill")
+        # An unowned customer keeps both as null rather than inventing a
+        # placeholder the client would have to recognise.
+        self.assertIsNone(rows["Hyatt"]["owner_id"])
+        self.assertIsNone(rows["Hyatt"]["owner_name"])
 
     # ── money and staleness, for the Renewal Date tab ─────────────────
 

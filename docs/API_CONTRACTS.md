@@ -979,6 +979,7 @@ not for the UI — Movement's own window selector re-slices client-side.
     {
       "id": 9,
       "name": "Hyatt Hotels Corporation",
+      "owner_id": 5,
       "owner_name": "Gerry Hill",
       "lifecycle_stage": "customer_active",
       "lifecycle_stage_display": "Customer - Active",
@@ -1008,6 +1009,10 @@ not for the UI — Movement's own window selector re-slices client-side.
 
 Notes on the shape:
 
+* `owner_id` accompanies `owner_name` because the dashboard's Primary
+  Owner filter keys on it. Two CSMs sharing a name is ordinary in a real
+  org, and a filter keyed on the label would merge their books. Both are
+  null for an unowned customer.
 * `csm_pulse_score` and `ai_pulse_value` stay **nullable all the way to
   the browser**. "Not rated yet" is a real state, and the Divergence tab
   must not read an unrated account as one both parties agree is terrible.

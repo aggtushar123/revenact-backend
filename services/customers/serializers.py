@@ -386,6 +386,11 @@ class CustomerHealthRowSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
+            # Both: the name is what a filter chip shows, the id is what it
+            # filters by. Two CSMs called "John Smith" is an ordinary thing in
+            # a real org, and keying a filter on the label would merge their
+            # books without anyone noticing.
+            "owner_id",
             "owner_name",
             "lifecycle_stage",
             "lifecycle_stage_display",
