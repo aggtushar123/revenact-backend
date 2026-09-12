@@ -39,6 +39,7 @@ from services.customers.views import (
     TaskListView,
     TicketStatsView,
 )
+from services.metrics.views import ClassificationCorrectionView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -140,6 +141,13 @@ urlpatterns = [
     # The metric layer: every headline number defined once, whole-org, with
     # month-end history. Gated on view_all_accounts — see services/metrics.
     path("api/v1/metrics/", include("services.metrics.urls")),
+    # A person correcting the model's tags on one interaction. Lives with the
+    # feedback log it writes to, mounted beside the interactions stats.
+    path(
+        "api/v1/interactions/<str:kind>/<int:pk>/classification/",
+        ClassificationCorrectionView.as_view(),
+        name="interaction-classification",
+    ),
     # Connectors — the external systems an organisation has hooked up
     # (Zendesk, Jira, ...). Same "tenant-wide config, not owned by one
     # Customer/Account" reasoning as Webhooks and FX rates above, with

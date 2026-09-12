@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("customers", "0003_customer_is_archived"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
@@ -86,9 +85,7 @@ class Migration(migrations.Migration):
                 ("ai_pulse_reason", models.TextField(blank=True)),
                 (
                     "nps_score",
-                    models.IntegerField(
-                        blank=True, help_text="-100 to 100.", null=True
-                    ),
+                    models.IntegerField(blank=True, help_text="-100 to 100.", null=True),
                 ),
                 (
                     "csat_score",

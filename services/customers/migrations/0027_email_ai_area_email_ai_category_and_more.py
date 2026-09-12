@@ -5,7 +5,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("connectors", "0001_initial"),
         ("customers", "0026_customer_health_score_override_and_more"),
@@ -375,12 +374,8 @@ class Migration(migrations.Migration):
                 "constraints": [
                     models.CheckConstraint(
                         condition=models.Q(
-                            models.Q(
-                                ("account__isnull", True), ("customer__isnull", False)
-                            ),
-                            models.Q(
-                                ("account__isnull", False), ("customer__isnull", True)
-                            ),
+                            models.Q(("account__isnull", True), ("customer__isnull", False)),
+                            models.Q(("account__isnull", False), ("customer__isnull", True)),
                             _connector="OR",
                         ),
                         name="call_belongs_to_exactly_one_parent",

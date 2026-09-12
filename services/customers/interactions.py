@@ -307,6 +307,15 @@ def recent_rows(querysets):
                     "area": record.get_ai_area_display() or "",
                     "category": record.get_ai_category_display() or "",
                     "subcategory": record.get_ai_subcategory_display() or "",
+                    # The stored values, for a screen that lets someone correct
+                    # them — the labels above are for reading.
+                    "keys": {
+                        "sentiment": record.sentiment,
+                        "area": record.ai_area,
+                        "category": record.ai_category,
+                        "subcategory": record.ai_subcategory,
+                    },
+                    "corrected": record.classification_corrected_at is not None,
                     "occurred_on": (when.date() if hasattr(when, "date") else when).isoformat(),
                 }
             )

@@ -84,6 +84,11 @@ class Command(BaseCommand):
             help="Re-do records that already carry a classification.",
         )
         parser.add_argument(
+            "--include-corrected",
+            action="store_true",
+            help="With --reclassify: also redo rows a person corrected by hand. Off by default.",
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Count the work without calling the model or writing anything.",
@@ -113,6 +118,11 @@ class Command(BaseCommand):
                 queryset = queryset.filter(_org_filter(model, organisation)).distinct()
             if not options["reclassify"]:
                 queryset = queryset.filter(ai_classified_at__isnull=True)
+            elif not options["include_corrected"]:
+                # A person's correction outranks the model. A reclassify pass
+                # is for a changed taxonomy or a better prompt, and neither is
+                # a reason to put the model's answer back over a human's.
+                queryset = queryset.filter(classification_corrected_at__isnull=True)
             # Oldest first: on a capped run, the records that have been waiting
             # longest are the ones to spend the budget on.
             pending.extend(queryset.order_by("pk"))

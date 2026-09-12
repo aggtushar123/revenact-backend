@@ -933,6 +933,14 @@ class AIClassified(models.Model):
         "row has never been classified, which is what classify_interactions "
         "looks for.",
     )
+    classification_corrected_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a person last corrected the tags by hand. Set, the row is "
+        "skipped by classify_interactions --reclassify: a correction outranks "
+        "the model, and the next run must not quietly put the model's answer "
+        "back. The correction itself is in metrics.Feedback.",
+    )
 
     class Meta:
         abstract = True

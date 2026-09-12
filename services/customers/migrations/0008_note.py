@@ -5,7 +5,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("customers", "0007_task"),
     ]
@@ -63,12 +62,8 @@ class Migration(migrations.Migration):
                 "constraints": [
                     models.CheckConstraint(
                         condition=models.Q(
-                            models.Q(
-                                ("account__isnull", True), ("customer__isnull", False)
-                            ),
-                            models.Q(
-                                ("account__isnull", False), ("customer__isnull", True)
-                            ),
+                            models.Q(("account__isnull", True), ("customer__isnull", False)),
+                            models.Q(("account__isnull", False), ("customer__isnull", True)),
                             _connector="OR",
                         ),
                         name="note_belongs_to_exactly_one_parent",

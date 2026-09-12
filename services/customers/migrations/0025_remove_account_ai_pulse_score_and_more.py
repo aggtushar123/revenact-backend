@@ -14,7 +14,13 @@ CATEGORY_TO_VALUE = {
     "moderate": 3,
     "high_risk": 1,
 }
-VALUE_TO_CATEGORY = {5: "very_satisfied", 4: "satisfied", 3: "moderate", 1: "high_risk", 2: "high_risk"}
+VALUE_TO_CATEGORY = {
+    5: "very_satisfied",
+    4: "satisfied",
+    3: "moderate",
+    1: "high_risk",
+    2: "high_risk",
+}
 
 
 def category_to_value(apps, schema_editor):
@@ -40,7 +46,6 @@ def value_to_category(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         (
             "customers",
@@ -206,12 +211,8 @@ class Migration(migrations.Migration):
                 "constraints": [
                     models.CheckConstraint(
                         condition=models.Q(
-                            models.Q(
-                                ("account__isnull", True), ("customer__isnull", False)
-                            ),
-                            models.Q(
-                                ("account__isnull", False), ("customer__isnull", True)
-                            ),
+                            models.Q(("account__isnull", True), ("customer__isnull", False)),
+                            models.Q(("account__isnull", False), ("customer__isnull", True)),
                             _connector="OR",
                         ),
                         name="healthsnapshot_belongs_to_exactly_one_parent",

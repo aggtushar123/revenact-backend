@@ -650,9 +650,7 @@ class Command(BaseCommand):
         today = timezone.localdate()
         rolled = overdue = 0
 
-        for customer in Customer.objects.filter(
-            organisation=org, renewal_date__isnull=False
-        ):
+        for customer in Customer.objects.filter(organisation=org, renewal_date__isnull=False):
             overdue_days = DEMO_OVERDUE_DAYS.get(customer.name)
             if overdue_days is not None:
                 customer.renewal_date = today - timedelta(days=overdue_days)

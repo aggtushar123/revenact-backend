@@ -212,3 +212,46 @@ class Proposal(models.Model):
 
     def __str__(self):
         return f"[{self.get_kind_display()}] {self.title}"
+
+
+class Feedback(models.Model):
+    """A person correcting something the system said.
+
+    The feedback log. Three kinds so far: a classification the model got
+    wrong, fixed by hand; a proposal the Ops agent made, approved or
+    rejected with a note; a health score overridden by a CSM who knows
+    better than the rubric. Each row keeps what the system said (`before`)
+    and what the person said (`after`), so the log is the training data the
+    next prompt, taxonomy or rubric change should be read against.
+    """
+
+    class Kind(models.TextChoices):
+        CLASSIFICATION = "classification", "Classification corrected"
+        PROPOSAL = "proposal", "Proposal decided"
+        HEALTH_OVERRIDE = "health_override", "Health score overridden"
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="feedback", on_delete=models.CASCADE
+    )
+    kind = models.CharField(max_length=32, choices=Kind.choices)
+    subject_type = models.CharField(
+        max_length=32, help_text='"ticket", "email", "call", "customer", "proposal".'
+    )
+    subject_id = models.PositiveIntegerField()
+    subject_label = models.CharField(
+        max_length=255, help_text="What the row was about, as it read then."
+    )
+    before = models.JSONField(default=dict, help_text="What the system said.")
+    after = models.JSONField(default=dict, help_text="What the person said.")
+    note = models.TextField(blank=True)
+    made_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["organisation", "kind", "created_at"])]
+
+    def __str__(self):
+        return f"{self.get_kind_display()}: {self.subject_label}"

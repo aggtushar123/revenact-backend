@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("accounts", "0007_grant_view_all_accounts"),
         ("metrics", "0003_initiative"),
@@ -46,9 +45,7 @@ class Migration(migrations.Migration):
                 ("title", models.CharField(max_length=255)),
                 (
                     "rationale",
-                    models.TextField(
-                        help_text="Why, in the agent's words, citing the evidence."
-                    ),
+                    models.TextField(help_text="Why, in the agent's words, citing the evidence."),
                 ),
                 (
                     "evidence",

@@ -69,9 +69,7 @@ class Command(BaseCommand):
                 continue
 
             if options["dry_run"]:
-                self.stdout.write(
-                    f"  {customer.name}: {customer.health_score} -> {computed}"
-                )
+                self.stdout.write(f"  {customer.name}: {customer.health_score} -> {computed}")
             else:
                 customer.health_score = computed
                 customer.save(update_fields=["health_score"])

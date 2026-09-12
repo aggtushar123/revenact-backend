@@ -150,8 +150,24 @@ class HealthRecalculationMixin:
         return instance
 
     def update(self, instance, validated_data):
+        override_changing = (
+            "health_score_override" in validated_data
+            and validated_data["health_score_override"] != instance.health_score_override
+        )
+        score_before = instance.health_score
         instance = super().update(instance, validated_data)
         instance.recalculate_health()
+        if override_changing and hasattr(instance, "organisation"):
+            # A person overriding the rubric is a correction of it, and the
+            # feedback log is where corrections live.
+            from services.metrics.feedback import record_health_override
+
+            record_health_override(
+                instance,
+                score_before,
+                instance.health_score_override,
+                self.context["request"].user,
+            )
         return instance
 
 

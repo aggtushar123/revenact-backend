@@ -5,7 +5,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("connectors", "0001_initial"),
         ("customers", "0023_headline"),

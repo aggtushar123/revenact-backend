@@ -7,6 +7,7 @@ customers would otherwise read the company's ARR off this endpoint.
 
 from rest_framework import generics, views
 from rest_framework.exceptions import NotFound
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from services.accounts.permissions import CanViewAllAccounts
@@ -375,3 +376,108 @@ class ProposalDecisionView(views.APIView):
         except AlreadyDecided as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response({"proposal": _proposal_payload(proposal)})
+
+
+def _feedback_payload(entry):
+    return {
+        "id": entry.id,
+        "kind": entry.kind,
+        "kind_display": entry.get_kind_display(),
+        "subject_type": entry.subject_type,
+        "subject_id": entry.subject_id,
+        "subject_label": entry.subject_label,
+        "before": entry.before,
+        "after": entry.after,
+        "note": entry.note,
+        "made_by": entry.made_by.name if entry.made_by else None,
+        "created_at": entry.created_at.isoformat(),
+    }
+
+
+class FeedbackListView(views.APIView):
+    """GET /api/v1/metrics/feedback/ — the feedback log, newest first;
+    `?kind=` narrows. Management-facing: it is the record of how often
+    the system is wrong and about what, across every book."""
+
+    permission_classes = [CanViewAllAccounts]
+
+    def get(self, request):
+        from .models import Feedback
+
+        queryset = Feedback.objects.filter(organisation=request.user.organisation).select_related(
+            "made_by"
+        )
+        wanted = request.query_params.get("kind")
+        if wanted in Feedback.Kind.values:
+            queryset = queryset.filter(kind=wanted)
+        entries = list(queryset[:200])
+        counts = {
+            kind: Feedback.objects.filter(organisation=request.user.organisation, kind=kind).count()
+            for kind in Feedback.Kind.values
+        }
+        return Response({"counts": counts, "feedback": [_feedback_payload(e) for e in entries]})
+
+
+class ClassificationCorrectionView(views.APIView):
+    """PATCH /api/v1/interactions/<kind>/<id>/classification/ — a person
+    correcting the model's tags on one ticket, email or call. Any member
+    who can see the record may correct it; the correction is logged and
+    outranks every later reclassify."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, kind, pk):
+        from django.shortcuts import get_object_or_404
+        from rest_framework import status
+
+        from services.customers.scoping import visible_children_q
+
+        from .feedback import INTERACTION_MODELS, InvalidCorrection, correct_classification
+
+        model = INTERACTION_MODELS.get(kind)
+        if model is None:
+            return Response(
+                {"detail": f"No interaction kind {kind!r}."}, status=status.HTTP_404_NOT_FOUND
+            )
+        record_ = get_object_or_404(
+            model.objects.filter(visible_children_q(request.user)).distinct(), pk=pk
+        )
+        fields = {
+            key: request.data[key]
+            for key in ("area", "category", "subcategory", "sentiment")
+            if key in request.data
+        }
+        if not fields:
+            return Response(
+                {"detail": "Send at least one of area, category, subcategory, sentiment."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            record_, entry = correct_classification(
+                request.user.organisation,
+                record_,
+                fields,
+                made_by=request.user,
+                note=str(request.data.get("note") or ""),
+            )
+        except InvalidCorrection as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "id": f"{kind}:{record_.pk}",
+                "keys": {
+                    "area": record_.ai_area,
+                    "category": record_.ai_category,
+                    "subcategory": record_.ai_subcategory,
+                    "sentiment": record_.sentiment,
+                },
+                "labels": {
+                    "area": record_.get_ai_area_display() or "",
+                    "category": record_.get_ai_category_display() or "",
+                    "subcategory": record_.get_ai_subcategory_display() or "",
+                    "sentiment": record_.get_sentiment_display(),
+                },
+                "corrected": record_.classification_corrected_at is not None,
+                "feedback": _feedback_payload(entry) if entry else None,
+            }
+        )

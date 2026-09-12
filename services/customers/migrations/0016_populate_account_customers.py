@@ -27,7 +27,6 @@ def copy_customers_to_customer(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("customers", "0015_account_customers"),
     ]

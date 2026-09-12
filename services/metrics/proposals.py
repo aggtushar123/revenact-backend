@@ -30,6 +30,7 @@ from services.customers import forecast
 from services.customers.models import Customer, Task
 from services.customers.scoping import SystemActor, live_customers
 
+from . import feedback as feedback_log
 from . import initiatives as initiative_rules
 from .models import Initiative, Proposal
 from .registry import BY_KEY, compute_all, compute_slices
@@ -410,6 +411,7 @@ def approve(proposal, user, note=""):
     proposal.decision_note = note
     proposal.result = result
     proposal.save(update_fields=["status", "decided_by", "decided_at", "decision_note", "result"])
+    feedback_log.record_proposal_decision(proposal, "approved", note, user)
     return proposal
 
 
@@ -421,4 +423,5 @@ def reject(proposal, user, note=""):
     proposal.decided_at = timezone.now()
     proposal.decision_note = note
     proposal.save(update_fields=["status", "decided_by", "decided_at", "decision_note"])
+    feedback_log.record_proposal_decision(proposal, "rejected", note, user)
     return proposal

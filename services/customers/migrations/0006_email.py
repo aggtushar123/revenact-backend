@@ -5,7 +5,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("customers", "0005_activity"),
     ]
@@ -28,9 +27,7 @@ class Migration(migrations.Migration):
                 ("recipient_name", models.CharField(max_length=150)),
                 (
                     "body",
-                    models.TextField(
-                        help_text="The summarized preview shown on the card."
-                    ),
+                    models.TextField(help_text="The summarized preview shown on the card."),
                 ),
                 ("sent_at", models.DateTimeField()),
                 (
@@ -77,12 +74,8 @@ class Migration(migrations.Migration):
                 "constraints": [
                     models.CheckConstraint(
                         condition=models.Q(
-                            models.Q(
-                                ("account__isnull", True), ("customer__isnull", False)
-                            ),
-                            models.Q(
-                                ("account__isnull", False), ("customer__isnull", True)
-                            ),
+                            models.Q(("account__isnull", True), ("customer__isnull", False)),
+                            models.Q(("account__isnull", False), ("customer__isnull", True)),
                             _connector="OR",
                         ),
                         name="email_belongs_to_exactly_one_parent",

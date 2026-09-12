@@ -1915,8 +1915,9 @@ sentiment from.
 Claude call per batch of 20, through the same
 `services/copilot/anthropic_client.py` the Copilot and Headlines use.
 It only touches rows with no `ai_classified_at` unless `--reclassify` is
-given, so it is safe on a schedule and won't overwrite a hand
-correction; `--dry-run` counts the work without calling anything and
+given, so it is safe on a schedule; and even `--reclassify` skips rows a
+person corrected (`classification_corrected_at`, see the correction
+endpoint under `metrics`) unless `--include-corrected` is passed; `--dry-run` counts the work without calling anything and
 `--limit` caps the spend. On a `--reclassify` pass a row the model
 declines to place has its previous tags **cleared** (and is stamped, so
 a scheduled pass doesn't pay to retry it): the first real run over the
@@ -3711,6 +3712,46 @@ is a `409`.
              "assignee_name": "Carl CSM", "due_date": "2026-09-19", "priority": "high"},
   "initiative": {"id": 1, "title": "Halve the ARR at risk on Product B"},
   "status": "proposed", "decided_by": null, "result": {}, "generated_by": "Alice"}]}
+```
+
+### Models — `Feedback`
+
+A person correcting something the system said — the feedback log. Three
+kinds: `classification` (the model's tags on a ticket/email/call, fixed
+by hand), `proposal` (the Ops agent's proposal approved or rejected, with
+the note), `health_override` (a CSM overriding the rubric's score, or
+clearing the override). Each row keeps `before` (what the system said)
+and `after` (what the person said), `subject_type`/`subject_id`/
+`subject_label`, `note`, `made_by`. This is the set of cases the next
+prompt, taxonomy or rubric change should be read against.
+
+### `PATCH /api/v1/interactions/<ticket|email|call>/<id>/classification/`
+
+Auth: `IsAuthenticated`, and the record must be visible to the caller
+(otherwise `404`). Body: any of `area`, `category`, `subcategory`,
+`sentiment` — stored values or human labels, the same tolerance the
+classifier's parser has — plus an optional `note`. A subcategory must sit
+under the chosen category (the taxonomy's rule, `400` otherwise); a
+value the taxonomy lacks is a `400`; a no-op is a `200` with
+`feedback: null`. Stamps `classification_corrected_at` on the row, and
+**`classify_interactions --reclassify` leaves corrected rows alone** from
+then on (`--include-corrected` to override): a person's correction
+outranks the model. Returns the row's new `keys`, `labels`, `corrected`
+and the `Feedback` entry written.
+
+### `GET /api/v1/metrics/feedback/`
+
+Auth: `CanViewAllAccounts`. Newest first, up to 200; `?kind=` narrows;
+`counts` gives the total per kind — the cheap answer to "how often is
+the model wrong, and about what".
+
+```json
+{"counts": {"classification": 2, "proposal": 4, "health_override": 1},
+ "feedback": [{"id": 9, "kind": "classification", "kind_display": "Classification corrected",
+               "subject_type": "ticket", "subject_id": 12, "subject_label": "Slow page load for large accounts",
+               "before": {"area": "support_operations", "category": "integration_support", "subcategory": "webhook_failure", "sentiment": "neutral"},
+               "after": {"area": "product_growth", "category": "bug_report", "subcategory": "performance_issue", "sentiment": "neutral"},
+               "note": "It's a perf bug, not a webhook.", "made_by": "Carl CSM", "created_at": "2026-09-12T18:20:11Z"}]}
 ```
 
 ### `GET /api/v1/metrics/<key>/history/`
