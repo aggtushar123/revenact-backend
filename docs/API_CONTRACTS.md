@@ -3280,7 +3280,9 @@ and to anyone a turn routed a question to. The first two see every turn;
 a mentioned person sees the turns whose author is in their scope **and
 which are not addressed to someone else** (a turn that routes a question
 to Raj is Raj's, however senior its author), the turns that mention
-them, their own, and the Copilot's replies to those
+them **or anyone who reports to them** — a manager sees what was asked
+of their team and what the team replied, and the conversation appears
+in their list — their own, and the Copilot's replies to those
 (`copilot.views.visible_messages`). `GET/POST` conversation payloads
 carry `visibility: "full" | "partial"` and each turn its `author`
 (`Message.author`, backfilled for older turns from the session's

@@ -425,3 +425,84 @@ class ReplyRedactionTests(ChartFixture):
         self.assertEqual(
             visible_messages(conversation, self.alice)[1].content, "Raj says procurement stalled."
         )
+
+
+class ManagerSeesTeamTests(ChartFixture):
+    """Carl manages Dana. The CEO asks Dana something in a chat; Carl sees
+    the ask and the reply. Raj, on another branch, sees nothing."""
+
+    def test_a_manager_sees_what_was_asked_of_a_report_and_what_they_replied(self):
+        from services.copilot.views import visible_messages
+
+        conversation = Conversation.objects.create(
+            organisation=self.org, user=self.alice, title="Pizza Hut"
+        )
+        Message.objects.create(
+            conversation=conversation, role="user", content="Alice: general", author=self.alice
+        )
+        to_raj = Message.objects.create(
+            conversation=conversation,
+            role="user",
+            content="@Raj Mehta procurement?",
+            author=self.alice,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.raj,
+            text=to_raj.content,
+            message=to_raj,
+        )
+        to_dana = Message.objects.create(
+            conversation=conversation,
+            role="user",
+            content="@Dana CSM when is the QBR?",
+            author=self.alice,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.dana,
+            text=to_dana.content,
+            message=to_dana,
+        )
+        Message.objects.create(conversation=conversation, role="assistant", content="re: dana")
+        Message.objects.create(
+            conversation=conversation,
+            role="user",
+            content="Dana: QBR is on the 20th.",
+            author=self.dana,
+        )
+        Message.objects.create(
+            conversation=conversation, role="assistant", content="re: dana reply"
+        )
+
+        self.client.force_authenticate(self.carl)
+        self.assertEqual(
+            [c["id"] for c in self.client.get("/api/v1/copilot/conversations/").data],
+            [conversation.id],
+        )
+        self.assertEqual(
+            [m.content for m in visible_messages(conversation, self.carl)],
+            [
+                "Alice: general",
+                "@Dana CSM when is the QBR?",
+                "re: dana",
+                "Dana: QBR is on the 20th.",
+                "re: dana reply",
+            ],
+        )
+        self.assertEqual(
+            [q["text"] for q in self.client.get("/api/v1/questions/").data if "Dana" in q["text"]],
+            ["@Dana CSM when is the QBR?"],
+        )
+        # Raj was asked too, but Dana's part is not his.
+        self.assertEqual(
+            [m.content for m in visible_messages(conversation, self.raj)],
+            ["Alice: general", "@Raj Mehta procurement?"],
+        )
+        # Priya reports to Alice, not Carl: not a manager of Dana, never mentioned.
+        self.client.force_authenticate(self.priya)
+        self.assertEqual(self.client.get("/api/v1/copilot/conversations/").data, [])

@@ -165,14 +165,17 @@ def visible_contributions(user, queryset):
 
 
 def visible_questions(user, queryset):
-    """Questions asked by someone in `user`'s scope, routed to them, or on a
-    customer they are responsible for."""
+    """Questions asked by someone in `user`'s scope, routed to them or to
+    anyone who reports to them, or on a customer they are responsible for."""
     from django.db.models import Q
 
-    from services.accounts.hierarchy import scope_ids
+    from services.accounts.hierarchy import scope_ids, subtree_ids
 
     return queryset.filter(
-        Q(asked_by_id__in=scope_ids(user)) | Q(assignee=user) | responsible_for_q()(user)
+        Q(asked_by_id__in=scope_ids(user))
+        | Q(assignee=user)
+        | Q(assignee_id__in=subtree_ids(user))
+        | responsible_for_q()(user)
     ).distinct()
 
 

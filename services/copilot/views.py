@@ -81,10 +81,18 @@ def conversations_visible_to(user):
             session__invites__status=SessionInvite.Status.ACCEPTED,
         )
         # Mentioned in it: a question routed to them from one of its turns
-        # (services.knowledge). They see a slice, not the whole — see
+        # (services.knowledge) — or to someone who reports to them, directly
+        # or through the chain: a manager sees what was asked of their team
+        # and what the team replied. They see a slice, not the whole — see
         # visible_messages.
-        | Q(messages__questions__assignee=user)
+        | Q(messages__questions__assignee_id__in=_me_and_my_reports(user))
     ).distinct()
+
+
+def _me_and_my_reports(user):
+    from services.accounts.hierarchy import subtree_ids
+
+    return {user.id, *subtree_ids(user)}
 
 
 def sees_whole_conversation(conversation, user):
@@ -105,8 +113,9 @@ def visible_messages(conversation, user):
     for someone who is only mentioned, the turns written by people in
     their scope (their team, their reports, leadership above them — see
     services.accounts.hierarchy) that are not addressed to someone else,
-    the turns that mention them, their own, and the Copilot's replies to
-    those turns."""
+    the turns that mention them or anyone who reports to them, their own,
+    and the Copilot's replies to those turns. A manager therefore sees what
+    was asked of their team and what the team replied."""
     from services.accounts.hierarchy import scope_ids
 
     turns = list(conversation.messages.order_by("created_at", "id"))
@@ -125,11 +134,12 @@ def visible_messages(conversation, user):
     ).values_list("message_id", "assignee_id"):
         addressed.setdefault(message_id, set()).add(assignee_id)
 
+    mine = _me_and_my_reports(user)
     kept, previous_kept = [], False
     for turn in turns:
         if turn.role == Message.Role.USER:
             targets = addressed.get(turn.id, set())
-            if turn.author_id == user.id or user.id in targets:
+            if turn.author_id == user.id or targets & mine:
                 previous_kept = True
             elif targets:
                 previous_kept = False
