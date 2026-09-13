@@ -3,6 +3,22 @@ from django.contrib.auth.models import PermissionsMixin
 from django.db import models
 from django.utils.text import slugify
 
+#: Settings > Data's global configuration: each headline concept and the
+#: customer fields that may stand for it. The defaults are what the
+#: dashboards have always used.
+GLOBAL_ATTRIBUTE_CHOICES = {
+    "arr": ("arr_billed_at_account", "arr_billed_at_hq", "total_contract_value"),
+    "mrr": ("arr_billed_at_account", "arr_billed_at_hq", "total_contract_value"),
+    "renewal_date": ("renewal_date", "contract_end_date"),
+    "joined_date": ("joined_date", "contract_start_date", "created_at"),
+}
+GLOBAL_ATTRIBUTE_DEFAULTS = {
+    "arr": "arr_billed_at_account",
+    "mrr": "arr_billed_at_account",
+    "renewal_date": "renewal_date",
+    "joined_date": "joined_date",
+}
+
 
 class Organisation(models.Model):
     """A tenant. Every non-superuser User belongs to exactly one of these —
@@ -66,6 +82,13 @@ class Organisation(models.Model):
         "for no tenant-wide default (see this model's own docstring).",
     )
     ai_agent_enabled = models.BooleanField(default=True)
+    #: The global configuration card (Settings > Data): which customer
+    #: attribute stands for each headline concept across the organisation —
+    #: "ARR" means arr_billed_at_account here, "Renewal date" means
+    #: renewal_date. Keys are fixed (GLOBAL_ATTRIBUTE_KEYS); values are
+    #: customer field names from GLOBAL_ATTRIBUTE_CHOICES. Stored so every
+    #: screen can read one answer instead of hard-coding its own.
+    global_attributes = models.JSONField(default=dict, blank=True)
     ai_agent_tone = models.CharField(
         max_length=16, choices=AgentTone.choices, default=AgentTone.PROFESSIONAL
     )
@@ -108,6 +131,10 @@ class Organisation(models.Model):
             defaults={"name": "CSM", "permissions": [], "is_system": True},
         )
         return {admin.slug: admin, csm.slug: csm}
+
+    def effective_global_attributes(self):
+        """The stored mapping over the defaults, so a screen always gets every key."""
+        return {**GLOBAL_ATTRIBUTE_DEFAULTS, **(self.global_attributes or {})}
 
     def __str__(self):
         return self.name

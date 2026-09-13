@@ -412,14 +412,18 @@ class OrganisationSettingsTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(self.org.fx_rates.count(), 1)
 
-    def test_cannot_rename_organisation_through_this_endpoint(self):
+    def test_a_settings_manager_can_rename_the_organisation_but_never_its_slug(self):
+        # The name is what Settings > Data's global configuration card edits
+        # (a deliberate change from the earlier read-only rule); the slug is
+        # the tenant's identity and stays read-only.
         self.client.force_authenticate(self.admin)
         response = self.client.patch(
-            "/api/v1/auth/organisation/", {"name": "Hacked"}, format="json"
+            "/api/v1/auth/organisation/", {"name": "Acme Corp", "slug": "hacked"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.org.refresh_from_db()
-        self.assertEqual(self.org.name, "Acme Inc")
+        self.assertEqual(self.org.name, "Acme Corp")
+        self.assertNotEqual(self.org.slug, "hacked")
 
     def test_scoped_to_callers_own_organisation(self):
         self.client.force_authenticate(self.admin)

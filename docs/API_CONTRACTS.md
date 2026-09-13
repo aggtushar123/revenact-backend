@@ -221,6 +221,15 @@ them is silently ignored (not an error), not written.
 
 ### `GET /api/v1/auth/organisation/`, `PATCH /api/v1/auth/organisation/`
 
+**Global configuration (Settings › Data).** `name` is editable (PATCH,
+`manage_org_settings`; `slug` stays read-only). `global_attributes`
+maps each headline concept to the customer field that stands for it —
+`arr`, `mrr`, `renewal_date`, `joined_date` — read as the stored
+mapping over the defaults (`arr_billed_at_account`, `arr_billed_at_account`,
+`renewal_date`, `joined_date`); `global_attribute_choices` lists what
+each may be. PATCH accepts a partial mapping and refuses unknown keys or
+a field that cannot stand for the concept (`400`).
+
 Backs Settings > Currency, Global Presets, and AI Agent (react-ts-app's
 `src/pages/settings/CurrencyPage.tsx`/`GlobalPresetsPage.tsx`/
 `AIAgentPage.tsx`).

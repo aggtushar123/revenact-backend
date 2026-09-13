@@ -24,6 +24,8 @@ class OrganisationSerializer(serializers.ModelSerializer):
     ai_agent_tone_display = serializers.CharField(
         source="get_ai_agent_tone_display", read_only=True
     )
+    global_attributes = serializers.SerializerMethodField()
+    global_attribute_choices = serializers.SerializerMethodField()
 
     class Meta:
         model = Organisation
@@ -37,8 +39,52 @@ class OrganisationSerializer(serializers.ModelSerializer):
             "ai_agent_enabled",
             "ai_agent_tone",
             "ai_agent_tone_display",
+            "global_attributes",
+            "global_attribute_choices",
         ]
-        read_only_fields = ["id", "name", "slug"]
+        # `slug` is read-only: it is the tenant's identity. `name` is what the
+        # global configuration card edits, gated on manage_org_settings by the
+        # view; the settings PATCH cannot touch anything else here.
+        read_only_fields = ["id", "slug"]
+
+    def get_global_attributes(self, obj):
+        return obj.effective_global_attributes()
+
+    def get_global_attribute_choices(self, obj):
+        from .models import GLOBAL_ATTRIBUTE_CHOICES
+
+        return {key: list(values) for key, values in GLOBAL_ATTRIBUTE_CHOICES.items()}
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("The organisation needs a name.")
+        return value
+
+    def to_internal_value(self, data):
+        # `global_attributes` is a method field on read; on write it is a
+        # partial mapping validated against the fixed keys and choices.
+        attrs = super().to_internal_value(data)
+        if "global_attributes" in data:
+            from .models import GLOBAL_ATTRIBUTE_CHOICES
+
+            mapping = data["global_attributes"]
+            if not isinstance(mapping, dict):
+                raise serializers.ValidationError({"global_attributes": "Must be an object."})
+            for key, value in mapping.items():
+                if key not in GLOBAL_ATTRIBUTE_CHOICES:
+                    raise serializers.ValidationError(
+                        {"global_attributes": f"Unknown attribute {key!r}."}
+                    )
+                if value not in GLOBAL_ATTRIBUTE_CHOICES[key]:
+                    raise serializers.ValidationError(
+                        {"global_attributes": f"{value!r} cannot stand for {key}."}
+                    )
+            attrs["global_attributes"] = {
+                **(self.instance.global_attributes or {}),
+                **mapping,
+            }
+        return attrs
 
 
 class UserSerializer(serializers.ModelSerializer):
