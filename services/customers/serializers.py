@@ -150,6 +150,9 @@ class HealthRecalculationMixin:
         return instance
 
     def update(self, instance, validated_data):
+        # The handover note is for the record, not the row (see the view).
+        self.context["handover_note"] = validated_data.pop("handover_note", "")
+
         override_changing = (
             "health_score_override" in validated_data
             and validated_data["health_score_override"] != instance.health_score_override
@@ -241,6 +244,12 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
     )
 
     owner = UserSerializer(read_only=True)
+    handover_note = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        help_text="Why the account owner is changing — written down as a contribution.",
+    )
     owner_id = serializers.PrimaryKeyRelatedField(
         source="owner",
         queryset=User.objects.all(),
@@ -307,6 +316,7 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
             "churn_reason_display",
             "churn_comment",
             "is_archived",
+            "handover_note",
         ]
         read_only_fields = ["created_at", "updated_at", "csm_pulse_modified_at"]
 
@@ -320,10 +330,21 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
         request = self.context["request"]
         if owner is not None and owner.organisation_id != request.user.organisation_id:
             raise serializers.ValidationError("Owner must be a member of your own organisation.")
+        # Changing who is accountable is gated: the current owner, someone
+        # above them, or an org-settings manager (services.knowledge.ownership).
+        if self.instance is not None and owner != self.instance.owner:
+            from services.knowledge.ownership import may_change_owner
+
+            if not may_change_owner(request.user, self.instance):
+                raise serializers.ValidationError(
+                    "Only the current account owner, their management chain or an "
+                    "organisation-settings manager can reassign this account."
+                )
         return owner
 
     def create(self, validated_data):
         request = self.context["request"]
+        validated_data.pop("handover_note", "")
         validated_data["organisation"] = request.user.organisation
         validated_data["created_by"] = request.user
         validated_data["modified_by"] = request.user

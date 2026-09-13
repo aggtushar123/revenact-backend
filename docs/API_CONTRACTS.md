@@ -3305,6 +3305,30 @@ _reply_readable_by`); the stored turn is untouched.
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei
 report to her; Dana to Carl.
 
+### The account owner
+
+`Customer.owner` is the **account owner**: the one accountable person for
+the relationship, from any function (by convention CS; it can be an
+engineer for a technical-led account). The per-function owners are the
+team around them. Two rules, in `services/knowledge/ownership.py`, apply
+on every path that changes it (`PATCH /customers/<id>/ owner_id`, and the
+Company View's CS row `PATCH …/responsible/ {"function": "cs"}`):
+
+- **Who may change it**: the current owner, anyone above them in the
+  chart, or `manage_org_settings`; an unowned customer may be claimed by
+  anyone (`400` / `403` otherwise).
+- **A change is an event**: `handover_note` (customer PATCH) / `note`
+  (responsible PATCH) is written down as a contribution by the person who
+  made the change — "Account owner changed from Dana to Priya. <note>" —
+  and the new owner is notified.
+
+"Your customers" in the Copilot's digest means owned **or** responsible
+in your function; the owner cut in the registry is labelled "Account
+owner"; the Ops agent and facilitator are given each account's team and
+told to assign a task to the person responsible for the function it
+needs, falling back to the account owner. The responsible payload carries
+`account_owner {id, name, function}`.
+
 ### Models — `User.function`, `Contribution`, `FunctionOwner`
 
 `User.function` (`cs`, `engineering`, `sales`, `analytics`, `leadership`,

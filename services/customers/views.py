@@ -665,9 +665,17 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
         return with_health_inputs(visible_customers(self.request.user))
 
     def perform_update(self, serializer):
-        previous_owner_id = serializer.instance.owner_id
+        previous_owner = serializer.instance.owner
         customer = serializer.save()
-        if customer.owner_id != previous_owner_id:
+        if customer.owner_id != (previous_owner.id if previous_owner else None):
+            from services.knowledge.ownership import record_handover
+
+            record_handover(
+                customer,
+                self.request.user,
+                previous_owner,
+                serializer.context.get("handover_note", ""),
+            )
             _notify_owner_assigned(
                 instance=customer,
                 actor=self.request.user,

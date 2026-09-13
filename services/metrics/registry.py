@@ -39,7 +39,7 @@ UP, DOWN, NONE = "up", "down", "none"
 #: so a month-end row for a member can be found again next month.
 OWNER, PRODUCT, SEGMENT, LIFECYCLE = "owner", "product", "segment", "lifecycle"
 DIMENSION_LABELS = {
-    OWNER: "Owner",
+    OWNER: "Account owner",
     PRODUCT: "Product",
     SEGMENT: "Size band",
     LIFECYCLE: "Lifecycle stage",

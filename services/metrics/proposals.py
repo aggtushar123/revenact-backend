@@ -65,8 +65,10 @@ an object with:
 quoted as given (e.g. "Pizza Hut: USD 42,000 at risk, renews in 34 days").
   "initiative_id": the id of an open decision this serves, or null.
   "action": for a task — {{"customer_id": <id from the accounts list>, \
-"title": <task title>, "assignee": <a team member's exact name, normally the \
-account's owner>, "due_in_days": <1-60>, "priority": "high"|"medium"|"low"}}; \
+"title": <task title>, "assignee": <a team member's exact name — the person on \
+the account's team responsible for the function the task needs (an engineer \
+for a fix, sales for a commercial step), else the account owner>, \
+"due_in_days": <1-60>, "priority": "high"|"medium"|"low"}}; \
 for an initiative — {{"metric": <metric key>, "dimension": <a cut the metric \
 has, or "">, "member": <member id from that cut, or "">, "target_value": \
 <number>, "target_in_days": <14-180>}}.
@@ -102,6 +104,15 @@ def build_evidence(organisation):
     rows = forecast.build_rows(customers, organisation, horizon=forecast.horizon_days({}))
     exposure = forecast.exposure_list(rows, limit=EXPOSURE_LIMIT)
     owners = {c.owner_id: c.owner for c in customers if c.owner_id}
+    # The account team: who answers for each account in each function
+    # (services.knowledge), so a task lands with the person whose job it is.
+    from services.knowledge.models import FunctionOwner
+
+    team = {}
+    for fo in FunctionOwner.objects.filter(
+        customer_id__in=[r["id"] for r in exposure]
+    ).select_related("user"):
+        team.setdefault(fo.customer_id, {})[fo.get_function_display()] = fo.user.name
     accounts = []
     for row in exposure:
         customer = next(c for c in customers if c.id == row["id"])
@@ -111,6 +122,7 @@ def build_evidence(organisation):
                 "name": row["name"],
                 "owner": row["owner"],
                 "owner_id": customer.owner_id,
+                "team": team.get(row["id"], {}),
                 "arr": row["arr"],
                 "downside": row["downside"],
                 "days_to_renewal": row["days_to_renewal"],
@@ -204,8 +216,11 @@ def build_prompt(evidence):
         else:
             renewal = f"renews in {a['days_to_renewal']} days"
         factors = ", ".join(a["factors"]) or "no named factors"
+        team = "; ".join(f"{fn} {name}" for fn, name in a.get("team", {}).items())
         lines.append(
-            f"- {a['id']}: {a['name']} — owner {a['owner']}, "
+            f"- {a['id']}: {a['name']} — account owner {a['owner']}"
+            + (f" (team: {team})" if team else "")
+            + ", "
             f"product {a['product'] or 'unrecorded'}, "
             f"ARR {_money(a['arr'], currency)}, downside {_money(a['downside'], currency)}, "
             f"{renewal}, health {a['health']}, risk {a['risk']:.0%} ({factors})"

@@ -66,7 +66,8 @@ with the function and author), or a figure from the input, quoted as given.
   "initiative_id": the id of an open decision this serves, or null.
   "action": for a task — {{"customer_id": <id from the accounts list>, \
 "title": <task title>, "assignee": <a team member's exact name — the person \
-who took it on in the session, else the account's owner>, "due_in_days": \
+who took it on in the session, else the account's team member for that \
+function, else the account owner>, "due_in_days": \
 <1-60>, "priority": "high"|"medium"|"low"}}; for an initiative — \
 {{"metric": <metric key>, "dimension": <a cut the metric has, or "">, \
 "member": <member id from that cut, or "">, "target_value": <number>, \
@@ -100,6 +101,10 @@ def _account_row(customer, organisation):
         "name": row["name"],
         "owner": row["owner"],
         "owner_id": customer.owner_id,
+        "team": {
+            fo.get_function_display(): fo.user.name
+            for fo in customer.function_owners.select_related("user")
+        },
         "arr": row["arr"],
         "downside": row["downside"],
         "days_to_renewal": row["days_to_renewal"],

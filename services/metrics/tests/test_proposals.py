@@ -77,7 +77,9 @@ class EvidenceTests(TestCase):
 
         self.assertEqual([a["name"] for a in evidence["accounts"]], ["Pizza Hut"])
         self.assertEqual(evidence["accounts"][0]["owner"], "Carl")
-        self.assertIn(f"- {self.shaky.id}: Pizza Hut — owner Carl, product Product B", prompt)
+        self.assertIn(
+            f"- {self.shaky.id}: Pizza Hut — account owner Carl, product Product B", prompt
+        )
         self.assertIn("renews in 30 days", prompt)
         self.assertIn("- Carl", prompt)
         # The healthy account carries no downside and is not offered as a target.

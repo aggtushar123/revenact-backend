@@ -506,3 +506,15 @@ class ManagerSeesTeamTests(ChartFixture):
         # Priya reports to Alice, not Carl: not a manager of Dana, never mentioned.
         self.client.force_authenticate(self.priya)
         self.assertEqual(self.client.get("/api/v1/copilot/conversations/").data, [])
+
+    def test_a_manager_opens_the_customers_their_reports_own(self):
+        # Dana owns nothing here; give her one and Carl, her manager, can open it.
+        mine = Customer.objects.create(organisation=self.org, name="Dana's", owner=self.dana)
+        self.client.force_authenticate(self.carl)
+        self.assertEqual(
+            self.client.get(f"/api/v1/customers/{mine.id}/").status_code, status.HTTP_200_OK
+        )
+        self.client.force_authenticate(self.raj)
+        self.assertEqual(
+            self.client.get(f"/api/v1/customers/{mine.id}/").status_code, status.HTTP_404_NOT_FOUND
+        )

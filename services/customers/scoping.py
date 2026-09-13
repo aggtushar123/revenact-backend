@@ -102,8 +102,13 @@ def visible_customers(user):
     # function, or was asked or asked about in — the knowledge layer
     # (services.knowledge) brings engineers, sales and analysts to an
     # account's page, and a notification that links there must open it.
+    # The org chart: a manager sees the customers their reports own, all
+    # the way down (services.accounts.hierarchy).
+    from services.accounts.hierarchy import subtree_ids
+
     return base.filter(
         Q(owner=user)
+        | Q(owner_id__in=subtree_ids(user))
         | Q(accounts__owner=user)
         | Q(owner__isnull=True)
         | Q(function_owners__user=user)

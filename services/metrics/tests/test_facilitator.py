@@ -100,7 +100,7 @@ class EvidenceTests(TestCase):
         # Fine carries no downside, so the Ops agent never lists it — the
         # facilitator adds it so a task on it validates.
         self.assertIn(self.fine.id, {a["id"] for a in evidence["accounts"]})
-        self.assertIn(f"- {self.fine.id}: Fine — owner Carl", prompt)
+        self.assertIn(f"- {self.fine.id}: Fine — account owner Carl", prompt)
 
     def test_decisions_already_captured_are_shown_so_they_are_not_repeated(self):
         with patch(PATH, return_value=_answer(self.fine.id)):

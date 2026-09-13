@@ -97,7 +97,14 @@ def _responsible_line(company) -> str:
 
 
 def build_grounding(organisation, user, query: str = "") -> Grounding:
-    customers = Customer.objects.filter(organisation=organisation, owner=user, is_archived=False)
+    # "Your customers": the ones you own or answer for in your function
+    # (services.knowledge.FunctionOwner) — the account team, not only the
+    # account owner.
+    customers = Customer.objects.filter(
+        Q(owner=user) | Q(function_owners__user=user),
+        organisation=organisation,
+        is_archived=False,
+    ).distinct()
     # `.distinct()` — same fan-out reasoning as AccountListView's own.
     accounts = Account.objects.filter(customers__organisation=organisation, owner=user).distinct()
     # Knowledge is company-wide (see services.knowledge): the company a

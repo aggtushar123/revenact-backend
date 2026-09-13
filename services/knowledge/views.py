@@ -92,6 +92,15 @@ class CustomerResponsibleView(APIView):
             owners.setdefault(User.Function.CS, customer.owner)
         return {
             "customer_id": customer.id,
+            "account_owner": (
+                {
+                    "id": customer.owner.id,
+                    "name": customer.owner.name,
+                    "function": customer.owner.function,
+                }
+                if customer.owner_id
+                else None
+            ),
             "responsible": [
                 {
                     "function": function,
@@ -117,21 +126,42 @@ class CustomerResponsibleView(APIView):
         if function not in User.Function.values:
             return Response({"detail": "Unknown function."}, status=status.HTTP_400_BAD_REQUEST)
         user_id = request.data.get("user_id")
-        if user_id is None:
-            if function == User.Function.CS:
-                customer.owner = None
-                customer.save(update_fields=["owner"])
-            else:
-                customer.function_owners.filter(function=function).delete()
-        else:
-            user = get_object_or_404(User, pk=user_id, organisation=request.user.organisation)
-            if function == User.Function.CS:
-                customer.owner = user
-                customer.save(update_fields=["owner"])
-            else:
-                FunctionOwner.objects.update_or_create(
-                    customer=customer, function=function, defaults={"user": user}
+        user = (
+            None
+            if user_id is None
+            else get_object_or_404(User, pk=user_id, organisation=request.user.organisation)
+        )
+        if function == User.Function.CS:
+            # The CS row is the account owner: gated and written down like
+            # every other owner change (services.knowledge.ownership).
+            from services.notifications.models import Notification
+            from services.notifications.realtime import notify
+
+            from .ownership import may_change_owner, record_handover
+
+            if not may_change_owner(request.user, customer):
+                raise PermissionDenied(
+                    "Only the current account owner, their management chain or an "
+                    "organisation-settings manager can reassign this account."
                 )
+            previous = customer.owner
+            customer.owner = user
+            customer.save(update_fields=["owner"])
+            record_handover(customer, request.user, previous, str(request.data.get("note") or ""))
+            if user is not None and user.id != request.user.id and previous != user:
+                notify(
+                    recipient=user,
+                    actor=request.user,
+                    kind=Notification.Kind.CUSTOMER_ASSIGNED,
+                    message=f"{request.user.name} made you the account owner of {customer.name}.",
+                    link=f"/organizations/{customer.id}",
+                )
+        elif user is None:
+            customer.function_owners.filter(function=function).delete()
+        else:
+            FunctionOwner.objects.update_or_create(
+                customer=customer, function=function, defaults={"user": user}
+            )
         return Response(self._payload(customer))
 
 
