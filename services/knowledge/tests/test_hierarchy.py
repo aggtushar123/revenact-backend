@@ -236,6 +236,76 @@ class ChatSliceTests(ChartFixture):
             status.HTTP_404_NOT_FOUND,
         )
 
+    def test_a_turn_addressed_to_someone_else_is_not_shown_however_senior_its_author(self):
+        from services.copilot.views import visible_messages
+
+        conversation = Conversation.objects.create(
+            organisation=self.org, user=self.alice, title="Pizza Hut"
+        )
+        general = Message.objects.create(
+            conversation=conversation, role="user", content="Alice: general", author=self.alice
+        )
+        to_priya = Message.objects.create(
+            conversation=conversation,
+            role="user",
+            content="@Priya Nair fix date?",
+            author=self.alice,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.priya,
+            text=to_priya.content,
+            message=to_priya,
+        )
+        to_raj = Message.objects.create(
+            conversation=conversation,
+            role="user",
+            content="@Raj Mehta procurement?",
+            author=self.alice,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.raj,
+            text=to_raj.content,
+            message=to_raj,
+        )
+        Message.objects.create(conversation=conversation, role="assistant", content="re: raj")
+        both = Message.objects.create(
+            conversation=conversation,
+            role="user",
+            content="@Priya Nair @Raj Mehta agree?",
+            author=self.alice,
+        )
+        for who in (self.priya, self.raj):
+            Question.objects.create(
+                organisation=self.org,
+                customer=self.pizza,
+                asked_by=self.alice,
+                assignee=who,
+                text=both.content,
+                message=both,
+            )
+
+        self.assertEqual(
+            [m.content for m in visible_messages(conversation, self.priya)],
+            ["Alice: general", "@Priya Nair fix date?", "@Priya Nair @Raj Mehta agree?"],
+        )
+        self.assertEqual(
+            [m.content for m in visible_messages(conversation, self.raj)],
+            [
+                "Alice: general",
+                "@Raj Mehta procurement?",
+                "re: raj",
+                "@Priya Nair @Raj Mehta agree?",
+            ],
+        )
+        self.assertEqual(len(visible_messages(conversation, self.alice)), 5)
+        self.assertEqual(general.author, self.alice)
+
     def test_a_follow_up_from_the_mentioned_person_uses_only_their_slice_as_history(self):
         conversation = Conversation.objects.create(
             organisation=self.org, user=self.alice, title="Pizza Hut"

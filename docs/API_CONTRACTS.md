@@ -3277,8 +3277,10 @@ there opens for the person it was sent to.
 **A mentioned person sees a slice of a chat, not the chat.** A
 conversation is visible to its owner, to accepted session participants,
 and to anyone a turn routed a question to. The first two see every turn;
-a mentioned person sees the turns whose author is in their scope, the
-turns that mention them, their own, and the Copilot's replies to those
+a mentioned person sees the turns whose author is in their scope **and
+which are not addressed to someone else** (a turn that routes a question
+to Raj is Raj's, however senior its author), the turns that mention
+them, their own, and the Copilot's replies to those
 (`copilot.views.visible_messages`). `GET/POST` conversation payloads
 carry `visibility: "full" | "partial"` and each turn its `author`
 (`Message.author`, backfilled for older turns from the session's

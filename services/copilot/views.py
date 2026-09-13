@@ -104,23 +104,37 @@ def visible_messages(conversation, user):
     """The turns `user` may read. Everything for the owner and participants;
     for someone who is only mentioned, the turns written by people in
     their scope (their team, their reports, leadership above them — see
-    services.accounts.hierarchy), the turns that mention them, their own,
-    and the Copilot's replies to those turns."""
+    services.accounts.hierarchy) that are not addressed to someone else,
+    the turns that mention them, their own, and the Copilot's replies to
+    those turns."""
     from services.accounts.hierarchy import scope_ids
 
     turns = list(conversation.messages.order_by("created_at", "id"))
     if sees_whole_conversation(conversation, user):
         return turns
+    from services.knowledge.models import Question
+
     allowed = scope_ids(user)
-    mentioned_in = set(
-        conversation.messages.filter(questions__assignee=user).values_list("id", flat=True)
-    )
+    # Who each turn routed a question to. A turn addressed to someone else
+    # — "@Raj, what did procurement say?" — is theirs, not the room's: a
+    # viewer who sees only a slice gets it only if it is addressed to them
+    # too, however senior its author.
+    addressed = {}
+    for message_id, assignee_id in Question.objects.filter(
+        message__conversation=conversation
+    ).values_list("message_id", "assignee_id"):
+        addressed.setdefault(message_id, set()).add(assignee_id)
+
     kept, previous_kept = [], False
     for turn in turns:
         if turn.role == Message.Role.USER:
-            previous_kept = (
-                turn.author_id in allowed or turn.author_id is None or turn.id in mentioned_in
-            )
+            targets = addressed.get(turn.id, set())
+            if turn.author_id == user.id or user.id in targets:
+                previous_kept = True
+            elif targets:
+                previous_kept = False
+            else:
+                previous_kept = turn.author_id in allowed or turn.author_id is None
             if previous_kept:
                 kept.append(turn)
         elif previous_kept:
