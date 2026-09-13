@@ -13,6 +13,7 @@ from django.utils import timezone
 from services.notifications.models import Notification
 from services.notifications.realtime import notify
 
+from .mentions import _link_for
 from .models import Question
 
 STALE_DAYS = 3
@@ -51,7 +52,7 @@ def nudge(organisation, days=STALE_DAYS, *, dry_run=False, now=None):
                     f"Still waiting: {q.asked_by.name} asked you{about} {age} days ago — "
                     f"{q.text[:100]}"
                 ),
-                link=f"/organizations/{q.customer_id}" if q.customer_id else "/copilot",
+                link=_link_for(q),
             )
             q.last_nudged_at = now
             q.save(update_fields=["last_nudged_at"])

@@ -64,7 +64,7 @@ def route_questions(*, organisation, asked_by, text, customer=None, message=None
             actor=asked_by,
             kind=Notification.Kind.QUESTION_ASKED,
             message=f"{asked_by.name} asked you{about}: {question.text[:120]}",
-            link=f"/organizations/{customer.id}" if customer else "/copilot",
+            link=_link_for(question),
         )
         created.append(question)
     return created
@@ -90,9 +90,21 @@ def answer_question(question, answerer, body):
         actor=answerer,
         kind=Notification.Kind.QUESTION_ANSWERED,
         message=f"{answerer.name} answered your question{about}: {body.strip()[:120]}",
-        link=f"/organizations/{question.customer_id}" if question.customer_id else "/copilot",
+        link=_link_for(question),
     )
     return question
+
+
+def _link_for(question):
+    """Where a notification about the question should land: the chat it was
+    asked in, when it was asked in one (the page already opens any
+    conversation the viewer may read via `?session=`); otherwise the
+    customer's page, where the Questions panel lives."""
+    if question.message_id:
+        return f"/copilot?session={question.message.conversation_id}"
+    if question.customer_id:
+        return f"/organizations/{question.customer_id}"
+    return "/copilot"
 
 
 def ask_suggestions_for(company, *, exclude=None):

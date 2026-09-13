@@ -3341,7 +3341,9 @@ them; otherwise to whoever the text **@mentions** (`@Mei` by first name
 when unique, `@Mei Tanaka` by full name; two Meis and a bare `@Mei`
 resolve to nobody rather than the wrong one; never yourself). `400`
 when nobody is asked. Each person asked gets a `question_asked`
-notification linking to the customer. Lists are open first, newest
+notification linking to the chat it was asked in (`/copilot?session=<conversation id>`)
+when it was asked in one, otherwise to the customer's page; the answer's
+notification links the same way. Lists are open first, newest
 first; `/questions/` takes `?mine=true` (waiting on the caller),
 `?asked=true` (asked by the caller), `?status=`. `answer/ {"body"}`:
 the assignee (or `manage_users`) answers once (`409` after); the answer

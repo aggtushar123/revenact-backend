@@ -213,6 +213,9 @@ class CopilotRoutingTests(Fixture):
         question = Question.objects.get()
         self.assertEqual(question.customer, self.pizza)
         self.assertEqual(question.message_id, user_turn["id"])
+        # Asked in a chat: the notification opens that chat, not the account page.
+        note = Notification.objects.get(recipient=self.mei)
+        self.assertEqual(note.link, f"/copilot?session={response.data['id']}")
         self.assertEqual(response.data["messages"][1]["questions"], [])
 
 
