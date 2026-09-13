@@ -3394,6 +3394,9 @@ responsible when the answer was given. The screen offers them as one
 click under the reply; the click is `POST /customers/<id>/questions/`
 with `assignee_id` and `message_id` (the user turn), so the question
 keeps the turn it came from and the chat shows whom it asked.
+When the caller did not write that turn — forwarding someone else's
+question — the stored text reads `Alice Admin asked: "…" — can you
+answer?`, so the person asked knows whose question it is.
 
 ### The Copilot reads all of it
 
