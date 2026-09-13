@@ -16,6 +16,7 @@ env = environ.Env(
     DEBUG=(bool, True),
     ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1"]),
     CORS_ALLOWED_ORIGINS=(list, ["http://localhost:5173"]),
+    CSRF_TRUSTED_ORIGINS=(list, []),
 )
 # Reads .env if present; real environment variables always take precedence.
 environ.Env.read_env(BASE_DIR / ".env")
@@ -173,12 +174,22 @@ USE_TZ = True
 # --- Static -----------------------------------------------------------------------
 
 STATIC_URL = "static/"
+# Collected at image build (Dockerfile) and served by the reverse proxy in a
+# deployment; unused by the dev server, which serves the admin's assets itself.
+STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- CORS -----------------------------------------------------------------------
 # The Vite dev server (localhost:5173) is a different origin from the API.
 
 CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS")
+
+# Behind a TLS-terminating reverse proxy (the deployment's Caddy): trust its
+# scheme header so Django builds https links and the admin's CSRF check
+# accepts the public origin. Harmless in dev, where nothing sets the header.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+CSRF_TRUSTED_ORIGINS = env("CSRF_TRUSTED_ORIGINS")
 CORS_ALLOW_CREDENTIALS = True
 
 # --- Django REST Framework -------------------------------------------------------
