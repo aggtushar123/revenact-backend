@@ -229,6 +229,11 @@ class CustomerQuestionListCreateView(generics.ListCreateAPIView):
                 pk=request.data["message_id"],
                 conversation__in=conversations_visible_to(request.user),
             )
+            # Forwarding someone else's question — the one-click ask under a
+            # reply to a turn the caller did not write — says whose it was,
+            # so the person asked knows who is actually waiting.
+            if message.author_id and message.author_id != request.user.id:
+                text = f'{message.author.name} asked: "{text}" — can you answer?'
         created = mentions.route_questions(
             organisation=request.user.organisation,
             asked_by=request.user,

@@ -183,6 +183,52 @@ class SuggestionTests(Fixture):
         self.assertEqual(asked.status_code, status.HTTP_201_CREATED)
         self.assertEqual(asked.data[0]["message_id"], response.data["messages"][0]["id"])
 
+    def test_forwarding_someone_elses_question_says_whose_it_was(self):
+        from services.copilot.models import Conversation, Message
+
+        conversation = Conversation.objects.create(
+            organisation=self.org, user=self.alice, title="PH"
+        )
+        turn = Message.objects.create(
+            conversation=conversation,
+            role="user",
+            content="What did procurement say?",
+            author=self.alice,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.mei,
+            text=turn.content,
+            message=turn,
+        )
+        # Mei, mentioned in the thread, forwards Alice's question to Carl in one click.
+        self.client.force_authenticate(self.mei)
+        forwarded = self.client.post(
+            f"/api/v1/customers/{self.pizza.id}/questions/",
+            {"text": turn.content, "assignee_id": self.carl.id, "message_id": turn.id},
+            format="json",
+        )
+        self.assertEqual(forwarded.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            forwarded.data[0]["text"],
+            'Alice Admin asked: "What did procurement say?" — can you answer?',
+        )
+        self.assertEqual(forwarded.data[0]["asked_by"]["name"], "Mei Tanaka")
+        self.assertIn(
+            'asked: "What did procurement say?"',
+            Notification.objects.get(recipient=self.carl).message,
+        )
+        # Asking on your own turn is not a forward.
+        self.client.force_authenticate(self.alice)
+        own = self.client.post(
+            f"/api/v1/customers/{self.pizza.id}/questions/",
+            {"text": turn.content, "assignee_id": self.carl.id, "message_id": turn.id},
+            format="json",
+        )
+        self.assertEqual(own.data[0]["text"], "What did procurement say?")
+
     def test_a_question_about_no_company_offers_nobody(self):
         self.client.force_authenticate(self.alice)
         with patch("services.copilot.views.get_completion", return_value="Hi."):
