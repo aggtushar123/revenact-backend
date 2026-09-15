@@ -1,5 +1,7 @@
 [tool.ruff]
 line-length = 100
+# The soc2-dev skill ships its own scripts with their own style; not this repo's code.
+extend-exclude = [".claude"]
 target-version = "py313"
 
 [tool.ruff.lint]

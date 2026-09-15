@@ -1,0 +1,24 @@
+# CODEOWNERS — required reviewers for security-sensitive paths (SOC2:CHG-04).
+# One maintainer today; add a second reviewer here as the team grows.
+
+# Authentication, authorization, sessions
+services/accounts/**      @aggtushar123
+core/**                   @aggtushar123
+config/**                 @aggtushar123
+
+# Outbound integrations (webhooks carry signing secrets)
+services/webhooks/**      @aggtushar123
+
+# Data models and migrations
+**/models.py              @aggtushar123
+**/migrations/**          @aggtushar123
+
+# CI, build, release
+.github/**                @aggtushar123
+Dockerfile                @aggtushar123
+docker-compose*.yml       @aggtushar123
+requirements*.txt         @aggtushar123
+
+# Compliance records
+.soc2/**                  @aggtushar123
+SECURITY.md               @aggtushar123

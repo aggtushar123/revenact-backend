@@ -1,5 +1,6 @@
 from rest_framework import generics
 
+from core import audit
 from services.accounts.permissions import CanManageIntegrations
 
 from .models import WebhookSubscription
@@ -21,7 +22,14 @@ class WebhookListCreateView(generics.ListCreateAPIView):
         return WebhookSubscription.objects.filter(organisation=self.request.user.organisation)
 
     def perform_create(self, serializer):
-        serializer.save(organisation=self.request.user.organisation)
+        webhook = serializer.save(organisation=self.request.user.organisation)
+        # SOC2:LOG-01 config change — where the org's data gets sent
+        audit.record(
+            "webhook.create",
+            request=self.request,
+            target=webhook,
+            metadata={"url": webhook.url, "event": webhook.event},
+        )
 
 
 class WebhookDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -35,3 +43,21 @@ class WebhookDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return WebhookSubscription.objects.filter(organisation=self.request.user.organisation)
+
+    def perform_update(self, serializer):
+        webhook = serializer.save()
+        audit.record(
+            "webhook.update",
+            request=self.request,
+            target=webhook,
+            metadata={"fields": sorted(serializer.validated_data.keys())},
+        )
+
+    def perform_destroy(self, instance):
+        audit.record(
+            "webhook.delete",
+            request=self.request,
+            target=instance,
+            metadata={"url": instance.url, "event": instance.event},
+        )
+        instance.delete()

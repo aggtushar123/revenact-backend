@@ -1,0 +1,92 @@
+# SOC 2 security gates (soc2-dev skill). Once branch rules exist on main, make
+# every job here a required status check (CHG-01, CHG-02).
+#   secret-scan      SEC-01  gitleaks over full history
+#   dependency-scan  SEC-03  pip-audit against the pinned requirements
+#   static-analysis  SEC-04  semgrep security rulesets (Django-aware)
+#   container-scan   SEC-05  trivy: vulnerabilities in the image's Python deps + Dockerfile misconfig
+#   soc2-scan        EVD-01  the skill's heuristic scanner + control-map drift
+name: soc2-gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: secret-scan (SEC-01)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-scan:
+    name: dependency-scan (SEC-03)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: pip-audit
+        run: pipx run pip-audit --requirement requirements.txt --strict
+
+  static-analysis:
+    name: static-analysis (SEC-04)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: semgrep
+        run: >-
+          semgrep scan --error --metrics=off
+          --config p/security-audit --config p/secrets --config p/owasp-top-ten --config p/django
+          --exclude .claude --exclude venv --exclude '**/tests/**' --exclude '**/migrations/**'
+
+  container-scan:
+    name: container-scan (SEC-05)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: trivy (vulnerabilities, blocking)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-dirs: venv,.claude
+      - name: trivy (Dockerfile misconfiguration, report only — review in the job log)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          skip-dirs: venv,.claude
+
+  soc2-scan:
+    name: soc2-heuristic-scan (EVD-01)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: scanner (fails on critical)
+        run: |
+          python3 .claude/skills/soc2-dev/scripts/soc2_scan.py . --format md --fail-on critical | tee soc2-scan.md
+      - name: control map drift
+        run: python3 .claude/skills/soc2-dev/scripts/control_map.py . || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soc2-scan
+          path: soc2-scan.md

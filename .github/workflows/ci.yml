@@ -28,7 +28,7 @@ jobs:
       SECRET_KEY: ci-test-key
       DEBUG: "False"
       ALLOWED_HOSTS: localhost,127.0.0.1
-      DATABASE_URL: postgres://revenact:revenact@localhost:5432/revenact
+      DATABASE_URL: postgres://revenact:revenact@localhost:5432/revenact  # soc2:ignore ephemeral CI service db
       CORS_ALLOWED_ORIGINS: http://localhost:5173
 
     steps:

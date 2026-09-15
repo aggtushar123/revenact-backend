@@ -22,6 +22,15 @@ COPY . .
 # Admin + API-docs assets, served by Caddy from the shared volume.
 RUN SECRET_KEY=build DEBUG=False python manage.py collectstatic --noinput
 
+# SOC2:SEC-05 the server runs as an unprivileged user. HF_HOME keeps the
+# embedding-model cache under /app (the deployment mounts a volume there)
+# rather than under /root, which the app user cannot write.
+ENV HF_HOME=/app/.cache/huggingface
+RUN useradd --system --uid 10001 --create-home --home-dir /home/app app \
+    && mkdir -p /app/.cache/huggingface \
+    && chown -R app:app /app
+USER app
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

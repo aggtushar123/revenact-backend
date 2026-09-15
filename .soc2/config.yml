@@ -1,0 +1,77 @@
+# SOC 2 configuration for revenact-backend. Read by the soc2-dev skill and its scripts.
+# Values here override the defaults in the skill's requirement registry.
+#
+# Status (2026-09-15): product is in active development. Code-level controls
+# (Security + Confidentiality) are in scope now; organisational policies are
+# deferred until closer to an audit window.
+
+company: "Revenact"
+system_name: "Revenact (API, web app, single-VM Azure deployment)"
+owner: "@aggtushar123"
+
+tsc:
+  security: true
+  availability: false
+  confidentiality: true
+  processing_integrity: false
+  privacy: false
+
+data:
+  pii: true                # customer contacts, user emails, interaction/email bodies
+  phi: false
+  payment_card: false
+  multi_tenant: true       # every model hangs off Organisation; scoping in services/customers/scoping.py
+  classification_default: internal
+
+auth:
+  mfa_required_for: [admin, privileged]
+  external_idp: false
+  password_min_length: 12
+  password_max_age_days: 0
+  password_breach_check: true
+  access_token_ttl_minutes: 60     # SIMPLE_JWT.ACCESS_TOKEN_LIFETIME
+  refresh_token_ttl_days: 7        # SIMPLE_JWT.REFRESH_TOKEN_LIFETIME
+  idle_timeout_minutes: 30
+  lockout_after_failures: 10
+
+retention_days:
+  audit_logs: 365
+  application_logs: 90
+  user_pii_after_account_close: 30
+  backups: 35
+  support_tickets: 730
+
+patch_sla_days:
+  critical: 7
+  high: 30
+  medium: 90
+  low: 180
+
+policies_dir: docs/policies
+
+stack:
+  language: python
+  framework: django
+  ci: github
+  cloud: azure
+
+scan_ignore:
+  - venv
+  - node_modules
+  - dist
+  - build
+  - .pytest_cache
+  - .ruff_cache
+  - "**/tests/**"
+  - "**/*.test.*"
+  - "**/management/commands/seed_demo*.py"   # synthetic demo fixtures, not credentials
+
+# Intentionally unauthenticated routes (AllowAny). Everything else is
+# IsAuthenticated by REST_FRAMEWORK.DEFAULT_PERMISSION_CLASSES.
+public_routes:
+  - "GET /api/v1/health/"
+  - "POST /api/v1/auth/signup/"
+  - "POST /api/v1/auth/login/"
+  - "POST /api/v1/auth/token/refresh/"
+  - "POST /api/v1/auth/password-reset/"
+  - "POST /api/v1/auth/password-reset/confirm/"

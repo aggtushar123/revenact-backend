@@ -1,0 +1,13 @@
+# SOC2:SEC-03 dependency updates land as PRs on a schedule; security
+# advisories open a PR immediately regardless of the schedule.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

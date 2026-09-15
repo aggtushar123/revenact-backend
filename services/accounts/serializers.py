@@ -1,4 +1,6 @@
+from django.contrib.auth.password_validation import validate_password as _django_validate_password
 from django.contrib.auth.tokens import default_token_generator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
@@ -144,6 +146,20 @@ class UserSerializer(serializers.ModelSerializer):
         return list(obj.role.permissions or []) if obj.role_id else []
 
 
+def _check_password_strength(password, user=None, field=None):
+    """SOC2:AUTH-04 every path that sets a password runs Django's
+    AUTH_PASSWORD_VALIDATORS (12+ chars, not common, not similar to the
+    user's own name/email) — signup, admin-set, self-service change and
+    reset alike. `user` may be unsaved; only its attributes are read.
+    From a serializer-level validate(), pass `field` so the errors are
+    reported against that field rather than as non_field_errors."""
+    try:
+        _django_validate_password(password, user=user)
+    except DjangoValidationError as exc:
+        messages = list(exc.messages)
+        raise serializers.ValidationError({field: messages} if field else messages)
+
+
 class SignupSerializer(serializers.Serializer):
     """Creates a new Organisation plus its first user (role=admin) in one
     call. This is the only way an Organisation gets created."""
@@ -151,13 +167,19 @@ class SignupSerializer(serializers.Serializer):
     organisation_name = serializers.CharField(max_length=255)
     name = serializers.CharField(max_length=255)
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True, min_length=8)
+    password = serializers.CharField(write_only=True)
 
     def validate_email(self, value):
         value = value.lower()
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("A user with this email already exists.")
         return value
+
+    def validate(self, attrs):
+        _check_password_strength(
+            attrs["password"], User(email=attrs["email"], name=attrs["name"]), field="password"
+        )
+        return attrs
 
     @transaction.atomic
     def create(self, validated_data):
@@ -265,10 +287,18 @@ class CreateOrgUserSerializer(serializers.Serializer):
 
     name = serializers.CharField(max_length=255)
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True, min_length=8)
+    password = serializers.CharField(write_only=True)
     role_id = serializers.IntegerField(required=False)
     function = serializers.ChoiceField(choices=User.Function.choices, required=False)
     reports_to_id = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        _check_password_strength(
+            attrs["password"],
+            User(email=attrs.get("email", ""), name=attrs.get("name", "")),
+            field="password",
+        )
+        return attrs
 
     def validate_reports_to_id(self, value):
         if value is None:
@@ -341,11 +371,15 @@ class ChangePasswordSerializer(serializers.Serializer):
     override and doesn't)."""
 
     current_password = serializers.CharField(write_only=True)
-    new_password = serializers.CharField(write_only=True, min_length=8)
+    new_password = serializers.CharField(write_only=True)
 
     def validate_current_password(self, value):
         if not self.context["request"].user.check_password(value):
             raise serializers.ValidationError("Current password is incorrect.")
+        return value
+
+    def validate_new_password(self, value):
+        _check_password_strength(value, self.context["request"].user)
         return value
 
     def save(self):
@@ -385,7 +419,7 @@ class ResetPasswordSerializer(serializers.Serializer):
 
     uid = serializers.CharField()
     token = serializers.CharField()
-    new_password = serializers.CharField(write_only=True, min_length=8)
+    new_password = serializers.CharField(write_only=True)
 
     GENERIC_ERROR = "This reset link is invalid or has expired."
 
@@ -399,6 +433,7 @@ class ResetPasswordSerializer(serializers.Serializer):
         if not default_token_generator.check_token(user, attrs["token"]):
             raise serializers.ValidationError(self.GENERIC_ERROR)
 
+        _check_password_strength(attrs["new_password"], user)
         attrs["user"] = user
         return attrs
 
@@ -421,7 +456,12 @@ class EditOrgUserSerializer(serializers.ModelSerializer):
     against the caller's own organisation so an admin can't move
     somebody onto another tenant's role."""
 
-    password = serializers.CharField(write_only=True, required=False, min_length=8)
+    password = serializers.CharField(write_only=True, required=False)
+
+    def validate_password(self, value):
+        _check_password_strength(value, self.instance)
+        return value
+
     role_id = serializers.PrimaryKeyRelatedField(
         source="role", queryset=Role.objects.all(), required=False
     )

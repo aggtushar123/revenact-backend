@@ -9,11 +9,14 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# SOC2:SEC-06 secure defaults: DEBUG is off unless the environment says
+# otherwise (.env.example turns it on for local dev).
 env = environ.Env(
-    DEBUG=(bool, True),
+    DEBUG=(bool, False),
     ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1"]),
     CORS_ALLOWED_ORIGINS=(list, ["http://localhost:5173"]),
     CSRF_TRUSTED_ORIGINS=(list, []),
@@ -23,8 +26,21 @@ environ.Env.read_env(BASE_DIR / ".env")
 
 # --- Core -------------------------------------------------------------------
 
-SECRET_KEY = env("SECRET_KEY", default="django-insecure-dev-key-change-in-production")
 DEBUG = env("DEBUG")
+# True under `manage.py test`: swaps external services (Redis) for in-memory
+# ones and disables auth rate limits so the suite isn't throttled.
+TESTING = "test" in sys.argv
+
+# SOC2:SEC-06 no default credentials in production. Dev gets a throwaway key
+# when DEBUG is on; anything else must set SECRET_KEY explicitly.
+SECRET_KEY = env("SECRET_KEY", default="")
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = "django-insecure-dev-key-change-in-production"  # soc2:ignore dev-only
+    else:
+        raise ImproperlyConfigured("SECRET_KEY must be set when DEBUG is off.")
+elif SECRET_KEY.startswith("django-insecure") and not DEBUG:
+    raise ImproperlyConfigured("SECRET_KEY is the insecure dev placeholder; set a real one.")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 
 # --- Applications -------------------------------------------------------------
@@ -77,6 +93,7 @@ INSTALLED_APPS = [
 AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
+    "core.middleware.RequestIDMiddleware",  # SOC2:API-05 first, so every log line has the id
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",  # must sit above CommonMiddleware
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -145,23 +162,48 @@ CHANNEL_LAYERS = {
     },
 }
 
+# --- Cache --------------------------------------------------------------------
+# Only consumer today is the auth rate limiting (core/throttling.py). Same
+# Redis the channel layer uses; in-memory under test for the same reason.
+
+REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
+CACHES = {
+    "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
+    if TESTING
+    else {"BACKEND": "django.core.cache.backends.redis.RedisCache", "LOCATION": REDIS_URL}
+}
+
 # --- Database -----------------------------------------------------------------
 # Defaults to the docker-compose Postgres instance; override via DATABASE_URL.
 
 DATABASES = {
     "default": env.db(
         "DATABASE_URL",
-        default="postgres://revenact:revenact@localhost:5432/revenact",
+        default="postgres://revenact:revenact@localhost:5432/revenact",  # soc2:ignore dev-only
     )
 }
 
 # --- Auth -----------------------------------------------------------------------
 
+# SOC2:AUTH-04 password policy: 12+ characters, not a common password, not
+# derived from the user's own name/email, no composition rules (NIST 800-63B).
+# Enforced by services/accounts/serializers.py on signup, admin-set,
+# self-service change and reset — not only by createsuperuser.
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 12},
+    },
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+# SOC2:AUTH-04 / SEC-07 Argon2id for new hashes; PBKDF2 stays listed so
+# existing hashes still verify and are upgraded on the user's next login.
+PASSWORD_HASHERS = [
+    "django.contrib.auth.hashers.Argon2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2PasswordHasher",
 ]
 
 # --- i18n -----------------------------------------------------------------------
@@ -192,6 +234,29 @@ USE_X_FORWARDED_HOST = True
 CSRF_TRUSTED_ORIGINS = env("CSRF_TRUSTED_ORIGINS")
 CORS_ALLOW_CREDENTIALS = True
 
+# --- Transport security headers (SOC2:API-06, DATA-03, AUTH-05) ------------------
+# Applied whenever DEBUG is off. TLS itself terminates at Caddy, which is why
+# SECURE_SSL_REDIRECT stays off (the container health check speaks plain
+# HTTP to 127.0.0.1). The API is bearer-token based; the cookie settings
+# protect the session the Django admin uses.
+
+if not DEBUG:
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = False
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_AGE = 30 * 60  # admin idle timeout, 30 min
+SESSION_SAVE_EVERY_REQUEST = True  # ...measured from the last request, not login
+X_FRAME_OPTIONS = "DENY"
+
+# SOC2:API-04 request body ceiling (Django default made explicit).
+DATA_UPLOAD_MAX_MEMORY_SIZE = 2_621_440  # 2.5 MB
+
 # --- Django REST Framework -------------------------------------------------------
 
 REST_FRAMEWORK = {
@@ -210,6 +275,24 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    # Behind Caddy the client address is the last X-Forwarded-For hop it
+    # appended; 0 means "no proxy, trust REMOTE_ADDR". Used by the auth
+    # throttles and audit log to identify the caller.
+    "NUM_PROXIES": env.int("NUM_PROXIES", default=1),
+    "DEFAULT_THROTTLE_RATES": {},  # filled in below from AUTH_THROTTLE_RATES
+}
+
+# SOC2:AUTH-06 rate limits on the public auth endpoints (core/throttling.py,
+# applied per view in services/accounts/views.py). None under test.
+AUTH_THROTTLE_RATES = {
+    "login": env("THROTTLE_LOGIN", default="10/min"),  # per source IP
+    "login_account": env("THROTTLE_LOGIN_ACCOUNT", default="5/min"),  # per email
+    "signup": env("THROTTLE_SIGNUP", default="5/hour"),
+    "password_reset": env("THROTTLE_PASSWORD_RESET", default="5/hour"),
+    "token_refresh": env("THROTTLE_TOKEN_REFRESH", default="30/min"),
+}
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+    scope: (None if TESTING else rate) for scope, rate in AUTH_THROTTLE_RATES.items()
 }
 
 if DEBUG:
@@ -224,6 +307,11 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "UPDATE_LAST_LOGIN": True,
+    # SOC2:AUTH-05 every refresh issues a new refresh token and blacklists
+    # the one just used, so a stolen refresh token is only good once (the
+    # frontend stores the replacement — see authSlice.refreshSession).
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
 }
 
 # --- Email (forgot/reset password) -----------------------------------------------
@@ -292,4 +380,37 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
+}
+
+# --- Logging (SOC2:LOG-03, LOG-04) ---------------------------------------------
+# JSON lines on stdout in production (shipped by whatever collects container
+# logs), plain text in dev. Every record passes core.logging.RedactFilter
+# first. The audit trail (core.audit) has its own table; the `core.audit`
+# logger is its second copy in the log stream.
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {"redact": {"()": "core.logging.RedactFilter"}},
+    "formatters": {
+        "json": {"()": "core.logging.JSONFormatter"},
+        "plain": {"format": "%(levelname)s %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "plain" if DEBUG else "json",
+            "filters": ["redact"],
+        }
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "WARNING" if TESTING else env("LOG_LEVEL", default="INFO"),
+    },
+    "loggers": {
+        "django.request": {"level": "WARNING"},
+        "django.server": {"level": "INFO"},
+        "core.audit": {"level": "INFO"},
+        "daphne": {"level": "WARNING"},
+    },
 }

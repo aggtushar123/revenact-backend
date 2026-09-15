@@ -39,7 +39,7 @@ services:
       # Overrides .env's localhost DATABASE_URL/REDIS_URL — inside the
       # compose network these are reachable at the service names, not
       # localhost.
-      DATABASE_URL: postgres://revenact:revenact@db:5432/revenact
+      DATABASE_URL: postgres://revenact:revenact@db:5432/revenact  # soc2:ignore dev-only local compose db
       REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
@@ -75,7 +75,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgres://revenact:revenact@db:5432/revenact
+      DATABASE_URL: postgres://revenact:revenact@db:5432/revenact  # soc2:ignore dev-only local compose db
       REDIS_URL: redis://redis:6379/0
     volumes:
       - .:/app

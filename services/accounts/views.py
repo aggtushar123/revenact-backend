@@ -5,7 +5,16 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+from core import audit
+from core.throttling import (
+    LoginAccountThrottle,
+    LoginIPThrottle,
+    PasswordResetThrottle,
+    SignupThrottle,
+    TokenRefreshThrottle,
+)
 
 from .capabilities import Capability
 from .models import Role, User
@@ -33,11 +42,20 @@ class SignupView(generics.CreateAPIView):
 
     serializer_class = SignupSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [SignupThrottle]  # SOC2:AUTH-06
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        # SOC2:LOG-01 new tenant + first admin
+        audit.record(
+            "auth.signup",
+            request=request,
+            actor=user,
+            target=user.organisation,
+            metadata={"organisation": user.organisation.name},
+        )
 
         refresh = RefreshToken.for_user(user)
         return Response(
@@ -56,6 +74,24 @@ class LoginView(TokenObtainPairView):
 
     serializer_class = LoginSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [LoginIPThrottle, LoginAccountThrottle]  # SOC2:AUTH-06
+
+    def post(self, request, *args, **kwargs):
+        # Failures are recorded by core.signals (Django's user_login_failed
+        # fires from authenticate()); success is recorded here because
+        # SimpleJWT never calls django.contrib.auth.login().
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        audit.record("auth.login", request=request, actor=serializer.user)  # SOC2:LOG-01
+        return Response(serializer.validated_data, status=status.HTTP_200_OK)
+
+
+class RefreshView(TokenRefreshView):
+    """POST /api/v1/auth/token/refresh/ — { refresh } → { access, refresh }.
+    Rotation is on (SIMPLE_JWT.ROTATE_REFRESH_TOKENS): the token sent in is
+    blacklisted and a new one comes back, so the client must store it."""
+
+    throttle_classes = [TokenRefreshThrottle]  # SOC2:AUTH-06
 
 
 class LogoutView(generics.GenericAPIView):
@@ -79,6 +115,7 @@ class LogoutView(generics.GenericAPIView):
             RefreshToken(serializer.validated_data["refresh"]).blacklist()
         except TokenError:
             pass
+        audit.record("auth.logout", request=request)  # SOC2:LOG-01
         return Response(status=status.HTTP_205_RESET_CONTENT)
 
 
@@ -125,7 +162,14 @@ class OrganisationSettingsView(generics.RetrieveUpdateAPIView):
         new_currency = serializer.validated_data.get("currency")
         if new_currency and new_currency != serializer.instance.currency:
             serializer.instance.fx_rates.all().delete()
-        serializer.save()
+        organisation = serializer.save()
+        # SOC2:LOG-01 tenant-wide config change
+        audit.record(
+            "organisation.update",
+            request=self.request,
+            target=organisation,
+            metadata={"fields": sorted(serializer.validated_data.keys())},
+        )
 
 
 class ChangePasswordView(generics.GenericAPIView):
@@ -141,6 +185,7 @@ class ChangePasswordView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        audit.record("auth.password_change", request=request, target=request.user)  # SOC2:LOG-01
         return Response(status=status.HTTP_200_OK)
 
 
@@ -152,11 +197,19 @@ class ForgotPasswordView(generics.GenericAPIView):
 
     serializer_class = ForgotPasswordSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetThrottle]  # SOC2:AUTH-06
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        # SOC2:LOG-01 recorded whether or not the address matched, so the
+        # audit row itself doesn't reveal which emails exist.
+        audit.record(
+            "auth.password_reset_request",
+            request=request,
+            metadata={"email": serializer.validated_data["email"].lower()},
+        )
         return Response(
             {"detail": "If an account exists for that email, we've sent a password reset link."},
             status=status.HTTP_200_OK,
@@ -172,11 +225,13 @@ class ResetPasswordView(generics.GenericAPIView):
 
     serializer_class = ResetPasswordSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetThrottle]  # SOC2:AUTH-06
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        user = serializer.save()
+        audit.record("auth.password_reset", request=request, actor=user, target=user)  # SOC2:LOG-01
         return Response({"detail": "Your password has been reset."}, status=status.HTTP_200_OK)
 
 
@@ -215,6 +270,16 @@ class RoleListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         return Role.objects.filter(organisation=self.request.user.organisation)
 
+    def perform_create(self, serializer):
+        role = serializer.save()
+        # SOC2:LOG-01 permission change
+        audit.record(
+            "role.create",
+            request=self.request,
+            target=role,
+            metadata={"permissions": role.permissions},
+        )
+
 
 class RoleDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/auth/roles/<id>/ — same read-open,
@@ -234,6 +299,19 @@ class RoleDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         return Role.objects.filter(organisation=self.request.user.organisation)
 
+    def perform_update(self, serializer):
+        role = serializer.save()
+        # SOC2:LOG-01 permission change
+        audit.record(
+            "role.update",
+            request=self.request,
+            target=role,
+            metadata={
+                "fields": sorted(serializer.validated_data.keys()),
+                "permissions": role.permissions,
+            },
+        )
+
     def destroy(self, request, *args, **kwargs):
         role = self.get_object()
         if role.is_system:
@@ -242,6 +320,7 @@ class RoleDetailView(generics.RetrieveUpdateDestroyAPIView):
             raise ValidationError(
                 "Move the people holding this role onto another one before deleting it."
             )
+        audit.record("role.delete", request=request, target=role)  # SOC2:LOG-01
         return super().destroy(request, *args, **kwargs)
 
 
@@ -269,6 +348,13 @@ class OrgUserListCreateView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        # SOC2:LOG-01 / AUTH-07 provisioning
+        audit.record(
+            "user.create",
+            request=request,
+            target=user,
+            metadata={"role": user.role.slug if user.role else None},
+        )
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
@@ -300,9 +386,17 @@ class OrgUserDetailView(generics.RetrieveUpdateAPIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
+        changed = sorted(serializer.validated_data.keys())
         if was_active and not user.is_active:
             for token in OutstandingToken.objects.filter(user=user):
                 BlacklistedToken.objects.get_or_create(token=token)
+            # SOC2:AUTH-07 / LOG-01 deprovisioning is auditable
+            audit.record("user.deactivate", request=request, target=user)
+        elif not was_active and user.is_active:
+            audit.record("user.reactivate", request=request, target=user)
+
+        # Field *names* only — never the password value (audit drops it anyway).
+        audit.record("user.update", request=request, target=user, metadata={"fields": changed})
 
         return Response(UserSerializer(user).data)
 
