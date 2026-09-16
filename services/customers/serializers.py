@@ -9,7 +9,9 @@ from . import churn
 from .models import (
     Account,
     Activity,
+    Attachment,
     CalendarEvent,
+    Call,
     Canvas,
     Contact,
     Customer,
@@ -799,6 +801,87 @@ class NoteSerializer(serializers.ModelSerializer):
         if obj.author_id is None:
             return None
         return {"id": obj.author_id, "name": obj.author.name}
+
+
+class AttachmentSerializer(serializers.ModelSerializer):
+    """A file on a customer or account. Never the storage path: the bytes
+    come from the download endpoint, which checks who is asking."""
+
+    uploaded_by = serializers.SerializerMethodField()
+    download_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Attachment
+        fields = [
+            "id",
+            "name",
+            "content_type",
+            "size",
+            "description",
+            "source",
+            "uploaded_by",
+            "download_url",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_uploaded_by(self, obj):
+        if obj.uploaded_by_id is None:
+            return None
+        return {"id": obj.uploaded_by_id, "name": obj.uploaded_by.name}
+
+    def get_download_url(self, obj):
+        return f"/api/v1/files/{obj.id}/download/"
+
+
+class CallSerializer(serializers.ModelSerializer):
+    """Read, and log a new call. On create, `transcript_text` (pasted) or
+    `transcript` (an uploaded .txt/.vtt/.srt/.md file) may stand in for
+    `summary`: the model writes the summary from it, and the transcript is
+    kept as an Attachment. `host_name` defaults to the caller."""
+
+    connector_name = serializers.CharField(source="connector.name", read_only=True, default=None)
+    connector_provider = serializers.CharField(
+        source="connector.provider", read_only=True, default=None
+    )
+    logged_by = serializers.SerializerMethodField()
+    transcript = serializers.SerializerMethodField()
+    host_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    transcript_text = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = Call
+        fields = [
+            "id",
+            "title",
+            "host_name",
+            "occurred_at",
+            "duration_minutes",
+            "summary",
+            "sentiment",
+            "ai_area",
+            "ai_category",
+            "recording_url",
+            "connector_name",
+            "connector_provider",
+            "logged_by",
+            "transcript",
+            "transcript_text",
+            "links",
+            "created_at",
+        ]
+        read_only_fields = ["sentiment", "ai_area", "ai_category", "links", "created_at"]
+        extra_kwargs = {"summary": {"required": False, "allow_blank": True}}
+
+    def get_logged_by(self, obj):
+        if obj.logged_by_id is None:
+            return None
+        return {"id": obj.logged_by_id, "name": obj.logged_by.name}
+
+    def get_transcript(self, obj):
+        if obj.transcript_id is None:
+            return None
+        return AttachmentSerializer(obj.transcript).data
 
 
 class TicketSerializer(serializers.ModelSerializer):

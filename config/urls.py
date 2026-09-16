@@ -26,6 +26,8 @@ from services.customers.views import (
     ContactDetailView,
     ContactListView,
     ContactStatsView,
+    FileDetailView,
+    FileDownloadView,
     HeadlineDetailView,
     InteractionStatsView,
     OpportunityDetailView,
@@ -69,6 +71,11 @@ urlpatterns = [
     # every Customer/Account at once (see ContactListView's own
     # docstring), unlike every other nested list under
     # services.customers.urls above.
+    # Files: a row and its bytes are reached by id from any company's Files
+    # tab, so they sit at their own prefix; both check the caller may open
+    # the company the file hangs off (services/customers/views.py).
+    path("api/v1/files/<int:pk>/", FileDetailView.as_view(), name="file-detail"),
+    path("api/v1/files/<int:pk>/download/", FileDownloadView.as_view(), name="file-download"),
     path("api/v1/contacts/stats/", ContactStatsView.as_view(), name="contact-stats"),
     path("api/v1/contacts/<int:pk>/", ContactDetailView.as_view(), name="contact-detail"),
     path("api/v1/contacts/", ContactListView.as_view(), name="contact-list"),
