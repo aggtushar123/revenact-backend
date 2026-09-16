@@ -309,6 +309,12 @@ class Customer(models.Model):
         help_text="When csm_pulse_score was last changed. Not auto_now — it tracks the "
         "pulse specifically, not any edit to the row, so a stale CSM read stays visibly stale.",
     )
+    pulse_recorded_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="The day the daily job last appended this customer's computed pulse "
+        "category to `pulse` — see run_health_maintenance and pulse.py.",
+    )
     nps_score = models.IntegerField(null=True, blank=True, help_text="-100 to 100.")
     csat_score = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True, help_text="0-100 (%)."
@@ -481,6 +487,81 @@ class Customer(models.Model):
             "additional_products_count": self.additional_products_count,
             "open_ticket_count": open_ticket_count,
         }
+
+    def pulse_inputs(self, today=None):
+        """Everything pulse.py needs for the organisation: its own signals,
+        with the conversations, last contact and tickets logged on any of
+        its accounts counted as its own — so account pulses roll up.
+        Reads annotations when the queryset supplied them (see
+        `with_health_inputs` for the last touch and
+        `with_customer_pulse_inputs` for the rest) and queries otherwise."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from . import pulse as pulse_rules
+
+        today = today or timezone.localdate()
+        if hasattr(self, "_last_touch_on"):
+            last_touch_on = self._last_touch_on
+        else:
+            from .contact import last_contact_by_customer
+
+            last_touch_on = last_contact_by_customer([self.pk]).get(self.pk)
+        if hasattr(self, "_pulse_open_ticket_count"):
+            open_ticket_count = self._pulse_open_ticket_count
+        else:
+            from .contact import parent_q
+
+            open_ticket_count = (
+                Ticket.objects.filter(parent_q([self.pk]))
+                .exclude(status__in=Ticket.RESOLVED_STATUSES)
+                .distinct()
+                .count()
+            )
+        if hasattr(self, "_positive_count"):
+            positive, negative, classified = (
+                self._positive_count,
+                self._negative_count,
+                self._classified_count,
+            )
+        else:
+            from .contact import parent_q
+
+            since = today - timedelta(days=pulse_rules.SENTIMENT_WINDOW_DAYS)
+            positive = negative = classified = 0
+            for model, field in SENTIMENT_SOURCES:
+                lookup = f"{field}__date__gte" if _is_datetime(model, field) else f"{field}__gte"
+                for row in (
+                    model.objects.filter(parent_q([self.pk]), **{lookup: since})
+                    .distinct()
+                    .values("sentiment")
+                    .annotate(n=models.Count("id", distinct=True))
+                ):
+                    classified += row["n"]
+                    if row["sentiment"] == taxonomy.Sentiment.POSITIVE:
+                        positive += row["n"]
+                    elif row["sentiment"] == taxonomy.Sentiment.NEGATIVE:
+                        negative += row["n"]
+        csm_age = None
+        if self.csm_pulse_modified_at is not None:
+            csm_age = (today - self.csm_pulse_modified_at.date()).days
+        return {
+            "ai_pulse_value": self.ai_pulse_value,
+            "csm_pulse_score": self.csm_pulse_score,
+            "csm_pulse_age_days": csm_age,
+            "positive_count": positive,
+            "negative_count": negative,
+            "classified_count": classified,
+            "days_since_touch": (today - last_touch_on).days if last_touch_on else None,
+            "open_ticket_count": open_ticket_count,
+        }
+
+    def account_pulse(self, today=None):
+        """The computed pulse (pulse.py) for this organisation."""
+        from . import pulse as pulse_rules
+
+        return pulse_rules.compute(**self.pulse_inputs(today))
 
     @property
     def health_breakdown(self):
@@ -2360,4 +2441,51 @@ def with_pulse_inputs(queryset):
         _positive_count=positive,
         _negative_count=negative,
         _classified_count=classified,
+    )
+
+
+def with_customer_pulse_inputs(queryset):
+    """Annotate a Customer queryset with the pulse figures that count the
+    organisation's own rows and its accounts' together: open tickets and
+    the last 30 days' positive / negative / all conversations. The last
+    touch comes from `with_health_inputs` (already parent-wide). Grouped on
+    a constant rather than a parent column, because the parent is either
+    the customer or one of its accounts."""
+    from datetime import timedelta
+
+    from django.db.models import Q
+    from django.utils import timezone
+
+    from . import pulse as pulse_rules
+
+    since = timezone.localdate() - timedelta(days=pulse_rules.SENTIMENT_WINDOW_DAYS)
+    parent = Q(customer=OuterRef("pk")) | Q(account__customers=OuterRef("pk"))
+
+    def count(rows):
+        rows = (
+            rows.order_by()
+            .annotate(_k=Value(1))
+            .values("_k")
+            .annotate(value=models.Count("id", distinct=True))
+            .values("value")[:1]
+        )
+        return Coalesce(Subquery(rows, output_field=models.IntegerField()), 0)
+
+    def windowed(model, field, **extra):
+        lookup = f"{field}__date__gte" if _is_datetime(model, field) else f"{field}__gte"
+        return count(model.objects.filter(parent, **{lookup: since}, **extra))
+
+    return queryset.annotate(
+        _pulse_open_ticket_count=count(
+            Ticket.objects.filter(parent).exclude(status__in=Ticket.RESOLVED_STATUSES)
+        ),
+        _positive_count=sum(
+            (windowed(m, f, sentiment=taxonomy.Sentiment.POSITIVE) for m, f in SENTIMENT_SOURCES),
+            Value(0),
+        ),
+        _negative_count=sum(
+            (windowed(m, f, sentiment=taxonomy.Sentiment.NEGATIVE) for m, f in SENTIMENT_SOURCES),
+            Value(0),
+        ),
+        _classified_count=sum((windowed(m, f) for m, f in SENTIMENT_SOURCES), Value(0)),
     )

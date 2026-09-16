@@ -37,6 +37,7 @@ from .models import (
     Survey,
     Task,
     Ticket,
+    with_customer_pulse_inputs,
     with_health_inputs,
     with_pulse_inputs,
 )
@@ -126,8 +127,8 @@ class CustomerListCreateView(generics.ListCreateAPIView):
         # Annotated up front: every serialized row renders health_breakdown,
         # which needs a last-touch date and an open-ticket count. Without this
         # each row runs two more queries — 120 extra on a 60-customer page.
-        queryset = with_health_inputs(
-            visible_customers(self.request.user).filter(is_archived=False)
+        queryset = with_customer_pulse_inputs(
+            with_health_inputs(visible_customers(self.request.user).filter(is_archived=False))
         )
 
         search = self.request.query_params.get("search", "").strip()
@@ -663,7 +664,7 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return with_health_inputs(visible_customers(self.request.user))
+        return with_customer_pulse_inputs(with_health_inputs(visible_customers(self.request.user)))
 
     def perform_update(self, serializer):
         previous_owner = serializer.instance.owner
