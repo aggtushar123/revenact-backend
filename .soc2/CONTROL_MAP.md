@@ -69,7 +69,7 @@ reconciles them with this file (also run in CI, `soc2-gates.yml`).
 | CHG-04 | met | `.github/CODEOWNERS` for auth, core, config, webhooks, models/migrations, CI, Dockerfile, `.soc2/` | | @aggtushar123 | 2026-09-15 |
 | CHG-05 | partial | PR template carries an "Emergency change" tick-box with the post-hoc review rule; no written process (organisational, deferred) | | | 2026-09-15 |
 | CHG-06 | partial | `revenact-infra/deploy/deploy.sh` appends who/when/ref/commit SHAs to `/opt/revenact/deploy.log` (`make deploy-log`). Gap: deploys track `main`, no release tags | deploy.log on the VM | @aggtushar123 | 2026-09-15 |
-| CHG-07 | partial | Deploy runs on the VM over SSH by a human (`make deploy` / `make sync`); recorded in deploy.log; no dedicated deploy identity | | | 2026-09-15 |
+| CHG-07 | met | Deploys run from GitHub Actions (`ci.yml: deploy` in both app repos) after tests and soc2-gates pass on `main`, as the Entra application `revenact-github-deployer` via OpenID Connect (no stored secret; federated to `main` of the two repos only; `Virtual Machine Contributor` on the one VM — `revenact-infra/terraform/deploy-identity.tf`), through `az vm run-command`; every run appended to `/opt/revenact/deploy.log` with actor, repo and commit. `make deploy`/`make sync` remain for operators | | | 2026-09-15 |
 | CHG-08 | missing | No signed commits/provenance (may) | | | 2026-09-15 |
 | CHG-09 | partial | Runtime config is env-only, changed via Terraform vars (reviewed as code when committed) | | | 2026-09-15 |
 | INFRA-01 | met | Terraform + Compose in `revenact-infra`; `terraform plan` before every change; no automated drift detection | `revenact-infra/terraform/main.tf` | @aggtushar123 | 2026-09-15 |
