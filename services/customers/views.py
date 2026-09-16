@@ -761,9 +761,17 @@ class AccountDetailView(generics.RetrieveUpdateAPIView):
         return visible_accounts(self.request.user).filter(customers=self.kwargs["customer_id"])
 
     def perform_update(self, serializer):
-        previous_owner_id = serializer.instance.owner_id
+        previous_owner = serializer.instance.owner
         account = serializer.save()
-        if account.owner_id != previous_owner_id:
+        if account.owner_id != (previous_owner.id if previous_owner else None):
+            from services.knowledge.ownership import record_account_handover
+
+            record_account_handover(
+                account,
+                self.request.user,
+                previous_owner,
+                serializer.context.get("handover_note", ""),
+            )
             _notify_owner_assigned(
                 instance=account,
                 actor=self.request.user,

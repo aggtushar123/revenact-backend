@@ -895,6 +895,73 @@ class AccountDetailTests(APITestCase):
         self.account.refresh_from_db()
         self.assertEqual(list(self.account.customers.all()), [self.customer])
 
+    def test_an_accounts_owner_is_gated_and_handed_over_on_the_record_like_an_organisations(self):
+        from services.accounts.capabilities import Capability
+        from services.accounts.models import Role
+        from services.knowledge.models import Contribution
+
+        # People who can see every account but cannot manage org settings.
+        lead = Role.objects.create(
+            organisation=self.org,
+            name="Lead",
+            slug="lead",
+            permissions=[Capability.VIEW_ALL_ACCOUNTS],
+        )
+        carl = User.objects.create_user(
+            email="carl@acme.io", password="supersecret1", name="Carl", organisation=self.org
+        )
+        dana = User.objects.create_user(
+            email="dana@acme.io", password="supersecret1", name="Dana", organisation=self.org
+        )
+        User.objects.filter(pk__in=[carl.pk, dana.pk]).update(role=lead)
+        carl.refresh_from_db()
+        dana.refresh_from_db()
+
+        # Unowned: anyone may claim it.
+        self.client.force_authenticate(dana)
+        response = self.client.patch(self.url, {"owner_id": carl.id}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Owned by Carl: Dana — not the owner, not above him, no settings
+        # capability — may not move it.
+        refused = self.client.patch(self.url, {"owner_id": dana.id}, format="json")
+        self.assertEqual(refused.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Only the current account owner", str(refused.data["owner_id"]))
+
+        # Carl hands it over with a note: written down on every organisation
+        # the account belongs to, and Dana is told.
+        initech = Customer.objects.create(organisation=self.org, name="Initech")
+        self.account.customers.add(initech)
+        self.client.force_authenticate(carl)
+        handed = self.client.patch(
+            self.url,
+            {"owner_id": dana.id, "handover_note": "Moving to Dana's region."},
+            format="json",
+        )
+        self.assertEqual(handed.status_code, status.HTTP_200_OK)
+        self.assertEqual(handed.data["owner"]["name"], "Dana")
+        notes = Contribution.objects.filter(
+            body="Owner of account North America changed from Carl to Dana. "
+            "Moving to Dana's region."
+        )
+        self.assertEqual(sorted(c.customer.name for c in notes), ["Globex", "Initech"])
+        self.assertEqual({c.author for c in notes}, {carl})
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=dana, kind=Notification.Kind.ACCOUNT_ASSIGNED
+            ).exists()
+        )
+
+        # An org-settings manager may always reassign; clearing is recorded too.
+        self.client.force_authenticate(self.admin)
+        cleared = self.client.patch(self.url, {"owner_id": None}, format="json")
+        self.assertEqual(cleared.status_code, status.HTTP_200_OK)
+        self.assertTrue(
+            Contribution.objects.filter(
+                body="Owner of account North America changed from Dana to nobody."
+            ).exists()
+        )
+
     def test_assigning_a_real_new_owner_sends_them_a_real_notification(self):
         csm = User.objects.create_user(
             email="carl@acme.io", password="supersecret1", name="Carl", organisation=self.org
