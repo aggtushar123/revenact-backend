@@ -196,6 +196,8 @@ class UserManager(BaseUserManager):
             extra_fields.get("role"), extra_fields.get("organisation")
         )
         user = self.model(email=email, **extra_fields)
+        # callers validate first (serializers._check_password_strength); seeds use fixtures
+        # nosemgrep: python.django.security.audit.unvalidated-password.unvalidated-password
         user.set_password(password)
         user.save(using=self._db)
         return user

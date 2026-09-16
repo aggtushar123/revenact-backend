@@ -1,13 +1,26 @@
 # SOC2:SEC-03 dependency updates land as PRs on a schedule; security
 # advisories open a PR immediately regardless of the schedule.
+# Minor and patch bumps arrive as one grouped PR per ecosystem; majors come
+# on their own. New releases wait a week before being proposed (cooldown).
 version: 2
 updates:
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

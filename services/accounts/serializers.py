@@ -384,6 +384,8 @@ class ChangePasswordSerializer(serializers.Serializer):
 
     def save(self):
         user = self.context["request"].user
+        # validated in validate_new_password / validate above
+        # nosemgrep: python.django.security.audit.unvalidated-password.unvalidated-password
         user.set_password(self.validated_data["new_password"])
         user.save(update_fields=["password"])
         return user
@@ -439,6 +441,8 @@ class ResetPasswordSerializer(serializers.Serializer):
 
     def save(self):
         user = self.validated_data["user"]
+        # validated in validate_new_password / validate above
+        # nosemgrep: python.django.security.audit.unvalidated-password.unvalidated-password
         user.set_password(self.validated_data["new_password"])
         user.save(update_fields=["password"])
         return user
@@ -524,6 +528,8 @@ class EditOrgUserSerializer(serializers.ModelSerializer):
         password = validated_data.pop("password", None)
         instance = super().update(instance, validated_data)
         if password:
+            # validated in validate_password above
+            # nosemgrep: python.django.security.audit.unvalidated-password.unvalidated-password
             instance.set_password(password)
             instance.save(update_fields=["password"])
         return instance
