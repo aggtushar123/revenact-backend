@@ -47,6 +47,7 @@ from .scoping import (
     get_visible_account,
     get_visible_customer,
     live_customers,
+    pipeline_visible_q,
     visible_accounts,
     visible_children_q,
     visible_customers,
@@ -1495,6 +1496,14 @@ class ContactInteractionsView(views.APIView):
         )
 
 
+def _pipeline_defaults(request, serializer):
+    """A new opportunity or risk lands on its creator's department unless
+    the form said otherwise."""
+    if "department" in serializer.validated_data:
+        return {}
+    return {"department": request.user.function}
+
+
 class CustomerOpportunityListView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/opportunities/ — same
     shape as CustomerContactListView: GET rolls up every Opportunity
@@ -1513,10 +1522,14 @@ class CustomerOpportunityListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Opportunity.objects.filter(Q(customer=customer) | Q(account__customers=customer))
+        return Opportunity.objects.filter(pipeline_visible_q(self.request.user)).filter(
+            Q(customer=customer) | Q(account__customers=customer)
+        )
 
     def perform_create(self, serializer):
-        serializer.save(customer=self.get_customer())
+        serializer.save(
+            **_pipeline_defaults(self.request, serializer), customer=self.get_customer()
+        )
 
 
 class AccountOpportunityListView(generics.ListCreateAPIView):
@@ -1535,10 +1548,10 @@ class AccountOpportunityListView(generics.ListCreateAPIView):
         )
 
     def get_queryset(self):
-        return self.get_account().opportunities.all()
+        return self.get_account().opportunities.filter(pipeline_visible_q(self.request.user))
 
     def perform_create(self, serializer):
-        serializer.save(account=self.get_account())
+        serializer.save(**_pipeline_defaults(self.request, serializer), account=self.get_account())
 
 
 class OpportunityListView(generics.ListCreateAPIView):
@@ -1571,7 +1584,8 @@ class OpportunityListView(generics.ListCreateAPIView):
     def get_queryset(self):
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
         return (
-            Opportunity.objects.filter(visible_children_q(self.request.user))
+            Opportunity.objects.filter(pipeline_visible_q(self.request.user))
+            .filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
@@ -1587,10 +1601,10 @@ class OpportunityListView(generics.ListCreateAPIView):
             # pk, which `.get()` (what get_object_or_404 calls) treats
             # as MultipleObjectsReturned rather than a single match.
             account = get_object_or_404(visible_accounts(self.request.user), pk=account_id)
-            serializer.save(account=account)
+            serializer.save(**_pipeline_defaults(self.request, serializer), account=account)
         elif customer_id:
             customer = get_object_or_404(visible_customers(self.request.user), pk=customer_id)
-            serializer.save(customer=customer)
+            serializer.save(**_pipeline_defaults(self.request, serializer), customer=customer)
         else:
             raise ValidationError("Provide either customer_id or account_id.")
 
@@ -1607,7 +1621,11 @@ class OpportunityDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         # `.distinct()` — same fan-out reasoning as ContactDetailView's own.
-        return Opportunity.objects.filter(visible_children_q(self.request.user)).distinct()
+        return (
+            Opportunity.objects.filter(pipeline_visible_q(self.request.user))
+            .filter(visible_children_q(self.request.user))
+            .distinct()
+        )
 
 
 class CustomerRiskListView(generics.ListCreateAPIView):
@@ -1628,10 +1646,14 @@ class CustomerRiskListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Risk.objects.filter(Q(customer=customer) | Q(account__customers=customer))
+        return Risk.objects.filter(pipeline_visible_q(self.request.user)).filter(
+            Q(customer=customer) | Q(account__customers=customer)
+        )
 
     def perform_create(self, serializer):
-        serializer.save(customer=self.get_customer())
+        serializer.save(
+            **_pipeline_defaults(self.request, serializer), customer=self.get_customer()
+        )
 
 
 class AccountRiskListView(generics.ListCreateAPIView):
@@ -1650,10 +1672,10 @@ class AccountRiskListView(generics.ListCreateAPIView):
         )
 
     def get_queryset(self):
-        return self.get_account().risks.all()
+        return self.get_account().risks.filter(pipeline_visible_q(self.request.user))
 
     def perform_create(self, serializer):
-        serializer.save(account=self.get_account())
+        serializer.save(**_pipeline_defaults(self.request, serializer), account=self.get_account())
 
 
 class RiskListView(generics.ListCreateAPIView):
@@ -1681,7 +1703,8 @@ class RiskListView(generics.ListCreateAPIView):
     def get_queryset(self):
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
         return (
-            Risk.objects.filter(visible_children_q(self.request.user))
+            Risk.objects.filter(pipeline_visible_q(self.request.user))
+            .filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
@@ -1694,10 +1717,10 @@ class RiskListView(generics.ListCreateAPIView):
             # `.distinct()` before `get_object_or_404` — same
             # reasoning as OpportunityListView.perform_create's own.
             account = get_object_or_404(visible_accounts(self.request.user), pk=account_id)
-            serializer.save(account=account)
+            serializer.save(**_pipeline_defaults(self.request, serializer), account=account)
         elif customer_id:
             customer = get_object_or_404(visible_customers(self.request.user), pk=customer_id)
-            serializer.save(customer=customer)
+            serializer.save(**_pipeline_defaults(self.request, serializer), customer=customer)
         else:
             raise ValidationError("Provide either customer_id or account_id.")
 
@@ -1714,7 +1737,11 @@ class RiskDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         # `.distinct()` — same fan-out reasoning as ContactDetailView's own.
-        return Risk.objects.filter(visible_children_q(self.request.user)).distinct()
+        return (
+            Risk.objects.filter(pipeline_visible_q(self.request.user))
+            .filter(visible_children_q(self.request.user))
+            .distinct()
+        )
 
 
 # Maps a Survey's own `survey_type` to the Customer/Account field its score

@@ -155,6 +155,18 @@ def visible_accounts(user):
     return base.filter(Q(owner=user) | Q(customers__owner=user) | Q(owner__isnull=True)).distinct()
 
 
+def pipeline_visible_q(user) -> Q:
+    """Opportunities and risks are read department-wise: a person sees
+    their own department's plus the undeparted ones; a role that may view
+    all accounts, and Leadership, see every department's."""
+    from services.accounts.models import User
+
+    if sees_everything(user) or user.function == User.Function.LEADERSHIP:
+        return Q()
+    # SOC2:AUTH-02 object-level rule for departmental pipeline items
+    return Q(department="") | Q(department=user.function)
+
+
 def visible_children_q(user) -> Q:
     """For the models that hang off a Customer *or* an Account — Task,
     Note, Email, Ticket, Contact, Opportunity, Risk, Survey, Canvas,

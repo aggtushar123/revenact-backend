@@ -1039,6 +1039,11 @@ class OpportunitySerializer(serializers.ModelSerializer):
     companies = serializers.SerializerMethodField()
     account_name = serializers.SerializerMethodField()
 
+    department = serializers.ChoiceField(
+        choices=User.Function.choices, required=False, allow_blank=True
+    )
+    department_display = serializers.SerializerMethodField()
+
     class Meta:
         model = Opportunity
         fields = [
@@ -1049,9 +1054,14 @@ class OpportunitySerializer(serializers.ModelSerializer):
             "stage_display",
             "priority",
             "priority_display",
+            "department",
+            "department_display",
             "companies",
             "account_name",
         ]
+
+    def get_department_display(self, obj):
+        return dict(User.Function.choices).get(obj.department, "") if obj.department else ""
 
     def get_companies(self, obj):
         return [{"id": c.id, "name": c.name} for c in obj.companies]
@@ -1072,6 +1082,11 @@ class RiskSerializer(serializers.ModelSerializer):
     companies = serializers.SerializerMethodField()
     account_name = serializers.SerializerMethodField()
 
+    department = serializers.ChoiceField(
+        choices=User.Function.choices, required=False, allow_blank=True
+    )
+    department_display = serializers.SerializerMethodField()
+
     class Meta:
         model = Risk
         fields = [
@@ -1082,9 +1097,14 @@ class RiskSerializer(serializers.ModelSerializer):
             "stage_display",
             "priority",
             "priority_display",
+            "department",
+            "department_display",
             "companies",
             "account_name",
         ]
+
+    def get_department_display(self, obj):
+        return dict(User.Function.choices).get(obj.department, "") if obj.department else ""
 
     def get_companies(self, obj):
         return [{"id": c.id, "name": c.name} for c in obj.companies]
