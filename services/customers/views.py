@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status, views
 from rest_framework.exceptions import ValidationError
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import SAFE_METHODS, IsAuthenticated
 from rest_framework.response import Response
 
@@ -26,6 +27,7 @@ from . import activity_tracking, forecast, interactions, portfolio, product_usag
 from .headline_generation import NothingToSummarise, generate_headlines
 from .models import (
     Account,
+    Attachment,
     Canvas,
     Contact,
     Customer,
@@ -52,7 +54,9 @@ from .scoping import (
 from .serializers import (
     AccountSerializer,
     ActivitySerializer,
+    AttachmentSerializer,
     CalendarEventSerializer,
+    CallSerializer,
     CanvasSerializer,
     ContactSerializer,
     CustomerHealthRowSerializer,
@@ -2493,3 +2497,225 @@ def _filter_options(user):
         ],
         "priorities": [{"value": v, "name": label} for v, label in Ticket.Priority.choices],
     }
+
+
+# ── Files (SOC2:API-10) ──────────────────────────────────────────────────────
+
+
+def _organisation_of(customer=None, account=None):
+    if customer is not None:
+        return customer.organisation
+    return account.customers.select_related("organisation").first().organisation
+
+
+class _FileListView(generics.ListCreateAPIView):
+    """List the files on one company, and upload one (multipart: `file`,
+    optional `description`). Anyone who may open the company may read and
+    add; the type list, size cap and name sanitising live in files.py."""
+
+    serializer_class = AttachmentSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+    parser_classes = [MultiPartParser, FormParser]
+
+    def _parent(self):
+        raise NotImplementedError
+
+    def get_queryset(self):
+        customer, account = self._parent()
+        parent = customer if customer is not None else account
+        return parent.attachments.select_related("uploaded_by")
+
+    def create(self, request, *args, **kwargs):
+        from core import audit
+
+        from .files import InvalidUpload, validate_upload
+
+        customer, account = self._parent()
+        uploaded = request.FILES.get("file")
+        if uploaded is None:
+            return Response(
+                {"detail": "Send the file as `file`."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            name, _ext, content_type = validate_upload(uploaded)  # SOC2:API-10 type, size, name
+        except InvalidUpload as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        attachment = Attachment.objects.create(
+            organisation=_organisation_of(customer, account),
+            customer=customer,
+            account=account,
+            file=uploaded,
+            name=name,
+            content_type=content_type,
+            size=uploaded.size,
+            description=str(request.data.get("description", ""))[:500],
+            uploaded_by=request.user,
+        )
+        audit.record(  # SOC2:LOG-01 customer content added
+            "file.upload",
+            request=request,
+            target=attachment,
+            metadata={"name": name, "size": uploaded.size, "content_type": content_type},
+        )
+        return Response(AttachmentSerializer(attachment).data, status=status.HTTP_201_CREATED)
+
+
+class CustomerFileListView(_FileListView):
+    """GET/POST /api/v1/customers/<customer_id>/files/."""
+
+    def _parent(self):
+        return get_visible_customer(self.request, self.kwargs["customer_id"]), None
+
+
+class AccountFileListView(_FileListView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/files/."""
+
+    def _parent(self):
+        return None, get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
+        )
+
+
+def _visible_attachment(request, pk):
+    # SOC2:AUTH-02 a file is reachable only through a company the caller may open
+    return get_object_or_404(
+        Attachment.objects.filter(visible_children_q(request.user)).select_related("uploaded_by"),
+        pk=pk,
+    )
+
+
+class FileDetailView(views.APIView):
+    """GET /api/v1/files/<id>/ — the row. DELETE — the uploader, or an
+    organisation-settings manager, removes the file and its bytes."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        return Response(AttachmentSerializer(_visible_attachment(request, pk)).data)
+
+    def delete(self, request, pk):
+        from core import audit
+
+        attachment = _visible_attachment(request, pk)
+        may_delete = (
+            attachment.uploaded_by_id == request.user.id
+            or CanManageOrgSettings().has_permission(request, self)
+        )
+        if not may_delete:
+            return Response(
+                {"detail": "Only the person who uploaded a file, or an admin, can delete it."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        audit.record(  # SOC2:LOG-01 customer content removed
+            "file.delete", request=request, target=attachment, metadata={"name": attachment.name}
+        )
+        attachment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FileDownloadView(views.APIView):
+    """GET /api/v1/files/<id>/download/ — the bytes, as an attachment."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from .files import attachment_response
+
+        return attachment_response(_visible_attachment(request, pk))
+
+
+# ── Calls (CallSense) ─────────────────────────────────────────────────────────
+
+
+class _CallListView(generics.ListCreateAPIView):
+    """List the calls on one company, and log one. JSON or multipart; a
+    multipart body may carry a `transcript` file (.txt/.vtt/.srt/.md)."""
+
+    serializer_class = CallSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def _parent(self):
+        raise NotImplementedError
+
+    def get_queryset(self):
+        customer, account = self._parent()
+        parent = customer if customer is not None else account
+        return parent.calls.select_related("connector", "logged_by", "transcript__uploaded_by")
+
+    def perform_create(self, serializer):
+        from core import audit
+
+        from .calls import classify_call, summarise_transcript
+        from .files import (
+            ALLOWED_TYPES,
+            TRANSCRIPT_EXTENSIONS,
+            InvalidUpload,
+            read_transcript_text,
+            validate_upload,
+        )
+
+        request = self.request
+        customer, account = self._parent()
+        organisation = _organisation_of(customer, account)
+        data = serializer.validated_data
+        transcript_text = data.pop("transcript_text", "") or ""
+        uploaded = request.FILES.get("transcript")
+        transcript = None
+        if uploaded is not None:
+            allowed = {ext: ALLOWED_TYPES[ext] for ext in TRANSCRIPT_EXTENSIONS}
+            try:
+                name, _ext, content_type = validate_upload(uploaded, allowed=allowed)
+            except InvalidUpload as exc:
+                raise ValidationError({"transcript": str(exc)}) from exc
+            transcript_text = transcript_text or read_transcript_text(uploaded)
+            transcript = Attachment.objects.create(
+                organisation=organisation,
+                customer=customer,
+                account=account,
+                file=uploaded,
+                name=name,
+                content_type=content_type,
+                size=uploaded.size,
+                source=Attachment.Source.TRANSCRIPT,
+                uploaded_by=request.user,
+            )
+        summary = (data.get("summary") or "").strip()
+        if not summary and transcript_text:
+            summary = summarise_transcript(
+                transcript_text, organisation=organisation, user=request.user
+            )
+        call = serializer.save(
+            customer=customer,
+            account=account,
+            host_name=(data.get("host_name") or "").strip() or request.user.name,
+            summary=summary,
+            logged_by=request.user,
+            transcript=transcript,
+        )
+        audit.record(  # SOC2:LOG-01 customer content added
+            "call.log",
+            request=request,
+            target=call,
+            metadata={"title": call.title, "transcript": transcript is not None},
+        )
+        # Sentiment now: the pulse counts only classified conversations.
+        classify_call(call)
+
+
+class CustomerCallListView(_CallListView):
+    """GET/POST /api/v1/customers/<customer_id>/calls/."""
+
+    def _parent(self):
+        return get_visible_customer(self.request, self.kwargs["customer_id"]), None
+
+
+class AccountCallListView(_CallListView):
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/calls/."""
+
+    def _parent(self):
+        return None, get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
+        )
