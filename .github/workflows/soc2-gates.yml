@@ -85,7 +85,7 @@ jobs:
           python3 .claude/skills/soc2-dev/scripts/soc2_scan.py . --format md --fail-on critical | tee soc2-scan.md
       - name: control map drift
         run: python3 .claude/skills/soc2-dev/scripts/control_map.py . || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: soc2-scan
