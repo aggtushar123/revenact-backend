@@ -100,3 +100,42 @@ def last_contact_annotation():
     return Greatest(
         *(_newest_date_subquery(model, field) for model, field, _ in TOUCH_SOURCES.values())
     )
+
+
+def last_contact_by_account(ids):
+    """`last_contact_by_customer` for accounts: the newest contact of any
+    kind logged *on the account itself*, per account id, as a date."""
+    from django.db.models import Max
+
+    latest = {}
+    for model, field, _label in TOUCH_SOURCES.values():
+        rows = (
+            model.objects.filter(account_id__in=ids)
+            .order_by()
+            .values("account_id")
+            .annotate(last=Max(field))
+        )
+        for row in rows:
+            if row["last"] is None:
+                continue
+            when = row["last"]
+            when = when.date() if hasattr(when, "date") else when
+            if row["account_id"] not in latest or when > latest[row["account_id"]]:
+                latest[row["account_id"]] = when
+    return latest
+
+
+def _newest_account_date_subquery(model, field):
+    rows = model.objects.filter(account=OuterRef("pk")).order_by()
+    if _is_timestamp(model, field):
+        rows = rows.annotate(_day=TruncDate(field)).order_by("-_day").values("_day")
+    else:
+        rows = rows.order_by(f"-{field}").values(field)
+    return Subquery(rows[:1], output_field=DateField())
+
+
+def last_account_contact_annotation():
+    """`last_contact_by_account` as one expression, for `with_pulse_inputs`."""
+    return Greatest(
+        *(_newest_account_date_subquery(model, field) for model, field, _ in TOUCH_SOURCES.values())
+    )

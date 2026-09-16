@@ -92,6 +92,15 @@ class Command(BaseCommand):
             )
         )
 
+        # Today's account pulse becomes one more history dot per account, once
+        # a day (pulse.py; the tables draw `pulse` as the trend).
+        dots, dots_had = self._record_account_pulses(queryset, options["dry_run"])
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{verb} {dots} account pulse dot(s); {dots_had} account(s) already had today's."
+            )
+        )
+
         # The metric layer's month-end, after the health scores it reads are
         # fresh. Same job because it is the same kind of work — free,
         # idempotent, one row per period — and one cron entry is easier to
@@ -164,4 +173,27 @@ class Command(BaseCommand):
             # still guards against a concurrent run inserting the same rows.
             HealthSnapshot.objects.bulk_create(to_create, ignore_conflicts=True)
 
+        return written, already_had
+
+    def _record_account_pulses(self, customers, dry_run):
+        """Append today's computed pulse category to each account's `pulse`
+        history (last ten kept), once per day."""
+        from django.utils import timezone
+
+        from services.customers.models import Account, with_pulse_inputs
+
+        today = timezone.localdate()
+        accounts = with_pulse_inputs(
+            Account.objects.filter(customers__in=customers).distinct()
+        ).select_related()
+        written, already_had = 0, 0
+        for account in accounts:
+            if account.pulse_recorded_on == today:
+                already_had += 1
+                continue
+            written += 1
+            if dry_run:
+                continue
+            history = list(account.pulse or [])[-9:] + [account.account_pulse(today).category]
+            Account.objects.filter(pk=account.pk).update(pulse=history, pulse_recorded_on=today)
         return written, already_had

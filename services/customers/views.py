@@ -38,6 +38,7 @@ from .models import (
     Task,
     Ticket,
     with_health_inputs,
+    with_pulse_inputs,
 )
 from .scoping import (
     get_visible_account,
@@ -717,7 +718,7 @@ class AccountListCreateView(generics.ListCreateAPIView):
         return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
-        return self.get_customer().accounts.all()
+        return with_pulse_inputs(self.get_customer().accounts.all())
 
     def perform_create(self, serializer):
         # `customer_ids` (if the client sent it) already set whatever
@@ -758,7 +759,9 @@ class AccountDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return visible_accounts(self.request.user).filter(customers=self.kwargs["customer_id"])
+        return with_pulse_inputs(
+            visible_accounts(self.request.user).filter(customers=self.kwargs["customer_id"])
+        )
 
     def perform_update(self, serializer):
         previous_owner = serializer.instance.owner
@@ -814,7 +817,7 @@ class AccountListView(generics.ListAPIView):
         # row per matching linked Customer — an Account linked to two+
         # Customers in this same organisation would otherwise appear
         # once per match instead of once overall.
-        queryset = (
+        queryset = with_pulse_inputs(
             visible_accounts(self.request.user)
             .prefetch_related("customers")
             .select_related("owner")
