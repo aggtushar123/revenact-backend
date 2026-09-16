@@ -68,3 +68,17 @@ def would_cycle(user, manager):
     if manager.id == user.id:
         return True
     return user.id in {a.id for a in ancestors(manager)} or user.id == manager.id
+
+
+def chain_visible_q(user, field):
+    """Personal records — mail, notes — are readable by the person on
+    `field` and their management chain: a Q for rows that have nobody on
+    the field (logged before it existed), the user, or someone below them.
+    Stricter than `scope_ids`: no peers, no seniors."""
+    from django.db.models import Q
+
+    return (
+        Q(**{f"{field}__isnull": True})
+        | Q(**{field: user})
+        | Q(**{f"{field}_id__in": subtree_ids(user)})
+    )

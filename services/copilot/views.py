@@ -182,6 +182,13 @@ def _reply_readable_by(turn, user):
             rows = Email.objects.filter(pk=source.get("id"))
             if rows.exists() and not visible_emails(user, rows).exists():
                 return False
+        elif source.get("type") == "note":
+            from services.customers.models import Note
+            from services.customers.personal import visible_notes
+
+            rows = Note.objects.filter(pk=source.get("id"))
+            if rows.exists() and not visible_notes(user, rows).exists():
+                return False
         elif source.get("company_type") == "customer":
             if not visible_customers(user).filter(pk=source.get("company_id")).exists():
                 return False

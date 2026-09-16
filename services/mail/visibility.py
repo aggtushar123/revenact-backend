@@ -7,18 +7,12 @@ senior's, never a peer's, never another branch's. Emails logged before
 mailboxes existed have no owner and stay visible as they always were.
 """
 
-from django.db.models import Q
-
-from services.accounts.hierarchy import subtree_ids
+from services.accounts.hierarchy import chain_visible_q
 
 
-def visible_emails_q(user) -> Q:
+def visible_emails_q(user):
     # SOC2:AUTH-02 object-level rule for personal mail
-    return (
-        Q(mailbox_owner__isnull=True)
-        | Q(mailbox_owner=user)
-        | Q(mailbox_owner_id__in=subtree_ids(user))
-    )
+    return chain_visible_q(user, "mailbox_owner")
 
 
 def visible_emails(user, queryset):

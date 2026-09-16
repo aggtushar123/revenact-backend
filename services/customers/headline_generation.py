@@ -108,7 +108,11 @@ def collect_records(parent, *, window_days=DEFAULT_WINDOW_DAYS):
     since = since_dt.date()
     collected = {}
 
-    notes = list(parent.notes.filter(logged_at__gte=since)[:MAX_RECORDS_PER_SOURCE])
+    # Headlines are read by everyone who opens the record, so a personal
+    # note (services.customers.personal) must not surface through one.
+    notes = list(
+        parent.notes.filter(logged_at__gte=since, author__isnull=True)[:MAX_RECORDS_PER_SOURCE]
+    )
     if notes:
         collected[Headline.DataSource.NOTES] = _fmt(
             notes,

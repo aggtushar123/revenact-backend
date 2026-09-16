@@ -746,11 +746,21 @@ class TaskListSerializer(serializers.ModelSerializer):
 
 
 class NoteSerializer(serializers.ModelSerializer):
-    """Read-only — see Note model's docstring."""
+    """Read, and write a new note. `author` is set from the caller; a note
+    is readable by them and their management chain only."""
+
+    author = serializers.SerializerMethodField()
+    logged_at = serializers.DateField(required=False)
 
     class Meta:
         model = Note
-        fields = ["id", "title", "author_name", "body", "logged_at", "links"]
+        fields = ["id", "title", "author_name", "author", "body", "logged_at", "links"]
+        read_only_fields = ["author_name", "links"]
+
+    def get_author(self, obj):
+        if obj.author_id is None:
+            return None
+        return {"id": obj.author_id, "name": obj.author.name}
 
 
 class TicketSerializer(serializers.ModelSerializer):
