@@ -225,6 +225,10 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
     )
     health_score = HealthScoreField(source="*", required=False)
     health_score_is_overridden = serializers.BooleanField(read_only=True)
+    account_pulse = serializers.SerializerMethodField(
+        help_text="How the relationship feels right now — pulse.py over the organisation's "
+        "own signals plus everything logged on its accounts."
+    )
     health_breakdown = HealthBreakdownField()
     csat_breakdown = serializers.JSONField(read_only=True)
     ai_pulse_score = AIPulseScoreField(source="*", required=False)
@@ -286,6 +290,7 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
             "ai_pulse_score",
             "ai_pulse_value",
             "ai_pulse_reason",
+            "account_pulse",
             "csm_pulse_score",
             "csm_pulse_modified_at",
             "nps_score",
@@ -325,6 +330,9 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
         if product is not None and product.organisation_id != request.user.organisation_id:
             raise serializers.ValidationError("Product must belong to your own organisation.")
         return product
+
+    def get_account_pulse(self, obj):
+        return obj.account_pulse().as_payload()
 
     def validate_owner_id(self, owner):
         request = self.context["request"]

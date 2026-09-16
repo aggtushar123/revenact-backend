@@ -94,11 +94,9 @@ class Command(BaseCommand):
 
         # Today's account pulse becomes one more history dot per account, once
         # a day (pulse.py; the tables draw `pulse` as the trend).
-        dots, dots_had = self._record_account_pulses(queryset, options["dry_run"])
+        dots, dots_had = self._record_pulses(queryset, options["dry_run"])
         self.stdout.write(
-            self.style.SUCCESS(
-                f"{verb} {dots} account pulse dot(s); {dots_had} account(s) already had today's."
-            )
+            self.style.SUCCESS(f"{verb} {dots} pulse dot(s); {dots_had} already had today's.")
         )
 
         # The metric layer's month-end, after the health scores it reads are
@@ -175,25 +173,36 @@ class Command(BaseCommand):
 
         return written, already_had
 
-    def _record_account_pulses(self, customers, dry_run):
-        """Append today's computed pulse category to each account's `pulse`
-        history (last ten kept), once per day."""
+    def _record_pulses(self, customers, dry_run):
+        """Append today's computed pulse category to each organisation's and
+        each of its accounts' `pulse` history (last ten kept), once per day."""
         from django.utils import timezone
 
-        from services.customers.models import Account, with_pulse_inputs
+        from services.customers.models import (
+            Account,
+            Customer,
+            with_customer_pulse_inputs,
+            with_health_inputs,
+            with_pulse_inputs,
+        )
 
         today = timezone.localdate()
-        accounts = with_pulse_inputs(
-            Account.objects.filter(customers__in=customers).distinct()
-        ).select_related()
         written, already_had = 0, 0
-        for account in accounts:
-            if account.pulse_recorded_on == today:
-                already_had += 1
-                continue
-            written += 1
-            if dry_run:
-                continue
-            history = list(account.pulse or [])[-9:] + [account.account_pulse(today).category]
-            Account.objects.filter(pk=account.pk).update(pulse=history, pulse_recorded_on=today)
+        batches = (
+            (Customer, with_customer_pulse_inputs(with_health_inputs(customers))),
+            (
+                Account,
+                with_pulse_inputs(Account.objects.filter(customers__in=customers).distinct()),
+            ),
+        )
+        for model, rows in batches:
+            for row in rows:
+                if row.pulse_recorded_on == today:
+                    already_had += 1
+                    continue
+                written += 1
+                if dry_run:
+                    continue
+                history = list(row.pulse or [])[-9:] + [row.account_pulse(today).category]
+                model.objects.filter(pk=row.pk).update(pulse=history, pulse_recorded_on=today)
         return written, already_had

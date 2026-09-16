@@ -155,3 +155,68 @@ class AccountPulseEndToEndTests(APITestCase):
         call_command("run_health_maintenance", verbosity=0)
         self.account.refresh_from_db()
         self.assertEqual(self.account.pulse, [1])  # once a day
+
+
+class OrganisationPulseTests(APITestCase):
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Globex", ai_pulse_value=2
+        )
+        self.account = Account.objects.create(name="North America")
+        self.account.customers.add(self.customer)
+        now = timezone.now()
+        # One conversation on the organisation itself, two on its account.
+        Email.objects.create(
+            customer=self.customer,
+            subject="Escalation",
+            body="Not happy",
+            sent_at=now - timedelta(days=1),
+            sentiment="negative",
+        )
+        Email.objects.create(
+            account=self.account,
+            subject="Thanks",
+            body="Great",
+            sent_at=now - timedelta(days=2),
+            sentiment="positive",
+        )
+        Ticket.objects.create(
+            account=self.account,
+            title="Login fails",
+            opened_at=(now - timedelta(days=5)).date(),
+            sentiment="positive",
+        )
+
+    def test_the_organisations_pulse_counts_its_accounts_conversations_as_its_own(self):
+        by = {r.key: r for r in self.customer.account_pulse().readings}
+        self.assertEqual(by["sentiment"].note, "2 positive, 1 negative of 3 in the last 30 days")
+        self.assertEqual(by["touch"].note, "1 days ago")
+        self.assertEqual(by["support"].note, "1 open")
+        self.assertEqual(by["ai_pulse"].reading, Decimal("2.0"))
+
+    def test_the_customer_endpoints_expose_it_through_the_annotated_path(self):
+        self.client.force_authenticate(self.admin)
+        detail = self.client.get(f"/api/v1/customers/{self.customer.id}/").data["account_pulse"]
+        listed = self.client.get("/api/v1/customers/").data
+        rows = listed["results"] if isinstance(listed, dict) else listed
+        by_id = {row["id"]: row for row in rows}
+        self.assertEqual(
+            detail["breakdown"][2]["note"], "2 positive, 1 negative of 3 in the last 30 days"
+        )
+        self.assertEqual(by_id[self.customer.id]["account_pulse"], detail)
+
+    def test_the_daily_job_records_a_dot_for_the_organisation_and_its_account(self):
+        call_command("run_health_maintenance", verbosity=0)
+        self.customer.refresh_from_db()
+        self.account.refresh_from_db()
+        self.assertEqual(len(self.customer.pulse), 1)
+        self.assertEqual(len(self.account.pulse), 1)
+        self.assertEqual(self.customer.pulse_recorded_on, timezone.localdate())
