@@ -1584,6 +1584,17 @@ class Ticket(AIClassified):
     links = models.PositiveIntegerField(
         default=0, help_text="Count shown on the card's link line — only rendered when > 0."
     )
+    # Which department the ticket belongs to — stamped from the connector
+    # it was synced through. Blank means everyone may read it. See
+    # personal.py:visible_tickets.
+    department = models.CharField(max_length=16, blank=True, default="")
+    # The ticket as the source system knows it.
+    external_id = models.CharField(max_length=128, blank=True, default="")
+    external_url = models.URLField(max_length=500, blank=True, default="")
+    description = models.TextField(blank=True, default="")
+    requester_name = models.CharField(max_length=150, blank=True, default="")
+    requester_email = models.EmailField(blank=True, default="")
+    synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1595,7 +1606,12 @@ class Ticket(AIClassified):
                     | models.Q(customer__isnull=True, account__isnull=False)
                 ),
                 name="ticket_belongs_to_exactly_one_parent",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["connector", "external_id"],
+                condition=models.Q(connector__isnull=False) & ~models.Q(external_id=""),
+                name="ticket_unique_per_connector_external_id",
+            ),
         ]
 
     def __str__(self):

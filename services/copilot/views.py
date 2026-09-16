@@ -189,6 +189,13 @@ def _reply_readable_by(turn, user):
             rows = Note.objects.filter(pk=source.get("id"))
             if rows.exists() and not visible_notes(user, rows).exists():
                 return False
+        elif source.get("type") == "ticket":
+            from services.customers.models import Ticket
+            from services.customers.personal import visible_tickets
+
+            rows = Ticket.objects.filter(pk=source.get("id"))
+            if rows.exists() and not visible_tickets(user, rows).exists():
+                return False
         elif source.get("company_type") == "customer":
             if not visible_customers(user).filter(pk=source.get("company_id")).exists():
                 return False

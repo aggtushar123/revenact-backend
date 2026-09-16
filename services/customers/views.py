@@ -1183,8 +1183,10 @@ class CustomerTicketListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
+        from .personal import visible_tickets
+
         customer = get_visible_customer(self.request, self.kwargs["customer_id"])
-        return customer.tickets.all()
+        return visible_tickets(self.request.user, customer.tickets.select_related("connector"))
 
 
 class AccountTicketListView(generics.ListAPIView):
@@ -1199,10 +1201,12 @@ class AccountTicketListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
+        from .personal import visible_tickets
+
         account = get_visible_account(
             self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
-        return account.tickets.all()
+        return visible_tickets(self.request.user, account.tickets.select_related("connector"))
 
 
 class CustomerCalendarEventListView(generics.ListAPIView):
@@ -2267,7 +2271,11 @@ class TicketStatsView(views.APIView):
         is what previously let members read other owners' custom-object
         records — see CustomObjectRecordListCreateView's own note."""
 
-        tickets = Ticket.objects.filter(visible_children_q(request.user)).distinct()
+        from .personal import visible_tickets
+
+        tickets = visible_tickets(
+            request.user, Ticket.objects.filter(visible_children_q(request.user)).distinct()
+        )
         params = request.query_params
 
         opened_from = _parse_date(params.get("from"))

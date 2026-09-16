@@ -1,7 +1,9 @@
 from rest_framework import serializers
 
+from services.accounts.models import User
 from services.customers.models import Account, Customer
 
+from . import providers
 from .models import Connector
 
 
@@ -19,6 +21,15 @@ class ConnectorSerializer(serializers.ModelSerializer):
 
     provider_display = serializers.CharField(source="get_provider_display", read_only=True)
     is_organisation_wide = serializers.BooleanField(read_only=True)
+    department = serializers.ChoiceField(
+        choices=User.Function.choices, required=False, allow_blank=True
+    )
+    department_display = serializers.CharField(source="get_department_display", read_only=True)
+    # The live side: never the credentials, only whether there are any
+    # and how the last pass went. `setup` is the connect form a ticket
+    # source needs; null for an attribution-only system.
+    has_credentials = serializers.BooleanField(read_only=True)
+    setup = serializers.SerializerMethodField()
     # What the connector has actually brought in — from the views' own
     # annotations (see `with_ingested`), so a page of connectors costs one
     # query. A connector is not a live sync (see the model), so these are
@@ -52,6 +63,8 @@ class ConnectorSerializer(serializers.ModelSerializer):
             "provider_display",
             "name",
             "is_enabled",
+            "department",
+            "department_display",
             "customers",
             "accounts",
             "customer_ids",
@@ -60,9 +73,26 @@ class ConnectorSerializer(serializers.ModelSerializer):
             "ticket_count",
             "call_count",
             "last_record_at",
+            "has_credentials",
+            "config",
+            "status",
+            "error",
+            "last_synced_at",
+            "last_sync_note",
+            "setup",
             "created_at",
         ]
-        read_only_fields = ["created_at"]
+        read_only_fields = [
+            "config",
+            "status",
+            "error",
+            "last_synced_at",
+            "last_sync_note",
+            "created_at",
+        ]
+
+    def get_setup(self, obj):
+        return providers.describe(obj.provider)
 
     def get_last_record_at(self, obj):
         latest = [

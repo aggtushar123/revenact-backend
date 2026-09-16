@@ -814,6 +814,7 @@ class TicketSerializer(serializers.ModelSerializer):
     connector_provider = serializers.CharField(
         source="connector.provider", read_only=True, default=None
     )
+    department_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
@@ -830,7 +831,19 @@ class TicketSerializer(serializers.ModelSerializer):
             "links",
             "connector_name",
             "connector_provider",
+            "department",
+            "department_display",
+            "description",
+            "requester_name",
+            "requester_email",
+            "external_url",
+            "synced_at",
         ]
+
+    def get_department_display(self, obj):
+        from services.accounts.models import User
+
+        return dict(User.Function.choices).get(obj.department, "") if obj.department else ""
 
 
 class CalendarEventSerializer(serializers.ModelSerializer):
