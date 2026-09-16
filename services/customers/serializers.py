@@ -536,6 +536,13 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
+    handover_note = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        help_text="Why the account owner is changing — written down as a contribution "
+        "on every organisation the account belongs to.",
+    )
     customers = serializers.SerializerMethodField()
     customer_ids = serializers.PrimaryKeyRelatedField(
         source="customers",
@@ -559,6 +566,7 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
             "phone",
             "owner",
             "owner_id",
+            "handover_note",
             "created_at",
             "updated_at",
             "lifecycle_stage",
@@ -584,7 +592,26 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
         request = self.context["request"]
         if owner is not None and owner.organisation_id != request.user.organisation_id:
             raise serializers.ValidationError("Owner must be a member of your own organisation.")
+        # Same rule as an organisation's owner: the current owner, someone
+        # above them, or an org-settings manager (services.knowledge.ownership).
+        if self.instance is not None and owner != self.instance.owner:
+            from services.knowledge.ownership import may_change_owner
+
+            if not may_change_owner(request.user, self.instance):
+                raise serializers.ValidationError(
+                    "Only the current account owner, their management chain or an "
+                    "organisation-settings manager can reassign this account."
+                )
         return owner
+
+    def create(self, validated_data):
+        validated_data.pop("handover_note", "")
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        # The handover note is for the record, not the row (see the view).
+        self.context["handover_note"] = validated_data.pop("handover_note", "")
+        return super().update(instance, validated_data)
 
     def validate_customer_ids(self, customers):
         if not customers:
