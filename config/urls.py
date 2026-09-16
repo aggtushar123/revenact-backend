@@ -142,6 +142,7 @@ urlpatterns = [
     # month-end history. Gated on view_all_accounts — see services/metrics.
     path("api/v1/metrics/", include("services.metrics.urls")),
     path("api/v1/", include("services.knowledge.urls")),
+    path("api/v1/", include("services.mail.urls")),
     # A person correcting the model's tags on one interaction. Lives with the
     # feedback log it writes to, mounted beside the interactions stats.
     path(

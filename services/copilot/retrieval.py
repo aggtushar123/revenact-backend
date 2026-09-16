@@ -171,7 +171,13 @@ def _gather_candidates(company, viewer=None) -> list[RetrievedItem]:
     is_account = company.__class__.__name__ == "Account"
     candidates: list[RetrievedItem] = []
 
-    for email in Email.objects.filter(**scope).order_by("-sent_at")[:CANDIDATE_POOL_PER_SOURCE]:
+    emails = Email.objects.filter(**scope)
+    if viewer is not None:
+        from services.mail.visibility import visible_emails
+
+        # SOC2:AUTH-02 the Copilot reads mail under the asker's own rule
+        emails = visible_emails(viewer, emails)
+    for email in emails.order_by("-sent_at")[:CANDIDATE_POOL_PER_SOURCE]:
         line = f'Email ({email.sent_at.date()}) "{email.subject}": {_snippet(email.body)}'
         candidates.append(
             RetrievedItem(

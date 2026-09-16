@@ -978,8 +978,11 @@ class CustomerEmailListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
+        from services.mail.visibility import visible_emails
+
         customer = get_visible_customer(self.request, self.kwargs["customer_id"])
-        return customer.emails.all()
+        # SOC2:AUTH-02 synced mail is the owner's and their chain's only
+        return visible_emails(self.request.user, customer.emails.select_related("mailbox_owner"))
 
 
 class AccountEmailListView(generics.ListAPIView):
@@ -994,10 +997,13 @@ class AccountEmailListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
+        from services.mail.visibility import visible_emails
+
         account = get_visible_account(
             self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
-        return account.emails.all()
+        # SOC2:AUTH-02 synced mail is the owner's and their chain's only
+        return visible_emails(self.request.user, account.emails.select_related("mailbox_owner"))
 
 
 class CustomerTaskListView(generics.ListAPIView):
