@@ -1257,6 +1257,37 @@ class Email(AIClassified):
     is_starred = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # --- Synced mail (services.mail) -----------------------------------------
+    # Set when the row came through someone's connected mailbox. Whose it is
+    # decides who may read it (services.mail.visibility): the owner and
+    # their management chain. Rows logged by hand or seeded have none and
+    # stay visible to everyone who may open the customer.
+    class Direction(models.TextChoices):
+        SENT = "sent", "Sent"
+        RECEIVED = "received", "Received"
+
+    mailbox = models.ForeignKey(
+        "mail.MailboxConnection",
+        related_name="emails",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    mailbox_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="mailbox_emails",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Whose mailbox this came through; decides who may read it.",
+    )
+    direction = models.CharField(max_length=8, choices=Direction.choices, blank=True)
+    from_address = models.EmailField(blank=True)
+    to_addresses = models.JSONField(default=list, blank=True)
+    thread_id = models.CharField(max_length=255, blank=True)
+    provider_message_id = models.CharField(max_length=255, blank=True)
+    synced_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-sent_at", "-id"]
         verbose_name_plural = "emails"
@@ -1267,8 +1298,14 @@ class Email(AIClassified):
                     | models.Q(customer__isnull=True, account__isnull=False)
                 ),
                 name="email_belongs_to_exactly_one_parent",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["mailbox", "provider_message_id"],
+                condition=models.Q(mailbox__isnull=False) & ~models.Q(provider_message_id=""),
+                name="email_once_per_mailbox_message",
+            ),
         ]
+        indexes = [models.Index(fields=["mailbox_owner", "-sent_at"])]
 
     def __str__(self):
         parent = self.customer or self.account

@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     "services.notifications",
     "services.custom_objects",
     "services.connectors",
+    "services.mail",
     "services.metrics",
     "services.knowledge",
 ]
@@ -422,3 +423,19 @@ LOGGING = {
         "daphne": {"level": "WARNING"},
     },
 }
+
+# --- Personal mailboxes (services.mail) ------------------------------------
+# OAuth clients for the providers a company can connect. A provider is offered
+# only when its client is configured; IMAP/SMTP needs nothing. Tokens and
+# passwords are encrypted at rest with MAIL_TOKEN_KEY (a Fernet key:
+# `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`);
+# unset, the key is derived from SECRET_KEY. SOC2:DATA-02
+MAIL_TOKEN_KEY = env("MAIL_TOKEN_KEY", default="")
+GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
+GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")
+MICROSOFT_OAUTH_CLIENT_ID = env("MICROSOFT_OAUTH_CLIENT_ID", default="")
+MICROSOFT_OAUTH_CLIENT_SECRET = env("MICROSOFT_OAUTH_CLIENT_SECRET", default="")
+MICROSOFT_OAUTH_TENANT = env("MICROSOFT_OAUTH_TENANT", default="common")
+# Where a provider sends the browser back after consent; the API's own
+# public origin (Caddy fronts it), e.g. https://revenact.example.com.
+MAIL_OAUTH_REDIRECT_BASE = env("MAIL_OAUTH_REDIRECT_BASE", default="")

@@ -657,7 +657,10 @@ class ActivitySerializer(serializers.ModelSerializer):
 
 
 class EmailSerializer(serializers.ModelSerializer):
-    """Read-only — see Email model's docstring."""
+    """Read-only — see Email model's docstring. `mailbox_owner` and
+    `direction` are set on rows synced through someone's mailbox."""
+
+    mailbox_owner = serializers.SerializerMethodField()
 
     class Meta:
         model = Email
@@ -671,7 +674,17 @@ class EmailSerializer(serializers.ModelSerializer):
             "links",
             "watchers",
             "is_starred",
+            "direction",
+            "from_address",
+            "to_addresses",
+            "thread_id",
+            "mailbox_owner",
         ]
+
+    def get_mailbox_owner(self, obj):
+        if obj.mailbox_owner_id is None:
+            return None
+        return {"id": obj.mailbox_owner_id, "name": obj.mailbox_owner.name}
 
 
 class TaskSerializer(serializers.ModelSerializer):

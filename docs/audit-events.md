@@ -27,6 +27,7 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `user.create` | `OrgUserListCreateView` | admin | User | role slug |
 | `user.update` | `OrgUserDetailView` | admin | User | changed field names (never the password) |
 | `user.deactivate` / `user.reactivate` | `OrgUserDetailView` | admin | User | — |
+| `mailbox.connect` / `mailbox.disconnect` | `services.mail.views` | user | MailboxConnection | provider, address |
 | `webhook.create` / `webhook.update` / `webhook.delete` | `services.webhooks.views` | user | WebhookSubscription | url, event, changed fields |
 
 Adding a new one: call `audit.record` at the point the change is committed, annotate the

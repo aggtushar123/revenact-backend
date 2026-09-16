@@ -25,7 +25,8 @@ customer records.
 | `core.AuditEvent` | confidential | actor_email, ip, user_agent, `metadata.email` on failed logins | append-only (LOG-02); retention 365 d (`retention_days.audit_logs`) |
 | `customers.Customer`, `customers.Account` | confidential | business contact email, phone, address; owner (a User) | commercial terms (ARR, TCV, fees, seats, churn reason) are confidential business data |
 | `customers.Contact` | confidential | name, role, email, phone, sentiment | a named person at the customer |
-| `customers.Email` | confidential | sender_name, recipient_name, subject, body | customer correspondence; sent to the LLM provider for classification and Copilot answers (see flows) |
+| `customers.Email` | confidential | sender_name, recipient_name, subject, body, from_address, to_addresses | customer correspondence; sent to the LLM provider for classification and Copilot answers (see flows). Rows synced through a person's mailbox carry `mailbox_owner`: **readable only by that person and their management chain** (`services/mail/visibility.py`), in the API and in the Copilot |
+| `mail.MailboxConnection` | confidential | address, display_name | `credentials`: **restricted** — OAuth refresh/access tokens or an IMAP/SMTP password, Fernet-encrypted at rest with `MAIL_TOKEN_KEY` (derived from `SECRET_KEY` when unset); never serialised; connect/disconnect audited |
 | `customers.Note`, `customers.Call`, `customers.Ticket` | confidential | author_name / host_name / assignee_name, body / summary | people's words about an account |
 | `customers.Task`, `customers.CalendarEvent`, `customers.Activity` | internal | assignee_name, attendee_count | titles and descriptions may quote customers — treat description as confidential |
 | `customers.Opportunity`, `customers.Risk`, `customers.Survey`, `customers.HealthSnapshot`, `customers.Product` | internal | — | pipeline, survey scores, health history |
@@ -51,6 +52,8 @@ customer records.
 |------|------|-------|---------|
 | Copilot / classification → Anthropic API or AWS Bedrock (`services/copilot`) | Email, Ticket, Note, Call, Contribution text; account names and metrics | confidential | TLS; provider under DPA when a customer is onboarded (Third-Party Management policy, deferred); `ModelCall` records every call without content |
 | Outbound webhooks (`services/webhooks/engine.py`) | event payloads the tenant subscribed to | internal / confidential | HTTPS only, no redirects, HMAC-SHA256 signature (SEC-07), SSRF guard |
+| Mailbox sync (`services/mail/sync.py`) ← Google / Microsoft / IMAP | the person's own mail, filed only when the counterpart is a customer/account contact or domain | confidential | TLS; per-person OAuth or app password; the rest of the mailbox is read but never stored |
+| Compose (`services/mail/views.py`) → the person's own provider | subject, body, recipients | confidential | sent as the person, copy filed as a sent Email with `mailbox_owner` |
 | Password-reset email (`ForgotPasswordView`) | user email, single-use token link | confidential | Django token generator; reset audited (LOG-01) |
 | Container stdout → log store (`config/settings.py: LOGGING`) | request ids, actions, outcomes | internal | `core.logging.RedactFilter` (LOG-03); no bodies or headers logged |
 | Nightly `pg_dump` → Azure Blob (`revenact-infra/deploy/backup.sh`) | everything above | confidential | private account, identity auth, versioning, 35-day expiry (DATA-07) |
