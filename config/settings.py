@@ -163,13 +163,15 @@ CHANNEL_LAYERS = {
 }
 
 # --- Cache --------------------------------------------------------------------
-# Only consumer today is the auth rate limiting (core/throttling.py). Same
-# Redis the channel layer uses; in-memory under test for the same reason.
+# Only consumer today is the auth rate limiting (core/throttling.py). Redis in
+# production (the same one the channel layer uses) so the counters survive a
+# restart; in-memory under test and in DEBUG, so a local login doesn't need
+# Redis to be up. Throttling still works in dev, per process.
 
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
 CACHES = {
     "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
-    if TESTING
+    if TESTING or DEBUG
     else {"BACKEND": "django.core.cache.backends.redis.RedisCache", "LOCATION": REDIS_URL}
 }
 
