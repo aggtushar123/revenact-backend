@@ -1006,7 +1006,7 @@ class AccountEmailListView(generics.ListAPIView):
         return visible_emails(self.request.user, account.emails.select_related("mailbox_owner"))
 
 
-class CustomerTaskListView(generics.ListAPIView):
+class CustomerTaskListView(generics.ListCreateAPIView):
     """GET /api/v1/customers/<customer_id>/tasks/ — every
     organization-level Task for one Customer, scoped to the caller's
     own organisation. Same 404-not-empty-list convention as
@@ -1018,11 +1018,20 @@ class CustomerTaskListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
+        from .personal import visible_tasks
+
         customer = get_visible_customer(self.request, self.kwargs["customer_id"])
-        return customer.tasks.all()
+        # SOC2:AUTH-02 a task is its creator's, its assignee's and their chains'
+        return visible_tasks(
+            self.request.user, customer.tasks.select_related("assignee", "created_by")
+        )
+
+    def perform_create(self, serializer):
+        customer = get_visible_customer(self.request, self.kwargs["customer_id"])
+        _create_task(serializer, self.request.user, customer=customer)
 
 
-class AccountTaskListView(generics.ListAPIView):
+class AccountTaskListView(generics.ListCreateAPIView):
     """GET /api/v1/customers/<customer_id>/accounts/<account_id>/tasks/
     — every account-level Task for one Account, scoped to both its
     customer_id and the caller's own organisation. Same reasoning as
@@ -1034,10 +1043,26 @@ class AccountTaskListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
+        from .personal import visible_tasks
+
         account = get_visible_account(
             self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
-        return account.tasks.all()
+        # SOC2:AUTH-02 a task is its creator's, its assignee's and their chains'
+        return visible_tasks(
+            self.request.user, account.tasks.select_related("assignee", "created_by")
+        )
+
+    def perform_create(self, serializer):
+        account = get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
+        )
+        _create_task(serializer, self.request.user, account=account)
+
+
+def _create_task(serializer, user, **parent):
+    assignee = serializer.validated_data.get("assignee") or user
+    serializer.save(created_by=user, assignee=assignee, assignee_name=assignee.name, **parent)
 
 
 class TaskListView(generics.ListAPIView):
@@ -1069,10 +1094,13 @@ class TaskListView(generics.ListAPIView):
 
     def get_queryset(self):
         # `.distinct()` — same fan-out reasoning as OpportunityListView's own.
-        queryset = (
+        from .personal import visible_tasks
+
+        queryset = visible_tasks(
+            self.request.user,
             Task.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
-            .distinct()
+            .distinct(),
         )
 
         if self.request.query_params.get("mine") == "true":
