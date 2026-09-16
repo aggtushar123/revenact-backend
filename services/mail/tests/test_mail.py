@@ -68,6 +68,17 @@ class FakeProvider:
 class Fixture(APITestCase):
     def setUp(self):
         FakeProvider.queued, FakeProvider.sent = [], []
+        # Never a live model call from a test: filing mail classifies it, and
+        # the developer's own key must not be spent. Tests that want an
+        # answer patch the same target again, closer in.
+        from services.copilot.anthropic_client import CopilotNotConfigured
+
+        no_model = patch(
+            "services.customers.classification.get_completion",
+            side_effect=CopilotNotConfigured("no model in tests"),
+        )
+        no_model.start()
+        self.addCleanup(no_model.stop)
         self.org = Organisation.objects.create(name="Acme Inc")
         mk = lambda email, name, **kw: User.objects.create_user(  # noqa: E731
             email=email, password="x", name=name, organisation=self.org, **kw
@@ -471,3 +482,75 @@ class HttpGuardTests(APITestCase):
             http_json("GET", "https://evil.example.com/token")
         with self.assertRaises(ProviderError):
             http_json("GET", "http://graph.microsoft.com/v1.0/me")
+
+
+class SentimentOnSyncTests(Fixture):
+    """Synced and sent mail is classified on the spot, so the pulse can count it."""
+
+    def _answer(self, batch, **_kw):
+        import json
+
+        return json.dumps(
+            [
+                {"ref": f"email:{r.pk}", "category": "bug_report", "sentiment": "negative"}
+                for r in batch
+            ]
+        )
+
+    def test_synced_emails_get_a_sentiment_and_the_pulse_counts_them(self):
+        connection = self.connect(self.dana)
+        FakeProvider.queued = [message(provider_id="s1", from_address="sam@pizzahut.com")]
+        with (
+            patch("services.mail.sync.get_provider", return_value=FakeProvider()),
+            patch(
+                "services.customers.classification.get_completion",
+                side_effect=lambda **kw: self._answer(self._batch_from(kw)),
+            ),
+        ):
+            sync.sync_mailbox(connection)
+        email = Email.objects.get(provider_message_id="s1")
+        self.assertEqual(email.sentiment, "negative")
+        self.assertIsNotNone(email.ai_classified_at)
+        by = {r.key: r for r in self.pizza.account_pulse().readings}
+        self.assertEqual(by["sentiment"].note, "0 positive, 1 negative of 1 in the last 30 days")
+
+    @staticmethod
+    def _batch_from(kwargs):
+        """The records a prompt was built from: their refs are in the user message."""
+        import re
+
+        text = kwargs["messages"][0]["content"]
+        ids = [int(pk) for pk in re.findall(r"email:(\d+)", text)]
+        return list(Email.objects.filter(pk__in=ids))
+
+    def test_a_sent_email_is_classified_too_and_a_missing_key_is_not_fatal(self):
+        self.connect(self.dana)
+        self.client.force_authenticate(self.dana)
+        with (
+            patch("services.mail.sync.get_provider", return_value=FakeProvider()),
+            patch(
+                "services.customers.classification.get_completion",
+                side_effect=lambda **kw: self._answer(self._batch_from(kw)),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/v1/customers/{self.pizza.id}/emails/send/",
+                {"to": ["sam@pizzahut.com"], "subject": "Renewal", "body": "Shall we?"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Email.objects.get(provider_message_id="sent-1").sentiment, "negative")
+        # No model configured: the sync still files the mail, unclassified.
+        from services.copilot.anthropic_client import CopilotNotConfigured
+
+        FakeProvider.queued = [message(provider_id="s2", from_address="sam@pizzahut.com")]
+        with (
+            patch("services.mail.sync.get_provider", return_value=FakeProvider()),
+            patch(
+                "services.customers.classification.get_completion",
+                side_effect=CopilotNotConfigured("no key"),
+            ),
+        ):
+            filed = sync.sync_mailbox(self.dana.mailbox)
+        self.assertEqual(filed, 1)
+        self.assertIsNone(Email.objects.get(provider_message_id="s2").ai_classified_at)

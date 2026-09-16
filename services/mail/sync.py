@@ -153,18 +153,25 @@ def sync_mailbox(connection):
         connection.save(update_fields=["status", "error", "updated_at"])
         logger.warning("mailbox %s: %s", connection.address, exc)
         return 0
-    filed = 0
+    filed = []
     with transaction.atomic():
         for message in sorted(messages, key=lambda m: m.date):
-            if file_message(connection, message) is not None:
-                filed += 1
+            email = file_message(connection, message)
+            if email is not None:
+                filed.append(email)
         _store(connection, creds)
         connection.sync_cursor = cursor[:512]
         connection.status = MailboxConnection.Status.CONNECTED
         connection.error = ""
         connection.last_synced_at = timezone.now()
         connection.save()
-    return filed
+    # Sentiment now, not at the next scheduled pass: the pulse counts only
+    # classified conversations (services/customers/pulse.py).
+    if filed:
+        from services.customers.classification import classify_records
+
+        classify_records(filed, organisation=connection.organisation, user=connection.user)
+    return len(filed)
 
 
 def send_email(connection, *, to, subject, body, customer=None, account=None):
@@ -174,7 +181,7 @@ def send_email(connection, *, to, subject, body, customer=None, account=None):
     message = provider.send(creds, to=to, subject=subject, body=body)
     _store(connection, creds)
     connection.save(update_fields=["credentials", "address", "updated_at"])
-    return Email.objects.create(
+    email = Email.objects.create(
         customer=customer,
         account=account,
         subject=subject[:255],
@@ -191,3 +198,8 @@ def send_email(connection, *, to, subject, body, customer=None, account=None):
         provider_message_id=message.provider_id[:255],
         synced_at=timezone.now(),
     )
+    from services.customers.classification import classify_records
+
+    classify_records([email], organisation=connection.organisation, user=connection.user)
+    email.refresh_from_db()
+    return email

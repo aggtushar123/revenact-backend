@@ -72,6 +72,20 @@ class Command(BaseCommand):
                 raise CommandError(f"{user.email} has no organisation.")
             queryset = queryset.filter(organisation=user.organisation)
 
+        # Sentiment first: anything logged since yesterday — synced mail that
+        # could not be classified at the time, tickets, calls — gets its tags
+        # before the pulse and health read them. A missing model key is
+        # reported, not fatal: the scores still run on what is classified.
+        classify_args = ["classify_interactions"]
+        if options["org_email"]:
+            classify_args += ["--org-email", options["org_email"]]
+        if options["dry_run"]:
+            classify_args += ["--dry-run"]
+        try:
+            call_command(*classify_args, stdout=self.stdout)
+        except CommandError as exc:
+            self.stdout.write(self.style.WARNING(f"classification skipped: {exc}"))
+
         # Scores first: the snapshot should record the freshly computed value,
         # not yesterday's.
         recalculate_args = ["recalculate_health"]
