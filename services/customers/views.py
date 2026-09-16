@@ -1447,6 +1447,54 @@ class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Contact.objects.filter(visible_children_q(self.request.user)).distinct()
 
 
+class ContactInteractionsView(views.APIView):
+    """GET /api/v1/contacts/<id>/interactions/ — what this person's
+    sentiment rests on: every classified call they were on, email from
+    their address and ticket they raised, newest first, each with its own
+    sentiment. Same scoping as ContactDetailView."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from .contact_sentiment import interactions_for, score
+
+        contact = get_object_or_404(
+            Contact.objects.filter(visible_children_q(request.user)).distinct(), pk=pk
+        )
+        rows = interactions_for(contact)
+        value, label = score(rows)
+        items = []
+        for row in rows:
+            record = row["record"]
+            kind = row["kind"]
+            if kind == "call":
+                title, snippet = record.title, record.summary
+            elif kind == "email":
+                title, snippet = record.subject, record.body
+            else:
+                title, snippet = f"{record.ticket_number} {record.title}", record.description
+            items.append(
+                {
+                    "kind": kind,
+                    "id": record.id,
+                    "title": title,
+                    "snippet": (snippet or "")[:240],
+                    "when": row["when"].isoformat(),
+                    "sentiment": row["sentiment"],
+                    "ai_category": record.ai_category,
+                }
+            )
+        return Response(
+            {
+                "sentiment": label,
+                "score": round(value, 3),
+                "source": contact.sentiment_source,
+                "evidence": contact.sentiment_evidence,
+                "interactions": items,
+            }
+        )
+
+
 class CustomerOpportunityListView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/opportunities/ — same
     shape as CustomerContactListView: GET rolls up every Opportunity
@@ -2662,6 +2710,7 @@ class _CallListView(generics.ListCreateAPIView):
         organisation = _organisation_of(customer, account)
         data = serializer.validated_data
         transcript_text = data.pop("transcript_text", "") or ""
+        chosen = data.pop("participant_ids", [])
         uploaded = request.FILES.get("transcript")
         transcript = None
         if uploaded is not None:
@@ -2695,14 +2744,33 @@ class _CallListView(generics.ListCreateAPIView):
             logged_by=request.user,
             transcript=transcript,
         )
+        # Who was on it: the contacts chosen, plus anyone from this company
+        # the transcript names. Only this company's own contacts count.
+        from .contact_sentiment import match_participants, recompute
+
+        matched = match_participants(customer, account, transcript_text)
+        own = {
+            c.id
+            for c in match_participants(customer, account, "", emails=[c.email for c in chosen])
+        }
+        participants = {c.id: c for c in matched}
+        participants.update({c.id: c for c in chosen if c.id in own})
+        call.participants.set(participants.values())
         audit.record(  # SOC2:LOG-01 customer content added
             "call.log",
             request=request,
             target=call,
-            metadata={"title": call.title, "transcript": transcript is not None},
+            metadata={
+                "title": call.title,
+                "transcript": transcript is not None,
+                "participants": len(participants),
+            },
         )
-        # Sentiment now: the pulse counts only classified conversations.
+        # Sentiment now: the pulse counts only classified conversations, and
+        # the people on the call sound different once it is read.
         classify_call(call)
+        for contact in participants.values():
+            recompute(contact)
 
 
 class CustomerCallListView(_CallListView):

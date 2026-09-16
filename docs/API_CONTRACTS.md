@@ -1989,6 +1989,37 @@ Attachment (`source: "transcript"`) on the same company, and when
 error). The new call is classified for sentiment straight away so the
 Account Pulse counts it. Audit event `call.log`.
 
+### Contact sentiment is computed (`services/customers/contact_sentiment.py`)
+
+A contact's `sentiment` pill is no longer only hand-set. Once a person has
+any **classified** interaction — a call they were a participant on, an
+email from their address, a ticket they raised — it is recomputed from
+those: each is +1 / 0 / −1 by its sentiment, weighted by kind (call 1.0,
+ticket 0.8, email 0.6) and by recency (≤30 d 1.0, ≤90 d 0.6, ≤365 d 0.3,
+older 0.1); the weighted average above 0.25 is positive, below −0.25
+negative, else neutral. `ContactSerializer` carries `sentiment_source`
+(`manual` | `computed`), `sentiment_evidence` (`{score, calls, emails,
+tickets, positive, neutral, negative, latest_at}`) and
+`sentiment_computed_at`. A contact with no evidence keeps the hand-set
+value; a `PATCH` of `sentiment` marks it `manual` again until evidence
+returns. `last_contacted_at` moves forward with their newest interaction
+(a call counts as contact even before it is classified).
+
+Recomputed whenever records are classified (`classify_records`), when a
+call is logged, and for every contact in `run_health_maintenance`.
+
+`Call.participants` (write `participant_ids`, read `participants
+[{id, name, role_display, sentiment}]`) says who from the customer's side
+was on a call; only contacts of that company are accepted, and a
+transcript that names a contact (full name or email address) links them
+automatically.
+
+### `GET /api/v1/contacts/<id>/interactions/`
+
+What the sentiment rests on: `{sentiment, score, source, evidence,
+interactions: [{kind: "call"|"email"|"ticket", id, title, snippet, when,
+sentiment, ai_category}]}`, newest first. Same scoping as the contact.
+
 ## Files — the Files tab on organisations and accounts
 
 ### `GET/POST /api/v1/customers/<id>/files/`, `.../accounts/<id>/files/`

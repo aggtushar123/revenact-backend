@@ -24,6 +24,7 @@ from services.customers.views import (
     CanvasListView,
     CockpitSummaryView,
     ContactDetailView,
+    ContactInteractionsView,
     ContactListView,
     ContactStatsView,
     FileDetailView,
@@ -78,6 +79,11 @@ urlpatterns = [
     path("api/v1/files/<int:pk>/download/", FileDownloadView.as_view(), name="file-download"),
     path("api/v1/contacts/stats/", ContactStatsView.as_view(), name="contact-stats"),
     path("api/v1/contacts/<int:pk>/", ContactDetailView.as_view(), name="contact-detail"),
+    path(
+        "api/v1/contacts/<int:pk>/interactions/",
+        ContactInteractionsView.as_view(),
+        name="contact-interactions",
+    ),
     path("api/v1/contacts/", ContactListView.as_view(), name="contact-list"),
     # Opportunity, same reasoning as Contact above — mounted at its own
     # top-level /api/v1/opportunities/ prefix since it's the one

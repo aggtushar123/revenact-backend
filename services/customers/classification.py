@@ -367,9 +367,15 @@ def classify_records(records, *, organisation=None, user=None):
             logger.warning("classification batch of %d failed: %s", len(batch), exc)
             failed += 1
             continue
+        done = []
         for record in batch:
             fields = results.get(f"{record._meta.model_name}:{record.pk}")
             if fields:
                 apply_classification(record, fields)
                 classified += 1
+                done.append(record)
+        # The people on these calls, emails and tickets sound different now.
+        from .contact_sentiment import recompute_for_records
+
+        recompute_for_records(done)
     return classified, failed

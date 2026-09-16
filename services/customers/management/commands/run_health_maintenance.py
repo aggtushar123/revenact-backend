@@ -86,6 +86,19 @@ class Command(BaseCommand):
         except CommandError as exc:
             self.stdout.write(self.style.WARNING(f"classification skipped: {exc}"))
 
+        # Then the people: every contact's sentiment re-read from their
+        # classified calls, emails and tickets, before the scores read it.
+        if not options["dry_run"]:
+            from services.customers.contact_sentiment import recompute_all
+
+            organisation = (
+                queryset.first().organisation
+                if options["org_email"] and queryset.exists()
+                else None
+            )
+            changed = recompute_all(organisation)
+            self.stdout.write(self.style.SUCCESS(f"recomputed sentiment for {changed} contact(s)"))
+
         # Scores first: the snapshot should record the freshly computed value,
         # not yesterday's.
         recalculate_args = ["recalculate_health"]
