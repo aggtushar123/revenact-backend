@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15  # the suite takes ~2 min; a hung runner must not block deploys for hours
 
     services:
       postgres:
@@ -65,6 +66,7 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     concurrency:
       group: deploy-production
       cancel-in-progress: false
