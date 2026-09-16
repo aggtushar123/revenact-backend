@@ -11,7 +11,12 @@ from rest_framework.views import APIView
 from services.accounts.models import Organisation, User
 from services.accounts.permissions import CanManageOrgSettings, CanViewAllAccounts
 from services.customers.models import Account, Customer
-from services.knowledge.mentions import ask_suggestions_for, resolve_mentions, route_questions
+from services.knowledge.mentions import (
+    ask_suggestions_for,
+    resolve_routes,
+    route_questions,
+    routing_summary,
+)
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
@@ -318,15 +323,21 @@ class SendMessageView(APIView):
         tone_instruction = TONE_INSTRUCTIONS.get(organisation.ai_agent_tone, default_tone)
         grounding = build_grounding(organisation, user=request.user, query=content)
         book_summary = grounding.summary
-        # "@Mei, why is usage down?" — the people named become a routed
-        # question once the turn is stored (below); the model is told now,
-        # so its reply acknowledges the routing instead of answering for Mei.
-        asked = resolve_mentions(content, organisation, exclude=request.user)
+        # "@Mei, why is usage down?" or "@engineering, does SSO still break?"
+        # — the people named, or responsible for the identified customer in
+        # the named function, become a routed question once the turn is
+        # stored (below); the model is told now, with the reason each was
+        # reached, so its reply acknowledges the routing instead of
+        # answering for them.
+        company = grounding.company
+        asked_about = company if company.__class__.__name__ == "Customer" else None
+        routes = resolve_routes(content, organisation, exclude=request.user, customer=asked_about)
+        asked = [route.user for route in routes]
         routing_note = ""
-        if asked:
-            names = ", ".join(f"{u.name} ({u.get_function_display()})" for u in asked)
+        if routes:
             routing_note = (
-                f"\n\nThe asker has routed this question to {names}; they will be "
+                f"\n\nThe asker has routed this question to "
+                f"{routing_summary(routes, asked_about)}; they will be "
                 "notified and their answer will be recorded. Acknowledge that in one "
                 "sentence, then answer whatever the summary already covers."
             )
@@ -380,12 +391,11 @@ class SendMessageView(APIView):
         conversation.save(update_fields=["updated_at"])
 
         if asked:
-            company = grounding.company
             route_questions(
                 organisation=organisation,
                 asked_by=request.user,
                 text=content,
-                customer=company if company.__class__.__name__ == "Customer" else None,
+                customer=asked_about,
                 message=user_message,
                 assignees=asked,
             )

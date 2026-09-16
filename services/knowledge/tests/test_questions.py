@@ -8,7 +8,7 @@ from rest_framework.test import APITestCase
 from services.accounts.models import Organisation, User
 from services.customers.models import Customer
 from services.knowledge import mentions
-from services.knowledge.models import Contribution, Question
+from services.knowledge.models import Contribution, FunctionOwner, Question
 from services.notifications.models import Notification
 
 
@@ -72,6 +72,119 @@ class MentionTests(Fixture):
         # "@Mei" alone is ambiguous between two Meis: nobody rather than the wrong one.
         self.assertEqual(mentions.resolve_mentions("@Mei why?", self.org), [])
         self.assertEqual(mentions.resolve_mentions("no mentions here", self.org), [])
+
+
+class FunctionMentionTests(Fixture):
+    """@engineering reaches the responsible engineer; failing one, all of them."""
+
+    def setUp(self):
+        super().setUp()
+        self.priya = User.objects.create_user(
+            email="priya@acme.io",
+            password="x",
+            name="Priya Nair",
+            organisation=self.org,
+            function=User.Function.ENGINEERING,
+            reports_to=self.alice,
+        )
+        self.sam = User.objects.create_user(
+            email="sam@acme.io",
+            password="x",
+            name="Sam Lee",
+            organisation=self.org,
+            function=User.Function.ENGINEERING,
+            reports_to=self.alice,
+        )
+
+    def test_a_function_mention_reaches_the_person_responsible_for_the_customer(self):
+        FunctionOwner.objects.create(customer=self.pizza, function="engineering", user=self.priya)
+        routes = mentions.resolve_routes(
+            "@engineering does SSO still break?", self.org, exclude=self.alice, customer=self.pizza
+        )
+        self.assertEqual([(r.user.name, r.via) for r in routes], [("Priya Nair", "owner")])
+        self.assertEqual(
+            mentions.routing_summary(routes, self.pizza),
+            "Priya Nair (Engineering) — responsible for Pizza Hut in Engineering",
+        )
+
+    def test_without_a_responsible_person_everyone_in_the_function_is_asked(self):
+        found = mentions.resolve_mentions(
+            "@Eng thoughts?", self.org, exclude=self.alice, customer=self.pizza
+        )
+        self.assertEqual([u.name for u in found], ["Priya Nair", "Sam Lee"])
+        # And with no customer at all, the same people.
+        found = mentions.resolve_mentions("@engineering?", self.org, exclude=self.alice)
+        self.assertEqual([u.name for u in found], ["Priya Nair", "Sam Lee"])
+        routes = mentions.resolve_routes("@sales anyone?", self.org, customer=self.pizza)
+        self.assertEqual([r.user.name for r in routes], ["Mei Ling"])
+        self.assertIn(
+            "nobody is responsible for Pizza Hut there yet",
+            mentions.routing_summary(routes, self.pizza),
+        )
+
+    def test_the_responsible_person_asking_their_own_function_reaches_their_peers(self):
+        FunctionOwner.objects.create(customer=self.pizza, function="engineering", user=self.priya)
+        found = mentions.resolve_mentions(
+            "@engineering anyone free?", self.org, exclude=self.priya, customer=self.pizza
+        )
+        self.assertEqual([u.name for u in found], ["Sam Lee"])
+
+    def test_cs_falls_back_to_the_account_owner_and_team_is_everyone_responsible(self):
+        FunctionOwner.objects.create(customer=self.pizza, function="analytics", user=self.mei)
+        found = mentions.resolve_mentions(
+            "@cs when is the renewal?", self.org, exclude=self.alice, customer=self.pizza
+        )
+        self.assertEqual([u.name for u in found], ["Carl CSM"])
+        team = mentions.resolve_routes(
+            "@team all hands on this one", self.org, exclude=self.carl, customer=self.pizza
+        )
+        # Carl owns the account but asked, so only the analytics owner remains.
+        self.assertEqual([(r.user.name, r.via) for r in team], [("Mei Tanaka", "team")])
+        self.assertEqual(
+            mentions.routing_summary(team, self.pizza),
+            "Mei Tanaka (Analytics) — everyone responsible for Pizza Hut",
+        )
+        # A team mention with no customer in sight reaches nobody.
+        self.assertEqual(mentions.resolve_mentions("@team?", self.org, exclude=self.alice), [])
+
+    def test_people_and_functions_mix_without_duplicates_and_unknown_words_are_ignored(self):
+        FunctionOwner.objects.create(customer=self.pizza, function="engineering", user=self.priya)
+        found = mentions.resolve_mentions(
+            "@Priya and @engineering and @marketing: thoughts?",
+            self.org,
+            exclude=self.alice,
+            customer=self.pizza,
+        )
+        self.assertEqual([u.name for u in found], ["Priya Nair"])
+
+    def test_asking_a_function_on_the_customer_page_routes_to_its_owner(self):
+        FunctionOwner.objects.create(customer=self.pizza, function="engineering", user=self.priya)
+        self.client.force_authenticate(self.alice)
+        response = self.client.post(
+            f"/api/v1/customers/{self.pizza.id}/questions/",
+            {"text": "@engineering is the SSO fix shipped?"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual([q["assignee"]["name"] for q in response.data], ["Priya Nair"])
+        note = Notification.objects.get(recipient=self.priya)
+        self.assertEqual(note.kind, Notification.Kind.QUESTION_ASKED)
+        self.assertIn("about Pizza Hut", note.message)
+
+    def test_the_copilot_is_told_why_a_function_mention_reached_whom(self):
+        self.client.force_authenticate(self.alice)
+        with patch("services.copilot.views.get_completion", return_value="Routed.") as call:
+            response = self.client.post(
+                "/api/v1/copilot/messages/",
+                {"content": "@engineering why does Pizza Hut's SSO break?"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        system = call.call_args.kwargs["system"]
+        self.assertIn("everyone in Engineering, since nobody is responsible for Pizza Hut", system)
+        asked = sorted(q["assignee"]["name"] for q in response.data["messages"][0]["questions"])
+        self.assertEqual(asked, ["Priya Nair", "Sam Lee"])
+        self.assertEqual(Question.objects.filter(customer=self.pizza).count(), 2)
 
 
 class QuestionFlowTests(Fixture):
