@@ -1655,6 +1655,79 @@ class Ticket(AIClassified):
             )
 
 
+def attachment_path(instance, filename):
+    """Where a file lands on disk: under its organisation, named by a random
+    id. The original name is kept on the row, never in the path, so a name
+    can't traverse anywhere and two "contract.pdf"s never collide."""
+    import uuid
+
+    from .files import extension_of
+
+    return f"attachments/{instance.organisation_id}/{uuid.uuid4().hex}{extension_of(filename)}"
+
+
+class Attachment(models.Model):
+    """A file on a customer or account: the contract, the QBR deck, the
+    call transcript. Same "belongs to exactly one of Customer or Account"
+    shape as Note/Email/Ticket.
+
+    The bytes live in MEDIA_ROOT (a private volume) and are served only by
+    the authenticated download view — `file.url` is never exposed. What
+    may be uploaded is a closed list of document, image, transcript and
+    audio types (files.py); size is capped; the stored name is sanitised.
+    `organisation` is denormalised so the on-disk path and the tenant
+    check don't need a join."""
+
+    class Source(models.TextChoices):
+        UPLOAD = "upload", "Uploaded"
+        TRANSCRIPT = "transcript", "Call transcript"
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="attachments", on_delete=models.CASCADE
+    )
+    customer = models.ForeignKey(
+        Customer, related_name="attachments", on_delete=models.CASCADE, null=True, blank=True
+    )
+    account = models.ForeignKey(
+        Account, related_name="attachments", on_delete=models.CASCADE, null=True, blank=True
+    )
+    file = models.FileField(upload_to=attachment_path, max_length=255)
+    name = models.CharField(max_length=255, help_text="The original file name, sanitised.")
+    content_type = models.CharField(max_length=100)
+    size = models.PositiveBigIntegerField()
+    description = models.CharField(max_length=500, blank=True, default="")
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.UPLOAD)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="uploaded_attachments",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(customer__isnull=False, account__isnull=True)
+                    | models.Q(customer__isnull=True, account__isnull=False)
+                ),
+                name="attachment_belongs_to_exactly_one_parent",
+            )
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def delete(self, *args, **kwargs):
+        storage, path = self.file.storage, self.file.name
+        super().delete(*args, **kwargs)
+        if path:
+            storage.delete(path)
+
+
 class Call(AIClassified):
     """A customer call that happened — the record CallSense is about.
 
@@ -1735,6 +1808,21 @@ class Call(AIClassified):
     links = models.PositiveIntegerField(
         default=0, help_text="Count shown on the card's link line — only rendered when > 0."
     )
+    # Logged from the CallSense tab: who logged it, the transcript they
+    # attached (a text/VTT/SRT file, kept as an Attachment so it is served
+    # and backed up like every other file), and a link to the recording
+    # wherever it lives.
+    logged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="logged_calls",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    transcript = models.OneToOneField(
+        Attachment, related_name="call", on_delete=models.SET_NULL, null=True, blank=True
+    )
+    recording_url = models.URLField(max_length=500, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

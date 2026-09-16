@@ -74,6 +74,18 @@ urlpatterns = [
         views.AccountNoteListView.as_view(),
         name="account-notes",
     ),
+    path("<int:customer_id>/files/", views.CustomerFileListView.as_view(), name="customer-files"),
+    path(
+        "<int:customer_id>/accounts/<int:account_id>/files/",
+        views.AccountFileListView.as_view(),
+        name="account-files",
+    ),
+    path("<int:customer_id>/calls/", views.CustomerCallListView.as_view(), name="customer-calls"),
+    path(
+        "<int:customer_id>/accounts/<int:account_id>/calls/",
+        views.AccountCallListView.as_view(),
+        name="account-calls",
+    ),
     path(
         "<int:customer_id>/tickets/",
         views.CustomerTicketListView.as_view(),

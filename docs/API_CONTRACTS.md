@@ -1970,6 +1970,57 @@ reason and in the same place.
 
 See `seed_demo_calls` (run after `seed_demo_connectors`) for demo data.
 
+### `GET/POST /api/v1/customers/<id>/calls/`, `.../accounts/<id>/calls/` — CallSense
+
+Auth: `IsAuthenticated`, same 404-not-empty-list scoping as the other
+nested lists. `GET` is the company's calls, newest first, each with
+`sentiment`/`ai_area`/`ai_category`, `connector_name` (the recorder, or
+null), `logged_by {id, name}` (null for synced or seeded calls),
+`recording_url`, and `transcript` (an Attachment row, or null).
+
+`POST` logs a call: `title`, `occurred_at` (datetime), optional
+`host_name` (defaults to the caller), `duration_minutes`, `summary`,
+`recording_url`. Instead of writing the summary the caller may send
+`transcript_text` (JSON) or a `transcript` file (multipart; .txt/.vtt/
+.srt/.md, same rules as Files below): the transcript is kept as an
+Attachment (`source: "transcript"`) on the same company, and when
+`summary` is blank the model writes one from it (`purpose:
+"call_summary"`; no model configured means an empty summary, not an
+error). The new call is classified for sentiment straight away so the
+Account Pulse counts it. Audit event `call.log`.
+
+## Files — the Files tab on organisations and accounts
+
+### `GET/POST /api/v1/customers/<id>/files/`, `.../accounts/<id>/files/`
+
+Auth: `IsAuthenticated`; anyone who may open the company may list and
+add. `POST` is multipart: `file`, optional `description`. What is
+accepted (SOC2:API-10, `services/customers/files.py`): a closed list of
+document, image, transcript and audio types by extension *and* declared
+content type (never HTML, SVG, scripts or archives), magic bytes checked
+for the binary formats, `ATTACHMENT_MAX_BYTES` (25 MB) cap, the name
+sanitised. The bytes live under `MEDIA_ROOT` (a private volume on the
+VM, in the nightly backup) under a random name; the storage path is
+never exposed.
+
+```json
+[{"id": 7, "name": "Signed MSA.pdf", "content_type": "application/pdf", "size": 183220,
+  "description": "Countersigned 12 Sep", "source": "upload",
+  "uploaded_by": {"id": 3, "name": "Carl"}, "download_url": "/api/v1/files/7/download/",
+  "created_at": "2026-09-16T09:00:00Z"}]
+```
+
+### `GET /api/v1/files/<id>/`, `DELETE`, `GET /api/v1/files/<id>/download/`
+
+Reached by id from any company's tab, so mounted at their own prefix;
+each checks the caller may open the company the file hangs off (404
+otherwise). `DELETE` is for the uploader or a `manage_org_settings`
+holder (403 otherwise) and removes the bytes too. The download is always
+`Content-Disposition: attachment` with `X-Content-Type-Options: nosniff`,
+a sandboxed CSP and `Cache-Control: private, no-store`, so user content
+is never rendered as part of the site. Audit events `file.upload`,
+`file.delete`.
+
 ### `GET /api/v1/interactions/stats/`
 
 Auth: `IsAuthenticated`. Every rollup the AI Trending Topics

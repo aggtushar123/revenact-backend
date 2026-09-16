@@ -228,6 +228,13 @@ STATIC_URL = "static/"
 # Collected at image build (Dockerfile) and served by the reverse proxy in a
 # deployment; unused by the dev server, which serves the admin's assets itself.
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Uploaded files (Files tab, call transcripts). A private directory — the
+# deployment mounts a volume here — served only through the authenticated
+# download view (services/customers/files.py), never by Caddy or MEDIA_URL.
+MEDIA_ROOT = Path(env("MEDIA_ROOT", default=str(BASE_DIR / "media")))
+ATTACHMENT_MAX_BYTES = env.int("ATTACHMENT_MAX_BYTES", default=25 * 1024 * 1024)
+FILE_UPLOAD_PERMISSIONS = 0o640
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- CORS -----------------------------------------------------------------------
@@ -372,6 +379,11 @@ AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default="")
 AWS_REGION = env("AWS_REGION", default="")
 BEDROCK_MODEL_ID = env("BEDROCK_MODEL_ID", default="")
 if TESTING:
+    import tempfile
+
+    # Uploads from the test suite land in a scratch directory, never in the
+    # developer's media folder.
+    MEDIA_ROOT = Path(tempfile.mkdtemp(prefix="revenact-test-media-"))
     # Never a live model call from the test suite: filing mail and the daily
     # job classify records, and a developer's key must not be spent by tests.
     # Tests that need an answer patch get_completion.
