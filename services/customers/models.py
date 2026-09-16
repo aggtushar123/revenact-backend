@@ -1362,6 +1362,24 @@ class Task(models.Model):
     )
     title = models.CharField(max_length=255)
     assignee_name = models.CharField(max_length=150)
+    # Personal, like a note (services.customers.personal): readable by whoever
+    # created it, whoever it is assigned to, and the management chain above
+    # either — a manager hands work down and sees it; a report sees what was
+    # handed to them, never a senior's other tasks. Seeded tasks have neither.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="tasks_created",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="tasks_assigned",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
     due_date = models.DateField()
     priority = models.CharField(max_length=8, choices=Priority.choices)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
