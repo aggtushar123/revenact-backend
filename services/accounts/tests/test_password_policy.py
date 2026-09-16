@@ -1,5 +1,7 @@
 """Password policy applies on every path that sets one (SOC2:AUTH-04)."""
 
+from django.conf import settings
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
@@ -77,7 +79,9 @@ class PasswordPolicyTests(APITestCase):
         self.assertTrue(self.admin.check_password(STRONG))
 
     def test_new_hashes_use_argon2(self):
-        user = User.objects.create_user(
-            email="new@acme.io", password=STRONG, name="New", organisation=self.org
-        )
+        # The suite runs with a fast hasher; this test checks the real one.
+        with override_settings(PASSWORD_HASHERS=settings.PRODUCTION_PASSWORD_HASHERS):
+            user = User.objects.create_user(
+                email="new@acme.io", password=STRONG, name="New", organisation=self.org
+            )
         self.assertTrue(user.password.startswith("argon2"))

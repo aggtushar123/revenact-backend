@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # the suite takes ~2 min; a hung runner must not block deploys for hours
+    timeout-minutes: 30  # well above the suite's normal run; a hung runner must not block deploys for hours
 
     services:
       postgres:

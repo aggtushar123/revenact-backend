@@ -207,6 +207,12 @@ PASSWORD_HASHERS = [
     "django.contrib.auth.hashers.Argon2PasswordHasher",
     "django.contrib.auth.hashers.PBKDF2PasswordHasher",
 ]
+if TESTING:
+    # Argon2 is deliberately slow; hundreds of test users made the suite take
+    # 13+ minutes on CI. The one test that checks the production hasher
+    # overrides this back (test_password_policy.test_new_hashes_use_argon2).
+    PRODUCTION_PASSWORD_HASHERS = PASSWORD_HASHERS
+    PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
 # --- i18n -----------------------------------------------------------------------
 
