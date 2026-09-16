@@ -20,7 +20,7 @@ jobs:
     name: secret-scan (SEC-01)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
@@ -31,7 +31,7 @@ jobs:
     name: dependency-scan (SEC-03)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -44,7 +44,7 @@ jobs:
     container:
       image: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: semgrep
         run: >-
           semgrep scan --error --metrics=off
@@ -55,7 +55,7 @@ jobs:
     name: container-scan (SEC-05)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: trivy (vulnerabilities, blocking)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -79,7 +79,7 @@ jobs:
     name: soc2-heuristic-scan (EVD-01)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: scanner (fails on critical)
         run: |
           python3 .claude/skills/soc2-dev/scripts/soc2_scan.py . --format md --fail-on critical | tee soc2-scan.md
