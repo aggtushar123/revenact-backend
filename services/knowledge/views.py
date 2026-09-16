@@ -158,6 +158,17 @@ class CustomerResponsibleView(APIView):
                 )
         elif user is None:
             customer.function_owners.filter(function=function).delete()
+        elif user.function != function:
+            # A CSM cannot be the engineering owner: whoever answers for a
+            # function on this customer works in that function.
+            return Response(
+                {
+                    "detail": f"{user.name} is in {user.get_function_display()}, not "
+                    f"{User.Function(function).label}. Pick someone from "
+                    f"{User.Function(function).label}."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         else:
             FunctionOwner.objects.update_or_create(
                 customer=customer, function=function, defaults={"user": user}

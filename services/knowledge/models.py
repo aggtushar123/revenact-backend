@@ -21,6 +21,7 @@ holds the other functions.
 """
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from services.accounts.models import Organisation, User
@@ -46,6 +47,22 @@ class FunctionOwner(models.Model):
 
     def __str__(self):
         return f"{self.get_function_display()} for {self.customer}: {self.user}"
+
+    def clean(self):
+        # The engineering owner is an engineer: responsibility for a function
+        # sits with someone in it. (The account owner, Customer.owner, is the
+        # one role open to any function.)
+        if self.user_id and self.user.function != self.function:
+            raise ValidationError(
+                {
+                    "user": f"{self.user.name} is in {self.user.get_function_display()}, "
+                    f"not {self.get_function_display()}."
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class Contribution(models.Model):
