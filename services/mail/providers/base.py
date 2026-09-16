@@ -74,9 +74,23 @@ class MailProvider:
         raise NotImplementedError
 
 
+#: The only hosts a provider may talk to. Every URL — including the paging
+#: links a provider hands back — is checked against this before a request.
+ALLOWED_HOSTS = {
+    "accounts.google.com",
+    "oauth2.googleapis.com",
+    "gmail.googleapis.com",
+    "login.microsoftonline.com",
+    "graph.microsoft.com",
+}
+
+
 def http_json(method, url, *, headers=None, data=None, form=None, timeout=30):
     """One JSON round-trip. `form` posts urlencoded (OAuth token endpoints),
     `data` posts JSON. Raises ProviderError with the body's message."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in ALLOWED_HOSTS:
+        raise ProviderError(f"refusing to call {parts.hostname or url!r}: not a mail provider host")
     body = None
     headers = dict(headers or {})
     if form is not None:
@@ -87,7 +101,8 @@ def http_json(method, url, *, headers=None, data=None, form=None, timeout=30):
         headers.setdefault("Content-Type", "application/json")
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed provider hosts
+        # https only, host allow-listed above (semgrep: dynamic-urllib-use)
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosemgrep
             raw = response.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:

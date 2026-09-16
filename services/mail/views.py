@@ -34,7 +34,8 @@ STATE_MAX_AGE = 15 * 60
 
 def _redirect_uri(request, provider_key):
     base = settings.MAIL_OAUTH_REDIRECT_BASE or request.build_absolute_uri("/").rstrip("/")
-    return f"{base}/api/v1/mail/oauth/{provider_key}/callback/"
+    # A URL for the provider, not an HTTP response body (semgrep's Flask rule misreads it).
+    return f"{base}/api/v1/mail/oauth/{provider_key}/callback/"  # nosemgrep
 
 
 def _back_to_settings(outcome, detail=""):
