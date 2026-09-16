@@ -461,3 +461,13 @@ class ParserTests(APITestCase):
         )
         self.assertEqual(m.body.strip(), "Hello there")
         self.assertEqual(m.to, [("", "dana@acme.io")])
+
+
+class HttpGuardTests(APITestCase):
+    def test_providers_may_only_call_their_own_hosts_over_https(self):
+        from services.mail.providers.base import http_json
+
+        with self.assertRaises(ProviderError):
+            http_json("GET", "https://evil.example.com/token")
+        with self.assertRaises(ProviderError):
+            http_json("GET", "http://graph.microsoft.com/v1.0/me")
