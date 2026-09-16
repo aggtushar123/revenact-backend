@@ -452,7 +452,7 @@ class Scanner:
                     line=i,
                     message=f"{name} found in source",
                     fix="Move to a secret manager or environment injection; rotate the exposed value; add gitleaks pre-commit.",
-                    snippet=_snip(line),
+                    snippet=_mask_secret(line, m),
                     check="secret",
                 )
         if base.startswith(".env") and not is_example:
@@ -841,6 +841,17 @@ class Scanner:
 def _snip(line: str, n: int = 140) -> str:
     s = line.strip()
     return (s[: n - 3] + "...") if len(s) > n else s
+
+
+def _mask_secret(line: str, match) -> str:
+    """Snippet for a secret finding with the matched value masked: a report must
+    never carry the credential it is warning about (reports get committed)."""
+    value = match.group(match.lastindex or 0) or ""
+    keep = value[:4] if len(value) > 8 else ""
+    masked = line.replace(value, keep + "****") if value else line
+    # Connection strings: the password between "user:" and "@" is the secret.
+    masked = re.sub(r"(://[^:/@\s]+:)[^@\s]+@", r"\1****@", masked)
+    return _snip(masked)
 
 
 # --------------------------------------------------------------------------- output

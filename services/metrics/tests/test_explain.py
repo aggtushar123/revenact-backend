@@ -54,7 +54,7 @@ class EvidenceAndPromptTests(TestCase):
         self.assertTrue(prompt.startswith("METRIC: ARR at risk [at_risk_arr]"))
         self.assertIn("lower is better", prompt)
         self.assertIn("At the 2026-08-31 month-end: USD 10,000", prompt)
-        self.assertIn("BY OWNER:", prompt)
+        self.assertIn("BY ACCOUNT OWNER:", prompt)
         self.assertIn("- Carl:", prompt)
         self.assertIn("(was USD 10,000)", prompt)
         self.assertIn("ACCOUNTS CARRYING THE DOWNSIDE:", prompt)
