@@ -103,6 +103,20 @@ def _revenue_q(bracket):
     return None
 
 
+def _personal_scope(user, name, queryset):
+    """The per-record rules on top of tenancy: mail is its owner's chain's,
+    tickets are their department's. Calls have no such rule."""
+    if name == "email":
+        from services.mail.visibility import visible_emails
+
+        return visible_emails(user, queryset)
+    if name == "ticket":
+        from .personal import visible_tickets
+
+        return visible_tickets(user, queryset)
+    return queryset
+
+
 def filtered_querysets(user, params):
     """One visibility-scoped, filtered queryset per interaction type.
 
@@ -131,7 +145,9 @@ def filtered_querysets(user, params):
     out = {}
     for name in names:
         spec = SOURCES[name]
-        queryset = spec["model"].objects.filter(visible_children_q(user))
+        queryset = _personal_scope(
+            user, name, spec["model"].objects.filter(visible_children_q(user))
+        )
 
         if sentiment in taxonomy.Sentiment.values:
             queryset = queryset.filter(sentiment=sentiment)

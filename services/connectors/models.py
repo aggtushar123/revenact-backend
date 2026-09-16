@@ -1,6 +1,7 @@
 from django.db import models
 
-from services.accounts.models import Organisation
+from services.accounts.models import Organisation, User
+from services.mail import crypto
 
 
 class Connector(models.Model):
@@ -28,19 +29,21 @@ class Connector(models.Model):
     but that's what `is_enabled` is for, and a connector covering
     nothing would have no reason to exist.
 
-    # What this is not
+    # Ticket sources and departments
 
-    Not a live integration. There is no OAuth, no API client, no sync —
-    nothing here reaches out to Zendesk. It records *that* an
-    organisation uses a system and *which* companies it covers, so
-    tickets already in this database can be attributed to it. A real
-    sync needs vendor credentials and a task queue, neither of which
-    this codebase has (see services/webhooks/models.py's own note on
-    the missing queue).
+    A ticket provider (Zendesk, Jira, Slack, Freshdesk, or any other
+    system through the inbound webhook) is a live connection: an admin
+    connects it with the organisation's own credentials (encrypted at
+    rest, see `set_credentials`), the scheduler pulls new and changed
+    tickets every few minutes (`sync.py`), and each ticket is filed on
+    the customer or account its requester belongs to.
 
-    That's why there's no `credentials` or `api_key` field: storing a
-    secret nothing authenticates with would be a liability with no
-    benefit."""
+    Every ticket connector belongs to a **department** (`User.Function`):
+    the Zendesk the support team lives in is Customer Success's, the Jira
+    project is Engineering's. Tickets synced through it are stamped with
+    that department, and only that department's people — and Leadership —
+    can read them (services/customers/personal.py:visible_tickets). A
+    connector with no department is everyone's."""
 
     class Provider(models.TextChoices):
         """The systems the product knows how to attribute a record to.
@@ -55,6 +58,8 @@ class Connector(models.Model):
 
         ZENDESK = "zendesk", "Zendesk"
         JIRA = "jira", "Jira Software"
+        FRESHDESK = "freshdesk", "Freshdesk"
+        WEBHOOK = "webhook", "Any other system (webhook)"
         INTERCOM = "intercom", "Intercom"
         SALESFORCE = "salesforce", "Salesforce"
         HUBSPOT = "hubspot", "HubSpot"
@@ -70,10 +75,38 @@ class Connector(models.Model):
         GITHUB = "github", "GitHub"
         FIGMA = "figma", "Figma"
 
+    class Status(models.TextChoices):
+        NOT_CONNECTED = "not_connected", "Not connected"
+        CONNECTED = "connected", "Connected"
+        ERROR = "error", "Needs attention"
+
     organisation = models.ForeignKey(
         Organisation, related_name="connectors", on_delete=models.CASCADE
     )
     provider = models.CharField(max_length=32, choices=Provider.choices)
+    department = models.CharField(
+        max_length=16,
+        choices=User.Function.choices,
+        blank=True,
+        default="",
+        help_text="Whose tickets these are. Blank means the whole company may read them.",
+    )
+    #: Fernet-encrypted JSON: an API token, a bot token, or the webhook's
+    #: shared secret. Restricted; never serialised.
+    credentials = models.TextField(blank=True, default="")
+    #: Non-secret setup: a Zendesk subdomain, a Jira site and project, a
+    #: Slack channel.
+    config = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.NOT_CONNECTED)
+    error = models.CharField(max_length=255, blank=True, default="")
+    sync_cursor = models.CharField(max_length=512, blank=True, default="")
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    last_sync_note = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text='What the last pass did, e.g. "3 new, 2 updated, 1 without a matching account".',
+    )
     name = models.CharField(
         max_length=100,
         help_text='Distinguishes two of the same provider, e.g. "Zendesk (EU)" '
@@ -109,6 +142,22 @@ class Connector(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.get_provider_display()})"
+
+    # Credentials never leave this pair of methods in clear.
+    def set_credentials(self, data: dict):
+        import json
+
+        # SOC2:DATA-02 vendor tokens encrypted at rest
+        self.credentials = crypto.encrypt(json.dumps(data)) if data else ""
+
+    def get_credentials(self) -> dict:
+        import json
+
+        return json.loads(crypto.decrypt(self.credentials)) if self.credentials else {}
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.credentials)
 
     @property
     def is_organisation_wide(self) -> bool:

@@ -215,12 +215,15 @@ def _gather_candidates(company, viewer=None) -> list[RetrievedItem]:
             )
         )
 
-    open_tickets = (
-        Ticket.objects.filter(**scope)
-        .exclude(status__in=[Ticket.Status.RESOLVED, Ticket.Status.CLOSED])
-        .order_by("-opened_at")[:CANDIDATE_POOL_PER_SOURCE]
+    open_tickets = Ticket.objects.filter(**scope).exclude(
+        status__in=[Ticket.Status.RESOLVED, Ticket.Status.CLOSED]
     )
-    for ticket in open_tickets:
+    if viewer is not None:
+        from services.customers.personal import visible_tickets
+
+        # SOC2:AUTH-02 the Copilot reads tickets under the asker's department
+        open_tickets = visible_tickets(viewer, open_tickets)
+    for ticket in open_tickets.order_by("-opened_at")[:CANDIDATE_POOL_PER_SOURCE]:
         priority = ticket.get_priority_display()
         line = f"Open ticket {ticket.ticket_number} ({priority}): {ticket.title}"
         candidates.append(

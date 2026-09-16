@@ -3234,13 +3234,34 @@ user message and the model's real assistant reply.
 ### Models — `Connector`
 
 One external system the organisation has connected — `provider` (a
-closed list: Zendesk, Jira, Intercom, Salesforce, HubSpot, Slack, Gmail,
-Microsoft Teams, Zoom, GitHub, Figma), `name` (distinguishes two of the
-same provider), `is_enabled`, and a scope of `customers`/`accounts` where
-**empty means the whole organisation**. Not a live sync — no OAuth, no
-credentials, nothing reaches out — it records *that* a system is used
-and which companies it covers, so `Ticket.connector` and `Call.connector`
-can say where a record came from. See the model's own docstring.
+closed list: Zendesk, Jira, Freshdesk, "any other system (webhook)",
+Intercom, Salesforce, HubSpot, Slack, Gmail, Microsoft Teams, Zoom,
+GitHub, Figma), `name` (distinguishes two of the same provider),
+`is_enabled`, and a scope of `customers`/`accounts` where **empty means
+the whole organisation**.
+
+**Ticket sources are live.** Zendesk, Jira, Slack (one channel), Freshdesk
+and the inbound webhook can be *connected*: an integration manager hands
+the connector the organisation's credentials (Fernet-encrypted at rest,
+never serialised), the scheduler container runs `sync_tickets` every ten
+minutes, and each ticket is filed on the customer or account its
+requester's email belongs to (a known contact first, then the domain —
+the same lookup mail uses; a connector scoped to exactly one company
+files everything there). Second passes update status, priority,
+assignee and resolution in place. New tickets are classified for
+sentiment on arrival so the Account Pulse can count them.
+
+**Tickets are read department-wise.** Every ticket connector has a
+`department` (`User.Function`: cs, engineering, sales, analytics,
+leadership, other, or blank); tickets synced through it carry that
+department, and `services/customers/personal.py:visible_tickets` shows a
+person only their own department's tickets plus the undeparted ones.
+Leadership reads every department. The rule applies to the Tickets tab
+on organisations and accounts, the Ticket Overview and Interactions
+dashboards, and the Copilot's retrieval and shared replies.
+
+Other providers (Salesforce, Zoom, …) stay attribution-only: `setup` is
+null and `connect/` answers 400.
 
 ### `GET/POST /api/v1/connectors/`, `GET/PATCH/DELETE /api/v1/connectors/<id>/`
 
@@ -3255,10 +3276,76 @@ SET_NULL.
 
 ```json
 [{"id": 3, "provider": "zendesk", "provider_display": "Zendesk", "name": "Zendesk",
-  "is_enabled": true, "customers": [{"id": 1, "name": "Apple"}], "accounts": [],
+  "is_enabled": true, "department": "cs", "department_display": "Customer Success",
+  "customers": [{"id": 1, "name": "Apple"}], "accounts": [],
   "is_organisation_wide": false, "ticket_count": 169, "call_count": 0,
-  "last_record_at": "2026-09-10", "created_at": "2026-08-01T00:00:00Z"}]
+  "last_record_at": "2026-09-10",
+  "has_credentials": true, "config": {"host": "acme.zendesk.com"},
+  "status": "connected", "error": "", "last_synced_at": "2026-09-16T09:00:00Z",
+  "last_sync_note": "3 new, 2 updated",
+  "setup": {"key": "zendesk", "label": "Zendesk", "uses_oauth": false,
+            "fields": [{"name": "subdomain", "label": "Zendesk subdomain", "secret": false, "placeholder": "acme (from acme.zendesk.com)", "required": true},
+                       {"name": "email", "label": "Agent email", "secret": false, "placeholder": "…", "required": true},
+                       {"name": "api_token", "label": "API token", "secret": true, "placeholder": "", "required": true}],
+            "help": "Admin Center › …"},
+  "created_at": "2026-08-01T00:00:00Z"}]
 ```
+
+`POST` accepts `department` alongside `provider` and `name`; `PATCH` may
+change it (existing tickets keep the department they were filed with).
+
+### `POST /api/v1/connectors/<id>/connect/` — `manage_integrations`
+
+Body is the provider's own form (`setup.fields`). The provider is called
+to verify the credentials before anything is stored (`400` with the
+provider's message otherwise); success is `201` with the connector and an
+audit event `connector.connect`. `{"oauth": true, "channel": "C…"}` asks
+for `{authorize_url}` instead when the provider supports sign-in
+(Slack, once `SLACK_OAUTH_CLIENT_ID/SECRET` are set); the provider then
+lands on `GET /api/v1/connectors/oauth/<provider>/callback/` (public,
+trusts only the 15-minute signed state) and the browser is bounced to
+`/integrations?connector=connected|error&detail=…`.
+
+For the webhook provider the `201` also carries `token` (shown once) and
+`inbound_url`.
+
+### `DELETE /api/v1/connectors/<id>/credentials/` — `manage_integrations`
+
+Disconnect: the secret is destroyed and the status returns to
+`not_connected`; the tickets it brought in stay. Audit event
+`connector.disconnect`.
+
+### `POST /api/v1/connectors/<id>/sync/` — `manage_integrations`
+
+Pull now. `200` with the connector plus `created`, `updated`, `unmatched`
+counts; a provider that refuses the token leaves the connector in
+`status: "error"` with the reason in `error`.
+
+### `POST /api/v1/connectors/<id>/inbound/` — public, secret-authenticated
+
+Where any other system pushes tickets. Authenticated by the connector's
+own secret, either `X-Revenact-Token: <secret>` or
+`X-Revenact-Signature: sha256=<hex hmac-sha256 of the raw body>`;
+unknown connectors and bad secrets are both `404` (and the latter is
+audited as `connector.inbound_rejected`). Body: one ticket object, or
+`{"tickets": [...]}` up to 200 at a time, 512 KB max:
+
+```json
+{"external_id": "77", "title": "Export broken", "description": "…",
+ "status": "open|in-progress|on-hold|resolved|closed", "priority": "critical|high|medium|low",
+ "requester_email": "sam@pizzahut.com", "requester_name": "Sam", "assignee_name": "Eve",
+ "url": "https://helpdesk/77", "opened_at": "2026-09-10", "resolved_at": null}
+```
+
+`202` with `{created, updated, unmatched}`. The same `external_id` again
+updates the ticket.
+
+### Ticket fields added for sources
+
+`TicketSerializer` now also carries `department`, `department_display`,
+`description`, `requester_name`, `requester_email`, `external_url` and
+`synced_at`. Numbers come from the source: `ZD-1042`, `SUP-12` (Jira key),
+`FD-88`, `SL-<ts>`, `WH-<id>`.
 
 ## `knowledge` — What the whole company knows (Organization Details › Company View, `CompanyViewTab.tsx`)
 

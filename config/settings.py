@@ -443,6 +443,10 @@ GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")
 MICROSOFT_OAUTH_CLIENT_ID = env("MICROSOFT_OAUTH_CLIENT_ID", default="")
 MICROSOFT_OAUTH_CLIENT_SECRET = env("MICROSOFT_OAUTH_CLIENT_SECRET", default="")
 MICROSOFT_OAUTH_TENANT = env("MICROSOFT_OAUTH_TENANT", default="common")
+# Slack app for ticket connectors (services/connectors/providers/slack.py).
+# Optional: a pasted bot token works without it.
+SLACK_OAUTH_CLIENT_ID = env("SLACK_OAUTH_CLIENT_ID", default="")
+SLACK_OAUTH_CLIENT_SECRET = env("SLACK_OAUTH_CLIENT_SECRET", default="")
 # Where a provider sends the browser back after consent; the API's own
 # public origin (Caddy fronts it), e.g. https://revenact.example.com.
 MAIL_OAUTH_REDIRECT_BASE = env("MAIL_OAUTH_REDIRECT_BASE", default="")

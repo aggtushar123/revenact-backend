@@ -28,6 +28,8 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `user.update` | `OrgUserDetailView` | admin | User | changed field names (never the password) |
 | `user.deactivate` / `user.reactivate` | `OrgUserDetailView` | admin | User | — |
 | `mailbox.connect` / `mailbox.disconnect` | `services.mail.views` | user | MailboxConnection | provider, address |
+| `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
+| `connector.inbound_rejected` | `ConnectorInboundView` | — (anonymous source) | Connector | outcome `failure`; a push with a wrong secret |
 | `webhook.create` / `webhook.update` / `webhook.delete` | `services.webhooks.views` | user | WebhookSubscription | url, event, changed fields |
 
 Adding a new one: call `audit.record` at the point the change is committed, annotate the
