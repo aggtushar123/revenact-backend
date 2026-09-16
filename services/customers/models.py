@@ -4,7 +4,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
-from django.db.models import OuterRef, Subquery
+from django.db.models import OuterRef, Subquery, Value
 from django.db.models.functions import Coalesce, Lower
 
 from services.accounts.models import Organisation
@@ -667,6 +667,12 @@ class Account(models.Model):
     csm_pulse_modified_at = models.DateTimeField(
         null=True, blank=True, help_text="See Customer.csm_pulse_modified_at."
     )
+    pulse_recorded_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="The day the daily job last appended this account's computed pulse "
+        "category to `pulse` — see run_health_maintenance and pulse.py.",
+    )
     nps_score = models.IntegerField(null=True, blank=True, help_text="-100 to 100.")
     csat_score = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True, help_text="0-100 (%)."
@@ -687,6 +693,68 @@ class Account(models.Model):
     def ai_pulse_score(self):
         """See Customer.ai_pulse_score — same derivation, same categories."""
         return ai_pulse_category(self.ai_pulse_value)
+
+    def pulse_inputs(self, today=None):
+        """Everything pulse.py needs, as plain values. Reads the related-row
+        figures off annotations when the queryset supplied them (see
+        `with_pulse_inputs`) and queries otherwise."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from . import pulse as pulse_rules
+
+        today = today or timezone.localdate()
+        if hasattr(self, "_last_touch_on"):
+            last_touch_on = self._last_touch_on
+        else:
+            from .contact import last_contact_by_account
+
+            last_touch_on = last_contact_by_account([self.pk]).get(self.pk)
+        if hasattr(self, "_open_ticket_count"):
+            open_ticket_count = self._open_ticket_count
+        else:
+            open_ticket_count = self.tickets.exclude(status__in=Ticket.RESOLVED_STATUSES).count()
+        if hasattr(self, "_positive_count"):
+            positive, negative, classified = (
+                self._positive_count,
+                self._negative_count,
+                self._classified_count,
+            )
+        else:
+            since = today - timedelta(days=pulse_rules.SENTIMENT_WINDOW_DAYS)
+            positive = negative = classified = 0
+            for model, field in SENTIMENT_SOURCES:
+                lookup = f"{field}__date__gte" if _is_datetime(model, field) else f"{field}__gte"
+                for row in (
+                    model.objects.filter(account=self, **{lookup: since})
+                    .values("sentiment")
+                    .annotate(n=models.Count("id"))
+                ):
+                    classified += row["n"]
+                    if row["sentiment"] == taxonomy.Sentiment.POSITIVE:
+                        positive += row["n"]
+                    elif row["sentiment"] == taxonomy.Sentiment.NEGATIVE:
+                        negative += row["n"]
+        csm_age = None
+        if self.csm_pulse_modified_at is not None:
+            csm_age = (today - self.csm_pulse_modified_at.date()).days
+        return {
+            "ai_pulse_value": self.ai_pulse_value,
+            "csm_pulse_score": self.csm_pulse_score,
+            "csm_pulse_age_days": csm_age,
+            "positive_count": positive,
+            "negative_count": negative,
+            "classified_count": classified,
+            "days_since_touch": (today - last_touch_on).days if last_touch_on else None,
+            "open_ticket_count": open_ticket_count,
+        }
+
+    def account_pulse(self, today=None):
+        """The computed pulse (pulse.py) for this account."""
+        from . import pulse as pulse_rules
+
+        return pulse_rules.compute(**self.pulse_inputs(today))
 
     class Meta:
         ordering = ["name"]
@@ -2227,3 +2295,69 @@ class Headline(models.Model):
         if self.customer_id:
             return [self.customer]
         return list(self.account.customers.all())
+
+
+#: Where an account's conversations carry a sentiment, and the date to window them by.
+SENTIMENT_SOURCES = ((Email, "sent_at"), (Ticket, "opened_at"), (Call, "occurred_at"))
+
+
+def _is_datetime(model, field):
+    return isinstance(model._meta.get_field(field), models.DateTimeField)
+
+
+def with_pulse_inputs(queryset):
+    """Annotate an Account queryset with the related-row figures pulse.py
+    needs: newest contact on the account, open tickets, and the last 30
+    days' positive / negative / all conversations. Correlated subqueries,
+    for the same reason as `with_health_inputs`. `Account.pulse_inputs`
+    picks them up when present."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from . import pulse as pulse_rules
+    from .contact import last_account_contact_annotation
+
+    since = timezone.localdate() - timedelta(days=pulse_rules.SENTIMENT_WINDOW_DAYS)
+
+    def count(model, field, **extra):
+        lookup = f"{field}__date__gte" if _is_datetime(model, field) else f"{field}__gte"
+        rows = (
+            model.objects.filter(account=OuterRef("pk"), **{lookup: since}, **extra)
+            .order_by()
+            .values("account")
+            .annotate(value=models.Count("id"))
+            .values("value")[:1]
+        )
+        return Coalesce(Subquery(rows, output_field=models.IntegerField()), 0)
+
+    open_tickets = (
+        Ticket.objects.filter(account=OuterRef("pk"))
+        .exclude(status__in=Ticket.RESOLVED_STATUSES)
+        .order_by()
+        .values("account")
+        .annotate(value=models.Count("id"))
+        .values("value")[:1]
+    )
+    positive = sum(
+        (
+            count(model, field, sentiment=taxonomy.Sentiment.POSITIVE)
+            for model, field in SENTIMENT_SOURCES
+        ),
+        Value(0),
+    )
+    negative = sum(
+        (
+            count(model, field, sentiment=taxonomy.Sentiment.NEGATIVE)
+            for model, field in SENTIMENT_SOURCES
+        ),
+        Value(0),
+    )
+    classified = sum((count(model, field) for model, field in SENTIMENT_SOURCES), Value(0))
+    return queryset.annotate(
+        _last_touch_on=last_account_contact_annotation(),
+        _open_ticket_count=Coalesce(Subquery(open_tickets, output_field=models.IntegerField()), 0),
+        _positive_count=positive,
+        _negative_count=negative,
+        _classified_count=classified,
+    )

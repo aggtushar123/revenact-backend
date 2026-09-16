@@ -544,6 +544,10 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
         "on every organisation the account belongs to.",
     )
     customers = serializers.SerializerMethodField()
+    account_pulse = serializers.SerializerMethodField(
+        help_text="How the relationship feels right now — pulse.py: value 1-5, label, "
+        "history category and the per-signal breakdown."
+    )
     customer_ids = serializers.PrimaryKeyRelatedField(
         source="customers",
         queryset=Customer.objects.all(),
@@ -567,6 +571,7 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
             "owner",
             "owner_id",
             "handover_note",
+            "account_pulse",
             "created_at",
             "updated_at",
             "lifecycle_stage",
@@ -587,6 +592,9 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
 
     def get_customers(self, obj):
         return [{"id": c.id, "name": c.name} for c in obj.customers.all()]
+
+    def get_account_pulse(self, obj):
+        return obj.account_pulse().as_payload()
 
     def validate_owner_id(self, owner):
         request = self.context["request"]
