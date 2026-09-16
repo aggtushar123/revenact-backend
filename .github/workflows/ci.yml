@@ -97,8 +97,18 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Run deploy.sh on the VM
+        # Azure runs one command at a time per VM: when the other repo's deploy
+        # is mid-flight this call can fail (conflict, or its output blob is not
+        # there yet), so wait and try again. deploy.sh itself takes a lock.
         run: |
-          az vm run-command invoke -g revenact-rg -n revenact-vm --command-id RunShellScript \
-            --scripts "cd /opt/revenact && DEPLOY_ACTOR='github-actions:${{ github.actor }}:${{ github.repository }}@${{ github.sha }}' ./deploy.sh" \
-            --query 'value[0].message' -o tsv | tee deploy-output.txt
-          grep -q '^Deployed https://' deploy-output.txt
+          for attempt in 1 2 3 4; do
+            if az vm run-command invoke -g revenact-rg -n revenact-vm --command-id RunShellScript \
+                 --scripts "cd /opt/revenact && DEPLOY_ACTOR='github-actions:${{ github.actor }}:${{ github.repository }}@${{ github.sha }}' ./deploy.sh" \
+                 --query 'value[0].message' -o tsv | tee deploy-output.txt \
+               && grep -q '^Deployed https://' deploy-output.txt; then
+              exit 0
+            fi
+            echo "deploy attempt $attempt did not complete; retrying in 90 s"
+            sleep 90
+          done
+          echo "deploy did not complete after 4 attempts"; exit 1

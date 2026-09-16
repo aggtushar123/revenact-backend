@@ -1439,6 +1439,17 @@ class Note(models.Model):
     )
     title = models.CharField(max_length=255)
     author_name = models.CharField(max_length=150)
+    # Who wrote it, when written in the app. A note is personal: readable
+    # by its author and their management chain (services.customers.personal),
+    # never by peers or seniors. Seeded/legacy notes have no author and stay
+    # visible to everyone who may open the record.
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="notes_written",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
     body = models.TextField()
     logged_at = models.DateField()
     links = models.PositiveIntegerField(

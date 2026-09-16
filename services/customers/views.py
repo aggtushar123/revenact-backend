@@ -1082,7 +1082,7 @@ class TaskListView(generics.ListAPIView):
         return queryset
 
 
-class CustomerNoteListView(generics.ListAPIView):
+class CustomerNoteListView(generics.ListCreateAPIView):
     """GET /api/v1/customers/<customer_id>/notes/ — every
     organization-level Note for one Customer, scoped to the caller's
     own organisation. Same 404-not-empty-list convention as
@@ -1094,11 +1094,18 @@ class CustomerNoteListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
+        from .personal import visible_notes
+
         customer = get_visible_customer(self.request, self.kwargs["customer_id"])
-        return customer.notes.all()
+        # SOC2:AUTH-02 a note is its author's and their chain's
+        return visible_notes(self.request.user, customer.notes.select_related("author"))
+
+    def perform_create(self, serializer):
+        customer = get_visible_customer(self.request, self.kwargs["customer_id"])
+        _create_note(serializer, self.request.user, customer=customer)
 
 
-class AccountNoteListView(generics.ListAPIView):
+class AccountNoteListView(generics.ListCreateAPIView):
     """GET /api/v1/customers/<customer_id>/accounts/<account_id>/notes/
     — every account-level Note for one Account, scoped to both its
     customer_id and the caller's own organisation. Same reasoning as
@@ -1110,10 +1117,30 @@ class AccountNoteListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
+        from .personal import visible_notes
+
         account = get_visible_account(
             self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
         )
-        return account.notes.all()
+        # SOC2:AUTH-02 a note is its author's and their chain's
+        return visible_notes(self.request.user, account.notes.select_related("author"))
+
+    def perform_create(self, serializer):
+        account = get_visible_account(
+            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
+        )
+        _create_note(serializer, self.request.user, account=account)
+
+
+def _create_note(serializer, user, **parent):
+    from django.utils import timezone
+
+    serializer.save(
+        author=user,
+        author_name=user.name,
+        logged_at=serializer.validated_data.get("logged_at") or timezone.localdate(),
+        **parent,
+    )
 
 
 class CustomerTicketListView(generics.ListAPIView):

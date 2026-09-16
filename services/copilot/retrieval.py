@@ -193,7 +193,13 @@ def _gather_candidates(company, viewer=None) -> list[RetrievedItem]:
             )
         )
 
-    for note in Note.objects.filter(**scope).order_by("-logged_at")[:CANDIDATE_POOL_PER_SOURCE]:
+    notes = Note.objects.filter(**scope)
+    if viewer is not None:
+        from services.customers.personal import visible_notes
+
+        # SOC2:AUTH-02 the Copilot reads notes under the asker's own rule
+        notes = visible_notes(viewer, notes)
+    for note in notes.order_by("-logged_at")[:CANDIDATE_POOL_PER_SOURCE]:
         line = f'Note ({note.logged_at}) "{note.title}": {_snippet(note.body)}'
         candidates.append(
             RetrievedItem(
