@@ -146,13 +146,37 @@ class KnowledgeViewTests(APITestCase):
             status.HTTP_403_FORBIDDEN,
         )
         self.client.force_authenticate(self.alice)
-        set_ = self.client.patch(
+        # Dana is a CSM: she cannot be the sales owner. Someone in Sales can.
+        refused = self.client.patch(
             f"/api/v1/customers/{self.pizza.id}/responsible/",
             {"function": "sales", "user_id": self.dana.id},
             format="json",
         )
+        self.assertEqual(refused.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            refused.data["detail"],
+            "Dana is in Customer Success, not Sales. Pick someone from Sales.",
+        )
+        self.assertFalse(self.pizza.function_owners.filter(function="sales").exists())
+        raj = User.objects.create_user(
+            email="raj@acme.io",
+            password="x",
+            name="Raj",
+            organisation=self.org,
+            function=User.Function.SALES,
+        )
+        set_ = self.client.patch(
+            f"/api/v1/customers/{self.pizza.id}/responsible/",
+            {"function": "sales", "user_id": raj.id},
+            format="json",
+        )
         by = {r["function"]: r["user"] for r in set_.data["responsible"]}
-        self.assertEqual(by["sales"]["name"], "Dana")
+        self.assertEqual(by["sales"]["name"], "Raj")
+        # The model refuses it too, whoever writes the row.
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError):
+            FunctionOwner.objects.create(customer=self.pizza, function="sales", user=self.dana)
         cleared = self.client.patch(
             f"/api/v1/customers/{self.pizza.id}/responsible/",
             {"function": "engineering", "user_id": None},
