@@ -688,15 +688,53 @@ class EmailSerializer(serializers.ModelSerializer):
 
 
 class TaskSerializer(serializers.ModelSerializer):
-    """Read-only — see Task model's docstring. No "group" field —
-    the frontend derives the Overdue/This Week/Next Week/Later bucket
-    from `due_date` at render time."""
+    """Read, and create. No "group" field — the frontend derives the
+    Overdue/This Week/Next Week/Later bucket from `due_date` at render
+    time. On write, `assignee_id` names a member of the caller's
+    organisation (default: the caller); `created_by` is always the caller."""
 
     initiative = serializers.SerializerMethodField()
+    assignee = serializers.SerializerMethodField()
+    created_by = serializers.SerializerMethodField()
+    assignee_id = serializers.PrimaryKeyRelatedField(
+        source="assignee",
+        queryset=User.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = Task
-        fields = ["id", "title", "assignee_name", "due_date", "priority", "status", "initiative"]
+        fields = [
+            "id",
+            "title",
+            "assignee_name",
+            "assignee",
+            "assignee_id",
+            "created_by",
+            "due_date",
+            "priority",
+            "status",
+            "initiative",
+        ]
+        read_only_fields = ["assignee_name"]
+
+    @staticmethod
+    def _person(user):
+        return None if user is None else {"id": user.id, "name": user.name}
+
+    def get_assignee(self, task):
+        return self._person(task.assignee)
+
+    def get_created_by(self, task):
+        return self._person(task.created_by)
+
+    def validate_assignee_id(self, assignee):
+        request = self.context["request"]
+        if assignee is not None and assignee.organisation_id != request.user.organisation_id:
+            raise serializers.ValidationError("Assignee must be a member of your own organisation.")
+        return assignee
 
     def get_initiative(self, task):
         # The decision this work serves — see Task.initiative.
