@@ -2143,6 +2143,11 @@ class Opportunity(models.Model):
     mrr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     stage = models.CharField(max_length=32, choices=Stage.choices, default=Stage.DISCOVERY)
     priority = models.CharField(max_length=8, choices=Priority.choices, default=Priority.MEDIUM)
+    # Whose pipeline this is on (User.Function). Read department-wise, the
+    # same rule as tickets: a Sales opportunity is Sales's, a CS risk is
+    # CS's; blank is everyone's, and a role that may view all accounts
+    # (or Leadership) sees every department. See scoping.pipeline_visible_q.
+    department = models.CharField(max_length=16, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2227,6 +2232,11 @@ class Risk(models.Model):
     mrr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     stage = models.CharField(max_length=16, choices=Stage.choices, default=Stage.OPEN)
     priority = models.CharField(max_length=8, choices=Priority.choices, default=Priority.MEDIUM)
+    # Whose pipeline this is on (User.Function). Read department-wise, the
+    # same rule as tickets: a Sales opportunity is Sales's, a CS risk is
+    # CS's; blank is everyone's, and a role that may view all accounts
+    # (or Leadership) sees every department. See scoping.pipeline_visible_q.
+    department = models.CharField(max_length=16, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

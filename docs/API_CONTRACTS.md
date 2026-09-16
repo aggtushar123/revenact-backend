@@ -1989,6 +1989,19 @@ Attachment (`source: "transcript"`) on the same company, and when
 error). The new call is classified for sentiment straight away so the
 Account Pulse counts it. Audit event `call.log`.
 
+### Opportunities and risks are read department-wise
+
+`Opportunity.department` / `Risk.department` (`User.Function` or blank)
+say whose pipeline an item is on; both serializers carry `department` and
+`department_display`, and a new item lands on its creator's department
+unless the form says otherwise. `services/customers/scoping.py:
+pipeline_visible_q(user)`: a person sees their own department's items
+plus the undeparted ones; a role holding `view_all_accounts`, and anyone
+in Leadership, see every department. Applied to every opportunity and
+risk list (standalone and nested) and to the detail endpoints (another
+department's item is a 404). The Pipelines page's filter narrows further
+by department, priority and stage on the client.
+
 ### Contact sentiment is computed (`services/customers/contact_sentiment.py`)
 
 A contact's `sentiment` pill is no longer only hand-set. Once a person has
