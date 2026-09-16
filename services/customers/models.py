@@ -1823,6 +1823,10 @@ class Call(AIClassified):
         Attachment, related_name="call", on_delete=models.SET_NULL, null=True, blank=True
     )
     recording_url = models.URLField(max_length=500, blank=True, default="")
+    # Who from the customer's side was on the call. The call's sentiment
+    # is theirs: it feeds each participant's own computed sentiment
+    # (contact_sentiment.py).
+    participants = models.ManyToManyField("Contact", related_name="calls", blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2017,6 +2021,25 @@ class Contact(models.Model):
     sentiment = models.CharField(
         max_length=16, choices=Sentiment.choices, default=Sentiment.NEUTRAL
     )
+
+    class SentimentSource(models.TextChoices):
+        MANUAL = "manual", "Set by hand"
+        COMPUTED = "computed", "From their calls, emails and tickets"
+
+    # How this person actually sounds: once they have classified calls
+    # (as a participant), emails from their address or tickets they raised,
+    # `sentiment` is computed from those (contact_sentiment.py) and the
+    # hand-set value is the fallback for a contact with no evidence yet.
+    sentiment_source = models.CharField(
+        max_length=16, choices=SentimentSource.choices, default=SentimentSource.MANUAL
+    )
+    sentiment_evidence = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="What the computed sentiment rests on: score, counts per kind "
+        "and per sentiment, and when the latest interaction was.",
+    )
+    sentiment_computed_at = models.DateTimeField(null=True, blank=True)
     last_contacted_at = models.DateTimeField(
         null=True,
         blank=True,

@@ -848,6 +848,10 @@ class CallSerializer(serializers.ModelSerializer):
     transcript = serializers.SerializerMethodField()
     host_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     transcript_text = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    participants = serializers.SerializerMethodField()
+    participant_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Contact.objects.all(), many=True, write_only=True, required=False
+    )
 
     class Meta:
         model = Call
@@ -867,11 +871,24 @@ class CallSerializer(serializers.ModelSerializer):
             "logged_by",
             "transcript",
             "transcript_text",
+            "participants",
+            "participant_ids",
             "links",
             "created_at",
         ]
         read_only_fields = ["sentiment", "ai_area", "ai_category", "links", "created_at"]
         extra_kwargs = {"summary": {"required": False, "allow_blank": True}}
+
+    def get_participants(self, obj):
+        return [
+            {
+                "id": c.id,
+                "name": c.name,
+                "role_display": c.get_role_display(),
+                "sentiment": c.sentiment,
+            }
+            for c in obj.participants.all()
+        ]
 
     def get_logged_by(self, obj):
         if obj.logged_by_id is None:
@@ -978,10 +995,23 @@ class ContactSerializer(serializers.ModelSerializer):
             "phone",
             "status",
             "sentiment",
+            "sentiment_source",
+            "sentiment_evidence",
+            "sentiment_computed_at",
             "last_contacted_at",
             "companies",
             "account_name",
         ]
+        read_only_fields = ["sentiment_source", "sentiment_evidence", "sentiment_computed_at"]
+
+    def update(self, instance, validated_data):
+        # A hand-set sentiment is the fallback for a contact with no evidence;
+        # once their calls, emails or tickets are classified it is recomputed.
+        if "sentiment" in validated_data:
+            validated_data["sentiment_source"] = Contact.SentimentSource.MANUAL
+            validated_data["sentiment_evidence"] = {}
+            validated_data["sentiment_computed_at"] = None
+        return super().update(instance, validated_data)
 
     def get_companies(self, obj):
         return [{"id": c.id, "name": c.name} for c in obj.companies]
