@@ -337,3 +337,39 @@ def apply_classification(record, fields):
         setattr(record, field, value)
     record.ai_classified_at = timezone.now()
     record.save(update_fields=[*fields, "ai_classified_at"])
+
+
+def classify_records(records, *, organisation=None, user=None):
+    """Classify these records now, in batches — the same work
+    `classify_interactions` does on a schedule, for a caller that has just
+    created the rows (a mailbox sync, a sent email) and wants their
+    sentiment on the record before the next pulse is computed.
+
+    Returns (classified, failed_batches). A missing model configuration or
+    an exhausted budget is logged, not raised: the rows stay unclassified
+    and the scheduled pass picks them up."""
+    from services.copilot.anthropic_client import (
+        BudgetExceeded,
+        CopilotNotConfigured,
+        CopilotRequestFailed,
+    )
+
+    records = [r for r in records if r.ai_classified_at is None]
+    classified, failed = 0, 0
+    for start in range(0, len(records), BATCH_SIZE):
+        batch = records[start : start + BATCH_SIZE]
+        try:
+            results = classify_batch(batch, organisation=organisation, user=user)
+        except (CopilotNotConfigured, BudgetExceeded) as exc:
+            logger.info("classification skipped: %s", exc)
+            return classified, failed + 1
+        except (CopilotRequestFailed, ValueError) as exc:
+            logger.warning("classification batch of %d failed: %s", len(batch), exc)
+            failed += 1
+            continue
+        for record in batch:
+            fields = results.get(f"{record._meta.model_name}:{record.pk}")
+            if fields:
+                apply_classification(record, fields)
+                classified += 1
+    return classified, failed

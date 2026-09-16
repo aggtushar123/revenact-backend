@@ -371,6 +371,13 @@ AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default="")
 AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default="")
 AWS_REGION = env("AWS_REGION", default="")
 BEDROCK_MODEL_ID = env("BEDROCK_MODEL_ID", default="")
+if TESTING:
+    # Never a live model call from the test suite: filing mail and the daily
+    # job classify records, and a developer's key must not be spent by tests.
+    # Tests that need an answer patch get_completion.
+    ANTHROPIC_API_KEY = ""
+    AWS_ACCESS_KEY_ID = ""
+    AWS_SECRET_ACCESS_KEY = ""
 
 # How long a password-reset link stays valid. Consumed by
 # django.contrib.auth.tokens.default_token_generator, which accounts/serializers.py
