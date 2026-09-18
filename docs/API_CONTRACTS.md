@@ -83,6 +83,7 @@ expects.
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
+| Communications (`/communications`) | `customers` | 🟢 Built — the queue of what is waiting on the caller, merged across Email, Question, Ticket and Call. Two endpoints, no new model. See below. |
 | Company Brain | — | ⏳ Not started |
 | Settings > Currency / Global Presets / AI Agent | `accounts` (`Organisation` model), `customers` (`Customer.currency`), `fx_rates` | 🟢 `Organisation.currency` actually controls money formatting everywhere now (every `$` in the frontend is currency-aware) and, since Tier 1, each `Customer` can carry its *own* contract currency independent of the org's, with an admin-maintained `fx_rates` table converting cross-currency rollups (see `GET /api/v1/customers/stats/`'s `unconverted_count`) — see the `fx_rates` app's own section below. `ai_agent_enabled`/`ai_agent_tone` are now genuinely read by the `copilot` app's own `SendMessageView` (see that app's own section below) — disabling AI Agent really blocks Copilot sends, and tone really changes the system prompt; `default_lifecycle_stage` is real end to end — it's what the standalone Add Organization flow actually pre-fills. |
 | Settings > Entity Uploads | — (no new endpoint) | 🟢 CSV bulk-create for Organizations, one real `POST /customers/` per mapped row via the existing `CustomerListCreateView` — see react-ts-app's EntityUploadsPage.tsx. Accounts/Contacts import not built yet. |
@@ -4343,6 +4344,163 @@ only. A month with no row is absent, not zero. Unknown key → `404`.
  "currency": "USD",
  "points": [{"period_end": "2026-07-31", "value": 640200.0}, {"period_end": "2026-08-31", "value": 688600.0}]}
 ```
+
+## `customers` — Communications (`/communications`, `CommunicationsPage.tsx`)
+
+The queue of things where a person is waiting on the caller, merged across four
+models. Mirrors `react-ts-app/docs/design/communications.md`, which is the
+product specification this was built from.
+
+Two endpoints and no new model. What "waiting" means lives in
+`services/customers/communications.py`; the views only turn it into HTTP.
+
+### Why these four, and why one list
+
+A customer email with no reply, a colleague's open question, an open ticket in
+your department and a call logged without a summary all mean the same thing to
+whoever opens the page: somebody asked and nobody answered. Ordering them by how
+long each has waited, rather than by which table they came from, is the whole
+product idea. Everything else in the app is scoped to one customer, so there was
+previously no way to find an unanswered email without opening accounts one at a
+time.
+
+### Visibility
+
+The module owns **no** rules of its own. Each channel starts from the helper
+that already decides who may read that model, so the queue can never show a row
+the record's own page would hide:
+
+| Channel | Rule | Defined in |
+|---|---|---|
+| email | mailbox owner and their management chain | `services/mail/visibility.py` |
+| question | the assignee | filtered directly on `Question.assignee` |
+| ticket | own department plus undeparted; Leadership sees all | `services/customers/personal.py` |
+| call | the customers and accounts you can see | `services/customers/scoping.py` |
+
+`?scope=team` widens from the person to the person plus their subtree, which is
+what the chain rules already permit. It deliberately does **not** change the
+ticket count: a ticket carries a department, not an assignee, so there is no
+personal ticket to separate from a team one. `stats` says so in
+`ticket_scope_note` rather than pretending the two differ.
+
+### What counts as a reply owed
+
+An `Email` with `direction="received"` that is the **newest message in its
+thread** for that mailbox. Expressed as "no later email exists in the same
+thread", not "no reply exists", because a thread where they wrote three times
+and nobody answered is one debt rather than three: excluding any email with a
+later sibling leaves exactly the newest message per thread, and it is owed
+precisely when that message came from them. One predicate, and it dedupes.
+
+Mail with no `mailbox_owner` (seeded, or filed by a campaign) is **excluded from
+`mine`**. Replies owed is about your own inbox, and an email belonging to nobody
+counted in everybody's queue would be nobody's job.
+
+`Email.thread_id` was stored but never queried before this, so migration
+`0046_email_thread_index` adds `(mailbox_owner, thread_id, sent_at)`. Without it
+the correlated subquery scans the table once per candidate row.
+
+### `GET /api/v1/communications/`
+
+Auth: required (`IsAuthenticated`). Returns DRF's list shape so the frontend's
+existing `next`/`previous` walking works unchanged, plus three extra keys.
+
+Query parameters:
+
+| Parameter | Values | Meaning |
+|---|---|---|
+| `needs` | `true` (default), `false` | The queue, or the Everything stream over the same records |
+| `kind` | `email`, `question`, `ticket`, `call`, repeatable | Narrow to one channel, what a tile click sends |
+| `scope` | `mine` (default), `team` | Yours, or yours and your reports' |
+| `q` | free text | Matches who, subject, snippet and account name |
+| `page`, `page_size` | ints, page_size capped at 100 | |
+
+```json
+{
+  "count": 6,
+  "next": null,
+  "previous": null,
+  "truncated": false,
+  "mode": "needs",
+  "scope": "mine",
+  "results": [
+    {
+      "id": "email:412",
+      "kind": "email",
+      "who": "Dana Whitfield",
+      "detail": "",
+      "subject": "Re: revised renewal terms",
+      "snippet": "We would need the revised terms before the board meets…",
+      "preview": "…up to 1200 characters…",
+      "sentiment": "negative",
+      "waiting_since": "2026-09-09",
+      "waiting_days": 9,
+      "account": { "id": 3, "name": "Pizza Hut", "type": "customer" },
+      "context": {
+        "health_score": 5.2, "health_category": "average",
+        "arr": 128400.0, "renewal_date": "2026-10-22",
+        "days_to_renewal": 34, "owner": "Carl"
+      },
+      "action": "reply",
+      "external_url": ""
+    }
+  ]
+}
+```
+
+`context` travels with every row on purpose: a renewal question answered without
+the renewal date in view is the exact mistake the page exists to prevent, and a
+second request per selection would make the detail pane flicker. `preview` is
+capped at 1200 characters for the same reason — the pane renders without a
+follow-up call, and a page of 25 stays small.
+
+`action` tells the client which composer to show: `reply` (email, through the
+caller's own mailbox), `answer` (question, stored as a Contribution),
+`open_external` (ticket, out to the source system by `external_url`),
+`summarise` (call), or `none`.
+
+`truncated` is `true` when any one channel hit `MAX_PER_KIND` (200). A queue is a
+working list: past a couple of hundred debts of one kind the number is the story,
+and the payload says so rather than quietly serving a prefix. The merge happens
+in Python — four models sharing no columns — so pagination does too, which is
+exactly what that cap keeps honest.
+
+Merged, not unioned, for the same reason `interactions.recent_rows` is: aliasing
+four different shapes into one SQL union to sort them would cost more than
+reading a bounded number of rows per model.
+
+### `GET /api/v1/communications/stats/`
+
+Auth: required. The four tile numbers, shipped separately from the list so that
+clicking a tile narrows the queue **without** the other three counts moving
+underneath it. Same reasoning as `/contacts/stats/` and `/tickets/stats/`.
+
+```json
+{
+  "counts": { "email": 2, "question": 2, "ticket": 1, "call": 1 },
+  "total": 6,
+  "oldest_waiting_days": 9,
+  "stale_questions": 1,
+  "has_mailbox": true,
+  "scope": "mine",
+  "ticket_scope_note": "Tickets are read by department, so this count is the same for you and your team."
+}
+```
+
+`has_mailbox` drives the first-run state: with no mailbox connected the replies
+tile shows a dash rather than a zero, because zero would be a lie, and the other
+three still carry real numbers.
+
+### Deliberately not built in v1
+
+No archive, snooze or "mark handled". A row leaves the queue only because the
+underlying thing changed — a reply was sent, a question answered, a ticket
+closed, a summary written. A queue you can dismiss without acting stops being
+true within a week, and inbox state would be the first new model this page needs.
+Keyboard navigation, bulk actions and posting ticket comments back through the
+connector are v2 in the specification.
+
+---
 
 ## `<app_name>` — <Frontend feature name>
 

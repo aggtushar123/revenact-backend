@@ -17,6 +17,10 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
+from services.customers.communications_views import (
+    CommunicationsListView,
+    CommunicationsStatsView,
+)
 from services.customers.views import (
     AccountListView,
     AccountStatsView,
@@ -196,4 +200,14 @@ urlpatterns = [
     # the caller's own owned book of business. Powers Cockpit's own
     # "My Portfolio Summary"/"Renewals" tiles.
     path("api/v1/cockpit/summary/", CockpitSummaryView.as_view(), name="cockpit-summary"),
+    # Communications — the queue of what is waiting on the caller, merged
+    # across four models (Email, Question, Ticket, Call). Its own top-level
+    # prefix for the same reason interactions has one: it belongs to no single
+    # record type, and every per-record list already lives under its parent.
+    path(
+        "api/v1/communications/stats/",
+        CommunicationsStatsView.as_view(),
+        name="communications-stats",
+    ),
+    path("api/v1/communications/", CommunicationsListView.as_view(), name="communications-list"),
 ]
