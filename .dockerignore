@@ -8,3 +8,5 @@ __pycache__/
 .ruff_cache/
 docs/
 README.md
+.claude/
+graphify-out/

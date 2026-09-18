@@ -22,3 +22,9 @@ media/
 .DS_Store
 .vscode/
 .idea/
+
+# graphify skill (.claude/skills/graphify): scratch file and SHA cache.
+# graphify-out/graph.json, GRAPH_REPORT.md and graph.html are left tracked-or-not
+# to whoever runs it; the cache is machine-local.
+.graphify_detect.json
+graphify-out/cache/
