@@ -1305,7 +1305,15 @@ class Email(AIClassified):
                 name="email_once_per_mailbox_message",
             ),
         ]
-        indexes = [models.Index(fields=["mailbox_owner", "-sent_at"])]
+        indexes = [
+            models.Index(fields=["mailbox_owner", "-sent_at"]),
+            # The Communications queue asks, per received email, whether a
+            # later email exists in the same thread for the same mailbox.
+            models.Index(
+                fields=["mailbox_owner", "thread_id", "sent_at"],
+                name="email_thread_lookup_idx",
+            ),
+        ]
 
     def __str__(self):
         parent = self.customer or self.account
