@@ -11,6 +11,7 @@ HTTP.
 from rest_framework import views
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.utils.urls import replace_query_param
 
 from . import communications
 
@@ -43,11 +44,15 @@ def _page(request, rows):
     end = start + size
 
     def link(target):
+        """The `next`/`previous` link for a page, keeping every other filter.
+
+        Built with DRF's own `replace_query_param` rather than by formatting a
+        string: it is what `PageNumberPagination` uses, so these links are
+        escaped exactly the way the rest of the API's are.
+        """
         if target < 1 or (target - 1) * size >= count:
             return None
-        query = request.query_params.copy()
-        query["page"] = target
-        return f"{request.build_absolute_uri(request.path)}?{query.urlencode()}"
+        return replace_query_param(request.build_absolute_uri(), "page", target)
 
     return {
         "count": count,
