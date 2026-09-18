@@ -21,9 +21,11 @@ description: Full repository architecture, app map, and URL reference for the Re
 ```
 revenact-backend/
 ├── .agents/workflows/          ← Workflow knowledge files (this file)
-├── .claude/skills/             ← Claude Code skills (karpathy-guidelines,
+├── .claude/skills/             ← Agent skills: house rules (karpathy-guidelines,
 │                                  commit-messages, flow-docs, api-contracts,
-│                                  testing)
+│                                  testing, soc2-dev), the Superpowers workflow set
+│                                  (brainstorming → writing-plans → TDD → review),
+│                                  ponytail* (lazy-senior-dev), graphify (codebase graph)
 ├── e2e/                        ← Cross-app end-to-end flow tests (LiveServerTestCase)
 ├── config/                     ← Django project (settings, root URLconf)
 │   ├── settings.py
