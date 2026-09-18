@@ -33,7 +33,8 @@ foreign keys plus a database check constraint:
 
 ```python
 customer = models.ForeignKey(Customer, null=True, related_name="notes", on_delete=CASCADE)
-account  = models.ForeignKey(Account,  null=True, related_name="notes", on_delete=CASCADE)
+account = models.ForeignKey(Account, null=True, related_name="notes", on_delete=CASCADE)
+
 
 class Meta:
     constraints = [CheckConstraint(..., name="note_belongs_to_exactly_one_parent")]
