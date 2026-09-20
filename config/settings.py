@@ -444,6 +444,12 @@ LOGGING = {
     },
 }
 
+# --- Sign-in with an external provider (services.identity) -----------------
+# Off by default. While it is off the endpoints answer as though the feature
+# does not exist, so a half-configured deployment never shows a button that
+# cannot work. Password sign-in is unaffected either way.
+AUTH_V2_ENABLED = env.bool("AUTH_V2_ENABLED", default=False)
+
 # --- Personal mailboxes (services.mail) ------------------------------------
 # OAuth clients for the providers a company can connect. A provider is offered
 # only when its client is configured; IMAP/SMTP needs nothing. Tokens and
