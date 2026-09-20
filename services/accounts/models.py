@@ -333,10 +333,22 @@ class User(AbstractBaseUser, PermissionsMixin):
 
         Platform superusers get everything: they're Django-admin staff
         with no organisation and so no Role to read, and Django's own
-        convention already grants them every permission."""
+        convention already grants them every permission.
+
+        Everyone else resolves through `services.identity.context`, which
+        reads the role from their membership in the tenant they're acting
+        in, and returns nothing at all when that membership or that tenant
+        is not active. Against today's data that is the same answer this
+        used to give from `self.role` directly — see
+        `manage.py check_membership_consistency`, which proves it — but it
+        makes "this person is suspended" and "this customer is suspended"
+        answerable without rewriting either of their rows."""
 
         if self.is_superuser:
             return True
-        if self.role_id is None:
-            return False
-        return self.role.has_capability(capability)
+
+        # Imported here, not at module scope: services.identity.models
+        # imports this module, so a top-level import would be circular.
+        from services.identity.context import capabilities_for
+
+        return capability in capabilities_for(self)
