@@ -11,9 +11,12 @@ audit event: a mailbox is a credential.
 
 from django.conf import settings
 from django.core import signing
+from django.db.models import Count, Q
 from django.http import HttpResponseRedirect
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.generics import get_object_or_404
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -23,10 +26,17 @@ from services.customers.scoping import get_visible_account, get_visible_customer
 from services.customers.serializers import EmailSerializer
 
 from . import providers
-from .models import MailboxConnection
+from .models import MailboxConnection, MailMessage
 from .providers.base import ProviderError
-from .serializers import ComposeSerializer, MailboxConnectionSerializer
-from .sync import send_email, sync_mailbox
+from .serializers import (
+    ComposeSerializer,
+    MailboxConnectionSerializer,
+    MailMessageDetailSerializer,
+    MailMessageSerializer,
+    MailMessageUpdateSerializer,
+    ReplySerializer,
+)
+from .sync import reply_to, send_email, sync_mailbox
 
 STATE_SALT = "mail.oauth"
 STATE_MAX_AGE = 15 * 60
@@ -250,3 +260,194 @@ class AccountComposeView(_ComposeView):
 
 
 __all__ = ["timezone"]
+
+
+# --- The person's own inbox --------------------------------------------------
+#
+# Every view below scopes on `owner=request.user`: a mailbox's whole contents
+# are the person's, and nobody else's, however senior. The team reads the
+# filed copies (`customers.Email`, under services.mail.visibility), not this.
+
+#: What `?folder=` may ask for. The five real folders, this product's two
+#: triage states, and two of the provider's flags, so one control on the
+#: page covers every list the person can want.
+FOLDERS = {
+    "inbox": Q(folder=MailMessage.Folder.INBOX, state=MailMessage.State.OPEN),
+    "drafts": Q(folder=MailMessage.Folder.DRAFTS),
+    "sent": Q(folder=MailMessage.Folder.SENT),
+    "done": Q(state=MailMessage.State.DONE),
+    "muted": Q(state=MailMessage.State.MUTED),
+    "spam": Q(folder=MailMessage.Folder.SPAM),
+    "trash": Q(folder=MailMessage.Folder.TRASH),
+    "starred": Q(is_starred=True),
+    "important": Q(is_important=True),
+}
+
+CATEGORIES = [c for c in MailMessage.Category if c != MailMessage.Category.GENERAL]
+
+
+def _truthy(raw):
+    return str(raw).lower() in ("1", "true", "yes")
+
+
+class MailPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+def _own_messages(request):
+    return MailMessage.objects.filter(owner=request.user).select_related(
+        "email__customer", "email__account"
+    )
+
+
+class MailMessageListView(APIView):
+    """GET /api/v1/mail/messages/ — the person's own mail, one folder at a
+    time, newest first. See FOLDERS for `?folder=`; `?category=` narrows to
+    one of the categories; `?unread=true` and `?priority=true` are the two
+    switches; `?q=` searches sender, subject and snippet."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        folder = request.query_params.get("folder", "inbox")
+        if folder not in FOLDERS:
+            return Response(
+                {"detail": f"folder must be one of {', '.join(FOLDERS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        rows = _own_messages(request).filter(FOLDERS[folder])
+        category = request.query_params.get("category")
+        if category:
+            if category not in MailMessage.Category.values:
+                return Response(
+                    {"detail": f"category must be one of {', '.join(MailMessage.Category.values)}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            rows = rows.filter(category=category)
+        if _truthy(request.query_params.get("unread")):
+            rows = rows.filter(is_read=False)
+        if _truthy(request.query_params.get("priority")):
+            rows = rows.filter(Q(is_important=True) | Q(email__isnull=False))
+        q = request.query_params.get("q", "").strip()
+        if q:
+            rows = rows.filter(
+                Q(subject__icontains=q)
+                | Q(from_name__icontains=q)
+                | Q(from_address__icontains=q)
+                | Q(snippet__icontains=q)
+            )
+        paginator = MailPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(MailMessageSerializer(page, many=True).data)
+
+
+class MailSummaryView(APIView):
+    """GET /api/v1/mail/messages/summary/ — the numbers beside the folders
+    and the Categories block at the top of the inbox: for each category with
+    unread mail waiting, how many, the latest subjects and who they are from."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        connection = getattr(request.user, "mailbox", None)
+        mine = MailMessage.objects.filter(owner=request.user)
+        folders = {
+            name: mine.filter(FOLDERS[name]).count()
+            for name in ("inbox", "drafts", "sent", "done", "muted")
+        }
+        unread = mine.filter(FOLDERS["inbox"], is_read=False)
+        categories = []
+        counted = {
+            row["category"]: row["n"] for row in unread.values("category").annotate(n=Count("id"))
+        }
+        for category in CATEGORIES:
+            if not counted.get(category):
+                continue
+            latest = list(
+                unread.filter(category=category)
+                .order_by("-sent_at")
+                .values_list("subject", "from_name", "from_address")[:12]
+            )
+            subjects, senders = [], []
+            for subject, name, address in latest:
+                if subject not in subjects:
+                    subjects.append(subject)
+                who = name or address
+                if who and who not in senders:
+                    senders.append(who)
+            categories.append(
+                {
+                    "category": category,
+                    "label": MailMessage.Category(category).label,
+                    "count": counted[category],
+                    "subjects": subjects[:2],
+                    "senders": senders[:1],
+                    "more_senders": max(len(senders) - 1, 0),
+                }
+            )
+        return Response(
+            {
+                "has_mailbox": connection is not None,
+                "address": connection.address if connection else "",
+                "last_synced_at": connection.last_synced_at if connection else None,
+                "folders": folders,
+                "unread": unread.count(),
+                "categories": categories,
+            }
+        )
+
+
+class MailMessageDetailView(APIView):
+    """GET /api/v1/mail/messages/<id>/ — the whole message. PATCH changes
+    `is_read`, `is_starred` or `state`; nothing goes back to the provider."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        message = get_object_or_404(_own_messages(request), pk=pk)
+        return Response(MailMessageDetailSerializer(message).data)
+
+    def patch(self, request, pk):
+        message = get_object_or_404(_own_messages(request), pk=pk)
+        serializer = MailMessageUpdateSerializer(message, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(MailMessageDetailSerializer(message).data)
+
+
+class MailReplyView(APIView):
+    """POST /api/v1/mail/messages/<id>/reply/ {body} — answer from the
+    mailbox the message arrived in. Filed against the customer too when the
+    original was. Returns the sent message as it now sits in Sent."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        message = get_object_or_404(_own_messages(request), pk=pk)
+        serializer = ReplySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        connection = getattr(request.user, "mailbox", None)
+        if connection is None or connection.id != message.connection_id:
+            return Response(
+                {"detail": "This message's mailbox is no longer connected."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            sent = reply_to(message, serializer.validated_data["body"])
+        except ProviderError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        # SOC2:LOG-01 mail left the building through a credential we hold
+        audit.record(
+            "mailbox.reply",
+            request=request,
+            target=message,
+            metadata={"to": sent.to if sent else [], "subject": sent.subject if sent else ""},
+        )
+        if not message.is_read:
+            message.is_read = True
+            message.save(update_fields=["is_read"])
+        return Response(
+            MailMessageDetailSerializer(sent).data if sent else {}, status=status.HTTP_201_CREATED
+        )

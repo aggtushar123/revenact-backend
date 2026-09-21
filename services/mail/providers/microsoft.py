@@ -124,20 +124,38 @@ class MicrosoftProvider(MailProvider):
                     "body",
                     "bodyPreview",
                     "isDraft",
+                    "isRead",
+                    "flag",
+                    "importance",
+                    "parentFolderId",
                 ]
             ),
         }
+        folders = self._folder_ids(creds)
         url = f"{GRAPH}/me/messages?{urlencode(params)}"
         found, newest = [], since
         while url and len(found) < 500:
             page = http_json("GET", url, headers=self._auth(creds))
             for item in page.get("value", []):
-                if item.get("isDraft"):
-                    continue
-                found.append(parse_graph_message(item))
+                found.append(parse_graph_message(item, folders))
                 newest = max(newest, item.get("lastModifiedDateTime", since))
             url = page.get("@odata.nextLink")
         return found, newest, creds
+
+    def _folder_ids(self, creds):
+        """Graph names folders by opaque id; the well-known ones resolve to
+        one each. A folder that cannot be resolved simply is not labelled."""
+        folders = {}
+        for known, label in WELL_KNOWN_FOLDERS.items():
+            try:
+                item = http_json(
+                    "GET", f"{GRAPH}/me/mailFolders/{known}?$select=id", headers=self._auth(creds)
+                )
+            except ProviderError:
+                continue
+            if item.get("id"):
+                folders[item["id"]] = label
+        return folders
 
     def send(self, creds, *, to, subject, body):
         creds = self._fresh(creds)
@@ -171,8 +189,30 @@ def _recipient(entry):
     return (address.get("name", ""), address.get("address", "").lower())
 
 
-def parse_graph_message(item) -> Message:
+#: Graph's well-known folder names, in the store's vocabulary.
+WELL_KNOWN_FOLDERS = {
+    "inbox": "inbox",
+    "sentitems": "sent",
+    "drafts": "draft",
+    "junkemail": "spam",
+    "deleteditems": "trash",
+}
+
+
+def parse_graph_message(item, folders=None) -> Message:
     sender = item.get("from", {}).get("emailAddress", {})
+    labels = []
+    folder = (folders or {}).get(item.get("parentFolderId", ""))
+    if item.get("isDraft"):
+        labels.append("draft")
+    elif folder:
+        labels.append(folder)
+    if item.get("isRead") is False:
+        labels.append("unread")
+    if (item.get("flag") or {}).get("flagStatus") == "flagged":
+        labels.append("starred")
+    if item.get("importance") == "high":
+        labels.append("important")
     body = item.get("body", {})
     text = body.get("content", "") if body.get("contentType", "").lower() == "text" else ""
     if not text:
@@ -189,4 +229,5 @@ def parse_graph_message(item) -> Message:
         to=[_recipient(r) for r in item.get("toRecipients", []) + item.get("ccRecipients", [])],
         date=datetime.fromisoformat(when.replace("Z", "+00:00")),
         body=text[:20000],
+        labels=labels,
     )

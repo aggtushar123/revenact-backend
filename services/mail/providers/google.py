@@ -119,7 +119,13 @@ class GoogleProvider(MailProvider):
         since = int(cursor) if cursor else int(time.time()) - 30 * 86400
         found, page = [], None
         while True:
-            params = {"q": f"after:{since} -in:chats -in:spam -in:trash", "maxResults": 100}
+            # Everything but chats: spam, trash and drafts are folders the
+            # person's own inbox view shows, so they come along, labelled.
+            params = {
+                "q": f"after:{since} -in:chats",
+                "maxResults": 100,
+                "includeSpamTrash": "true",
+            }
             if page:
                 params["pageToken"] = page
             listing = http_json(
@@ -194,10 +200,33 @@ def _strip_html(html):
     return re.sub(r"\s+", " ", text).strip()
 
 
+#: Gmail's label ids, in the store's vocabulary.
+GMAIL_LABELS = {
+    "INBOX": "inbox",
+    "SENT": "sent",
+    "DRAFT": "draft",
+    "SPAM": "spam",
+    "TRASH": "trash",
+    "UNREAD": "unread",
+    "STARRED": "starred",
+    "IMPORTANT": "important",
+    "CATEGORY_PROMOTIONS": "promotions",
+    "CATEGORY_SOCIAL": "social",
+    "CATEGORY_UPDATES": "updates",
+    "CATEGORY_FORUMS": "forums",
+    "CATEGORY_PERSONAL": "personal",
+}
+
+
 def parse_gmail_message(full) -> Message:
     payload = full.get("payload", {})
     from_name, from_address = parse_address(_header(payload, "From"))
     date = datetime.fromtimestamp(int(full.get("internalDate", "0")) / 1000, tz=timezone.utc)
+    headers = {}
+    unsubscribe = _header(payload, "List-Unsubscribe")
+    if unsubscribe:
+        headers["list-unsubscribe"] = unsubscribe
+    labels = [GMAIL_LABELS[label] for label in full.get("labelIds", []) if label in GMAIL_LABELS]
     return Message(
         provider_id=full.get("id", ""),
         thread_id=full.get("threadId", ""),
@@ -207,4 +236,6 @@ def parse_gmail_message(full) -> Message:
         to=parse_address_list(_header(payload, "To")) + parse_address_list(_header(payload, "Cc")),
         date=date,
         body=_text_of(payload)[:20000],
+        headers=headers,
+        labels=labels,
     )
