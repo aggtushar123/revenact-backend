@@ -36,7 +36,7 @@ from .serializers import (
     MailMessageUpdateSerializer,
     ReplySerializer,
 )
-from .sync import reply_to, send_email, sync_mailbox
+from .sync import NothingToReplyTo, reply_to, send_email, sync_mailbox
 
 STATE_SALT = "mail.oauth"
 STATE_MAX_AGE = 15 * 60
@@ -413,7 +413,8 @@ class MailMessageDetailView(APIView):
         message = get_object_or_404(_own_messages(request), pk=pk)
         serializer = MailMessageUpdateSerializer(message, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        # From now on what the person did here outlives the provider's view.
+        serializer.save(locally_changed_at=timezone.now())
         return Response(MailMessageDetailSerializer(message).data)
 
 
@@ -436,6 +437,8 @@ class MailReplyView(APIView):
             )
         try:
             sent = reply_to(message, serializer.validated_data["body"])
+        except NothingToReplyTo as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except ProviderError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         # SOC2:LOG-01 mail left the building through a credential we hold

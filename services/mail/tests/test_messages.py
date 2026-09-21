@@ -9,6 +9,7 @@ from services.customers.models import Email
 from services.mail import sync
 from services.mail.categorise import categorise
 from services.mail.models import MailMessage
+from services.mail.providers.base import Credentials
 from services.mail.providers.google import parse_gmail_message
 from services.mail.providers.imap import _labels
 from services.mail.providers.microsoft import parse_graph_message
@@ -59,14 +60,78 @@ class ProviderLabels(Fixture):
 
     def test_imap_flags(self):
         self.assertEqual(
-            _labels("INBOX", b"1 (FLAGS (\\Seen \\Flagged) RFC822 {12}"), ["inbox", "starred"]
+            _labels("INBOX", [(b"1 (FLAGS (\\Seen \\Flagged) RFC822 {12}", b"raw")]),
+            ["inbox", "starred"],
         )
         self.assertEqual(
-            _labels("[Gmail]/Sent Mail", b"1 (FLAGS () RFC822 {12}"), ["sent", "unread"]
+            _labels("[Gmail]/Sent Mail", [(b"1 (FLAGS () RFC822 {12}", b"raw")]), ["sent", "unread"]
         )
+
+    def test_imap_flags_after_the_literal(self):
+        # RFC 3501 lets the server put FLAGS after the RFC822 literal; some do.
+        parts = [(b"1 (RFC822 {12}", b"raw"), b" FLAGS (\\Seen \\Flagged))"]
+        self.assertEqual(_labels("INBOX", parts), ["inbox", "starred"])
+
+    def test_gmail_archived_mail_is_labelled_archive(self):
+        full = {
+            "id": "abc",
+            "threadId": "thr",
+            "labelIds": ["UNREAD", "CATEGORY_PERSONAL"],
+            "internalDate": str(int(NOW.timestamp() * 1000)),
+            "payload": {"mimeType": "text/plain", "headers": [], "body": {"data": ""}},
+        }
+        self.assertEqual(parse_gmail_message(full).labels, ["unread", "personal", "archive"])
+
+    def test_graph_unknown_folder_is_archive_only_when_folders_resolved(self):
+        item = {
+            "id": "g1",
+            "conversationId": "c1",
+            "subject": "Hi",
+            "from": {"emailAddress": {"name": "Sam", "address": "sam@pizzahut.com"}},
+            "toRecipients": [],
+            "sentDateTime": "2026-09-16T09:00:00Z",
+            "body": {"contentType": "text", "content": "hello"},
+            "isRead": True,
+            "parentFolderId": "F-CUSTOM",
+        }
+        self.assertEqual(parse_graph_message(item, {"F-INBOX": "inbox"}).labels, ["archive"])
+        self.assertEqual(parse_graph_message(item, {}).labels, [])
+        self.assertEqual(
+            parse_graph_message({**item, "parentFolderId": "F-ARCH"}, {"F-ARCH": "archive"}).labels,
+            ["archive"],
+        )
+
+    def test_graph_folder_ids_are_resolved_once_and_kept_in_the_credentials(self):
+        from services.mail.providers.microsoft import MicrosoftProvider
+
+        calls = []
+
+        def fake_http(method, url, **kw):
+            calls.append(url)
+            if "/mailFolders/" in url:
+                return {"id": "ID-" + url.rsplit("/", 1)[-1].split("?")[0]}
+            return {"value": []}
+
+        creds = Credentials(address="a@b.io", data={"access_token": "t", "expires_at": 9e12})
+        with patch("services.mail.providers.microsoft.http_json", side_effect=fake_http):
+            _, _, creds = MicrosoftProvider().fetch_messages(creds, "")
+            first = len([u for u in calls if "/mailFolders/" in u])
+            _, _, creds = MicrosoftProvider().fetch_messages(creds, "")
+        self.assertEqual(first, 6)
+        self.assertEqual(len([u for u in calls if "/mailFolders/" in u]), 6)
+        self.assertEqual(creds.data["folder_ids"]["ID-inbox"], "inbox")
 
     def test_categories(self):
         self.assertEqual(categorise(message(subject="Invoice #42 is due")), "financial")
+        # The provider's own tab wins over a money word in a promo subject.
+        self.assertEqual(
+            categorise(message(subject="40% off your subscription renewal", labels=["promotions"])),
+            "promotions",
+        )
+        # support@ a customer is a person writing back, not a system.
+        self.assertEqual(
+            categorise(message(subject="Hi", from_address="support@pizzahut.com")), "general"
+        )
         self.assertEqual(categorise(message(subject="Hi", labels=["promotions"])), "promotions")
         self.assertEqual(categorise(message(subject="Hi", labels=["social"])), "social")
         self.assertEqual(
@@ -122,8 +187,8 @@ class OwnInbox(Fixture):
         self.assertEqual(unmatched.category, "newsletters")
         self.assertFalse(unmatched.priority)
         self.assertEqual(MailMessage.objects.get(provider_message_id="m3").folder, "sent")
-        # A second pass changes nothing.
-        self._sync(message(provider_id="m1", labels=["inbox"]))
+        # A second pass adds nothing.
+        self._sync(message(provider_id="m1", labels=["inbox", "unread"]))
         self.assertEqual(MailMessage.objects.count(), 3)
         self.assertFalse(MailMessage.objects.get(provider_message_id="m1").is_read)
 
@@ -340,6 +405,113 @@ class OwnInbox(Fixture):
             Email.objects.filter(direction="sent").count(), 1
         )  # not filed: nobody in the book
         self.assertEqual(self.client.get("/api/v1/mail/messages/?folder=sent").data["count"], 2)
+
+    def test_spam_trash_and_drafts_are_kept_but_never_filed_on_the_customer(self):
+        self._sync(
+            message(provider_id="s", labels=["spam", "unread"]),
+            message(provider_id="t", labels=["trash"]),
+            message(
+                provider_id="d",
+                labels=["draft"],
+                from_address="dana@acme.io",
+                to=[("", "sam@pizzahut.com")],
+            ),
+        )
+        self.assertEqual(MailMessage.objects.count(), 3)
+        self.assertEqual(Email.objects.count(), 0)
+        self.assertEqual(
+            {m.provider_message_id: m.folder for m in MailMessage.objects.all()},
+            {"s": "spam", "t": "trash", "d": "drafts"},
+        )
+
+    def test_archived_mail_is_done_not_inbox(self):
+        self._sync(message(provider_id="a", labels=["archive", "unread"]))
+        row = MailMessage.objects.get()
+        self.assertEqual((row.folder, row.state), ("inbox", "done"))
+        self.assertEqual(self.client.get("/api/v1/mail/messages/").data["count"], 0)
+        self.assertEqual(self.client.get("/api/v1/mail/messages/?folder=done").data["count"], 1)
+
+    def test_a_resync_refreshes_provider_flags_unless_changed_here(self):
+        self._sync(message(provider_id="a", labels=["inbox", "unread"]))
+        self._sync(message(provider_id="a", labels=["inbox", "starred"]))
+        row = MailMessage.objects.get()
+        self.assertEqual((row.is_read, row.is_starred), (True, True))
+        self.client.patch(f"/api/v1/mail/messages/{row.id}/", {"is_read": False}, format="json")
+        self._sync(message(provider_id="a", labels=["inbox"]))
+        row.refresh_from_db()
+        self.assertEqual((row.is_read, row.is_starred), (False, True))
+
+    def test_a_relisted_message_keeps_its_link_to_the_filed_copy(self):
+        self._sync(message(provider_id="a", labels=["inbox"]))
+        MailMessage.objects.all().delete()
+        self._sync(message(provider_id="a", labels=["inbox"]))
+        self.assertEqual(MailMessage.objects.get().email, Email.objects.get())
+
+    def test_sent_label_means_sent_even_from_an_alias(self):
+        self._sync(
+            message(
+                provider_id="a", labels=["sent"], from_address="alias@acme.io", to=[("", "x@y.io")]
+            )
+        )
+        row = MailMessage.objects.get()
+        self.assertEqual((row.direction, row.folder), ("sent", "sent"))
+
+    def test_a_sent_reply_is_matched_to_the_providers_own_copy(self):
+        self._sync(
+            message(
+                provider_id="b", from_address="stranger@else.io", subject="Hey", labels=["inbox"]
+            )
+        )
+        stranger = MailMessage.objects.get()
+
+        class NoId(FakeProvider):
+            def send(self, creds, **kw):
+                sent = super().send(creds, **kw)
+                sent.provider_id = ""
+                return sent
+
+        with patch("services.mail.sync.get_provider", return_value=NoId()):
+            self.client.post(
+                f"/api/v1/mail/messages/{stranger.id}/reply/", {"body": "Hello."}, format="json"
+            )
+        placeholder = MailMessage.objects.get(folder="sent")
+        self.assertTrue(placeholder.provider_message_id.startswith("sent:"))
+        # The provider's Sent Items copy arrives on the next sync with a real id.
+        self._sync(
+            message(
+                provider_id="real-1",
+                thread_id="t-sent",
+                subject="Re: Hey",
+                from_address="dana@acme.io",
+                to=[("", "stranger@else.io")],
+                labels=["sent"],
+                date=placeholder.sent_at + timedelta(seconds=30),
+            )
+        )
+        self.assertEqual(MailMessage.objects.filter(folder="sent").count(), 1)
+        self.assertEqual(MailMessage.objects.get(folder="sent").provider_message_id, "real-1")
+
+    def test_reply_with_nobody_to_reply_to_is_a_client_error(self):
+        self._sync(message(provider_id="a", labels=["inbox"], from_address=""))
+        row = MailMessage.objects.get()
+        with patch("services.mail.sync.get_provider", return_value=FakeProvider()):
+            response = self.client.post(
+                f"/api/v1/mail/messages/{row.id}/reply/", {"body": "?"}, format="json"
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(FakeProvider.sent, [])
+
+    def test_patch_cannot_move_a_message_between_provider_folders(self):
+        self._sync(message(provider_id="a", labels=["inbox"]))
+        row = MailMessage.objects.get()
+        response = self.client.patch(
+            f"/api/v1/mail/messages/{row.id}/",
+            {"folder": "trash", "is_important": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        row.refresh_from_db()
+        self.assertEqual((row.folder, row.is_important), ("inbox", False))
 
     def test_disconnecting_takes_the_personal_copy_away_and_keeps_the_filed_one(self):
         self._sync(message(provider_id="a", labels=["inbox"]))

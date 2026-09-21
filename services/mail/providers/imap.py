@@ -78,7 +78,7 @@ class ImapProvider(MailProvider):
                     if status != "OK" or not parts or not isinstance(parts[0], tuple):
                         continue
                     message = parse_rfc822(parts[0][1], fallback_id=f"{folder}:{uid.decode()}")
-                    message.labels = _labels(folder, parts[0][0])
+                    message.labels = _labels(folder, parts)
                     if message.date >= since_date:
                         found.append(message)
         finally:
@@ -114,12 +114,21 @@ class ImapProvider(MailProvider):
         )
 
 
-def _labels(folder, envelope):
+def _labels(folder, parts):
     """Where an IMAP message sits and how it was left, from the folder it
-    came out of and the FLAGS the server put in the fetch envelope."""
+    came out of and the FLAGS in the fetch response. RFC 3501 lets a server
+    put FLAGS before or after the RFC822 literal, so every envelope piece of
+    the response is read, not only the first."""
     name = folder.lower()
     labels = ["sent" if "sent" in name else "inbox"]
-    flags = envelope.decode(errors="replace") if isinstance(envelope, bytes) else str(envelope)
+    pieces = []
+    for part in parts:
+        raw = part[0] if isinstance(part, tuple) else part
+        if isinstance(raw, bytes):
+            pieces.append(raw.decode(errors="replace"))
+        elif isinstance(raw, str):
+            pieces.append(raw)
+    flags = " ".join(pieces)
     if "\\Seen" not in flags:
         labels.append("unread")
     if "\\Flagged" in flags:
