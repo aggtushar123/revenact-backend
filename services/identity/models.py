@@ -314,3 +314,68 @@ class OrganizationDomain(models.Model):
     @property
     def is_verified(self) -> bool:
         return self.verification_status == self.VerificationStatus.VERIFIED
+
+
+class AccessRequest(models.Model):
+    """Somebody who signed in with a corporate address and has no membership.
+
+    The point is that authenticating is not joining. Proving you control
+    `john@accenture.com` proves you work at Accenture; it does not prove
+    Accenture wants you in their Revenact tenant, and it certainly does not say
+    which role or department. An administrator there decides that.
+
+    So a request holds the person in a waiting state: they have a `User` and a
+    verified `Identity`, and no membership at all, which means
+    `capabilities_for` returns nothing and every scoped queryset finds nothing.
+    There is no partial access to leak through.
+
+    **A pending request consumes no seat.** Twenty people can be waiting while
+    the company has one seat left; the seat is taken at approval, which is where
+    the check belongs. That rule is load-bearing for billing and is asserted in
+    the tests.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        EXPIRED = "expired", "Expired"
+        CANCELLED = "cancelled", "Cancelled"
+
+    #: Statuses still awaiting a decision, and so holding the one open slot.
+    OPEN_STATUSES = (Status.PENDING,)
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="access_requests", on_delete=models.CASCADE
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="access_requests", on_delete=models.CASCADE
+    )
+    email = models.EmailField(
+        help_text="The verified address that mapped to this organisation, as it was at the time."
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+
+    requested_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="+", on_delete=models.SET_NULL, null=True, blank=True
+    )
+    rejection_reason = models.CharField(max_length=500, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-requested_at", "-id"]
+        constraints = [
+            # One open request per person per tenant: signing in again while
+            # waiting must not queue a second row for an admin to wade through.
+            models.UniqueConstraint(
+                fields=["organisation", "user"],
+                condition=models.Q(status="pending"),
+                name="one_open_access_request_per_user_per_organisation",
+            )
+        ]
+        indexes = [models.Index(fields=["organisation", "status"])]
+
+    def __str__(self):
+        return f"{self.email} -> {self.organisation.name} ({self.status})"

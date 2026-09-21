@@ -127,30 +127,53 @@ def resolve_user(identity_info, *, request=None) -> User:
 
     user = User.objects.filter(email__iexact=identity_info.email).first()
     if user is None:
+        # Nobody here by that address. If their domain belongs to a tenant that
+        # has proved it owns it, this is somebody's first day rather than a
+        # stranger: raise a request an administrator can approve.
+        from . import onboarding
+
+        try:
+            user, _ = onboarding.request_access(identity_info, request=request)
+        except onboarding.OnboardingError as exc:
+            raise LoginError(exc.code, exc.message) from exc
+        _link_identity(user, identity_info, request=request)
         raise LoginError(
-            "NO_ACCOUNT",
-            "There is no account for that address yet.",
+            "ACCESS_REQUEST_PENDING",
+            "Your request is with an administrator at your organisation.",
         )
     if not user.is_active:
         raise LoginError("ACCOUNT_DISABLED", "This account has been deactivated.")
 
-    Identity.objects.create(
-        user=user,
+    _link_identity(user, identity_info, request=request)
+    return user
+
+
+def _link_identity(user, identity_info, *, request=None) -> None:
+    """Record that this external account belongs to this person.
+
+    Idempotent, because the pending-access path links before refusing the
+    sign-in: the same person signing in again while they wait must not collide
+    with the identity they already have.
+    """
+    _, created = Identity.objects.get_or_create(
         provider=identity_info.provider,
         provider_user_id=identity_info.subject,
-        email=identity_info.email,
-        email_verified=True,
-        last_used_at=timezone.now(),
+        defaults={
+            "user": user,
+            "email": identity_info.email,
+            "email_verified": True,
+            "last_used_at": timezone.now(),
+        },
     )
-    audit.record(  # SOC2:LOG-01
-        "identity.linked",
-        request=request,
-        actor=user,
-        organisation=user.organisation,
-        target=user,
-        metadata={"provider": identity_info.provider},
-    )
-    return user
+    if created:
+        audit.record(  # SOC2:LOG-01
+            "identity.linked",
+            request=request,
+            actor=user,
+            organisation=user.organisation,
+            target=user,
+            metadata={"provider": identity_info.provider},
+        )
 
 
 def complete(provider_key: str, *, code: str, state: str, request=None) -> User:

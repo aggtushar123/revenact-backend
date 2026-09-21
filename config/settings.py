@@ -450,6 +450,12 @@ LOGGING = {
 # cannot work. Password sign-in is unaffected either way.
 AUTH_V2_ENABLED = env.bool("AUTH_V2_ENABLED", default=False)
 
+# Free and consumer mail providers, which can never establish or join a tenant
+# by domain alone — an address there identifies a person, not a company. The
+# default list lives in services/identity/domains.py; this only extends or
+# replaces it without a release.
+PERSONAL_EMAIL_DOMAINS = env.list("PERSONAL_EMAIL_DOMAINS", default=[])
+
 # --- Personal mailboxes (services.mail) ------------------------------------
 # OAuth clients for the providers a company can connect. A provider is offered
 # only when its client is configured; IMAP/SMTP needs nothing. Tokens and
