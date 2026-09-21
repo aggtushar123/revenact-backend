@@ -5728,20 +5728,23 @@ class HealthRubricAPITests(APITestCase):
         for i in range(8):
             Customer.objects.create(organisation=self.org, name=f"Co {i}")
 
-        # Three for the page however many rows it has: a COUNT, the SELECT
-        # carrying both health subqueries, and one prefetch of every CSAT
-        # response. The per-row breakdowns cost nothing further.
-        with self.assertNumQueries(3):
+        # Four for the page however many rows it has: resolving the caller's
+        # membership (once per request, memoised — see
+        # services.identity.context), a COUNT, the SELECT carrying both health
+        # subqueries, and one prefetch of every CSAT response. The per-row
+        # breakdowns cost nothing further, which is what this guards.
+        with self.assertNumQueries(4):
             response = self.client.get(self.url)
         self.assertEqual(len(response.data["results"]), 8)
 
     def test_the_query_count_does_not_grow_with_the_page(self):
         # The assertion above is only meaningful if it holds at a larger size:
-        # a fixed number for 8 rows could still be per-row at 30.
+        # a fixed number for 8 rows could still be per-row at 30. Same four as
+        # above: the count must not move with the page.
         for i in range(30):
             Customer.objects.create(organisation=self.org, name=f"Big {i}")
 
-        with self.assertNumQueries(3):
+        with self.assertNumQueries(4):
             response = self.client.get(self.url)
         self.assertGreater(len(response.data["results"]), 8)
 
@@ -5869,11 +5872,12 @@ class CustomerHealthViewTests(APITestCase):
                 customer=other, captured_on=date(2026, 1, 31), health_score="7.0"
             )
 
-        # Four, none of them per row: the customers (owners joined,
-        # touch/tickets annotated as subqueries), every CSAT survey at once
-        # (with_health_inputs prefetches those), every snapshot at once, and
-        # one FX rate table for the whole page.
-        with self.assertNumQueries(4):
+        # Five, none of them per row: resolving the caller's membership (once
+        # per request, memoised — see services.identity.context), the customers
+        # (owners joined, touch/tickets annotated as subqueries), every CSAT
+        # survey at once (with_health_inputs prefetches those), every snapshot
+        # at once, and one FX rate table for the whole page.
+        with self.assertNumQueries(5):
             self.client.get(self.url)
 
     def test_each_row_carries_the_shared_churn_rule_and_its_reasons(self):
