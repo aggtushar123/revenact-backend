@@ -35,6 +35,7 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `auth.login` (`stage: password`) | `LoginView` | user | — | password accepted, second factor still owed; no session issued |
 | `auth.login` (`mfa: totp|recovery`) | `MfaLoginView` | user | — | the second factor that completed the sign-in |
 | `organisation.owner_transferred` | `services.identity.ownership.transfer` | previous owner, or platform staff | User (new owner) | from, to, `by_platform` |
+| `platform.organisation.status` | `services.platform.views` | platform staff | Organisation | from, to, reason; suspension refuses sign-in and voids capabilities |
 | `auth.logout` | `LogoutView` | user | — | — |
 | `auth.password_change` | `ChangePasswordView` | user | User (self) | — |
 | `auth.password_reset_request` | `ForgotPasswordView` | — | — | `email` (recorded whether or not it exists) |

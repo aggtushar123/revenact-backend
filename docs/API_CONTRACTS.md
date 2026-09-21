@@ -411,6 +411,24 @@ Microsoft using the invited address and is accepted on the spot, whatever the
 domain rules would otherwise say; a different verified address simply finds no
 invitation. Open for seven days.
 
+### The internal portal — `/api/v1/platform/`
+
+Mirrors: (frontend pending). Requires `IsPlatformStaff`: a superuser whose
+token carries `mfa: true` (only `POST /auth/login/mfa/` mints one). A tenant
+administrator is `403` whatever they hold; an unenrolled superuser is `403`
+with `detail: "MFA_REQUIRED"`. **Metadata only**: nothing here returns a
+tenant's customers, emails, notes, tickets or calls, and the test suite pins
+the detail payload's keys.
+
+| Call | Purpose |
+|---|---|
+| `GET overview/` | Organisations by status, active members, pending requests, open invitations, verified domains, staff count |
+| `GET organisations/?q=&status=` | Summaries: owner, active members, pending requests, domains with verification state, `plan` (null until billing) |
+| `GET organisations/<id>/` | Summary plus memberships (name, email, role, department, status, owner, last login), domains, open invitations, last 20 audit events |
+| `POST organisations/<id>/status/` `{status: active\|suspended, reason}` | Reason required. Suspension refuses password and provider sign-in and voids every member's capabilities; nothing is deleted. `platform.organisation.status` on the tenant's audit trail |
+| `POST organisations/<id>/owner/` `{user_id}` | Move ownership when the owner cannot (audited `by_platform`) |
+| `GET staff/` | Who holds platform access and whether their second factor is on |
+
 ### `GET /api/v1/auth/members/`
 
 Auth: `IsAuthenticated` (any role) — **not** admin-gated, unlike everything

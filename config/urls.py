@@ -68,6 +68,8 @@ urlpatterns = [
     path("api/v1/auth/oauth/", include("services.identity.urls")),
     # Domains and access requests, scoped to the caller's own tenant.
     path("api/v1/identity/", include("services.identity.admin_urls")),
+    # Revenact's own staff administering every tenant: superuser + second factor.
+    path("api/v1/platform/", include("services.platform.urls")),
     path("api/v1/customers/", include("services.customers.urls")),
     # Product lives in the `customers` app but is mounted at its own
     # top-level prefix, for two reasons: it is organisation

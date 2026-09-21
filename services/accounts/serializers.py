@@ -6,7 +6,7 @@ from django.utils import timezone
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from django.utils.text import slugify
-from rest_framework import serializers
+from rest_framework import exceptions, serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from services.email import send_password_reset_email
@@ -230,6 +230,15 @@ class LoginSerializer(TokenObtainPairSerializer):
 
     def validate(self, attrs):
         data = super().validate(attrs)
+        # A suspended organisation's people cannot sign in, by any door. The
+        # provider path refuses with ORGANIZATION_SUSPENDED; this is the same
+        # rule for passwords. Superusers belong to no organisation.
+        organisation = self.user.organisation if self.user.organisation_id else None
+        if organisation is not None and organisation.status != Organisation.Status.ACTIVE:
+            raise exceptions.AuthenticationFailed(
+                "Your organisation is not active. Contact your administrator.",
+                code="organization_suspended",
+            )
         data["user"] = UserSerializer(self.user).data
         return data
 
