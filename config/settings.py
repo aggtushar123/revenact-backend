@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     "services.knowledge",
     "services.identity",
     "services.platform",
+    "services.billing",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
@@ -456,6 +457,20 @@ AUTH_V2_ENABLED = env.bool("AUTH_V2_ENABLED", default=False)
 # default list lives in services/identity/domains.py; this only extends or
 # replaces it without a release.
 PERSONAL_EMAIL_DOMAINS = env.list("PERSONAL_EMAIL_DOMAINS", default=[])
+
+# --- Billing (services.billing) -----------------------------------------------
+# What a brand-new workspace gets before anyone pays, as decided in review:
+# three seats and a fortnight of AI credits. Seats stay at three until a plan
+# is bought, which is what keeps a self-made workspace small.
+BILLING_TRIAL_SEATS = env.int("BILLING_TRIAL_SEATS", default=3)
+BILLING_TRIAL_CREDITS = env.int("BILLING_TRIAL_CREDITS", default=200)
+BILLING_TRIAL_DAYS = env.int("BILLING_TRIAL_DAYS", default=14)
+# One model call costs this many credits. Charged before the call, refunded
+# if the call fails.
+BILLING_CREDITS_PER_MODEL_CALL = env.int("BILLING_CREDITS_PER_MODEL_CALL", default=1)
+# Off, seats and credits are still recorded but never refuse anything: the
+# ledger shows what would have been billed. For a beta, or an incident.
+BILLING_ENFORCED = env.bool("BILLING_ENFORCED", default=True)
 
 # --- Personal mailboxes (services.mail) ------------------------------------
 # OAuth clients for the providers a company can connect. A provider is offered

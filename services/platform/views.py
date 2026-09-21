@@ -64,9 +64,15 @@ def _summary(organisation, counts):
             {"domain": d.domain, "verification_status": d.verification_status}
             for d in organisation.domains.all()
         ],
-        # Billing joins here in the next phase.
-        "plan": None,
+        "plan": _plan(organisation),
     }
+
+
+def _plan(organisation):
+    from services.billing import accounts as billing_accounts
+
+    account = billing_accounts.ensure(organisation)
+    return billing_accounts.summary(account)
 
 
 class OverviewView(views.APIView):
@@ -137,6 +143,7 @@ class OrganisationListView(views.APIView):
                 role=User.Role.ADMIN,
             )
             ownership.claim(owner, organisation)
+            # The founder holds seat one; the membership signal opened it.
 
         audit.record(  # SOC2:LOG-01
             "platform.organisation.created",
@@ -417,3 +424,101 @@ class StaffListView(views.APIView):
                 for u in staff
             ]
         )
+
+
+class OrganisationBillingView(views.APIView):
+    """GET /api/v1/platform/organisations/<id>/billing/ — plan, seats, credits
+    and the last fifty ledger rows. The staff view of what a tenant has and
+    has used; the tenant sees the same numbers at /api/v1/billing/."""
+
+    permission_classes = [IsPlatformStaff]
+
+    def get(self, request, pk):
+        from services.billing import accounts as billing_accounts
+        from services.billing.models import CreditLedger, Plan
+        from services.billing.views import _serialise_row
+
+        organisation = Organisation.objects.filter(pk=pk).first()
+        if organisation is None:
+            return _error(
+                "ORGANIZATION_NOT_FOUND", "No such organisation.", status.HTTP_404_NOT_FOUND
+            )
+        account = billing_accounts.ensure(organisation)
+        rows = CreditLedger.objects.filter(account=account).select_related("actor")[:50]
+        return Response(
+            {
+                **billing_accounts.summary(account),
+                "stripe_customer_id": account.stripe_customer_id,
+                "stripe_subscription_id": account.stripe_subscription_id,
+                "ledger": [_serialise_row(r) for r in rows],
+                "plans": [
+                    {
+                        "code": p.code,
+                        "name": p.name,
+                        "seats_included": p.seats_included,
+                        "monthly_credits": p.monthly_credits,
+                    }
+                    for p in Plan.objects.all()
+                ],
+            }
+        )
+
+
+class OrganisationBillingActionView(views.APIView):
+    """POST /api/v1/platform/organisations/<id>/billing/<action>/
+
+        credits/  { amount, reason }      signed; a manual ledger adjustment
+        seats/    { seats_limit, reason }  the allowance, never below seats in use
+        plan/     { plan_code, reason }    puts the account on a plan and grants its credits
+
+    Every one needs a reason and lands on the tenant's own audit trail.
+    """
+
+    permission_classes = [IsPlatformStaff]
+
+    def post(self, request, pk, action):
+        from services.billing import accounts as billing_accounts
+        from services.billing import ledger
+        from services.billing.models import Plan
+
+        organisation = Organisation.objects.filter(pk=pk).first()
+        if organisation is None:
+            return _error(
+                "ORGANIZATION_NOT_FOUND", "No such organisation.", status.HTTP_404_NOT_FOUND
+            )
+        account = billing_accounts.ensure(organisation)
+        reason = str(request.data.get("reason", "")).strip()
+        try:
+            if action == "credits":
+                try:
+                    amount = int(request.data.get("amount", 0))
+                except (TypeError, ValueError):
+                    return _error("INVALID_AMOUNT", "Amount must be a whole number.")
+                ledger.adjust(account, amount, reason=reason, actor=request.user, request=request)
+            elif action == "seats":
+                try:
+                    seats_limit = int(request.data.get("seats_limit", -1))
+                except (TypeError, ValueError):
+                    return _error("INVALID_AMOUNT", "Seats must be a whole number.")
+                billing_accounts.set_seats(
+                    account, seats_limit, actor=request.user, reason=reason, request=request
+                )
+            elif action == "plan":
+                plan = Plan.objects.filter(code=str(request.data.get("plan_code", ""))).first()
+                if plan is None:
+                    return _error("PLAN_NOT_FOUND", "No such plan.")
+                if not reason:
+                    return _error("REASON_REQUIRED", "Say why; it goes on the record.")
+                billing_accounts.change_plan(
+                    account, plan, actor=request.user, reason=reason, request=request
+                )
+            else:
+                return _error(
+                    "INVALID_ACTION",
+                    "Action must be credits, seats or plan.",
+                    status.HTTP_404_NOT_FOUND,
+                )
+        except ledger.BillingError as exc:
+            return _error(exc.code, exc.message)
+        account.refresh_from_db()
+        return Response(billing_accounts.summary(account))

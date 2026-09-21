@@ -432,6 +432,31 @@ the detail payload's keys.
 | `POST organisations/<id>/owner/` `{user_id}` | Move ownership when the owner cannot (audited `by_platform`) |
 | `GET staff/` | Who holds platform access and whether their second factor is on |
 
+### Billing — `/api/v1/billing/`
+
+Mirrors: `src/features/billing/billingSlice.ts`, Account settings › Plan & billing.
+Scoped through the caller's organisation; no account id in any path.
+
+| Call | Auth | Purpose |
+|---|---|---|
+| `GET account/` | any member | `{plan{code,name,seats_included,monthly_credits,price_cents,currency,is_trial}, status, seats{used,limit}, credits{balance}, trial_ends_at, current_period_end, enforced}` |
+| `GET ledger/?limit=` | `manage_org_settings` | Credit movements, newest first: `kind` (grant/consume/refund/adjust/expire), signed `amount`, `balance_after`, `reason`, `actor`, `at` |
+| `GET plans/` | any member | Public plans |
+
+**What the meters mean.** Seats are people: an active member holds one, taken
+where membership is granted (approval, invitation, founding, adding, reactivation)
+under a row lock on the billing account, so the last seat can be taken exactly
+once. Refusals are `INSUFFICIENT_SEATS` (`402` on the Users endpoints, `400`
+with the code on approvals). Credits are AI: every model call charges
+`BILLING_CREDITS_PER_MODEL_CALL` before it is made and refunds it if the call
+fails; with none left the call is refused like a spent budget (`429`). A new
+workspace starts on the trial plan (`BILLING_TRIAL_*`). `BILLING_ENFORCED=False`
+records everything and refuses nothing.
+
+The platform portal manages the other side: `GET /platform/organisations/<id>/billing/`
+(summary, Stripe ids, last 50 ledger rows, all plans) and
+`POST …/billing/{credits|seats|plan}/` with a mandatory `reason`, each audited.
+
 ### `GET /api/v1/auth/members/`
 
 Auth: `IsAuthenticated` (any role) — **not** admin-gated, unlike everything

@@ -270,6 +270,36 @@ claim, so a session that skipped the second factor can never reach
 `/api/v1/platform/`. The portal itself (organisations, owners, status,
 billing once it exists) sees tenant metadata only, never tenant data.
 
+### 4.8 Billing, as built
+
+Decided in review: Stripe as the provider; **seats for people, credits for
+AI**; a new workspace gets 3 seats and a 14-day trial of credits; entitlement
+tokens for the desktop build later, derived from these tables.
+
+`services/billing`: `Plan` (data, not code), `BillingAccount` (one per
+organisation, created by signal on the trial, the row every decision locks),
+`CreditLedger` (append-only, `balance_after` on every row, DB check
+`balance_after >= 0`, unique `reference` per account for idempotency),
+`SeatAssignment` (one open row per seat in use; history kept),
+`PaymentWebhookEvent` (unique `(provider, event_id)`, filled in next).
+
+Seats are taken in `onboarding._grant_membership` via `seats.reserve`, under
+`SELECT … FOR UPDATE` on the account and *before* the membership is written,
+so a refusal leaves nothing behind. The concurrent-approval test
+(`billing/tests/test_seats.py::ConcurrentApprovalTests`) runs two real threads
+at the last seat and asserts exactly one succeeds. Adding a member from Users
+and reactivating a deactivated one reserve the same way; deactivation and a
+membership leaving `active` release. A bookkeeping signal keeps seat rows true
+for raw `create_user` paths without ever refusing.
+
+Credits are charged at `get_completion`, the single chokepoint for every model
+call: one charge before the call (raising the existing `BudgetExceeded`, so
+every caller's handling applies unchanged), one refund if the call fails.
+
+Platform staff adjust credits, seats and plans from the portal, each with a
+mandatory reason and an audit row on the tenant's trail. Tenants read their
+own account at `/api/v1/billing/`.
+
 ## 5. Licensing for a future downloadable build
 
 This is the requirement most easily got wrong, so it is stated plainly.
@@ -392,7 +422,7 @@ migration.
 2. OAuth login reusing the mail provider abstraction, behind a flag — done, PR #36
 3. Domains and DNS verification — done, PR #38 (with 4a)
 4. Access requests (4a, PR #38), self-serve workspaces (4b, §4.5, PR #39), invitations (4c, §4.6, PR #40) — done
-5. Billing account, plans, credit ledger, seat allocation with the locking test first
+5. Billing account, plans, credit ledger, seat allocation with the locking test first — done (§4.8)
 6. Payment provider interface, one implementation, idempotent webhooks
 7. Platform-admin surface — owners + staff MFA (7a, §4.7, PR #41); portal API (7b, PR #42); pages next
 8. Frontend: login, pending state, approvals, billing, platform admin
