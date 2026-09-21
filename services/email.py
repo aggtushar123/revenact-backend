@@ -79,3 +79,29 @@ def send_campaign_email(contact, subject, body):
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[contact.email],
     )
+
+
+def send_invitation_email(invitation):
+    """Tells `invitation.email` an administrator has asked them into an
+    organisation, and where to sign in. There is no token in the link:
+    acceptance is keyed on the address a provider verifies at sign-in, so
+    forwarding this email hands nothing to anyone else. Called from
+    identity.onboarding.invite."""
+
+    inviter = invitation.invited_by.name if invitation.invited_by else "An administrator"
+    organisation = invitation.organisation.name
+    send_mail(
+        subject=f"You have been invited to {organisation} on Revenact",
+        message=(
+            f"Hi,\n\n"
+            f"{inviter} has invited you to join {organisation} on Revenact "
+            f"as {invitation.role.name}.\n\n"
+            f"Sign in with this address ({invitation.email}) using Google or Microsoft "
+            f"and you will be taken straight in:\n\n"
+            f"{settings.FRONTEND_URL}/login\n\n"
+            f"The invitation expires on {invitation.expires_at:%d %B %Y}. "
+            "If you were not expecting it, you can ignore this email."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[invitation.email],
+    )

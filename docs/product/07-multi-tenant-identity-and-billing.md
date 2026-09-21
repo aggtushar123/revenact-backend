@@ -236,6 +236,19 @@ design makes that harmless rather than forbidding it:
    signs in a second time waits again rather than opening an empty app, and is
    re-routed if the domain changed hands while they waited.
 
+### 4.6 Invitations
+
+The company asking someone in, as opposed to the person asking. An
+`Invitation` names the address, role and department up front; it grants
+nothing until a provider verifies exactly that address at sign-in, and then it
+is accepted in the same transaction that writes the membership and the columns.
+There is no token: acceptance is keyed on the verified address, so forwarding
+the email hands nothing to anyone, and `INVITATION_EMAIL_MISMATCH` is true by
+construction. An invitation overrides the domain rules (it is the only door
+for a personal address), consumes no seat until accepted, expires after seven
+days, and its inviter is held to the same rule as an approver: they cannot
+grant a capability they do not hold.
+
 ## 5. Licensing for a future downloadable build
 
 This is the requirement most easily got wrong, so it is stated plainly.
@@ -357,7 +370,7 @@ migration.
 1. Membership, Identity, Department; backfill; `request.membership` (no behaviour change) — done, PR #35
 2. OAuth login reusing the mail provider abstraction, behind a flag — done, PR #36
 3. Domains and DNS verification — done, PR #38 (with 4a)
-4. Access requests (4a, PR #38), self-serve workspaces (4b, §4.5), invitations (4c, open)
+4. Access requests (4a, PR #38), self-serve workspaces (4b, §4.5, PR #39), invitations (4c, §4.6, PR #40) — done
 5. Billing account, plans, credit ledger, seat allocation with the locking test first
 6. Payment provider interface, one implementation, idempotent webhooks
 7. Platform-admin surface

@@ -362,6 +362,29 @@ Nothing here ever puts a token or an address in a URL: the codes are opaque
 and short-lived, and the frontend removes them from the address bar on
 arrival.
 
+### Tenant administration — `/api/v1/identity/`
+
+Mirrors: (frontend pending). Every call is scoped to the caller's own
+organisation through their membership; **there is no organisation id in any
+path**, so there is nothing to tamper with. A row in another tenant answers
+`404`, never `403`. Errors use `{ "success": false, "error": { "code", "message" } }`.
+
+| Call | Capability | Purpose |
+|---|---|---|
+| `GET/POST domains/` | `manage_org_settings` | Claim a domain; the response carries the exact TXT record to publish |
+| `POST domains/<id>/verify/` | `manage_org_settings` | Check DNS. `400 DOMAIN_NOT_VERIFIED` = not published; `503 DNS_LOOKUP_FAILED` = could not check. Verifying revokes every other tenant's claim on that domain |
+| `GET access-requests/?status=pending|all` | `manage_users` | People who signed in with a corporate address and are waiting |
+| `POST access-requests/<id>/approve/` `{role_id, department_id?}` | `manage_users` | Grants the membership and the columns in one transaction. `403 INSUFFICIENT_PERMISSION` if the role holds a capability the approver does not |
+| `POST access-requests/<id>/reject/` `{reason?}` | `manage_users` | |
+| `GET invitations/?status=pending|all` | `manage_users` | Who this tenant has asked in |
+| `POST invitations/` `{email, role_id, department_id?}` | `manage_users` | `201` new, `200` re-sent. Same grant rule as approval. `ALREADY_A_MEMBER` refused |
+| `POST invitations/<id>/cancel/` | `manage_users` | |
+
+Invitations carry no token. The invited person signs in with Google or
+Microsoft using the invited address and is accepted on the spot, whatever the
+domain rules would otherwise say; a different verified address simply finds no
+invitation. Open for seven days.
+
 ### `GET /api/v1/auth/members/`
 
 Auth: `IsAuthenticated` (any role) — **not** admin-gated, unlike everything

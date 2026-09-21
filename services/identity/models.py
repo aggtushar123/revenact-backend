@@ -38,12 +38,15 @@ What each one is for:
   owning Accenture.
 """
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models.functions import Lower
+from django.utils import timezone
 
-from services.accounts.models import Organisation
+from services.accounts.models import Organisation, Role
 
 
 class Identity(models.Model):
@@ -395,3 +398,90 @@ class AccessRequest(models.Model):
 
     def __str__(self):
         return f"{self.email} -> {self.organisation.name} ({self.status})"
+
+
+class Invitation(models.Model):
+    """An administrator asked someone in, by address, before they ever signed in.
+
+    The other half of joining: access requests are the person asking, an
+    invitation is the company asking. It names the role and department up
+    front, so acceptance needs no second decision.
+
+    **Acceptance is keyed on the verified address, not on a link.** The person
+    signs in with a provider that vouches for `email`; if a pending invitation
+    names that exact address, it is accepted then and there and they hold a
+    membership. There is no token to forward to somebody else, so the address
+    in the invitation is the only thing that can redeem it — which is what
+    `INVITATION_EMAIL_MISMATCH` means in the architecture note: a different
+    verified address simply is not invited.
+
+    **An invitation consumes no seat.** As with requests, the seat is taken at
+    acceptance, which is where the check belongs.
+
+    Invitations expire, because an address that has not been used in a week
+    may have been typed wrongly, and a standing open door is a liability.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        ACCEPTED = "accepted", "Accepted"
+        EXPIRED = "expired", "Expired"
+        CANCELLED = "cancelled", "Cancelled"
+
+    #: How long an invitation stays open.
+    TTL_DAYS = 7
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="invitations", on_delete=models.CASCADE
+    )
+    email = models.EmailField(help_text="Lowercased. The one address that can accept this.")
+    role = models.ForeignKey(Role, related_name="invitations", on_delete=models.PROTECT)
+    department = models.ForeignKey(
+        Department, related_name="invitations", on_delete=models.SET_NULL, null=True, blank=True
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="+", on_delete=models.SET_NULL, null=True, blank=True
+    )
+    invited_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="+", on_delete=models.SET_NULL, null=True, blank=True
+    )
+
+    class Meta:
+        ordering = ["-invited_at", "-id"]
+        constraints = [
+            # One open invitation per address per tenant: inviting twice is a
+            # reminder, not a second row.
+            models.UniqueConstraint(
+                fields=["organisation", "email"],
+                condition=models.Q(status="pending"),
+                name="one_open_invitation_per_email_per_organisation",
+            )
+        ]
+        indexes = [models.Index(fields=["email", "status"])]
+
+    def __str__(self):
+        return f"{self.email} <- {self.organisation.name} ({self.status})"
+
+    def clean(self):
+        if self.role_id and self.role.organisation_id != self.organisation_id:
+            raise ValidationError({"role": "The role must belong to the same organisation."})
+        if self.department_id and self.department.organisation_id != self.organisation_id:
+            raise ValidationError(
+                {"department": "The department must belong to the same organisation."}
+            )
+
+    def save(self, *args, **kwargs):
+        self.email = (self.email or "").strip().lower()
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timedelta(days=self.TTL_DAYS)
+        self.full_clean(exclude=["accepted_by", "invited_by"])
+        super().save(*args, **kwargs)
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == self.Status.PENDING and self.expires_at > timezone.now()

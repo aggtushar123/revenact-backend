@@ -338,11 +338,18 @@ class CrossTenantTests(APITestCase):
         response = self.client.get("/api/v1/identity/domains/")
         self.assertEqual(response.data, [])
 
-    def test_a_domain_cannot_be_claimed_twice(self):
+    def test_another_tenants_claim_is_no_obstacle_but_your_own_duplicate_is(self):
+        """Since phase 5a a claim proves nothing, so Acme may claim rival.io
+        too: whoever publishes the DNS record takes it. What is refused is
+        the same tenant adding the same domain twice."""
         self.client.force_authenticate(self.acme_admin)
         response = self.client.post("/api/v1/identity/domains/", {"domain": "rival.io"})
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"]["code"], "DOMAIN_ALREADY_CLAIMED")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["verification_status"], "pending")
+
+        again = self.client.post("/api/v1/identity/domains/", {"domain": "rival.io"})
+        self.assertEqual(again.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(again.data["error"]["code"], "DOMAIN_ALREADY_CLAIMED")
 
     def test_a_member_without_the_capability_is_refused(self):
         plain = User.objects.create_user(

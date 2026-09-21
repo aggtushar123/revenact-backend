@@ -129,8 +129,7 @@ def resolve_user(identity_info, *, request=None) -> User:
             email_verified=identity_info.email_verified,
             last_used_at=timezone.now(),
         )
-        _require_standing(user, identity_info, request=request)
-        return user
+        return _require_standing(user, identity_info, request=request)
 
     # First time with this provider. Only a provider-verified address may be
     # used to claim an existing account.
@@ -142,17 +141,19 @@ def resolve_user(identity_info, *, request=None) -> User:
 
     user = User.objects.filter(email__iexact=identity_info.email).first()
     if user is None:
-        _route_newcomer(identity_info, request=request)
+        return _route_newcomer(identity_info, request=request)
     if not user.is_active:
         raise LoginError("ACCOUNT_DISABLED", "This account has been deactivated.")
 
     _link_identity(user, identity_info, request=request)
-    _require_standing(user, identity_info, request=request)
-    return user
+    return _require_standing(user, identity_info, request=request)
 
 
-def _require_standing(user, identity_info, *, request=None) -> None:
+def _require_standing(user, identity_info, *, request=None) -> User:
     """A person is signed in only if they hold an active membership somewhere.
+
+    Returns the user to sign in: the same instance, or a fresh one when an
+    invitation was accepted along the way and the columns changed.
 
     Authenticating is not joining. Someone who signed in once, was routed to
     an access request, and comes back the next morning has a linked identity
@@ -162,7 +163,7 @@ def _require_standing(user, identity_info, *, request=None) -> None:
     they waited (a company verifying a domain an employee had claimed).
     """
     if user.is_superuser:
-        return
+        return user
 
     from . import domains, onboarding
     from .models import OrganizationMembership
@@ -171,9 +172,15 @@ def _require_standing(user, identity_info, *, request=None) -> None:
         OrganizationMembership.objects.filter(user=user).values_list("organisation_id", "status")
     )
     if OrganizationMembership.Status.ACTIVE in statuses.values():
-        return
+        return user
     if OrganizationMembership.Status.SUSPENDED in statuses.values():
         raise LoginError("ACCOUNT_DISABLED", "Your access has been suspended.")
+
+    # Waiting on a request, and meanwhile an administrator invited them:
+    # the invitation is the decision, so it is accepted here.
+    invited = _accept_if_invited(identity_info, request=request)
+    if invited is not None:
+        return invited
 
     route = domains.route_for_email(identity_info.email)
     if route.organisation is not None:
@@ -198,17 +205,20 @@ def _require_standing(user, identity_info, *, request=None) -> None:
     )
 
 
-def _route_newcomer(identity_info, *, request=None):
+def _route_newcomer(identity_info, *, request=None) -> User:
     """Nobody here by that address. Decide where a verified stranger goes.
 
-    Always raises: a newcomer is never signed in on the spot. Either they
-    are asked to wait for an administrator, told why they cannot proceed, or
-    invited to set up a workspace of their own.
+    Returns a signed-in user in exactly one case: an administrator already
+    invited this address, so the provider's word that they hold it is the
+    whole acceptance. Otherwise raises: they are asked to wait for an
+    administrator, told why they cannot proceed, or invited to set up a
+    workspace of their own.
 
-        verified domain   -> access request to that tenant, then wait
+        an open invitation  -> accepted; membership granted; signed in
+        verified domain     -> access request to that tenant, then wait
         one unverified claim -> access request to that tenant, then wait
-        several claims    -> refused; nobody can be chosen without proof
-        personal address  -> refused; there is no company to map to
+        several claims      -> refused; nobody can be chosen without proof
+        personal address    -> refused; there is no company to map to
         nobody has claimed it -> WORKSPACE_SETUP_REQUIRED with a setup code
 
     The second line is the one that stops a company fragmenting into a
@@ -216,6 +226,10 @@ def _route_newcomer(identity_info, *, request=None):
     next person is pointed at it and must be let in deliberately.
     """
     from . import domains, onboarding
+
+    invited = _accept_if_invited(identity_info, request=request)
+    if invited is not None:
+        return invited
 
     route = domains.route_for_email(identity_info.email)
 
@@ -247,6 +261,23 @@ def _route_newcomer(identity_info, *, request=None):
         "ACCESS_REQUEST_PENDING",
         "Your request is with an administrator at your organisation.",
     )
+
+
+def _accept_if_invited(identity_info, *, request=None):
+    """An open invitation to exactly this verified address is accepted on the
+    spot, whatever the domain says: an invitation is an administrator's
+    decision already made, and it is the only door for a personal address."""
+    from . import onboarding
+
+    invitation = onboarding.open_invitation_for(identity_info.email)
+    if invitation is None:
+        return None
+    try:
+        user = onboarding.accept_invitation(invitation, identity_info, request=request)
+    except onboarding.OnboardingError as exc:
+        raise LoginError(exc.code, exc.message) from exc
+    _link_identity(user, identity_info, request=request)
+    return user
 
 
 def _link_identity(user, identity_info, *, request=None) -> None:

@@ -35,6 +35,8 @@ standing, and `check_membership_consistency` enforces that they agree. Approving
 therefore sets both, in one transaction, or neither.
 """
 
+from datetime import timedelta
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -240,45 +242,15 @@ def approve(access_request: AccessRequest, *, reviewer: User, role, department=N
         raise OnboardingError("ACCESS_REQUEST_DECIDED", "That request has already been decided.")
 
     organisation = access_request.organisation
-
-    if role is None or role.organisation_id != organisation.id:
-        raise OnboardingError("INVALID_ROLE", "That role does not belong to this organisation.")
-    if department is not None and department.organisation_id != organisation.id:
-        raise OnboardingError(
-            "INVALID_DEPARTMENT", "That department does not belong to this organisation."
-        )
-
-    # An admin must not hand out more than they hold, or `manage_users` would
-    # quietly be a route to full administration.
-    granting = set(role.permissions or [])
-    held = set(_capabilities_of(reviewer))
-    if not reviewer.is_superuser and not granting.issubset(held):
-        raise OnboardingError(
-            "INSUFFICIENT_PERMISSION",
-            "You cannot grant a capability you do not hold yourself.",
-        )
+    _check_grant(reviewer, organisation, role=role, department=department)
 
     user = access_request.user
     now = timezone.now()
 
     with transaction.atomic():
-        # (billing phase: allocate a seat here, and fail the whole thing if
-        # none is available)
-        membership, _ = OrganizationMembership.objects.update_or_create(
-            organisation=organisation,
-            user=user,
-            status=OrganizationMembership.Status.ACTIVE,
-            defaults={
-                "role": role,
-                "department": department,
-                "approved_at": now,
-                "approved_by": reviewer,
-            },
+        membership = _grant_membership(
+            user, organisation, role=role, department=department, approver=reviewer, when=now
         )
-        # Both representations, together: phase 3's consistency guard requires
-        # the column to agree with the membership.
-        User.objects.filter(pk=user.pk).update(organisation=organisation, role=role)
-
         AccessRequest.objects.filter(pk=access_request.pk).update(
             status=AccessRequest.Status.APPROVED, reviewed_at=now, reviewed_by=reviewer
         )
@@ -292,6 +264,202 @@ def approve(access_request: AccessRequest, *, reviewer: User, role, department=N
         metadata={"role": role.slug, "department": department.name if department else None},
     )
     return membership
+
+
+def _grant_membership(user, organisation, *, role, department, approver, when=None):
+    """The one place a person is let in. Caller holds the transaction.
+
+    Writes both representations together: the membership that carries
+    standing and the columns that phase 3 still reads for permissions, so the
+    consistency guard never sees them disagree. Seat allocation joins here in
+    the billing phase, before the membership write, and fails the whole
+    transaction when no seat is free.
+    """
+    when = when or timezone.now()
+    # (billing phase: allocate a seat here)
+    membership, _ = OrganizationMembership.objects.update_or_create(
+        organisation=organisation,
+        user=user,
+        status=OrganizationMembership.Status.ACTIVE,
+        defaults={
+            "role": role,
+            "department": department,
+            "approved_at": when,
+            "approved_by": approver,
+        },
+    )
+    User.objects.filter(pk=user.pk).update(organisation=organisation, role=role)
+    return membership
+
+
+def _check_grant(reviewer: User, organisation, *, role, department) -> None:
+    """What every act of letting someone in must satisfy, whoever does it."""
+    if role is None or role.organisation_id != organisation.id:
+        raise OnboardingError("INVALID_ROLE", "That role does not belong to this organisation.")
+    if department is not None and department.organisation_id != organisation.id:
+        raise OnboardingError(
+            "INVALID_DEPARTMENT", "That department does not belong to this organisation."
+        )
+    # An admin must not hand out more than they hold, or `manage_users` would
+    # quietly be a route to full administration.
+    granting = set(role.permissions or [])
+    held = set(_capabilities_of(reviewer))
+    if not reviewer.is_superuser and not granting.issubset(held):
+        raise OnboardingError(
+            "INSUFFICIENT_PERMISSION",
+            "You cannot grant a capability you do not hold yourself.",
+        )
+
+
+# ── Invitations ────────────────────────────────────────────────────────────
+
+
+def invite(organisation, *, email: str, role, department=None, inviter: User, request=None):
+    """Ask someone in by address. Returns `(invitation, created)`.
+
+    Inviting an address that already has an open invitation re-sends it
+    rather than queueing a second. The inviter is held to the same rule as an
+    approver: they cannot grant a capability they do not hold.
+    """
+    from services.email import send_invitation_email
+
+    from .models import Invitation
+
+    email = (email or "").strip().lower()
+    if "@" not in email:
+        raise OnboardingError("INVALID_EMAIL", "That does not look like an email address.")
+    _check_grant(inviter, organisation, role=role, department=department)
+
+    existing_member = OrganizationMembership.objects.filter(
+        organisation=organisation,
+        user__email__iexact=email,
+        status__in=LIVE_STATUSES,
+    ).exists()
+    if existing_member:
+        raise OnboardingError("ALREADY_A_MEMBER", "That person is already in this organisation.")
+
+    with transaction.atomic():
+        invitation = (
+            Invitation.objects.select_for_update()
+            .filter(organisation=organisation, email=email, status=Invitation.Status.PENDING)
+            .first()
+        )
+        created = invitation is None
+        if created:
+            invitation = Invitation.objects.create(
+                organisation=organisation,
+                email=email,
+                role=role,
+                department=department,
+                invited_by=inviter,
+            )
+        elif not invitation.is_open:
+            # Expired but never marked: refresh it rather than refuse.
+            invitation.expires_at = timezone.now() + timedelta(days=Invitation.TTL_DAYS)
+            invitation.role = role
+            invitation.department = department
+            invitation.save()
+
+    send_invitation_email(invitation)
+    audit.record(  # SOC2:LOG-01
+        "invitation.created" if created else "invitation.resent",
+        request=request,
+        actor=inviter,
+        organisation=organisation,
+        target=invitation,
+        metadata={"email": email, "role": role.slug},
+    )
+    return invitation, created
+
+
+def cancel_invitation(invitation, *, actor: User, request=None):
+    from .models import Invitation
+
+    if invitation.status != Invitation.Status.PENDING:
+        raise OnboardingError("INVITATION_DECIDED", "That invitation is no longer open.")
+    Invitation.objects.filter(pk=invitation.pk).update(status=Invitation.Status.CANCELLED)
+    audit.record(  # SOC2:LOG-01
+        "invitation.cancelled",
+        request=request,
+        actor=actor,
+        organisation=invitation.organisation,
+        target=invitation,
+        metadata={"email": invitation.email},
+    )
+
+
+def open_invitation_for(email: str):
+    """The one invitation a verified address can accept right now, or None.
+
+    Several tenants may have invited the same address; the earliest open one
+    wins, since a person holds one membership at a time in this phase.
+    """
+    from .models import Invitation
+
+    return (
+        Invitation.objects.select_related("organisation", "role", "department")
+        .filter(
+            email=(email or "").strip().lower(),
+            status=Invitation.Status.PENDING,
+            expires_at__gt=timezone.now(),
+            organisation__status="active",
+        )
+        .order_by("invited_at")
+        .first()
+    )
+
+
+def accept_invitation(invitation, identity_info, *, request=None) -> User:
+    """A provider has vouched for exactly the invited address: let them in.
+
+    The address equality is the whole check. A verified identity whose
+    address is not the invited one never reaches here, because
+    `open_invitation_for` is keyed on the address the provider verified.
+    One transaction: the person (created if new), the membership, both
+    columns, the invitation's own status.
+    """
+    from .models import Invitation
+
+    if (identity_info.email or "").strip().lower() != invitation.email:
+        raise OnboardingError(
+            "INVITATION_EMAIL_MISMATCH", "That invitation was sent to a different address."
+        )
+    if not invitation.is_open:
+        raise OnboardingError("INVITATION_EXPIRED", "That invitation has expired.")
+
+    now = timezone.now()
+    with transaction.atomic():
+        user = _user_for(identity_info)
+        if not user.is_active:
+            raise OnboardingError("ACCOUNT_DISABLED", "This account has been deactivated.")
+        _grant_membership(
+            user,
+            invitation.organisation,
+            role=invitation.role,
+            department=invitation.department,
+            approver=invitation.invited_by,
+            when=now,
+        )
+        Invitation.objects.filter(pk=invitation.pk).update(
+            status=Invitation.Status.ACCEPTED, accepted_at=now, accepted_by=user
+        )
+        # A request they may have raised elsewhere while waiting is moot now.
+        AccessRequest.objects.filter(user=user, status=AccessRequest.Status.PENDING).update(
+            status=AccessRequest.Status.CANCELLED, reviewed_at=now
+        )
+
+    # The grant wrote the columns with a queryset update; hand back an
+    # instance that has read them, and that carries no stale memo.
+    user = User.objects.get(pk=user.pk)
+    audit.record(  # SOC2:LOG-01
+        "invitation.accepted",
+        request=request,
+        actor=user,
+        organisation=invitation.organisation,
+        target=user,
+        metadata={"email": invitation.email, "role": invitation.role.slug},
+    )
+    return user
 
 
 def reject(access_request: AccessRequest, *, reviewer: User, reason: str = "", request=None):
