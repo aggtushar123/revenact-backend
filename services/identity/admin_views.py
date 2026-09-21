@@ -23,7 +23,7 @@ from services.mail.providers.base import ProviderError
 from . import domains as domain_service
 from . import onboarding
 from .context import organisation_for
-from .models import AccessRequest, Department, OrganizationDomain
+from .models import AccessRequest, Department, Invitation, OrganizationDomain
 
 
 def _error(code, message, http_status=status.HTTP_400_BAD_REQUEST):
@@ -74,6 +74,28 @@ class AccessRequestSerializer(serializers.ModelSerializer):
         ]
 
 
+class InvitationSerializer(serializers.ModelSerializer):
+    role_name = serializers.CharField(source="role.name", read_only=True)
+    department_name = serializers.CharField(source="department.name", read_only=True, default="")
+    invited_by_name = serializers.CharField(source="invited_by.name", read_only=True, default="")
+
+    class Meta:
+        model = Invitation
+        fields = [
+            "id",
+            "email",
+            "role_id",
+            "role_name",
+            "department_id",
+            "department_name",
+            "status",
+            "invited_by_name",
+            "invited_at",
+            "expires_at",
+            "accepted_at",
+        ]
+
+
 class DomainListCreateView(views.APIView):
     """GET/POST /api/v1/identity/domains/ — this organisation's own domains."""
 
@@ -98,10 +120,11 @@ class DomainListCreateView(views.APIView):
                 "A shared email provider cannot be claimed by one organisation.",
             )
 
-        # Globally unique: two tenants cannot both claim a domain, or a
-        # corporate sign-in would be ambiguous about where it lands.
-        if OrganizationDomain.objects.filter(domain=domain).exists():
-            return _error("DOMAIN_ALREADY_CLAIMED", "That domain is already claimed.")
+        # A claim proves nothing, so another tenant's claim is no obstacle:
+        # whoever verifies takes the domain. Only this tenant's own duplicate
+        # is refused.
+        if OrganizationDomain.objects.filter(domain=domain, organisation=organisation).exists():
+            return _error("DOMAIN_ALREADY_CLAIMED", "You have already added that domain.")
 
         record = OrganizationDomain.objects.create(
             organisation=organisation,
@@ -224,3 +247,73 @@ class AccessRequestDecisionView(views.APIView):
             return _error(exc.code, exc.message, http_status)
 
         return Response({"status": AccessRequest.Status.APPROVED})
+
+
+class InvitationListCreateView(views.APIView):
+    """GET/POST /api/v1/identity/invitations/ — who this tenant has asked in.
+
+    POST `{email, role_id, department_id?}`. Inviting an address that is
+    already invited re-sends the email and answers 200 with the same row.
+    """
+
+    permission_classes = [IsAuthenticated, CanManageUsers]
+
+    def get(self, request):
+        organisation = organisation_for(request.user)
+        rows = Invitation.objects.filter(organisation=organisation).select_related(
+            "role", "department", "invited_by"
+        )
+        wanted = request.query_params.get("status", Invitation.Status.PENDING)
+        if wanted != "all":
+            rows = rows.filter(status=wanted)
+        return Response(InvitationSerializer(rows, many=True).data)
+
+    def post(self, request):
+        organisation = organisation_for(request.user)
+        if organisation is None:
+            return _error("ORGANIZATION_NOT_FOUND", "You do not belong to an organisation.")
+
+        role = Role.objects.filter(
+            pk=request.data.get("role_id"), organisation=organisation
+        ).first()
+        department = Department.objects.filter(
+            pk=request.data.get("department_id"), organisation=organisation
+        ).first()
+        try:
+            invitation, created = onboarding.invite(
+                organisation,
+                email=str(request.data.get("email", "")),
+                role=role,
+                department=department,
+                inviter=request.user,
+                request=request,
+            )
+        except onboarding.OnboardingError as exc:
+            http_status = (
+                status.HTTP_403_FORBIDDEN
+                if exc.code == "INSUFFICIENT_PERMISSION"
+                else status.HTTP_400_BAD_REQUEST
+            )
+            return _error(exc.code, exc.message, http_status)
+
+        return Response(
+            InvitationSerializer(invitation).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class InvitationCancelView(views.APIView):
+    """POST /api/v1/identity/invitations/<pk>/cancel/."""
+
+    permission_classes = [IsAuthenticated, CanManageUsers]
+
+    def post(self, request, pk):
+        organisation = organisation_for(request.user)
+        invitation = Invitation.objects.filter(pk=pk, organisation=organisation).first()
+        if invitation is None:
+            return _error("INVITATION_NOT_FOUND", "No such invitation.", status.HTTP_404_NOT_FOUND)
+        try:
+            onboarding.cancel_invitation(invitation, actor=request.user, request=request)
+        except onboarding.OnboardingError as exc:
+            return _error(exc.code, exc.message)
+        return Response({"status": Invitation.Status.CANCELLED})

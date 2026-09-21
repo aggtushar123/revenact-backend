@@ -23,4 +23,14 @@ urlpatterns = [
         admin_views.AccessRequestDecisionView.as_view(),
         name="identity-access-request-decision",
     ),
+    path(
+        "invitations/",
+        admin_views.InvitationListCreateView.as_view(),
+        name="identity-invitations",
+    ),
+    path(
+        "invitations/<int:pk>/cancel/",
+        admin_views.InvitationCancelView.as_view(),
+        name="identity-invitation-cancel",
+    ),
 ]

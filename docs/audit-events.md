@@ -28,6 +28,9 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `domain.added` | `services.identity.admin_views` | user | OrganizationDomain | domain |
 | `domain.verified` | `services.identity.admin_views` | user | OrganizationDomain | domain |
 | `domain.superseded` | `services.identity.domains.verify` | verifying user | OrganizationDomain (the loser's) | domain, `verified_by` organisation id; another organisation proved the domain |
+| `invitation.created` / `invitation.resent` | `services.identity.onboarding.invite` | inviting admin | Invitation | email, role slug |
+| `invitation.accepted` | `services.identity.onboarding.accept_invitation` | the person | User (self) | email, role slug; accepted at sign-in |
+| `invitation.cancelled` | `services.identity.onboarding.cancel_invitation` | admin | Invitation | email |
 | `auth.logout` | `LogoutView` | user | — | — |
 | `auth.password_change` | `ChangePasswordView` | user | User (self) | — |
 | `auth.password_reset_request` | `ForgotPasswordView` | — | — | `email` (recorded whether or not it exists) |
