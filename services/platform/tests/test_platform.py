@@ -217,7 +217,7 @@ class SuspendTests(PlatformTestCase):
         self.assertEqual(no_reason.data["error"]["code"], "REASON_REQUIRED")
         bad = self.client.post(
             f"/api/v1/platform/organisations/{self.acme.id}/status/",
-            {"status": "archived", "reason": "x"},
+            {"status": "deleted", "reason": "x"},
             format="json",
         )
         self.assertEqual(bad.data["error"]["code"], "INVALID_STATUS")
@@ -263,3 +263,95 @@ class OwnerTests(PlatformTestCase):
         self.assertEqual(detail["pending_requests"], 1)
         self.assertNotIn("w@acme.io", {m["email"] for m in detail["memberships"]})
         self.assertEqual(OrganizationMembership.objects.filter(user=waiting).count(), 0)
+
+
+class CrudTests(PlatformTestCase):
+    def test_creating_an_organisation_creates_its_root_user(self):
+        """The owner is the root user: Admin, owner, no password, active
+        membership, in the same transaction as the tenant."""
+        self.as_staff()
+        response = self.client.post(
+            "/api/v1/platform/organisations/",
+            {"name": "Newco", "owner_email": "Priya@Newco.io", "owner_name": "Priya"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["owner"]["email"], "priya@newco.io")
+        self.assertEqual(response.data["members_active"], 1)
+
+        owner = User.objects.get(email="priya@newco.io")
+        self.assertEqual(owner.organisation.name, "Newco")
+        self.assertEqual(owner.role.slug, "admin")
+        self.assertTrue(ownership.is_owner(owner))
+        self.assertFalse(owner.has_usable_password())
+        self.assertEqual(OrganizationMembership.objects.get(user=owner).status, "active")
+        event = AuditEvent.objects.get(action="platform.organisation.created")
+        self.assertEqual(event.actor, self.staff)
+        self.assertEqual(event.metadata["owner"], "priya@newco.io")
+
+    def test_an_address_already_in_use_cannot_own_a_second_tenant(self):
+        self.as_staff()
+        response = self.client.post(
+            "/api/v1/platform/organisations/",
+            {"name": "Again", "owner_email": "csm@acme.io"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"]["code"], "EMAIL_TAKEN")
+        self.assertFalse(Organisation.objects.filter(name="Again").exists())
+
+    def test_name_and_email_are_required(self):
+        self.as_staff()
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/platform/organisations/", {"owner_email": "a@b.io"}, format="json"
+            ).data["error"]["code"],
+            "INVALID_NAME",
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/platform/organisations/",
+                {"name": "X", "owner_email": "nope"},
+                format="json",
+            ).data["error"]["code"],
+            "INVALID_EMAIL",
+        )
+
+    def test_rename(self):
+        self.as_staff()
+        response = self.client.patch(
+            f"/api/v1/platform/organisations/{self.acme.id}/",
+            {"name": "Acme Corporation"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Organisation.objects.get(pk=self.acme.pk).name, "Acme Corporation")
+        self.assertTrue(AuditEvent.objects.filter(action="platform.organisation.updated").exists())
+
+    def test_delete_archives_and_keeps_everything(self):
+        self.as_staff()
+        response = self.client.delete(
+            f"/api/v1/platform/organisations/{self.acme.id}/", {"reason": "Churned"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Organisation.objects.get(pk=self.acme.pk).status, "archived")
+        self.assertTrue(User.objects.filter(email="owner@acme.io").exists(), "nothing purged")
+
+        # Out of the default list, back with the filter, and closed to sign-in.
+        names = [o["name"] for o in self.client.get("/api/v1/platform/organisations/").data]
+        self.assertNotIn("Acme Inc", names)
+        archived = self.client.get("/api/v1/platform/organisations/", {"status": "archived"}).data
+        self.assertEqual([o["name"] for o in archived], ["Acme Inc"])
+        self.client.credentials()
+        login = self.client.post(
+            "/api/v1/auth/login/", {"email": "csm@acme.io", "password": "supersecret-pw-1"}
+        )
+        self.assertEqual(login.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_delete_needs_a_reason(self):
+        self.as_staff()
+        response = self.client.delete(
+            f"/api/v1/platform/organisations/{self.acme.id}/", {}, format="json"
+        )
+        self.assertEqual(response.data["error"]["code"], "REASON_REQUIRED")
+        self.assertEqual(Organisation.objects.get(pk=self.acme.pk).status, "active")

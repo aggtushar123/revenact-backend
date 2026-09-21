@@ -1,11 +1,14 @@
 """The internal portal: Revenact staff administering every tenant.
 
-    GET  /api/v1/platform/overview/
-    GET  /api/v1/platform/organisations/?q=&status=
-    GET  /api/v1/platform/organisations/<id>/
-    POST /api/v1/platform/organisations/<id>/status/   { status, reason }
-    POST /api/v1/platform/organisations/<id>/owner/    { user_id }
-    GET  /api/v1/platform/staff/
+    GET    /api/v1/platform/overview/
+    GET    /api/v1/platform/organisations/?q=&status=
+    POST   /api/v1/platform/organisations/                { name, owner_email, owner_name? }
+    GET    /api/v1/platform/organisations/<id>/
+    PATCH  /api/v1/platform/organisations/<id>/           { name }
+    DELETE /api/v1/platform/organisations/<id>/           { reason }   (archives; nothing is purged)
+    POST   /api/v1/platform/organisations/<id>/status/    { status, reason }
+    POST   /api/v1/platform/organisations/<id>/owner/     { user_id }
+    GET    /api/v1/platform/staff/
 
 Every view requires `IsPlatformStaff`: a superuser signed in with a second
 factor. Every action is audited with the tenant as `organisation`, so a
@@ -95,15 +98,75 @@ class OverviewView(views.APIView):
 
 
 class OrganisationListView(views.APIView):
-    """GET /api/v1/platform/organisations/?q=<name or domain>&status=<status>"""
+    """GET /api/v1/platform/organisations/?q=<name or domain>&status=<status>
+    POST /api/v1/platform/organisations/ { name, owner_email, owner_name? }
+
+    Creating a tenant creates its **root user** in the same transaction: the
+    owner, holding the built-in Admin role, with no password (they sign in
+    with Google or Microsoft on that address, or set a password from the
+    reset email if mail is configured). One tenant per person in this phase,
+    so an address already in use anywhere is refused.
+
+    Archived organisations are left out unless asked for by status.
+    """
 
     permission_classes = [IsPlatformStaff]
+
+    def post(self, request):
+        from django.db import transaction
+
+        from services.email import send_password_reset_email
+
+        name = str(request.data.get("name", "")).strip()
+        owner_email = str(request.data.get("owner_email", "")).strip().lower()
+        owner_name = str(request.data.get("owner_name", "")).strip()
+        if not name:
+            return _error("INVALID_NAME", "Give the organisation a name.")
+        if "@" not in owner_email:
+            return _error("INVALID_EMAIL", "The owner needs a valid email address.")
+        if User.objects.filter(email__iexact=owner_email).exists():
+            return _error("EMAIL_TAKEN", "That address already belongs to an account.")
+
+        with transaction.atomic():
+            organisation = Organisation.objects.create(name=name)
+            owner = User.objects.create_user(
+                email=owner_email,
+                password=None,
+                name=owner_name or owner_email.split("@")[0],
+                organisation=organisation,
+                role=User.Role.ADMIN,
+            )
+            ownership.claim(owner, organisation)
+
+        audit.record(  # SOC2:LOG-01
+            "platform.organisation.created",
+            request=request,
+            actor=request.user,
+            organisation=organisation,
+            target=organisation,
+            metadata={"name": name, "owner": owner_email},
+        )
+        # Best effort: lets the owner choose a password where mail is set up;
+        # a provider sign-in on the same address works regardless.
+        try:
+            send_password_reset_email(owner)
+            mailed = True
+        except Exception:  # noqa: BLE001 - mail is optional here
+            mailed = False
+
+        organisation = Organisation.objects.prefetch_related("domains").get(pk=organisation.pk)
+        return Response(
+            {**_summary(organisation, {"members_active": 1}), "owner_mailed": mailed},
+            status=status.HTTP_201_CREATED,
+        )
 
     def get(self, request):
         rows = Organisation.objects.all().prefetch_related("domains").order_by("name")
         wanted = request.query_params.get("status", "")
         if wanted:
             rows = rows.filter(status=wanted)
+        else:
+            rows = rows.exclude(status=Organisation.Status.ARCHIVED)
         q = request.query_params.get("q", "").strip()
         if q:
             rows = rows.filter(Q(name__icontains=q) | Q(domains__domain__icontains=q)).distinct()
@@ -136,9 +199,61 @@ class OrganisationListView(views.APIView):
 
 
 class OrganisationDetailView(views.APIView):
-    """GET /api/v1/platform/organisations/<id>/ — one tenant's metadata."""
+    """GET / PATCH / DELETE /api/v1/platform/organisations/<id>/.
+
+    PATCH renames. DELETE **archives**: the organisation stops accepting
+    sign-ins (like suspension) and drops out of the default list, but every
+    row it owns stays where it is. Purging a tenant's data is a deliberate,
+    separate act with its own retention rules, not something a button on a
+    list page does.
+    """
 
     permission_classes = [IsPlatformStaff]
+
+    def patch(self, request, pk):
+        organisation = Organisation.objects.filter(pk=pk).first()
+        if organisation is None:
+            return _error(
+                "ORGANIZATION_NOT_FOUND", "No such organisation.", status.HTTP_404_NOT_FOUND
+            )
+        name = str(request.data.get("name", "")).strip()
+        if not name:
+            return _error("INVALID_NAME", "Give the organisation a name.")
+        previous = organisation.name
+        organisation.name = name
+        organisation.save(update_fields=["name"])
+        audit.record(  # SOC2:LOG-01
+            "platform.organisation.updated",
+            request=request,
+            actor=request.user,
+            organisation=organisation,
+            target=organisation,
+            metadata={"fields": ["name"], "from": previous, "to": name},
+        )
+        return Response(
+            {"id": organisation.id, "name": organisation.name, "slug": organisation.slug}
+        )
+
+    def delete(self, request, pk):
+        organisation = Organisation.objects.filter(pk=pk).first()
+        if organisation is None:
+            return _error(
+                "ORGANIZATION_NOT_FOUND", "No such organisation.", status.HTTP_404_NOT_FOUND
+            )
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return _error("REASON_REQUIRED", "Say why; it goes on the record.")
+        previous = organisation.status
+        Organisation.objects.filter(pk=pk).update(status=Organisation.Status.ARCHIVED)
+        audit.record(  # SOC2:LOG-01
+            "platform.organisation.status",
+            request=request,
+            actor=request.user,
+            organisation=organisation,
+            target=organisation,
+            metadata={"from": previous, "to": "archived", "reason": reason[:500]},
+        )
+        return Response({"status": Organisation.Status.ARCHIVED})
 
     def get(self, request, pk):
         organisation = Organisation.objects.filter(pk=pk).prefetch_related("domains").first()
@@ -224,9 +339,13 @@ class OrganisationStatusView(views.APIView):
             )
 
         new_status = str(request.data.get("status", ""))
-        allowed = {Organisation.Status.ACTIVE, Organisation.Status.SUSPENDED}
+        allowed = {
+            Organisation.Status.ACTIVE,
+            Organisation.Status.SUSPENDED,
+            Organisation.Status.ARCHIVED,
+        }
         if new_status not in allowed:
-            return _error("INVALID_STATUS", "Status must be active or suspended.")
+            return _error("INVALID_STATUS", "Status must be active, suspended or archived.")
         reason = str(request.data.get("reason", "")).strip()
         if not reason:
             return _error("REASON_REQUIRED", "Say why; it goes on the record.")
