@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
@@ -356,3 +357,28 @@ class User(AbstractBaseUser, PermissionsMixin):
         from services.identity.context import capabilities_for
 
         return capability in capabilities_for(self)
+
+
+class TOTPDevice(models.Model):
+    """One authenticator app per person, for the second factor.
+
+    `secret_encrypted` is Fernet at rest (see services.mail.crypto); nothing
+    here is ever serialised. `confirmed_at` is null until the person proves
+    the app works, and an unconfirmed device grants nothing. `last_counter`
+    is the replay guard: a code is accepted once. `recovery_codes` holds
+    SHA-256 digests only; the plain codes are shown exactly once, at
+    enrolment. See services.accounts.mfa for every operation.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, related_name="totp_device", on_delete=models.CASCADE
+    )
+    secret_encrypted = models.TextField()
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    last_counter = models.BigIntegerField(default=-1)
+    recovery_codes = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        state = "confirmed" if self.confirmed_at else "pending"
+        return f"TOTP for {self.user_id} ({state})"

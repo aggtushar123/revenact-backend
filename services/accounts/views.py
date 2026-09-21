@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import generics, status, views
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -16,6 +17,7 @@ from core.throttling import (
     TokenRefreshThrottle,
 )
 
+from . import mfa
 from .capabilities import Capability
 from .models import Role, User
 from .permissions import CanManageOrgSettings, CanManageUsers
@@ -82,8 +84,143 @@ class LoginView(TokenObtainPairView):
         # SimpleJWT never calls django.contrib.auth.login().
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        audit.record("auth.login", request=request, actor=serializer.user)  # SOC2:LOG-01
+        user = serializer.user
+
+        # A second factor is owed: no tokens yet, only a short-lived challenge
+        # naming the person. The password was right, and that is all this
+        # response admits to.
+        if mfa.is_enrolled(user):
+            audit.record(  # SOC2:LOG-01
+                "auth.login", request=request, actor=user, metadata={"stage": "password"}
+            )
+            return Response(
+                {"mfa_required": True, "mfa_token": mfa.issue_challenge(user)},
+                status=status.HTTP_200_OK,
+            )
+
+        audit.record("auth.login", request=request, actor=user)  # SOC2:LOG-01
         return Response(serializer.validated_data, status=status.HTTP_200_OK)
+
+
+class MfaLoginView(generics.GenericAPIView):
+    """POST /api/v1/auth/login/mfa/ — { mfa_token, code } → { access, refresh, user }.
+
+    The second half of a password login for someone with a second factor.
+    Tokens minted here carry `mfa: true`, which is what platform endpoints
+    require (see IsPlatformStaff): a session that skipped the second factor
+    can never reach them, however it was obtained.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+    throttle_classes = [LoginIPThrottle]  # SOC2:AUTH-06
+
+    def post(self, request):
+        try:
+            user = mfa.read_challenge(str(request.data.get("mfa_token", "")))
+            with transaction.atomic():
+                method = mfa.verify(user, str(request.data.get("code", "")))
+        except mfa.MFAError as exc:
+            audit.record(  # SOC2:LOG-01
+                "auth.login", request=request, outcome="failure", metadata={"reason": exc.code}
+            )
+            return _error(exc.code, exc.message, status.HTTP_401_UNAUTHORIZED)
+
+        refresh = RefreshToken.for_user(user)
+        refresh["mfa"] = True  # inherited by every access token derived from it
+        audit.record(  # SOC2:LOG-01
+            "auth.login", request=request, actor=user, metadata={"mfa": method}
+        )
+        return Response(
+            {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user": UserSerializer(user).data,
+            }
+        )
+
+
+class MfaSetupView(generics.GenericAPIView):
+    """POST /api/v1/auth/me/mfa/setup/ — start enrolling an authenticator app.
+
+    Returns the secret and the `otpauth://` URI the app scans. Nothing is on
+    until `confirm/` proves the app produces the right codes.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            _, secret = mfa.begin_enrolment(request.user)
+        except mfa.MFAError as exc:
+            return _error(exc.code, exc.message)
+        return Response(
+            {"secret": secret, "otpauth_uri": mfa.otpauth_uri(secret, email=request.user.email)}
+        )
+
+
+class MfaConfirmView(generics.GenericAPIView):
+    """POST /api/v1/auth/me/mfa/confirm/ — { code } → { recovery_codes }.
+
+    The recovery codes are shown once, here, and never again.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            codes = mfa.confirm_enrolment(request.user, str(request.data.get("code", "")))
+        except mfa.MFAError as exc:
+            return _error(exc.code, exc.message)
+        audit.record("mfa.enrolled", request=request, target=request.user)  # SOC2:LOG-01
+        return Response({"recovery_codes": codes})
+
+
+class MfaDisableView(generics.GenericAPIView):
+    """POST /api/v1/auth/me/mfa/disable/ — { code }. A current code is required:
+    a signed-in session alone must not be enough to weaken the account."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            with transaction.atomic():
+                mfa.disable(request.user, str(request.data.get("code", "")))
+        except mfa.MFAError as exc:
+            return _error(exc.code, exc.message)
+        audit.record("mfa.disabled", request=request, target=request.user)  # SOC2:LOG-01
+        return Response({"enrolled": False})
+
+
+class OrganisationOwnerView(generics.GenericAPIView):
+    """POST /api/v1/auth/organisation/owner/ — { user_id }: hand the
+    organisation to another active member. Only the current owner may do
+    this from here (platform staff have their own route)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from services.identity import ownership
+
+        try:
+            membership = ownership.transfer(
+                request.user.organisation,
+                to_user_id=request.data.get("user_id"),
+                actor=request.user,
+                request=request,
+            )
+        except ownership.OwnershipError as exc:
+            http_status = (
+                status.HTTP_403_FORBIDDEN
+                if exc.code == "NOT_OWNER"
+                else status.HTTP_400_BAD_REQUEST
+            )
+            return _error(exc.code, exc.message, http_status)
+        return Response({"owner": {"id": membership.user_id, "name": membership.user.name}})
+
+
+def _error(code, message, http_status=status.HTTP_400_BAD_REQUEST):
+    return Response({"success": False, "error": {"code": code, "message": message}}, http_status)
 
 
 class RefreshView(TokenRefreshView):

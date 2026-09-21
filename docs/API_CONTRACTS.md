@@ -187,6 +187,32 @@ they were created with.
 `refresh`). `401` on bad credentials:
 `{"detail": "No active account found with the given credentials"}`.
 
+### `POST /api/v1/auth/login/mfa/`
+
+The second half of a password login for someone with a second factor. When
+the person has an authenticator enrolled, `POST /auth/login/` answers
+`200 { "mfa_required": true, "mfa_token": "<5-minute challenge>" }` and no
+tokens. Send `{ mfa_token, code }` here (a six-digit app code or a recovery
+code) to receive the usual `{ access, refresh, user }`. Tokens minted this way
+carry `mfa: true`, which survives refresh and is what `/api/v1/platform/`
+requires. `401` with `MFA_CODE_INVALID`, `MFA_CODE_REUSED` (a code works
+once), `MFA_CHALLENGE_EXPIRED` or `MFA_CHALLENGE_INVALID`.
+
+### `POST /api/v1/auth/me/mfa/{setup,confirm,disable}/`
+
+Auth: `IsAuthenticated`. `setup/` → `{ secret, otpauth_uri }` (nothing is on
+yet; calling it again replaces an unconfirmed secret). `confirm/ { code }` →
+`{ recovery_codes: [8] }`, shown once and stored hashed. `disable/ { code }`
+needs a current code. `/auth/me/` reports `mfa_enrolled`.
+
+### `POST /api/v1/auth/organisation/owner/`
+
+`{ user_id }`. Only the current owner may hand the organisation to another
+active member, who is given the built-in Admin role. `403 NOT_OWNER`,
+`400 NOT_A_MEMBER | ALREADY_OWNER`. `/auth/organisation/` carries `owner`
+`{id, name, email}` and `/auth/me/` carries `is_owner`. Another administrator
+cannot deactivate or re-role the owner (`400` from `PATCH /auth/users/<id>/`).
+
 ### `POST /api/v1/auth/token/refresh/`
 
 Auth: `AllowAny`. `{"refresh": "<jwt>"}` → `{"access": "<jwt>"}`. Standard

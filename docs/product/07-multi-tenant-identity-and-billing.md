@@ -249,6 +249,27 @@ for a personal address), consumes no seat until accepted, expires after seven
 days, and its inviter is held to the same rule as an approver: they cannot
 grant a capability they do not hold.
 
+### 4.7 Owners, and the platform surface
+
+Every organisation has exactly one **owner** (`OrganizationMembership.is_owner`,
+partial unique): the founder at signup or workspace creation, backfilled for
+existing tenants as the earliest-joined admin. The owner is the billing
+contact; other administrators cannot deactivate or demote them; ownership
+moves only when the owner hands it over (`POST /auth/organisation/owner/`,
+the new owner becomes Admin) or when platform staff do it.
+
+**Platform staff** are the existing superusers: they belong to no tenant,
+which is what makes them the right people to administer all of them. Because
+that account is the one worth stealing, platform access needs a **second
+factor**: TOTP (RFC 6238, implemented in `services/accounts/mfa.py` with no
+new dependency), secret Fernet-encrypted at rest, one-use codes, hashed
+single-use recovery codes. A password login for an enrolled person returns a
+challenge, not a session; only `POST /auth/login/mfa/` mints tokens, and
+those carry `mfa: true`. `IsPlatformStaff` requires superuser *and* that
+claim, so a session that skipped the second factor can never reach
+`/api/v1/platform/`. The portal itself (organisations, owners, status,
+billing once it exists) sees tenant metadata only, never tenant data.
+
 ## 5. Licensing for a future downloadable build
 
 This is the requirement most easily got wrong, so it is stated plainly.
@@ -373,7 +394,7 @@ migration.
 4. Access requests (4a, PR #38), self-serve workspaces (4b, §4.5, PR #39), invitations (4c, §4.6, PR #40) — done
 5. Billing account, plans, credit ledger, seat allocation with the locking test first
 6. Payment provider interface, one implementation, idempotent webhooks
-7. Platform-admin surface
+7. Platform-admin surface — owners + staff MFA (7a, §4.7); portal API and pages (7b, next)
 8. Frontend: login, pending state, approvals, billing, platform admin
 9. Expanded capability vocabulary and the data migration
 10. Drop the legacy columns

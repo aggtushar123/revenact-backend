@@ -29,6 +29,19 @@ class OrganisationSerializer(serializers.ModelSerializer):
     )
     global_attributes = serializers.SerializerMethodField()
     global_attribute_choices = serializers.SerializerMethodField()
+    owner = serializers.SerializerMethodField()
+
+    def get_owner(self, obj):
+        from services.identity import ownership
+
+        membership = ownership.owner_membership(obj)
+        if membership is None:
+            return None
+        return {
+            "id": membership.user_id,
+            "name": membership.user.name,
+            "email": membership.user.email,
+        }
 
     class Meta:
         model = Organisation
@@ -44,6 +57,7 @@ class OrganisationSerializer(serializers.ModelSerializer):
             "ai_agent_tone_display",
             "global_attributes",
             "global_attribute_choices",
+            "owner",
         ]
         # `slug` is read-only: it is the tenant's identity. `name` is what the
         # global configuration card edits, gated on manage_org_settings by the
@@ -137,6 +151,7 @@ class UserSerializer(serializers.ModelSerializer):
             "is_active",
             "has_password",
             "tour_completed_at",
+            "is_superuser",
         ]
 
     def get_avatar(self, obj):
@@ -194,14 +209,18 @@ class SignupSerializer(serializers.Serializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        from services.identity import ownership
+
         organisation = Organisation.objects.create(name=validated_data["organisation_name"])
-        return User.objects.create_user(
+        user = User.objects.create_user(
             email=validated_data["email"],
             password=validated_data["password"],
             name=validated_data["name"],
             organisation=organisation,
             role=User.Role.ADMIN,
         )
+        ownership.claim(user, organisation)
+        return user
 
 
 class LoginSerializer(TokenObtainPairSerializer):
@@ -372,9 +391,18 @@ class MeSerializer(UserSerializer):
     # Only here, not on UserSerializer, which is embedded in list rows where
     # one query per row would be a real cost.
     sign_in_providers = serializers.SerializerMethodField()
+    # Owner and second-factor state, one query each; your own profile only.
+    is_owner = serializers.SerializerMethodField()
+    mfa_enrolled = serializers.SerializerMethodField()
 
     class Meta(UserSerializer.Meta):
-        fields = [*UserSerializer.Meta.fields, "tour_completed", "sign_in_providers"]
+        fields = [
+            *UserSerializer.Meta.fields,
+            "tour_completed",
+            "sign_in_providers",
+            "is_owner",
+            "mfa_enrolled",
+        ]
         read_only_fields = [
             "id",
             "email",
@@ -385,10 +413,21 @@ class MeSerializer(UserSerializer):
             "is_active",
             "has_password",
             "tour_completed_at",
+            "is_superuser",
         ]
 
     def get_sign_in_providers(self, obj) -> list:
         return sorted(obj.identities.values_list("provider", flat=True))
+
+    def get_mfa_enrolled(self, obj) -> bool:
+        from . import mfa
+
+        return mfa.is_enrolled(obj)
+
+    def get_is_owner(self, obj) -> bool:
+        from services.identity import ownership
+
+        return ownership.is_owner(obj)
 
     def update(self, instance, validated_data):
         if "tour_completed" in validated_data:
@@ -530,13 +569,26 @@ class EditOrgUserSerializer(serializers.ModelSerializer):
         return role
 
     def validate(self, attrs):
-        """The no-lockout rule: an organisation must always keep at least
-        one *active* person who can manage users.
+        """Two rules. The owner's standing is theirs alone: another
+        administrator cannot deactivate or re-role the person the
+        organisation belongs to (platform staff can, from their own
+        surface). And the no-lockout rule: an organisation must always
+        keep at least one *active* person who can manage users.
 
         Both a role change and a deactivation can violate it, so it's
         checked here rather than in either field's own validator —
         strip that last person's access and nobody could ever add a
         member, mint a role, or restore anyone again."""
+
+        from services.identity import ownership
+
+        actor = self.context["request"].user
+        touches_standing = "role" in attrs or ("is_active" in attrs and not attrs["is_active"])
+        if touches_standing and actor.pk != self.instance.pk and ownership.is_owner(self.instance):
+            raise serializers.ValidationError(
+                "That person owns the organisation. "
+                "Only they, or Revenact staff, can change their access."
+            )
 
         new_role = attrs.get("role", self.instance.role)
         will_be_active = attrs.get("is_active", self.instance.is_active)

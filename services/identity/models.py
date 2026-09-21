@@ -192,6 +192,10 @@ class OrganizationMembership(models.Model):
         settings.AUTH_USER_MODEL, related_name="memberships", on_delete=models.CASCADE
     )
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    # The one person the organisation ultimately belongs to: billing contact,
+    # un-demotable by other administrators, transferable only by themselves
+    # or by platform staff. Exactly one per organisation (partial unique).
+    is_owner = models.BooleanField(default=False)
     role = models.ForeignKey(
         "accounts.Role",
         related_name="memberships",
@@ -232,7 +236,13 @@ class OrganizationMembership(models.Model):
                 fields=["organisation", "user"],
                 condition=models.Q(status__in=LIVE_MEMBERSHIP_STATUSES),
                 name="one_live_membership_per_user_per_organisation",
-            )
+            ),
+            # One owner per organisation.
+            models.UniqueConstraint(
+                fields=["organisation"],
+                condition=models.Q(is_owner=True),
+                name="one_owner_per_organisation",
+            ),
         ]
         indexes = [
             models.Index(fields=["user", "status"]),

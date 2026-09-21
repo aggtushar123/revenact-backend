@@ -5,6 +5,11 @@ from . import views
 urlpatterns = [
     path("signup/", views.SignupView.as_view(), name="signup"),
     path("login/", views.LoginView.as_view(), name="login"),
+    path("login/mfa/", views.MfaLoginView.as_view(), name="login-mfa"),
+    path("me/mfa/setup/", views.MfaSetupView.as_view(), name="mfa-setup"),
+    path("me/mfa/confirm/", views.MfaConfirmView.as_view(), name="mfa-confirm"),
+    path("me/mfa/disable/", views.MfaDisableView.as_view(), name="mfa-disable"),
+    path("organisation/owner/", views.OrganisationOwnerView.as_view(), name="organisation-owner"),
     path("token/refresh/", views.RefreshView.as_view(), name="token-refresh"),
     path("logout/", views.LogoutView.as_view(), name="logout"),
     path("password-reset/", views.ForgotPasswordView.as_view(), name="password-reset"),
