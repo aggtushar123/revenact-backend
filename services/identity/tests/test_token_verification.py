@@ -159,6 +159,37 @@ class MicrosoftIssuerTests(TestCase):
         self.assertEqual(claims["tid"], tenant)
         self.assertTrue(hasattr(microsoft, "MicrosoftLoginProvider"))
 
+    def test_the_issuer_is_derived_from_the_verified_claims(self):
+        """Deriving the issuer from `tid` must happen after the signature
+        check, so the provider hands the verifier a function of the verified
+        claims and never decodes without verifying (semgrep's
+        unverified-jwt-decode is the rule this defends)."""
+        from services.identity.providers import base, microsoft
+
+        tenant = "11111111-2222-3333-4444-555555555555"
+        base._jwk_clients["https://jwks.test/keys"] = FakeJWKClient()
+
+        def verify(token):
+            return verify_id_token(
+                token,
+                jwks_uri="https://jwks.test/keys",
+                issuers=microsoft._issuers_for,
+                audience=AUDIENCE,
+                nonce=NONCE,
+            )
+
+        token = make_token(iss=f"https://login.microsoftonline.com/{tenant}/v2.0", tid=tenant)
+        self.assertEqual(verify(token)["tid"], tenant)
+
+        # A token whose issuer does not match its own tenant claim is refused.
+        forged = make_token(iss="https://login.microsoftonline.com/other/v2.0", tid=tenant)
+        with self.assertRaises(ProviderError):
+            verify(forged)
+
+        # No tenant claim, no acceptable issuer, nothing accepted.
+        with self.assertRaises(ProviderError):
+            verify(make_token(iss="https://login.microsoftonline.com/x/v2.0"))
+
     def test_a_token_from_another_tenant_is_refused(self):
         from services.identity.providers import base
 

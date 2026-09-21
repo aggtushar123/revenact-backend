@@ -1,14 +1,14 @@
 """Sign in with Microsoft, over OpenID Connect.
 
 Microsoft's issuer carries the tenant id, so a `common` (multi-tenant) app sees
-a different `iss` per customer. The accepted issuers are therefore built from
-the token's own `tid` claim only after the signature has been verified, which
-is why `verify_id_token` takes a list rather than a single value.
+a different `iss` per customer. The accepted issuer is therefore derived from
+the token's own `tid` claim, and only after the signature has been verified:
+`verify_id_token` takes a function of the verified claims for exactly this.
+The token is never decoded without verification, not even to peek.
 """
 
 import urllib.parse
 
-import jwt
 from django.conf import settings
 
 from .base import LoginProvider, ProviderError, VerifiedIdentity, http_json, verify_id_token
@@ -25,6 +25,14 @@ def _jwks_uri() -> str:
 
 
 SCOPES = "openid email profile"
+
+
+def _issuers_for(claims: dict) -> list[str]:
+    """The one issuer a token from this tenant may carry. Called by
+    `verify_id_token` with claims whose signature has already been checked,
+    so the `tid` used here is the tenant's own word, not the bearer's."""
+    tenant_id = claims.get("tid")
+    return [f"https://login.microsoftonline.com/{tenant_id}/v2.0"] if tenant_id else []
 
 
 class MicrosoftLoginProvider(LoginProvider):
@@ -67,23 +75,14 @@ class MicrosoftLoginProvider(LoginProvider):
         if not id_token:
             raise ProviderError("Microsoft returned no id_token")
 
-        # Read the tenant id without trusting it: this is an unverified peek
-        # used only to build the list of issuers the *verified* token is then
-        # required to match. The signature check happens inside verify_id_token.
-        try:
-            unverified = jwt.decode(id_token, options={"verify_signature": False})
-        except jwt.InvalidTokenError as exc:
-            raise ProviderError("the provider's response could not be verified") from exc
-        tenant_id = unverified.get("tid")
-        issuers = [f"https://login.microsoftonline.com/{tenant_id}/v2.0"] if tenant_id else []
-
         claims = verify_id_token(
             id_token,
             jwks_uri=_jwks_uri(),
-            issuers=issuers,
+            issuers=_issuers_for,
             audience=settings.MICROSOFT_OAUTH_CLIENT_ID,
             nonce=nonce,
         )
+        tenant_id = claims.get("tid")
 
         # Entra ID puts the address in `email` when the tenant publishes it and
         # in `preferred_username` otherwise.

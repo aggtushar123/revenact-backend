@@ -24,6 +24,7 @@ particular is what stops a token captured from another session being replayed
 here.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import jwt
@@ -101,7 +102,7 @@ def verify_id_token(
     id_token: str,
     *,
     jwks_uri: str,
-    issuers: list[str],
+    issuers: list[str] | Callable[[dict], list[str]],
     audience: str,
     nonce: str,
 ) -> dict:
@@ -109,8 +110,11 @@ def verify_id_token(
 
     Every check that makes the token evidence is required here, and `options`
     spells them out rather than relying on library defaults that could change
-    under us. `issuers` is a list because Microsoft's issuer carries the tenant
-    id, so a multi-tenant app legitimately accepts more than one.
+    under us. `issuers` is a list, or a function of the *verified* claims that
+    returns one: Microsoft's issuer carries the tenant id, so a multi-tenant
+    app only knows which issuer to expect once it can trust the `tid` claim,
+    and it can trust it only after the signature check. Nothing here ever
+    reads a claim before that check.
     """
     if not id_token:
         raise ProviderError("the provider returned no id_token")
@@ -142,7 +146,8 @@ def verify_id_token(
         # Never echo the token or the library's detail back to the caller.
         raise ProviderError("the provider's response could not be verified") from exc
 
-    if claims.get("iss") not in issuers:
+    accepted = issuers(claims) if callable(issuers) else issuers
+    if not accepted or claims.get("iss") not in accepted:
         raise ProviderError("the provider's response could not be verified")
 
     # Replay protection: a token minted for a different login attempt has a
