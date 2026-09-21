@@ -208,6 +208,34 @@ webhook, never from a client saying payment succeeded.
 
 ---
 
+### 4.5 Self-serve workspaces, and the employee who gets there first
+
+A verified corporate address whose domain nobody has claimed is offered the
+workspace form rather than refused (`WORKSPACE_SETUP_REQUIRED`). The obvious
+objection is an employee creating "Acme" before Acme's management knows. The
+design makes that harmless rather than forbidding it:
+
+1. **A self-made workspace holds only its founder.** It contains no company
+   data and no seats beyond the founder's until billing is set up.
+2. **The domain is attached as a claim, not ownership.** `OrganizationDomain`
+   now allows several organisations to hold a `pending` claim on one domain
+   and exactly one to hold it `verified` (partial unique constraint). Only a
+   verified domain routes sign-ins.
+3. **Proof supersedes claims.** `domains.verify` promoting one organisation's
+   record revokes every other record for that domain, with a
+   `domain.superseded` audit event each. DNS control is the only evidence, and
+   only whoever controls the company's DNS can produce it, so the company
+   always wins and an earlier claim never stands in its way.
+4. **Colleagues are never auto-joined to a claim.** The second person from the
+   domain is routed to the existing workspace as an *access request* the
+   founder must approve explicitly — an administrator's decision, not domain
+   trust — and never handed a second workspace. Two claims and no proof is
+   `DOMAIN_NOT_VERIFIED`: nobody can be chosen.
+5. **Authenticating is still not joining.** `login._require_standing` refuses
+   a session to anyone without an active membership, so a pending person who
+   signs in a second time waits again rather than opening an empty app, and is
+   re-routed if the domain changed hands while they waited.
+
 ## 5. Licensing for a future downloadable build
 
 This is the requirement most easily got wrong, so it is stated plainly.
@@ -326,10 +354,10 @@ migration.
 
 ## 8. Recommended build order
 
-1. Membership, Identity, Department; backfill; `request.membership` (no behaviour change)
-2. OAuth login reusing the mail provider abstraction, behind a flag
-3. Domains and DNS verification
-4. Access requests and invitations
+1. Membership, Identity, Department; backfill; `request.membership` (no behaviour change) — done, PR #35
+2. OAuth login reusing the mail provider abstraction, behind a flag — done, PR #36
+3. Domains and DNS verification — done, PR #38 (with 4a)
+4. Access requests (4a, PR #38), self-serve workspaces (4b, §4.5), invitations (4c, open)
 5. Billing account, plans, credit ledger, seat allocation with the locking test first
 6. Payment provider interface, one implementation, idempotent webhooks
 7. Platform-admin surface

@@ -164,12 +164,30 @@ class OrganizationDomainTests(TestCase):
         self.acme = Organisation.objects.create(name="Acme Inc")
         self.rival = Organisation.objects.create(name="Rival Ltd")
 
-    def test_a_domain_cannot_be_claimed_by_two_organisations(self):
-        """Otherwise a corporate sign-in would be ambiguous about the tenant."""
+    def test_a_domain_may_be_claimed_by_two_organisations(self):
+        """A claim proves nothing, so two of them collide with nothing. This
+        is what lets a company claim, and then verify, a domain an employee
+        attached to a workspace of their own first."""
+        OrganizationDomain.objects.create(organisation=self.acme, domain="acme.io")
+        OrganizationDomain.objects.create(organisation=self.rival, domain="acme.io")
+        self.assertEqual(OrganizationDomain.objects.filter(domain="acme.io").count(), 2)
+
+    def test_an_organisation_cannot_claim_a_domain_twice(self):
         OrganizationDomain.objects.create(organisation=self.acme, domain="acme.io")
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
-                OrganizationDomain.objects.create(organisation=self.rival, domain="acme.io")
+                OrganizationDomain.objects.create(organisation=self.acme, domain="acme.io")
+
+    def test_a_domain_cannot_be_verified_by_two_organisations(self):
+        """Verified domains route sign-ins, and routing cannot be ambiguous."""
+        OrganizationDomain.objects.create(
+            organisation=self.acme, domain="acme.io", verification_status="verified"
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                OrganizationDomain.objects.create(
+                    organisation=self.rival, domain="acme.io", verification_status="verified"
+                )
 
     def test_a_new_domain_is_not_verified(self):
         """Typing a domain is a claim, not evidence of owning it."""

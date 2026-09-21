@@ -81,15 +81,15 @@ class ResolveUserTests(TestCase):
         self.assertEqual(caught.exception.code, "EMAIL_NOT_VERIFIED")
         self.assertFalse(Identity.objects.exists())
 
-    def test_an_address_from_an_unclaimed_domain_creates_nothing(self):
-        """Phase 2 answered `NO_ACCOUNT` here. Phase 4 says something more
-        useful: nobody has proved they own that domain, so there is no tenant
-        to ask to join. Either way nothing is created — see
-        `test_onboarding.py` for the case where the domain *is* verified and a
-        request is raised."""
+    def test_an_address_from_an_unclaimed_domain_is_offered_a_workspace(self):
+        """Phase 2 answered `NO_ACCOUNT` here and phase 4 `DOMAIN_NOT_VERIFIED`.
+        Phase 5 says the useful thing: nobody has claimed that domain, so this
+        person may start a workspace. Still nothing is created until they do
+        — see `test_workspace.py` for what happens when they submit the form."""
         with self.assertRaises(login.LoginError) as caught:
             login.resolve_user(verified(email="stranger@elsewhere.com", subject="g-9"))
-        self.assertEqual(caught.exception.code, "DOMAIN_NOT_VERIFIED")
+        self.assertEqual(caught.exception.code, "WORKSPACE_SETUP_REQUIRED")
+        self.assertTrue(caught.exception.setup)
         self.assertEqual(User.objects.filter(email="stranger@elsewhere.com").count(), 0)
 
     def test_a_deactivated_account_cannot_sign_in(self):
@@ -243,6 +243,14 @@ class EndpointTests(APITestCase):
         self.assertTrue(exchange.data["access"])
 
     def test_a_refusal_redirects_with_a_code_the_frontend_can_explain(self):
+        """Two workspaces claim the domain and neither has proved it, so
+        nobody can be chosen: the one newcomer case that is a plain refusal."""
+        from services.identity.models import OrganizationDomain
+
+        for name in ("One", "Two"):
+            OrganizationDomain.objects.create(
+                organisation=Organisation.objects.create(name=name), domain="elsewhere.com"
+            )
         stub = StubProvider(identity=verified(email="stranger@elsewhere.com", subject="g-9"))
         with patch.object(login.providers, "get", return_value=stub):
             self.client.post("/api/v1/auth/oauth/google/start/")
@@ -253,6 +261,22 @@ class EndpointTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_302_FOUND)
         self.assertIn("error=DOMAIN_NOT_VERIFIED", response["Location"])
+
+    def test_an_unclaimed_domain_redirects_to_the_workspace_form(self):
+        """A `setup` code and nothing else: no error, no address, no token."""
+        stub = StubProvider(identity=verified(email="stranger@elsewhere.com", subject="g-9"))
+        with patch.object(login.providers, "get", return_value=stub):
+            self.client.post("/api/v1/auth/oauth/google/start/")
+            response = self.client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "abc", "state": stub.seen["state"]},
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        location = response["Location"]
+        self.assertIn("/auth/callback?setup=", location)
+        self.assertNotIn("error=", location)
+        self.assertNotIn("elsewhere.com", location)
 
     def test_a_provider_refusal_is_reported_without_a_round_trip(self):
         with patch.object(login.providers, "get", return_value=StubProvider()):
