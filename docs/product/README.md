@@ -16,6 +16,7 @@ they sit far from their subject. Four are here; two are in the frontend.
 | 4 | [App Flow](../../../react-ts-app/docs/04-app-flow.md) | frontend | Every route and user journey, with the files and endpoints involved |
 | 5 | [Backend Schema](05-backend-schema.md) | backend | Every model, field, relation, constraint and visibility rule |
 | 6 | [Implementation Plan](06-implementation-plan.md) | backend | The work ahead as bite-sized tasks with tests |
+| 7 | [Multi-tenant identity and billing](07-multi-tenant-identity-and-billing.md) | backend | Architecture assessment and target design for identity, RBAC, onboarding, seats and billing |
 
 ## Relationship to the other documents in these repositories
 
@@ -50,6 +51,7 @@ they sit far from their subject. Four are here; two are in the frontend.
 | App Flow | A route, flow or guard changes |
 | Backend Schema | Any migration |
 | Implementation Plan | A task is finished, added or re-ordered |
+| Multi-tenant identity and billing | The design changes, or a phase of it ships |
 
 ## Skills that maintain them
 

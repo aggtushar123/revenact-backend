@@ -66,6 +66,19 @@ class Organisation(models.Model):
         AUD = "AUD", "Australian Dollar (A$)"
         JPY = "JPY", "Japanese Yen (¥)"
 
+    class Status(models.TextChoices):
+        """Whether the tenant may be used.
+
+        Checked at authorization time rather than by editing every membership:
+        suspending a company for non-payment must not require touching a
+        thousand rows, and must not be undone by a stale membership somewhere.
+        """
+
+        PENDING = "pending", "Pending"
+        ACTIVE = "active", "Active"
+        SUSPENDED = "suspended", "Suspended"
+        ARCHIVED = "archived", "Archived"
+
     class AgentTone(models.TextChoices):
         PROFESSIONAL = "professional", "Professional"
         FRIENDLY = "friendly", "Friendly"
@@ -80,6 +93,12 @@ class Organisation(models.Model):
         default="",
         help_text="One of Customer.LifecycleStage's own values, or blank "
         "for no tenant-wide default (see this model's own docstring).",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        help_text="Existing tenants are active; nothing reads this yet (phase 1).",
     )
     ai_agent_enabled = models.BooleanField(default=True)
     #: The global configuration card (Settings > Data): which customer
