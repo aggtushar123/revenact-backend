@@ -18,6 +18,9 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `auth.login` (success) | `LoginView` | user | — | — |
 | `auth.login` (success, `via: session`) | `core.signals` (`user_logged_in`) | user | — | Django admin session logins |
 | `auth.login` (failure) | `core.signals` (`user_login_failed`) | — | — | `email` attempted |
+| `auth.login` (success, `via: oauth`) | `services.identity.views.CallbackView` | user | — | provider |
+| `auth.login` (failure, `via: oauth`) | `services.identity.views.CallbackView` | — | — | provider, refusal `reason` code |
+| `identity.linked` | `services.identity.login.resolve_user` | user | User (self) | provider; first sign-in with that provider |
 | `auth.logout` | `LogoutView` | user | — | — |
 | `auth.password_change` | `ChangePasswordView` | user | User (self) | — |
 | `auth.password_reset_request` | `ForgotPasswordView` | — | — | `email` (recorded whether or not it exists) |

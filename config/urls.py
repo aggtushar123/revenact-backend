@@ -62,6 +62,10 @@ urlpatterns = [
     path("api/v1/", include("core.urls")),
     # `accounts` app, mounted at /auth/ to match the frontend's features/auth/.
     path("api/v1/auth/", include("services.accounts.urls")),
+    # Sign-in with an external provider. Beside the password endpoints
+    # rather than in place of them: both are live while AUTH_V2_ENABLED is
+    # being rolled out (see services/identity/views.py).
+    path("api/v1/auth/oauth/", include("services.identity.urls")),
     path("api/v1/customers/", include("services.customers.urls")),
     # Product lives in the `customers` app but is mounted at its own
     # top-level prefix, for two reasons: it is organisation
