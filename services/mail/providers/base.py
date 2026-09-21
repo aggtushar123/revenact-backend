@@ -85,12 +85,18 @@ ALLOWED_HOSTS = {
 }
 
 
-def http_json(method, url, *, headers=None, data=None, form=None, timeout=30):
+def http_json(method, url, *, headers=None, data=None, form=None, timeout=30, allowed_hosts=None):
     """One JSON round-trip. `form` posts urlencoded (OAuth token endpoints),
-    `data` posts JSON. Raises ProviderError with the body's message."""
+    `data` posts JSON. Raises ProviderError with the body's message.
+
+    `allowed_hosts` lets another caller supply its own allow-list rather than
+    widening this module's: `services.identity.domains` resolves DNS over
+    HTTPS through here, and a resolver is not a mail provider host. The check
+    itself is never optional — omitting the argument keeps the mail list."""
+    permitted = allowed_hosts if allowed_hosts is not None else ALLOWED_HOSTS
     parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "https" or parts.hostname not in ALLOWED_HOSTS:
-        raise ProviderError(f"refusing to call {parts.hostname or url!r}: not a mail provider host")
+    if parts.scheme != "https" or parts.hostname not in permitted:
+        raise ProviderError(f"refusing to call {parts.hostname or url!r}: host not allowed")
     body = None
     headers = dict(headers or {})
     if form is not None:

@@ -21,6 +21,11 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `auth.login` (success, `via: oauth`) | `services.identity.views.CallbackView` | user | — | provider |
 | `auth.login` (failure, `via: oauth`) | `services.identity.views.CallbackView` | — | — | provider, refusal `reason` code |
 | `identity.linked` | `services.identity.login.resolve_user` | user | User (self) | provider; first sign-in with that provider |
+| `access_request.created` | `services.identity.onboarding.request_access` | the person | User (self) | their verified email |
+| `access_request.approved` | `services.identity.onboarding.approve` | reviewing admin | User | role slug, department |
+| `access_request.rejected` | `services.identity.onboarding.reject` | reviewing admin | User | reason |
+| `domain.added` | `services.identity.admin_views` | user | OrganizationDomain | domain |
+| `domain.verified` | `services.identity.admin_views` | user | OrganizationDomain | domain |
 | `auth.logout` | `LogoutView` | user | — | — |
 | `auth.password_change` | `ChangePasswordView` | user | User (self) | — |
 | `auth.password_reset_request` | `ForgotPasswordView` | — | — | `email` (recorded whether or not it exists) |

@@ -81,10 +81,15 @@ class ResolveUserTests(TestCase):
         self.assertEqual(caught.exception.code, "EMAIL_NOT_VERIFIED")
         self.assertFalse(Identity.objects.exists())
 
-    def test_an_unknown_address_is_refused_rather_than_creating_an_account(self):
+    def test_an_address_from_an_unclaimed_domain_creates_nothing(self):
+        """Phase 2 answered `NO_ACCOUNT` here. Phase 4 says something more
+        useful: nobody has proved they own that domain, so there is no tenant
+        to ask to join. Either way nothing is created — see
+        `test_onboarding.py` for the case where the domain *is* verified and a
+        request is raised."""
         with self.assertRaises(login.LoginError) as caught:
             login.resolve_user(verified(email="stranger@elsewhere.com", subject="g-9"))
-        self.assertEqual(caught.exception.code, "NO_ACCOUNT")
+        self.assertEqual(caught.exception.code, "DOMAIN_NOT_VERIFIED")
         self.assertEqual(User.objects.filter(email="stranger@elsewhere.com").count(), 0)
 
     def test_a_deactivated_account_cannot_sign_in(self):
@@ -247,7 +252,7 @@ class EndpointTests(APITestCase):
             )
 
         self.assertEqual(response.status_code, status.HTTP_302_FOUND)
-        self.assertIn("error=NO_ACCOUNT", response["Location"])
+        self.assertIn("error=DOMAIN_NOT_VERIFIED", response["Location"])
 
     def test_a_provider_refusal_is_reported_without_a_round_trip(self):
         with patch.object(login.providers, "get", return_value=StubProvider()):
