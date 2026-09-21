@@ -4667,11 +4667,18 @@ mailbox deletes the personal copy (`connection` cascades) and leaves the filed
 ### What the provider tells us, and what we keep
 
 `providers.base.Message.labels` carries one vocabulary for all three providers:
-`inbox sent draft spam trash unread starred important promotions social updates
-forums personal`. Gmail maps its label ids (and the fetch now includes spam,
-trash and drafts); Graph maps `isRead`, `flag`, `importance`, `isDraft` and the
-five well-known folders; IMAP maps the folder it read from and `\Seen` /
-`\Flagged`.
+`inbox sent draft spam trash archive unread starred important promotions social
+updates forums personal`. Gmail maps its label ids (the fetch includes spam,
+trash and drafts; a message with no folder label at all is `archive`); Graph
+maps `isRead`, `flag`, `importance`, `isDraft` and the six well-known folders
+(resolved once per mailbox and kept in the credentials; a message in any other
+folder is `archive`); IMAP maps the folder it read from and `\Seen` /
+`\Flagged`, wherever the server puts FLAGS in the fetch response.
+
+**Only inbox and sent mail is filed against a customer** (`customers.Email`).
+Spam is never evidence, trash was thrown away and a draft has not happened yet:
+those are kept in the person's store only, and never reach the timeline, the
+classifier or the pulse.
 
 At sync those become `folder` (`inbox sent drafts spam trash`), `is_read`,
 `is_starred`, `is_important`, and `category` via `services/mail/categorise.py`:
@@ -4681,9 +4688,28 @@ header), `notifications` (Gmail's updates/forums, or a system sender such as
 `noreply@`), else `general`. No model call: a category is a filing decision and
 must come out the same every time.
 
-Nothing is written back to the provider (Gmail is connected read-only). A star
-or a read mark changed here is changed here. `state` (`open done muted`) is
-this product's own triage and exists nowhere else.
+Nothing is written back to the provider (Gmail is connected read-only). `state`
+(`open done muted`) is this product's own triage and exists nowhere else; an
+`archive`d message arrives as `done`.
+
+**What refreshes after the first sync.** When the provider lists a message
+again, its flags and folder are taken afresh (read, starred, important, moved,
+archived → `done`) **unless the person changed something here**: a PATCH stamps
+`locally_changed_at`, and from then on what they did here wins. Graph re-lists
+on `lastModifiedDateTime`, so a read or a move in Outlook reaches Revenact on
+the next pass. Gmail's cursor lists only mail newer than the last pass, so a
+Gmail message's flags are what they were when it first arrived; that is the
+honest limit of a read-only, cursor-based sync.
+
+**Existing mailboxes.** Migration `0003` clears every connection's
+`sync_cursor`, so the next pass re-lists the provider's window (30 days) and the
+personal store fills in; filing and storing are both idempotent on the
+provider's id, so nothing is duplicated.
+
+**Sent mail the app itself sent.** Graph and SMTP return no id for a send, so
+the app records the send under a `sent:<uuid>` placeholder; when the provider's
+own Sent copy is listed later (same subject, within ten minutes) the placeholder
+takes its id rather than a second row appearing.
 
 `priority` on a row is `is_important` **or** "from someone in the book"
 (`email` is set).
@@ -4747,7 +4773,8 @@ wrote it (or, for something the person sent, to the same recipients), under
 filed there too (`send_email`, so the team's picture of that account gains the
 answer and it is classified like any other email); otherwise it is only the
 person's own sent mail. Marks the original read. Returns **201** with the sent
-message as it now sits in `sent`. 409 when the mailbox is no longer connected;
+message as it now sits in `sent`. 400 when the message names nobody to reply
+to; 409 when the mailbox is no longer connected;
 502 with the provider's reason when the send fails. Audited as `mailbox.reply`.
 
 ### Where it sits in the frontend

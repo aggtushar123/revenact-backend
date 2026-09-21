@@ -144,7 +144,12 @@ class MicrosoftProvider(MailProvider):
 
     def _folder_ids(self, creds):
         """Graph names folders by opaque id; the well-known ones resolve to
-        one each. A folder that cannot be resolved simply is not labelled."""
+        one each. Resolved once and kept in the credentials, which the sync
+        stores back, so a mailbox costs these calls once rather than every
+        pass. A folder that cannot be resolved simply is not labelled."""
+        cached = creds.data.get("folder_ids")
+        if cached:
+            return dict(cached)
         folders = {}
         for known, label in WELL_KNOWN_FOLDERS.items():
             try:
@@ -155,6 +160,8 @@ class MicrosoftProvider(MailProvider):
                 continue
             if item.get("id"):
                 folders[item["id"]] = label
+        if folders:
+            creds.data["folder_ids"] = folders
         return folders
 
     def send(self, creds, *, to, subject, body):
@@ -196,6 +203,7 @@ WELL_KNOWN_FOLDERS = {
     "drafts": "draft",
     "junkemail": "spam",
     "deleteditems": "trash",
+    "archive": "archive",
 }
 
 
@@ -207,6 +215,10 @@ def parse_graph_message(item, folders=None) -> Message:
         labels.append("draft")
     elif folder:
         labels.append(folder)
+    elif folders:
+        # The folders resolved and this is none of them: filed away by the
+        # person, which is what archive means. Unresolved folders say nothing.
+        labels.append("archive")
     if item.get("isRead") is False:
         labels.append("unread")
     if (item.get("flag") or {}).get("flagStatus") == "flagged":

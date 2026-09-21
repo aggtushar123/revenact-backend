@@ -14,13 +14,14 @@ their mail. Where both exist they point at each other.
 """
 
 import logging
+from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
 
 from services.customers.models import Account, Contact, Customer, Email
 
-from .categorise import categorise, folder_of
+from .categorise import FILED_FOLDERS, categorise, folder_of, is_archived
 from .models import MailboxConnection, MailMessage
 from .providers import get_provider
 from .providers.base import Credentials, ProviderError
@@ -152,13 +153,24 @@ def store_message(connection, message, email=None):
     key on, and None comes back."""
     if not message.provider_id:
         return None
+    labels = set(message.labels or [])
+    _, direction = counterpart_addresses(message, connection.address)
+    if "sent" in labels:
+        # The provider says the person sent it, whatever address it left from
+        # (a send-as alias is still them).
+        direction = MailMessage.Direction.SENT
     existing = MailMessage.objects.filter(
         connection=connection, provider_message_id=message.provider_id
     ).first()
+    if existing is None and "sent" in labels:
+        existing = _placeholder_for(connection, message)
     if existing is not None:
-        return existing
-    _, direction = counterpart_addresses(message, connection.address)
-    labels = set(message.labels or [])
+        return _refresh(existing, message, labels, direction)
+    if email is None:
+        # Filed on an earlier pass (the provider re-listed it): keep the link.
+        email = Email.objects.filter(
+            mailbox=connection, provider_message_id=message.provider_id
+        ).first()
     body = message.body or ""
     return MailMessage.objects.create(
         connection=connection,
@@ -176,11 +188,62 @@ def store_message(connection, message, email=None):
         sent_at=message.date,
         folder=folder_of(message, direction),
         category=categorise(message),
+        state=MailMessage.State.DONE if is_archived(message) else MailMessage.State.OPEN,
         is_read="unread" not in labels,
         is_starred="starred" in labels,
         is_important="important" in labels,
         email=email,
     )
+
+
+#: How far apart the app's own record of a send and the provider's copy of
+#: it may be and still be the same message.
+SENT_MATCH_WINDOW = timedelta(minutes=10)
+
+
+def _placeholder_for(connection, message):
+    """The row this app made when it sent the message, before the provider
+    had a name for it (Graph and SMTP return none). Matched on subject and
+    time; on a match the row takes the provider's id so the copy the
+    provider lists later is recognised rather than duplicated."""
+    row = (
+        MailMessage.objects.filter(
+            connection=connection,
+            folder=MailMessage.Folder.SENT,
+            provider_message_id__startswith="sent:",
+            subject=(message.subject or "")[:255],
+            sent_at__gte=message.date - SENT_MATCH_WINDOW,
+            sent_at__lte=message.date + SENT_MATCH_WINDOW,
+        )
+        .order_by("-sent_at")
+        .first()
+    )
+    if row is None:
+        return None
+    row.provider_message_id = message.provider_id[:255]
+    if not row.thread_id and message.thread_id:
+        row.thread_id = message.thread_id[:255]
+    row.save(update_fields=["provider_message_id", "thread_id"])
+    return row
+
+
+def _refresh(row, message, labels, direction):
+    """A message seen again: take the provider's current flags and folder,
+    unless the person changed something here, in which case what they did
+    here wins and the provider's view is left alone."""
+    if row.locally_changed_at is not None:
+        return row
+    row.is_read = "unread" not in labels
+    row.is_starred = "starred" in labels
+    row.is_important = "important" in labels
+    row.folder = folder_of(message, direction)
+    row.direction = direction
+    if is_archived(message) and row.state == MailMessage.State.OPEN:
+        row.state = MailMessage.State.DONE
+    row.save(
+        update_fields=["is_read", "is_starred", "is_important", "folder", "direction", "state"]
+    )
+    return row
 
 
 def sync_mailbox(connection):
@@ -199,9 +262,14 @@ def sync_mailbox(connection):
     filed = []
     with transaction.atomic():
         for message in sorted(messages, key=lambda m: m.date):
-            email = file_message(connection, message)
-            if email is not None:
-                filed.append(email)
+            _, direction = counterpart_addresses(message, connection.address)
+            email = None
+            # Only real mail reaches the customer's timeline: never spam,
+            # trash or a draft. The person's own copy keeps everything.
+            if folder_of(message, direction) in FILED_FOLDERS:
+                email = file_message(connection, message)
+                if email is not None:
+                    filed.append(email)
             store_message(connection, message, email)
         _store(connection, creds)
         connection.sync_cursor = cursor[:512]
@@ -251,6 +319,11 @@ def send_email(connection, *, to, subject, body, customer=None, account=None):
     return email
 
 
+class NothingToReplyTo(ValueError):
+    """The message names no address a reply could go to. The caller's
+    problem, not the provider's."""
+
+
 def reply_to(original, body):
     """Answer a message from the mailbox it arrived in.
 
@@ -265,7 +338,7 @@ def reply_to(original, body):
     else:
         to = [original.from_address] if original.from_address else []
     if not to:
-        raise ProviderError("this message has nobody to reply to")
+        raise NothingToReplyTo("this message has nobody to reply to")
     subject = original.subject
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"[:255]

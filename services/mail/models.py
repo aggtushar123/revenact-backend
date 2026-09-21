@@ -133,6 +133,9 @@ class MailMessage(models.Model):
     is_read = models.BooleanField(default=True)
     is_starred = models.BooleanField(default=False)
     is_important = models.BooleanField(default=False)
+    #: Set when the person changed a flag or the state here. From then on a
+    #: re-sync leaves the provider's flags alone: what they did here wins.
+    locally_changed_at = models.DateTimeField(null=True, blank=True)
     email = models.OneToOneField(
         "customers.Email",
         related_name="mail_message",

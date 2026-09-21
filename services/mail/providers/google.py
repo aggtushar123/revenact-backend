@@ -200,6 +200,8 @@ def _strip_html(html):
     return re.sub(r"\s+", " ", text).strip()
 
 
+FOLDER_LABELS = frozenset({"inbox", "sent", "draft", "spam", "trash"})
+
 #: Gmail's label ids, in the store's vocabulary.
 GMAIL_LABELS = {
     "INBOX": "inbox",
@@ -227,6 +229,10 @@ def parse_gmail_message(full) -> Message:
     if unsubscribe:
         headers["list-unsubscribe"] = unsubscribe
     labels = [GMAIL_LABELS[label] for label in full.get("labelIds", []) if label in GMAIL_LABELS]
+    # Gmail's archive is the absence of a folder label: the message exists,
+    # and it is in no folder we know. Only when Gmail spoke at all.
+    if full.get("labelIds") is not None and not FOLDER_LABELS & set(labels):
+        labels.append("archive")
     return Message(
         provider_id=full.get("id", ""),
         thread_id=full.get("threadId", ""),

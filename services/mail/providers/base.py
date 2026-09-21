@@ -57,6 +57,9 @@ LABELS = frozenset(
         "updates",
         "forums",
         "personal",
+        # Neither in the inbox nor in any other folder: archived. The store
+        # shows it as done rather than pretending it is still waiting.
+        "archive",
     }
 )
 
