@@ -260,17 +260,21 @@ class OrganizationMembership(models.Model):
 
 
 class OrganizationDomain(models.Model):
-    """A domain an organisation has proven it controls.
-
-    Globally unique: two organisations cannot both claim `accenture.com`, or
-    signing in with a corporate address would be ambiguous about which tenant
-    you land in.
+    """A domain an organisation claims, and may have proven it controls.
 
     **Verification is the point.** A domain maps nobody to an organisation until
     `verification_status` is `verified`. Typing a domain into a form is a claim,
     not evidence; proving control of DNS is evidence. The token below is what a
     company publishes as a TXT record for that proof, and it is generated
     server-side.
+
+    **Claims may overlap; ownership may not.** Several organisations can hold a
+    `pending` claim on `accenture.com` (an employee who started a workspace, and
+    later the company itself), but only one can hold it `verified`, because a
+    verified domain is what routes sign-ins and routing must never be ambiguous.
+    Verifying supersedes every other claim on that domain (see
+    `domains.verify`), so whoever controls DNS always wins, and an earlier
+    unverified claim can never stand in their way.
     """
 
     class VerificationStatus(models.TextChoices):
@@ -279,7 +283,7 @@ class OrganizationDomain(models.Model):
         REVOKED = "revoked", "Revoked"
 
     organisation = models.ForeignKey(Organisation, related_name="domains", on_delete=models.CASCADE)
-    domain = models.CharField(max_length=253, unique=True)
+    domain = models.CharField(max_length=253, db_index=True)
     is_primary = models.BooleanField(default=False)
     verification_status = models.CharField(
         max_length=16, choices=VerificationStatus.choices, default=VerificationStatus.PENDING
@@ -301,7 +305,19 @@ class OrganizationDomain(models.Model):
                 fields=["organisation"],
                 condition=models.Q(is_primary=True),
                 name="one_primary_domain_per_organisation",
-            )
+            ),
+            # One claim per organisation per domain: re-adding is an update.
+            models.UniqueConstraint(
+                fields=["organisation", "domain"],
+                name="one_claim_per_organisation_per_domain",
+            ),
+            # Only one organisation can have *proved* a domain, because a
+            # verified domain routes sign-ins and routing cannot be ambiguous.
+            models.UniqueConstraint(
+                fields=["domain"],
+                condition=models.Q(verification_status="verified"),
+                name="one_verified_holder_per_domain",
+            ),
         ]
 
     def __str__(self):

@@ -2,6 +2,7 @@ from django.contrib.auth.password_validation import validate_password as _django
 from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.utils import timezone
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from django.utils.text import slugify
@@ -112,6 +113,11 @@ class UserSerializer(serializers.ModelSerializer):
     permissions = serializers.SerializerMethodField()
     function_display = serializers.CharField(source="get_function_display", read_only=True)
     reports_to = serializers.SerializerMethodField()
+    # Whether a password form makes sense for them. Someone who only ever
+    # signed in with Google has none, and Account settings says so instead
+    # of asking for a "current password" that does not exist. No query: it
+    # reads the hash column already loaded.
+    has_password = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -129,10 +135,15 @@ class UserSerializer(serializers.ModelSerializer):
             "reports_to",
             "organisation",
             "is_active",
+            "has_password",
+            "tour_completed_at",
         ]
 
     def get_avatar(self, obj):
         return f"https://i.pravatar.cc/150?u={obj.email}"
+
+    def get_has_password(self, obj) -> bool:
+        return obj.has_usable_password()
 
     def get_reports_to(self, obj):
         # The org chart, one level up — see services.accounts.hierarchy.
@@ -353,7 +364,17 @@ class MeSerializer(UserSerializer):
     here would silently wipe it from that cached user — `permissions`
     especially, which every capability gate reads."""
 
+    # Write `true` when the tour is finished or skipped; the server stamps
+    # the time. `false` clears it, which is how "show me the tour again"
+    # works from settings.
+    tour_completed = serializers.BooleanField(write_only=True, required=False)
+    # Which providers they can sign in with, for "You sign in with Google".
+    # Only here, not on UserSerializer, which is embedded in list rows where
+    # one query per row would be a real cost.
+    sign_in_providers = serializers.SerializerMethodField()
+
     class Meta(UserSerializer.Meta):
+        fields = [*UserSerializer.Meta.fields, "tour_completed", "sign_in_providers"]
         read_only_fields = [
             "id",
             "email",
@@ -362,7 +383,18 @@ class MeSerializer(UserSerializer):
             "role_name",
             "permissions",
             "is_active",
+            "has_password",
+            "tour_completed_at",
         ]
+
+    def get_sign_in_providers(self, obj) -> list:
+        return sorted(obj.identities.values_list("provider", flat=True))
+
+    def update(self, instance, validated_data):
+        if "tour_completed" in validated_data:
+            done = validated_data.pop("tour_completed")
+            instance.tour_completed_at = timezone.now() if done else None
+        return super().update(instance, validated_data)
 
 
 class ChangePasswordSerializer(serializers.Serializer):

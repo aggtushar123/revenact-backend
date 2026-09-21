@@ -214,9 +214,16 @@ this blacklist.
 
 Auth: `IsAuthenticated` — any user, admin or CSM, editing themselves.
 
-GET returns the same shape as the `user` object in login/signup. PATCH
-accepts `{ "name": "..." }` — `email` and `role` are read-only here; sending
-them is silently ignored (not an error), not written.
+GET returns the same shape as the `user` object in login/signup, plus
+`sign_in_providers` (e.g. `["google"]`), which only your own profile carries.
+Every user object also has `has_password` (false for someone who only ever
+signed in with a provider, so Account settings hides the password form) and
+`tour_completed_at` (null until the first-run tour is finished or skipped).
+
+PATCH accepts `{ "name": "..." }` and `{ "tour_completed": true | false }` —
+the server stamps `tour_completed_at` itself, and `false` clears it ("show me
+the tour again"). `email` and `role` are read-only here; sending them is
+silently ignored (not an error), not written.
 
 **Response `200`** (both) — the (possibly updated) profile.
 
@@ -319,6 +326,41 @@ one — all collapsed to the same generic
 again to avoid leaking which case it was. A token stops working the moment
 it's used once, since the generator's hash includes the password field
 that the reset itself just changed.
+
+### Sign in with Google / Microsoft — `/api/v1/auth/oauth/`
+
+Mirrors: `src/features/auth/oauth.ts`, `src/pages/auth/AuthCallback.tsx`.
+All gated on `AUTH_V2_ENABLED`; with it off, `providers/` returns an empty
+list and everything else answers `PROVIDER_NOT_AVAILABLE`. Errors use
+`{ "success": false, "error": { "code", "message" } }`.
+
+| Call | Auth | Purpose |
+|---|---|---|
+| `GET providers/` | AllowAny | `{ providers: [{key, label}] }` — which buttons to show |
+| `POST <provider>/start/` | AllowAny | `{ authorize_url }` — send the browser there |
+| `GET <provider>/callback/` | AllowAny | the provider returns here; always a `302` to the frontend |
+| `POST exchange/` | AllowAny | `{ handoff }` → `{ access, refresh, user }` (single use, 60 s) |
+| `POST workspace/preview/` | AllowAny | `{ setup }` → `{ email, name, domain, suggested_organisation_name }` (does not spend the code) |
+| `POST workspace/` | AllowAny, signup-throttled | `{ setup, organisation_name, name? }` → `201 { access, refresh, user }` |
+
+The callback redirects to `FRONTEND_URL/auth/callback` with exactly one of:
+
+- `?handoff=<code>` — signed in; exchange it at once.
+- `?setup=<code>` — verified, and nobody has claimed their domain: show the
+  workspace form, then `POST workspace/`. Fifteen minutes; single use.
+- `?error=<CODE>` — `ACCESS_REQUEST_PENDING`, `DOMAIN_NOT_VERIFIED`,
+  `PERSONAL_EMAIL_NOT_SUPPORTED`, `ORGANIZATION_SUSPENDED`,
+  `EMAIL_NOT_VERIFIED`, `ACCOUNT_DISABLED`, `PROVIDER_REJECTED`,
+  `PROVIDER_NOT_AVAILABLE`, `INVALID_STATE`, `STATE_EXPIRED`.
+
+`POST workspace/` answers `401 INVALID_SETUP` for a spent or expired code,
+`409 WORKSPACE_CLAIMED` when someone from that domain got there first (send
+them back to sign in; they will be routed to that workspace), and `400` for
+`INVALID_ORGANISATION_NAME` / `PERSONAL_EMAIL_NOT_SUPPORTED`.
+
+Nothing here ever puts a token or an address in a URL: the codes are opaque
+and short-lived, and the frontend removes them from the address bar on
+arrival.
 
 ### `GET /api/v1/auth/members/`
 

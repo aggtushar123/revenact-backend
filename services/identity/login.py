@@ -16,12 +16,13 @@ of the next request, and in any proxy log along the way. Instead the redirect
 carries an opaque one-time value, good for sixty seconds, which the frontend
 exchanges for tokens over POST. Nothing long-lived ever appears in a URL.
 
-**How someone is matched to an account, in this phase.** Either the identity is
-already linked, or their verified address matches exactly one active user and
-the identity is linked on the spot. An address nobody recognises is refused with
-`NO_ACCOUNT`; phase 4 turns that case into an access request. Linking without a
-provider-verified address is never allowed, because that is account takeover by
-whoever can claim an address they do not own.
+**How someone is matched to an account.** Either the identity is already
+linked, or their verified address matches exactly one active user and the
+identity is linked on the spot. An address nobody recognises is routed by its
+domain (`_route_newcomer`): to an access request when a tenant holds the domain,
+or to the workspace form when nobody does. Linking without a provider-verified
+address is never allowed, because that is account takeover by whoever can claim
+an address they do not own.
 """
 
 import secrets
@@ -51,14 +52,27 @@ HANDOFF_TTL = 60
 
 HANDOFF_CACHE_PREFIX = "identity.login.handoff:"
 
+#: How long someone has to fill in the workspace form after a provider has
+#: vouched for them. Longer than the hand-off: a form is being typed into.
+SETUP_TTL = 15 * 60
+
+SETUP_CACHE_PREFIX = "identity.login.setup:"
+
 
 class LoginError(Exception):
-    """A login that cannot proceed, carrying a code the frontend can act on."""
+    """A login that cannot proceed, carrying a code the frontend can act on.
 
-    def __init__(self, code: str, message: str):
+    `setup` is present on exactly one code, `WORKSPACE_SETUP_REQUIRED`: the
+    person is verified, nobody has claimed their domain, and the frontend
+    should show them the workspace form. The value is the short-lived code that
+    form sends back (see `issue_setup`).
+    """
+
+    def __init__(self, code: str, message: str, *, setup: str | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.setup = setup
 
 
 def callback_url(provider_key: str) -> str:
@@ -115,6 +129,7 @@ def resolve_user(identity_info, *, request=None) -> User:
             email_verified=identity_info.email_verified,
             last_used_at=timezone.now(),
         )
+        _require_standing(user, identity_info, request=request)
         return user
 
     # First time with this provider. Only a provider-verified address may be
@@ -127,25 +142,111 @@ def resolve_user(identity_info, *, request=None) -> User:
 
     user = User.objects.filter(email__iexact=identity_info.email).first()
     if user is None:
-        # Nobody here by that address. If their domain belongs to a tenant that
-        # has proved it owns it, this is somebody's first day rather than a
-        # stranger: raise a request an administrator can approve.
-        from . import onboarding
-
-        try:
-            user, _ = onboarding.request_access(identity_info, request=request)
-        except onboarding.OnboardingError as exc:
-            raise LoginError(exc.code, exc.message) from exc
-        _link_identity(user, identity_info, request=request)
-        raise LoginError(
-            "ACCESS_REQUEST_PENDING",
-            "Your request is with an administrator at your organisation.",
-        )
+        _route_newcomer(identity_info, request=request)
     if not user.is_active:
         raise LoginError("ACCOUNT_DISABLED", "This account has been deactivated.")
 
     _link_identity(user, identity_info, request=request)
+    _require_standing(user, identity_info, request=request)
     return user
+
+
+def _require_standing(user, identity_info, *, request=None) -> None:
+    """A person is signed in only if they hold an active membership somewhere.
+
+    Authenticating is not joining. Someone who signed in once, was routed to
+    an access request, and comes back the next morning has a linked identity
+    and still no membership; without this check they would receive a session
+    that opens onto an empty application. Instead they are routed again, which
+    also carries them to the right tenant if the domain changed hands while
+    they waited (a company verifying a domain an employee had claimed).
+    """
+    if user.is_superuser:
+        return
+
+    from . import domains, onboarding
+    from .models import OrganizationMembership
+
+    statuses = dict(
+        OrganizationMembership.objects.filter(user=user).values_list("organisation_id", "status")
+    )
+    if OrganizationMembership.Status.ACTIVE in statuses.values():
+        return
+    if OrganizationMembership.Status.SUSPENDED in statuses.values():
+        raise LoginError("ACCOUNT_DISABLED", "Your access has been suspended.")
+
+    route = domains.route_for_email(identity_info.email)
+    if route.organisation is not None:
+        try:
+            onboarding.request_access(
+                identity_info, organisation=route.organisation, request=request
+            )
+        except onboarding.OnboardingError as exc:
+            raise LoginError(exc.code, exc.message) from exc
+        raise LoginError(
+            "ACCESS_REQUEST_PENDING",
+            "Your request is with an administrator at your organisation.",
+        )
+    if route.kind == "personal":
+        raise LoginError(
+            "PERSONAL_EMAIL_NOT_SUPPORTED",
+            "Ask a colleague to invite you with your work address.",
+        )
+    raise LoginError(
+        "DOMAIN_NOT_VERIFIED",
+        "No organisation here has verified that email domain yet.",
+    )
+
+
+def _route_newcomer(identity_info, *, request=None):
+    """Nobody here by that address. Decide where a verified stranger goes.
+
+    Always raises: a newcomer is never signed in on the spot. Either they
+    are asked to wait for an administrator, told why they cannot proceed, or
+    invited to set up a workspace of their own.
+
+        verified domain   -> access request to that tenant, then wait
+        one unverified claim -> access request to that tenant, then wait
+        several claims    -> refused; nobody can be chosen without proof
+        personal address  -> refused; there is no company to map to
+        nobody has claimed it -> WORKSPACE_SETUP_REQUIRED with a setup code
+
+    The second line is the one that stops a company fragmenting into a
+    workspace per employee: once anyone from `acme.io` has started one, the
+    next person is pointed at it and must be let in deliberately.
+    """
+    from . import domains, onboarding
+
+    route = domains.route_for_email(identity_info.email)
+
+    if route.kind == "personal":
+        raise LoginError(
+            "PERSONAL_EMAIL_NOT_SUPPORTED",
+            "Sign in with your work address, or ask a colleague to invite you.",
+        )
+    if route.kind == "ambiguous":
+        raise LoginError(
+            "DOMAIN_NOT_VERIFIED",
+            "More than one workspace has claimed that domain and none has verified it.",
+        )
+    if route.kind == "unclaimed":
+        raise LoginError(
+            "WORKSPACE_SETUP_REQUIRED",
+            "Nobody has set up a workspace for that domain yet.",
+            setup=issue_setup(identity_info),
+        )
+
+    try:
+        user, _ = onboarding.request_access(
+            identity_info, organisation=route.organisation, request=request
+        )
+    except onboarding.OnboardingError as exc:
+        raise LoginError(exc.code, exc.message) from exc
+    _link_identity(user, identity_info, request=request)
+    raise LoginError(
+        "ACCESS_REQUEST_PENDING",
+        "Your request is with an administrator at your organisation.",
+    )
 
 
 def _link_identity(user, identity_info, *, request=None) -> None:
@@ -208,6 +309,54 @@ def issue_handoff(user: User) -> str:
     return handoff
 
 
+def issue_setup(identity_info) -> str:
+    """Park a verified identity behind a code while its owner fills in the
+    workspace form. Nothing is written to the database until they submit:
+    a person who closes the tab leaves no user and no organisation behind."""
+    from django.core.cache import cache
+
+    code = secrets.token_urlsafe(32)
+    cache.set(
+        SETUP_CACHE_PREFIX + code,
+        {
+            "provider": identity_info.provider,
+            "subject": identity_info.subject,
+            "email": identity_info.email,
+            "name": identity_info.name or "",
+        },
+        SETUP_TTL,
+    )
+    return code
+
+
+def peek_setup(code: str):
+    """The identity behind a setup code, without spending it. For the form's
+    own prefill; the code is spent by `redeem_setup` on submit."""
+    from django.core.cache import cache
+
+    from .providers import VerifiedIdentity
+
+    payload = cache.get(SETUP_CACHE_PREFIX + (code or ""))
+    if not payload:
+        raise LoginError("INVALID_SETUP", "That sign-in has expired. Start again.")
+    return VerifiedIdentity(
+        provider=payload["provider"],
+        subject=payload["subject"],
+        email=payload["email"],
+        email_verified=True,
+        name=payload["name"],
+    )
+
+
+def redeem_setup(code: str):
+    """Spend a setup code. Single use, like the hand-off."""
+    from django.core.cache import cache
+
+    identity_info = peek_setup(code)
+    cache.delete(SETUP_CACHE_PREFIX + code)
+    return identity_info
+
+
 def redeem_handoff(handoff: str) -> dict:
     """Trade the code for tokens. Single use: the code is dropped on read."""
     from django.core.cache import cache
@@ -225,5 +374,10 @@ def redeem_handoff(handoff: str) -> dict:
     if user is None:
         raise LoginError("ACCOUNT_DISABLED", "This account has been deactivated.")
 
+    return session_for(user)
+
+
+def session_for(user: User) -> dict:
+    """Mint the same pair the password login issues."""
     refresh = RefreshToken.for_user(user)
     return {"user": user, "refresh": str(refresh), "access": str(refresh.access_token)}

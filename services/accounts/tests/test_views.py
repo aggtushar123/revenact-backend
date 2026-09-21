@@ -276,7 +276,11 @@ class MeViewTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(set(me.data), set(login.data["user"]))
+        # Every field login has, me has too. Me may carry more: the
+        # extras below are only meaningful on your own profile and would be
+        # a query per row anywhere a user is embedded in a list.
+        me_only = {"sign_in_providers"}
+        self.assertEqual(set(me.data) - me_only, set(login.data["user"]))
         self.assertEqual(me.data["role"], User.Role.ADMIN)
         self.assertEqual(me.data["role_name"], "Admin")
         self.assertIn(Capability.MANAGE_USERS, me.data["permissions"])

@@ -15,6 +15,7 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | Action | Emitted from | Actor | Target | Metadata |
 |--------|--------------|-------|--------|----------|
 | `auth.signup` | `SignupView` | new admin | Organisation | organisation name |
+| `auth.signup` (`via: oauth`) | `services.identity.onboarding.create_workspace` | founder | Organisation | organisation name, provider; a self-serve workspace from an unclaimed domain |
 | `auth.login` (success) | `LoginView` | user | — | — |
 | `auth.login` (success, `via: session`) | `core.signals` (`user_logged_in`) | user | — | Django admin session logins |
 | `auth.login` (failure) | `core.signals` (`user_login_failed`) | — | — | `email` attempted |
@@ -26,6 +27,7 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `access_request.rejected` | `services.identity.onboarding.reject` | reviewing admin | User | reason |
 | `domain.added` | `services.identity.admin_views` | user | OrganizationDomain | domain |
 | `domain.verified` | `services.identity.admin_views` | user | OrganizationDomain | domain |
+| `domain.superseded` | `services.identity.domains.verify` | verifying user | OrganizationDomain (the loser's) | domain, `verified_by` organisation id; another organisation proved the domain |
 | `auth.logout` | `LogoutView` | user | — | — |
 | `auth.password_change` | `ChangePasswordView` | user | User (self) | — |
 | `auth.password_reset_request` | `ForgotPasswordView` | — | — | `email` (recorded whether or not it exists) |

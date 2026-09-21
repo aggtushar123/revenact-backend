@@ -26,10 +26,13 @@ instead, which is the workflow the brief reserves for them.
 
 import secrets
 import urllib.parse
+from dataclasses import dataclass
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
+from core import audit
 from services.mail.providers.base import ProviderError, http_json
 
 from .models import OrganizationDomain
@@ -146,13 +149,20 @@ def lookup_txt(domain: str) -> list[str]:
     raise ProviderError(f"could not reach a DNS resolver: {last_error}")
 
 
-def verify(domain: OrganizationDomain) -> bool:
+def verify(domain: OrganizationDomain, *, request=None, actor=None) -> bool:
     """Check the published record and promote the domain if it matches.
 
     Idempotent: verifying an already-verified domain re-checks and leaves it
     verified. A domain whose record has been withdrawn is *not* silently
     demoted here — revoking access is a deliberate act, not a side effect of a
     DNS blip — but the caller is told it no longer matches.
+
+    **Proof supersedes claims.** Promoting one organisation's record revokes
+    every other organisation's record for the same domain, verified or not. DNS
+    control is the only evidence this system accepts, so whoever holds it now
+    holds the domain, and an employee's earlier unverified claim (a self-made
+    workspace, say) cannot stand in the company's way. Each revocation is
+    audited: it is somebody losing something.
     """
     if not domain.verification_token:
         return False
@@ -161,9 +171,30 @@ def verify(domain: OrganizationDomain) -> bool:
     matched = expected_record(domain) in values
 
     if matched and domain.verification_status != OrganizationDomain.VerificationStatus.VERIFIED:
-        domain.verification_status = OrganizationDomain.VerificationStatus.VERIFIED
-        domain.verified_at = timezone.now()
-        domain.save(update_fields=["verification_status", "verified_at", "updated_at"])
+        with transaction.atomic():
+            superseded = list(
+                OrganizationDomain.objects.select_for_update()
+                .filter(domain=domain.domain)
+                .exclude(pk=domain.pk)
+                .exclude(verification_status=OrganizationDomain.VerificationStatus.REVOKED)
+            )
+            for other in superseded:
+                other.verification_status = OrganizationDomain.VerificationStatus.REVOKED
+                other.save(update_fields=["verification_status", "updated_at"])
+
+            domain.verification_status = OrganizationDomain.VerificationStatus.VERIFIED
+            domain.verified_at = timezone.now()
+            domain.save(update_fields=["verification_status", "verified_at", "updated_at"])
+
+        for other in superseded:
+            audit.record(  # SOC2:LOG-01
+                "domain.superseded",
+                request=request,
+                actor=actor,
+                organisation=other.organisation,
+                target=other,
+                metadata={"domain": other.domain, "verified_by": domain.organisation_id},
+            )
 
     return matched
 
@@ -175,20 +206,61 @@ def organisation_for_email(email: str):
     single place that turns an address into a tenant, so there is one rule to
     audit rather than one per caller.
     """
-    domain = domain_of(email)
-    if not domain or is_personal(domain):
-        return None
+    route = route_for_email(email)
+    return route.organisation if route.kind == "verified" else None
 
-    record = (
+
+@dataclass(frozen=True)
+class DomainRoute:
+    """Where an address leads, and why.
+
+    kind is one of:
+      personal   — a consumer mailbox; never maps anywhere
+      verified   — an organisation has proved it owns the domain
+      claimed    — exactly one organisation holds an unverified claim
+      ambiguous  — several unverified claims and no proof; nobody can be chosen
+      unclaimed  — nobody has mentioned this domain
+    """
+
+    kind: str
+    organisation: object = None
+
+
+def route_for_email(email: str) -> DomainRoute:
+    """Classify an address. The one rule every sign-in path shares.
+
+    `verified` is the only kind that grants anything on its own. `claimed`
+    exists so the second person from a domain does not create a second
+    workspace: they are pointed at the one that exists and its founder must
+    approve them explicitly. That is an administrator's decision, not domain
+    trust, so the rule that an unverified domain maps nobody still holds.
+    """
+    domain = domain_of(email)
+    if not domain:
+        return DomainRoute("unclaimed")
+    if is_personal(domain):
+        return DomainRoute("personal")
+
+    records = list(
         OrganizationDomain.objects.select_related("organisation")
-        .filter(domain=domain, verification_status=OrganizationDomain.VerificationStatus.VERIFIED)
-        .first()
+        .filter(domain=domain)
+        .exclude(verification_status=OrganizationDomain.VerificationStatus.REVOKED)
+        .order_by("created_at")
     )
-    return record.organisation if record else None
+    for record in records:
+        if record.is_verified:
+            return DomainRoute("verified", record.organisation)
+    if len(records) == 1:
+        return DomainRoute("claimed", records[0].organisation)
+    if records:
+        return DomainRoute("ambiguous")
+    return DomainRoute("unclaimed")
 
 
 __all__ = [
     "TXT_PREFIX",
+    "DomainRoute",
+    "route_for_email",
     "domain_of",
     "expected_record",
     "is_personal",

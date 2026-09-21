@@ -133,7 +133,7 @@ class DomainVerifyView(views.APIView):
             return _error("DOMAIN_NOT_FOUND", "No such domain.", status.HTTP_404_NOT_FOUND)
 
         try:
-            matched = domain_service.verify(record)
+            matched = domain_service.verify(record, request=request, actor=request.user)
         except ProviderError as exc:
             # Could not check is not the same as did not match, and saying so
             # stops somebody re-publishing a record that was already correct.

@@ -6,11 +6,17 @@ closes that loop.
 
     verified address
         -> domain, if it is not a personal one
-        -> a tenant, but only through a *verified* domain
+        -> a tenant, through a verified domain or the one workspace claiming it
         -> a User, created here, belonging to nothing yet
         -> an AccessRequest, pending
         -> an administrator decides
         -> a membership, and only then any access at all
+
+    or, when nobody has claimed the domain at all:
+
+    verified address
+        -> the workspace form
+        -> an Organisation, its founder as admin, the domain as an unverified claim
 
 Three rules hold throughout, and each exists because its opposite is a real
 failure:
@@ -48,12 +54,17 @@ class OnboardingError(Exception):
         self.message = message
 
 
-def request_access(identity_info, *, request=None):
+def request_access(identity_info, *, organisation=None, request=None):
     """Create (or find) the pending request for a verified corporate address.
 
     Returns `(user, access_request)`. Raises when the address cannot lead
     anywhere, so the caller can tell the person *why* rather than leaving them
     on a spinner.
+
+    `organisation` is the tenant the caller has already routed the address to
+    (`login._route_newcomer` does this, and may pass one holding only an
+    unverified claim, because a request there still needs the founder's
+    explicit approval). Left out, only a verified domain will do.
     """
     email = identity_info.email
 
@@ -63,7 +74,8 @@ def request_access(identity_info, *, request=None):
             "Sign in with your work address, or ask a colleague to invite you.",
         )
 
-    organisation = domains.organisation_for_email(email)
+    if organisation is None:
+        organisation = domains.organisation_for_email(email)
     if organisation is None:
         raise OnboardingError(
             "DOMAIN_NOT_VERIFIED",
@@ -125,6 +137,92 @@ def _user_for(identity_info) -> User:
     user = User(email=identity_info.email.lower(), name=name, organisation=None, role=None)
     user.set_unusable_password()  # they sign in through the provider, not a password
     user.save()
+    return user
+
+
+def create_workspace(identity_info, *, organisation_name: str, name: str = "", request=None):
+    """The first person from an unclaimed corporate domain starts a workspace.
+
+    What they get is deliberately small: an organisation with themselves as its
+    only member and administrator, and their domain attached as a *claim* that
+    proves nothing yet. Nobody is routed into it by domain until they publish
+    the DNS record, and the company can take the domain from them at any time
+    by verifying it under its own workspace (`domains.verify`). So an employee
+    who starts "Acme" ahead of Acme has an empty room with their name on the
+    door, and nothing Acme has to fight for.
+
+    One transaction: organisation, founder, membership (raised by the same
+    signal every other creation path uses), domain claim, linked identity.
+    Either the workspace exists whole or it does not exist.
+    """
+    from services.accounts.models import Organisation
+
+    from .models import Identity, OrganizationDomain
+
+    email = identity_info.email
+    organisation_name = (organisation_name or "").strip()
+    if not organisation_name:
+        raise OnboardingError("INVALID_ORGANISATION_NAME", "Give the workspace a name.")
+
+    # Re-checked here, not only at sign-in: two colleagues may both have been
+    # handed a setup code before either submitted. The second finds a claim
+    # and is sent back to sign in, where they will be routed to the first.
+    route = domains.route_for_email(email)
+    if route.kind == "personal":
+        raise OnboardingError(
+            "PERSONAL_EMAIL_NOT_SUPPORTED", "A workspace needs a company address."
+        )
+    if route.kind != "unclaimed":
+        raise OnboardingError(
+            "WORKSPACE_CLAIMED", "Somebody has already started a workspace for that domain."
+        )
+    if User.objects.filter(email__iexact=email).exists():
+        raise OnboardingError("WORKSPACE_CLAIMED", "That address already belongs to an account.")
+
+    with transaction.atomic():
+        organisation = Organisation.objects.create(name=organisation_name)
+        user = User.objects.create_user(
+            email=email.lower(),
+            password=None,  # unusable: they sign in through the provider
+            name=(name or identity_info.name or email.split("@")[0]).strip(),
+            organisation=organisation,
+            role=User.Role.ADMIN,
+        )
+        OrganizationDomain.objects.create(
+            organisation=organisation,
+            domain=domains.domain_of(email),
+            is_primary=True,
+            verification_token=domains.new_token(),
+        )
+        Identity.objects.create(
+            user=user,
+            provider=identity_info.provider,
+            provider_user_id=identity_info.subject,
+            email=email,
+            email_verified=True,
+            last_used_at=timezone.now(),
+        )
+
+    audit.record(  # SOC2:LOG-01
+        "auth.signup",
+        request=request,
+        actor=user,
+        organisation=organisation,
+        target=organisation,
+        metadata={
+            "organisation": organisation.name,
+            "via": "oauth",
+            "provider": identity_info.provider,
+        },
+    )
+    audit.record(  # SOC2:LOG-01
+        "domain.added",
+        request=request,
+        actor=user,
+        organisation=organisation,
+        target=organisation,
+        metadata={"domain": domains.domain_of(email), "claimed_at_signup": True},
+    )
     return user
 
 

@@ -316,6 +316,10 @@ class User(AbstractBaseUser, PermissionsMixin):
         help_text="Null only for platform-staff superusers; every org member has one.",
     )
     is_active = models.BooleanField(default=True)
+    # When they finished (or skipped) the first-run tour. Server-side so it
+    # follows the person across browsers, and so nothing in localStorage
+    # decides what a new device shows.
+    tour_completed_at = models.DateTimeField(null=True, blank=True)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(auto_now_add=True)
 
