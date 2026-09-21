@@ -1070,6 +1070,54 @@ def _create_task(serializer, user, **parent):
     serializer.save(created_by=user, assignee=assignee, assignee_name=assignee.name, **parent)
 
 
+class TaskDetailView(generics.GenericAPIView):
+    """PATCH /api/v1/tasks/<id>/ — `{ "status": "pending" | "in-progress" | "completed" }`.
+
+    The one write on a Task outside its parent's own tab: Cockpit's My
+    Tasks lets a person tick something off without leaving the page. Scoped
+    exactly like TaskListView (a task on another tenant's or an unseen
+    parent is a 404, never a 403), only `status` is writable here, and the
+    change is audited.
+    """
+
+    serializer_class = TaskListSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        from .personal import visible_tasks
+
+        return visible_tasks(
+            self.request.user,
+            Task.objects.filter(visible_children_q(self.request.user))
+            .select_related("customer", "account")
+            .distinct(),
+        )
+
+    def patch(self, request, pk):
+        task = self.get_queryset().filter(pk=pk).first()
+        if task is None:
+            return Response({"detail": "No such task."}, status=status.HTTP_404_NOT_FOUND)
+        new_status = request.data.get("status")
+        if new_status not in Task.Status.values:
+            return Response(
+                {"detail": f"status must be one of {', '.join(Task.Status.values)}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        previous = task.status
+        if new_status != previous:
+            task.status = new_status
+            task.save(update_fields=["status"])
+            from core import audit
+
+            audit.record(  # SOC2:LOG-01
+                "task.update",
+                request=request,
+                target=task,
+                metadata={"fields": ["status"], "from": previous, "to": new_status},
+            )
+        return Response(TaskListSerializer(task).data)
+
+
 class TaskListView(generics.ListAPIView):
     """GET /api/v1/tasks/ — every Task across every Customer/Account the
     caller's own organisation owns, organisation-level and account-level

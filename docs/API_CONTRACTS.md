@@ -1912,6 +1912,13 @@ longer a plain tenant-wide list.
 spanning every company needs to say which one each row belongs to,
 same reasoning as `OpportunitySerializer`'s own `account_name`.
 
+### `PATCH /api/v1/tasks/<id>/`
+
+Auth: `IsAuthenticated`. `{ "status": "pending" | "in-progress" | "completed" }`,
+nothing else is writable here. Scoped exactly like the list (a task on a
+parent the caller cannot see is `404`). Powers Cockpit's tick-off; audited as
+`task.update` with `from`/`to`. Returns the row in the list shape.
+
 ### Models — `Note`
 
 Mirrors: `src/components/shared/ActivityFeed.tsx`'s "Notes" filter,
