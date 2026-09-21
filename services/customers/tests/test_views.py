@@ -5981,3 +5981,63 @@ class CustomerHealthViewTests(APITestCase):
 
         self.assertEqual(row["days_since_touch"], 5)
         self.assertEqual(new.health_inputs()["days_since_touch"], 5)
+
+
+class TaskStatusTests(APITestCase):
+    """PATCH /api/v1/tasks/<id>/ — Cockpit ticking a task off."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.owner = User.objects.create_user(
+            email="carl@acme.io", password="supersecret1", name="Carl", organisation=self.org
+        )
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.owner
+        )
+        self.task = Task.objects.create(
+            customer=self.customer,
+            title="Prepare QBR deck",
+            assignee_name="Carl",
+            due_date="2026-03-15",
+            priority=Task.Priority.HIGH,
+            status=Task.Status.PENDING,
+        )
+
+    def test_the_owner_completes_a_task_and_it_is_audited(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            f"/api/v1/tasks/{self.task.id}/", {"status": "completed"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "completed")
+        self.assertEqual(response.data["parent_name"], "Globex")
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "completed")
+        from core.models import AuditEvent
+
+        event = AuditEvent.objects.get(action="task.update")
+        self.assertEqual(
+            event.metadata, {"fields": ["status"], "from": "pending", "to": "completed"}
+        )
+
+    def test_only_status_and_only_known_values(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            f"/api/v1/tasks/{self.task.id}/", {"status": "done", "title": "Renamed"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.title, "Prepare QBR deck")
+
+    def test_another_tenant_cannot_see_the_task(self):
+        rival = Organisation.objects.create(name="Rival")
+        stranger = User.objects.create_user(
+            email="x@rival.io", password="supersecret1", name="X", organisation=rival
+        )
+        self.client.force_authenticate(stranger)
+        response = self.client.patch(
+            f"/api/v1/tasks/{self.task.id}/", {"status": "completed"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "pending")

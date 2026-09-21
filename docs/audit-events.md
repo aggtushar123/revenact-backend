@@ -54,6 +54,7 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
 | `file.upload` / `file.delete` | `services.customers.views` (Files tab) | user | Attachment | name, size, content_type |
 | `call.log` | `services.customers.views` (CallSense) | user | Call | title, whether a transcript was attached |
+| `task.update` | `TaskDetailView` (Cockpit tick-off) | user | Task | `fields`, `from`, `to` |
 | `connector.inbound_rejected` | `ConnectorInboundView` | — (anonymous source) | Connector | outcome `failure`; a push with a wrong secret |
 | `webhook.create` / `webhook.update` / `webhook.delete` | `services.webhooks.views` | user | WebhookSubscription | url, event, changed fields |
 

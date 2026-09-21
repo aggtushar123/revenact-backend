@@ -43,6 +43,7 @@ from services.customers.views import (
     RiskListView,
     SurveyDetailView,
     SurveyListView,
+    TaskDetailView,
     TaskListView,
     TicketStatsView,
 )
@@ -193,6 +194,7 @@ urlpatterns = [
     # Task, same top-level-prefix reasoning as Contact/Opportunity/Risk
     # above — the one Task view spanning every Customer/Account at once.
     path("api/v1/tasks/", TaskListView.as_view(), name="task-list"),
+    path("api/v1/tasks/<int:pk>/", TaskDetailView.as_view(), name="task-detail"),
     # Ticket rollups for the Ticket Overview dashboard. A stats-only
     # endpoint with no matching list — a flat "every ticket" list has
     # no consumer, and the dashboard only ever wants the aggregates.
