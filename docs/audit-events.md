@@ -36,6 +36,8 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `auth.login` (`mfa: totp|recovery`) | `MfaLoginView` | user | — | the second factor that completed the sign-in |
 | `organisation.owner_transferred` | `services.identity.ownership.transfer` | previous owner, or platform staff | User (new owner) | from, to, `by_platform` |
 | `platform.organisation.status` | `services.platform.views` | platform staff | Organisation | from, to, reason; suspension refuses sign-in and voids capabilities |
+| `platform.organisation.created` | `services.platform.views` | platform staff | Organisation | name, owner email; the owner is created as root user in the same transaction |
+| `platform.organisation.updated` | `services.platform.views` | platform staff | Organisation | changed field names, from, to |
 | `auth.logout` | `LogoutView` | user | — | — |
 | `auth.password_change` | `ChangePasswordView` | user | User (self) | — |
 | `auth.password_reset_request` | `ForgotPasswordView` | — | — | `email` (recorded whether or not it exists) |
