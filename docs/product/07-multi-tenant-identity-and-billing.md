@@ -394,7 +394,7 @@ migration.
 4. Access requests (4a, PR #38), self-serve workspaces (4b, §4.5, PR #39), invitations (4c, §4.6, PR #40) — done
 5. Billing account, plans, credit ledger, seat allocation with the locking test first
 6. Payment provider interface, one implementation, idempotent webhooks
-7. Platform-admin surface — owners + staff MFA (7a, §4.7); portal API and pages (7b, next)
+7. Platform-admin surface — owners + staff MFA (7a, §4.7, PR #41); portal API (7b, PR #42); pages next
 8. Frontend: login, pending state, approvals, billing, platform admin
 9. Expanded capability vocabulary and the data migration
 10. Drop the legacy columns
