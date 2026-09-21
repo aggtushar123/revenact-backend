@@ -204,6 +204,9 @@ def create_workspace(identity_info, *, organisation_name: str, name: str = "", r
             email_verified=True,
             last_used_at=timezone.now(),
         )
+        from . import ownership
+
+        ownership.claim(user, organisation)
 
     audit.record(  # SOC2:LOG-01
         "auth.signup",

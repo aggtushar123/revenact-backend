@@ -292,7 +292,14 @@ class ConnectionTests(Fixture):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(MailboxConnection.objects.exists())
 
+    @override_settings(
+        GOOGLE_OAUTH_CLIENT_ID="",
+        GOOGLE_OAUTH_CLIENT_SECRET="",
+        MICROSOFT_OAUTH_CLIENT_ID="",
+        MICROSOFT_OAUTH_CLIENT_SECRET="",
+    )
     def test_oauth_providers_are_offered_only_when_configured(self):
+        """Pinned explicitly: a developer's .env may well hold real clients."""
         self.client.force_authenticate(self.dana)
         keys = {p["key"] for p in self.client.get("/api/v1/mail/connection/").data["providers"]}
         self.assertEqual(keys, {"imap"})

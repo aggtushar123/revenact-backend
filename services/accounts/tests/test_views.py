@@ -279,7 +279,7 @@ class MeViewTests(APITestCase):
         # Every field login has, me has too. Me may carry more: the
         # extras below are only meaningful on your own profile and would be
         # a query per row anywhere a user is embedded in a list.
-        me_only = {"sign_in_providers"}
+        me_only = {"sign_in_providers", "is_owner", "mfa_enrolled"}
         self.assertEqual(set(me.data) - me_only, set(login.data["user"]))
         self.assertEqual(me.data["role"], User.Role.ADMIN)
         self.assertEqual(me.data["role_name"], "Admin")

@@ -72,3 +72,27 @@ class CanViewAllAccounts(HasCapability):
 
     capability = Capability.VIEW_ALL_ACCOUNTS
     message = "You can only see the customers and accounts you own."
+
+
+class IsPlatformStaff(BasePermission):
+    """Revenact's own staff, signed in with a second factor.
+
+    Superusers belong to no tenant, which is what makes them the right people
+    to administer all of them. But the account that can reach every
+    organisation is the one worth stealing, so a password alone is not
+    enough: the token must carry the `mfa` claim that only the second-factor
+    login mints. A superuser who has not enrolled is told so (MFA_REQUIRED)
+    rather than let through.
+    """
+
+    message = "Platform access needs a staff account signed in with two-factor authentication."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not (user and user.is_authenticated and user.is_superuser):
+            return False
+        token = request.auth
+        if token is None or not bool(token.get("mfa", False)):
+            self.message = "MFA_REQUIRED"
+            return False
+        return True

@@ -209,7 +209,14 @@ class EndpointTests(APITestCase):
             email="alice@acme.io", password="x", name="Alice", organisation=self.org
         )
 
+    @override_settings(
+        GOOGLE_OAUTH_CLIENT_ID="",
+        GOOGLE_OAUTH_CLIENT_SECRET="",
+        MICROSOFT_OAUTH_CLIENT_ID="",
+        MICROSOFT_OAUTH_CLIENT_SECRET="",
+    )
     def test_the_provider_list_is_empty_when_nothing_is_configured(self):
+        """Pinned explicitly: a developer's .env may well hold real clients."""
         response = self.client.get("/api/v1/auth/oauth/providers/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["providers"], [])
