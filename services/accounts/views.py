@@ -482,9 +482,17 @@ class OrgUserListCreateView(generics.ListCreateAPIView):
         return UserSerializer if self.request.method == "GET" else CreateOrgUserSerializer
 
     def create(self, request, *args, **kwargs):
+        from services.billing import seats
+        from services.billing.ledger import BillingError
+
         serializer = self.get_serializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
+        try:
+            with transaction.atomic():
+                seats.reserve(request.user.organisation)
+                user = serializer.save()
+        except BillingError as exc:
+            return _error(exc.code, exc.message, status.HTTP_402_PAYMENT_REQUIRED)
         # SOC2:LOG-01 / AUTH-07 provisioning
         audit.record(
             "user.create",
@@ -517,11 +525,32 @@ class OrgUserDetailView(generics.RetrieveUpdateAPIView):
         return UserSerializer if self.request.method == "GET" else EditOrgUserSerializer
 
     def update(self, request, *args, **kwargs):
+        from services.billing import seats
+        from services.billing.ledger import BillingError
+        from services.identity.models import OrganizationMembership
+
         instance = self.get_object()
         was_active = instance.is_active
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
+
+        reactivating = not was_active and serializer.validated_data.get("is_active") is True
+        try:
+            with transaction.atomic():
+                if reactivating:
+                    # Coming back takes a seat like arriving does.
+                    seats.reserve(request.user.organisation)
+                user = serializer.save()
+                membership = OrganizationMembership.objects.filter(
+                    user=user, organisation=request.user.organisation, status="active"
+                ).first()
+                if membership is not None:
+                    if user.is_active:
+                        seats.allocate(membership, enforce=False)
+                    else:
+                        seats.release(membership)
+        except BillingError as exc:
+            return _error(exc.code, exc.message, status.HTTP_402_PAYMENT_REQUIRED)
 
         changed = sorted(serializer.validated_data.keys())
         if was_active and not user.is_active:

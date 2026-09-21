@@ -38,6 +38,9 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `platform.organisation.status` | `services.platform.views` | platform staff | Organisation | from, to, reason; suspension refuses sign-in and voids capabilities |
 | `platform.organisation.created` | `services.platform.views` | platform staff | Organisation | name, owner email; the owner is created as root user in the same transaction |
 | `platform.organisation.updated` | `services.platform.views` | platform staff | Organisation | changed field names, from, to |
+| `billing.credits.adjusted` | `services.billing.ledger.adjust` | platform staff | BillingAccount | signed amount, balance after, reason |
+| `billing.seats.changed` | `services.billing.accounts.set_seats` | platform staff | BillingAccount | from, to, reason; never below seats in use |
+| `billing.plan.changed` | `services.billing.accounts.change_plan` | platform staff (or the payment webhook, next phase) | BillingAccount | from, to, seat allowance, reason |
 | `auth.logout` | `LogoutView` | user | — | — |
 | `auth.password_change` | `ChangePasswordView` | user | User (self) | — |
 | `auth.password_reset_request` | `ForgotPasswordView` | — | — | `email` (recorded whether or not it exists) |

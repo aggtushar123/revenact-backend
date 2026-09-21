@@ -23,6 +23,7 @@ send_campaign_email's own single outbound call.
 """
 
 import time
+import uuid
 
 from django.conf import settings
 
@@ -140,10 +141,29 @@ def get_completion(
                 "Raise it under Brain > Agents, or wait for next month."
             )
 
+    # AI credits: one charge per call, taken before the call and given back
+    # if it fails. The ledger, not this function, decides whether there is
+    # anything to take; the existing BudgetExceeded handling everywhere
+    # applies unchanged because the refusal is that exception.
+    from services.billing import credits
+
+    charge_reference = f"call:{uuid.uuid4()}"
+    charged = False
+    if organisation is not None:
+        try:
+            charged = credits.charge(
+                organisation, purpose=purpose, reference=charge_reference, actor=user
+            )
+        except credits.CreditsExhausted as exc:
+            log("over_budget", error=str(exc))
+            raise BudgetExceeded(str(exc)) from exc
+
     try:
         client, model = _build_client_and_model()
     except CopilotNotConfigured as exc:
         log("unconfigured", error=exc)
+        if charged:
+            credits.refund(organisation, purpose=purpose, reference=charge_reference, actor=user)
         raise
 
     try:
@@ -158,6 +178,8 @@ def get_completion(
         # model access granted, ...) becomes a clear 502 for the caller,
         # never a raw 500.
         log("failed", model=model, error=exc)
+        if charged:
+            credits.refund(organisation, purpose=purpose, reference=charge_reference, actor=user)
         raise CopilotRequestFailed(str(exc)) from exc
 
     used = getattr(response, "usage", None)

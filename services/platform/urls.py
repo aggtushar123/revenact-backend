@@ -22,5 +22,15 @@ urlpatterns = [
         views.OrganisationOwnerView.as_view(),
         name="platform-organisation-owner",
     ),
+    path(
+        "organisations/<int:pk>/billing/",
+        views.OrganisationBillingView.as_view(),
+        name="platform-organisation-billing",
+    ),
+    path(
+        "organisations/<int:pk>/billing/<str:action>/",
+        views.OrganisationBillingActionView.as_view(),
+        name="platform-organisation-billing-action",
+    ),
     path("staff/", views.StaffListView.as_view(), name="platform-staff"),
 ]

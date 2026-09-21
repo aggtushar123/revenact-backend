@@ -207,6 +207,7 @@ def create_workspace(identity_info, *, organisation_name: str, name: str = "", r
         from . import ownership
 
         ownership.claim(user, organisation)
+        _seat_or_rollback(user)
 
     audit.record(  # SOC2:LOG-01
         "auth.signup",
@@ -231,6 +232,22 @@ def create_workspace(identity_info, *, organisation_name: str, name: str = "", r
     return user
 
 
+def _seat_or_rollback(user) -> None:
+    """A founder holds the first seat. The membership signal already opened
+    it without enforcing; this asserts the allowance was not zero, which is
+    the one way a founder could not be seated."""
+    from services.billing import seats
+    from services.billing.ledger import BillingError
+
+    membership = OrganizationMembership.objects.filter(user=user, status="active").first()
+    if membership is None:
+        return
+    try:
+        seats.allocate(membership)
+    except BillingError as exc:
+        raise OnboardingError(exc.code, exc.message) from exc
+
+
 def approve(access_request: AccessRequest, *, reviewer: User, role, department=None, request=None):
     """Turn a pending request into an active membership.
 
@@ -250,13 +267,18 @@ def approve(access_request: AccessRequest, *, reviewer: User, role, department=N
     user = access_request.user
     now = timezone.now()
 
-    with transaction.atomic():
-        membership = _grant_membership(
-            user, organisation, role=role, department=department, approver=reviewer, when=now
-        )
-        AccessRequest.objects.filter(pk=access_request.pk).update(
-            status=AccessRequest.Status.APPROVED, reviewed_at=now, reviewed_by=reviewer
-        )
+    from services.billing.ledger import BillingError
+
+    try:
+        with transaction.atomic():
+            membership = _grant_membership(
+                user, organisation, role=role, department=department, approver=reviewer, when=now
+            )
+            AccessRequest.objects.filter(pk=access_request.pk).update(
+                status=AccessRequest.Status.APPROVED, reviewed_at=now, reviewed_by=reviewer
+            )
+    except BillingError as exc:
+        raise OnboardingError(exc.code, exc.message) from exc
 
     audit.record(  # SOC2:LOG-01
         "access_request.approved",
@@ -278,8 +300,13 @@ def _grant_membership(user, organisation, *, role, department, approver, when=No
     the billing phase, before the membership write, and fails the whole
     transaction when no seat is free.
     """
+    from services.billing import seats
+
     when = when or timezone.now()
-    # (billing phase: allocate a seat here)
+    # The seat check, under the billing account's row lock: two concurrent
+    # grants for the last seat serialise here and exactly one succeeds. It
+    # runs before the membership exists, so a refusal leaves nothing behind.
+    seats.reserve(organisation)
     membership, _ = OrganizationMembership.objects.update_or_create(
         organisation=organisation,
         user=user,
@@ -375,6 +402,27 @@ def invite(organisation, *, email: str, role, department=None, inviter: User, re
     return invitation, created
 
 
+def _accept_grant(invitation, user, now) -> None:
+    """Caller holds the transaction."""
+    from .models import Invitation
+
+    _grant_membership(
+        user,
+        invitation.organisation,
+        role=invitation.role,
+        department=invitation.department,
+        approver=invitation.invited_by,
+        when=now,
+    )
+    Invitation.objects.filter(pk=invitation.pk).update(
+        status=Invitation.Status.ACCEPTED, accepted_at=now, accepted_by=user
+    )
+    # A request they may have raised elsewhere while waiting is moot now.
+    AccessRequest.objects.filter(user=user, status=AccessRequest.Status.PENDING).update(
+        status=AccessRequest.Status.CANCELLED, reviewed_at=now
+    )
+
+
 def cancel_invitation(invitation, *, actor: User, request=None):
     from .models import Invitation
 
@@ -421,7 +469,6 @@ def accept_invitation(invitation, identity_info, *, request=None) -> User:
     One transaction: the person (created if new), the membership, both
     columns, the invitation's own status.
     """
-    from .models import Invitation
 
     if (identity_info.email or "").strip().lower() != invitation.email:
         raise OnboardingError(
@@ -430,26 +477,17 @@ def accept_invitation(invitation, identity_info, *, request=None) -> User:
     if not invitation.is_open:
         raise OnboardingError("INVITATION_EXPIRED", "That invitation has expired.")
 
+    from services.billing.ledger import BillingError
+
     now = timezone.now()
-    with transaction.atomic():
-        user = _user_for(identity_info)
-        if not user.is_active:
-            raise OnboardingError("ACCOUNT_DISABLED", "This account has been deactivated.")
-        _grant_membership(
-            user,
-            invitation.organisation,
-            role=invitation.role,
-            department=invitation.department,
-            approver=invitation.invited_by,
-            when=now,
-        )
-        Invitation.objects.filter(pk=invitation.pk).update(
-            status=Invitation.Status.ACCEPTED, accepted_at=now, accepted_by=user
-        )
-        # A request they may have raised elsewhere while waiting is moot now.
-        AccessRequest.objects.filter(user=user, status=AccessRequest.Status.PENDING).update(
-            status=AccessRequest.Status.CANCELLED, reviewed_at=now
-        )
+    try:
+        with transaction.atomic():
+            user = _user_for(identity_info)
+            if not user.is_active:
+                raise OnboardingError("ACCOUNT_DISABLED", "This account has been deactivated.")
+            _accept_grant(invitation, user, now)
+    except BillingError as exc:
+        raise OnboardingError(exc.code, exc.message) from exc
 
     # The grant wrote the columns with a queryset update; hand back an
     # instance that has read them, and that carries no stale memo.
