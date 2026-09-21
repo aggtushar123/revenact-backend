@@ -4646,6 +4646,119 @@ connector are v2 in the specification.
 
 ---
 
+## `mail` — The person's own inbox (`/communications?source=mailbox:<provider>`, `MailboxView.tsx`)
+
+Connecting a mailbox used to file only the messages that matched someone in
+the book (`customers.Email`, the team's view of a customer). The Communications
+page, opened on the mailbox source, now shows the person's mail **whole**: every
+message the provider handed back, in the folders the provider keeps, with its
+flags and a category. That is `mail.MailMessage`, one row per message per
+connection, created at sync next to the filed copy and pointing at it when
+there is one.
+
+### Ownership
+
+A mailbox's contents are the owner's and nobody else's. Every endpoint below
+filters on `owner=request.user`; a manager reads the **filed** copies under
+`services/mail/visibility.py`, never a report's whole inbox. Disconnecting the
+mailbox deletes the personal copy (`connection` cascades) and leaves the filed
+`Email` rows on the customer, as before.
+
+### What the provider tells us, and what we keep
+
+`providers.base.Message.labels` carries one vocabulary for all three providers:
+`inbox sent draft spam trash unread starred important promotions social updates
+forums personal`. Gmail maps its label ids (and the fetch now includes spam,
+trash and drafts); Graph maps `isRead`, `flag`, `importance`, `isDraft` and the
+five well-known folders; IMAP maps the folder it read from and `\Seen` /
+`\Flagged`.
+
+At sync those become `folder` (`inbox sent drafts spam trash`), `is_read`,
+`is_starred`, `is_important`, and `category` via `services/mail/categorise.py`:
+`financial` (subject mentions an invoice, renewal, payment…), then the
+provider's own tab (`promotions`, `social`), `newsletters` (a `List-Unsubscribe`
+header), `notifications` (Gmail's updates/forums, or a system sender such as
+`noreply@`), else `general`. No model call: a category is a filing decision and
+must come out the same every time.
+
+Nothing is written back to the provider (Gmail is connected read-only). A star
+or a read mark changed here is changed here. `state` (`open done muted`) is
+this product's own triage and exists nowhere else.
+
+`priority` on a row is `is_important` **or** "from someone in the book"
+(`email` is set).
+
+### `GET /api/v1/mail/messages/`
+
+Auth: required. DRF's paginated list shape (`page`, `page_size` ≤ 100).
+
+| Parameter | Values | Meaning |
+|---|---|---|
+| `folder` | `inbox` (default), `drafts`, `sent`, `done`, `muted`, `spam`, `trash`, `starred`, `important` | Which list. `inbox` is `folder=inbox` **and** `state=open`; `done`/`muted` are the two triage states; `starred`/`important` are the flags across folders |
+| `category` | `general financial newsletters notifications promotions social` | Narrow to one |
+| `unread` | `true` | Only unread |
+| `priority` | `true` | Only priority (see above) |
+| `q` | text | Subject, sender name, sender address, snippet |
+
+Row: `id, thread_id, direction (sent|received), from_name, from_address,
+to ([[name, address]…]), subject, snippet (≤300 chars), sent_at, folder,
+category, state, is_read, is_starred, is_important, priority, account
+({id, name, type: customer|account} from the filed copy, else null)`. No body:
+that is the detail's.
+
+400 for an unknown `folder` or `category`.
+
+### `GET /api/v1/mail/messages/summary/`
+
+The numbers beside the folders and the Categories block at the top of the
+inbox.
+
+```json
+{
+  "has_mailbox": true,
+  "address": "dana@acme.io",
+  "last_synced_at": "2026-09-21T17:02:11Z",
+  "folders": {"inbox": 41, "drafts": 2, "sent": 12, "done": 7, "muted": 1},
+  "unread": 9,
+  "categories": [
+    {"category": "financial", "label": "Financial", "count": 2,
+     "subjects": ["Subscription renewal", "Invoice 1042"],
+     "senders": ["Circleback"], "more_senders": 1}
+  ]
+}
+```
+
+`categories` lists each non-general category with **unread inbox** mail, newest
+first within it: up to two distinct subjects, the newest sender, and how many
+other distinct senders there are. `general` is never a block; it is the list
+itself.
+
+### `GET | PATCH /api/v1/mail/messages/<id>/`
+
+GET adds `body` to the row. PATCH accepts `is_read`, `is_starred`, `state`
+(partial) and returns the detail. 404 for anyone but the owner, including
+their manager.
+
+### `POST /api/v1/mail/messages/<id>/reply/`
+
+`{"body": "…"}` — sends from the mailbox the message arrived in, to whoever
+wrote it (or, for something the person sent, to the same recipients), under
+`Re: <subject>`. If the original was filed against a customer the reply is
+filed there too (`send_email`, so the team's picture of that account gains the
+answer and it is classified like any other email); otherwise it is only the
+person's own sent mail. Marks the original read. Returns **201** with the sent
+message as it now sits in `sent`. 409 when the mailbox is no longer connected;
+502 with the provider's reason when the send fails. Audited as `mailbox.reply`.
+
+### Where it sits in the frontend
+
+`CommunicationsPage` renders `MailboxView` in the inbox card when the sidebar
+source is `mailbox:<provider>`: folders (Inbox, Drafts, Sent, Done, Muted with
+counts), Filters (Priority, Unread), Categories (Starred, Important, Spam,
+Trash, then the five categories), the Categories block, the list grouped by
+month, the open message in place with its reply box. The queue view (the four
+kinds of waiting) is unchanged for every other source.
+
 ## `<app_name>` — <Frontend feature name>
 
 Mirrors: `src/pages/<domain>/...`, `src/features/<domain>/...`

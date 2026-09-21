@@ -34,6 +34,31 @@ class Message:
     date: datetime
     body: str
     headers: dict = field(default_factory=dict)
+    #: Provider state, normalised to one vocabulary so the store never has to
+    #: know Gmail from Graph from IMAP: any of LABELS below.
+    labels: list[str] = field(default_factory=list)
+
+
+#: The only labels a provider may hand back. Folder ones say where the message
+#: sits, flag ones how the person left it, category ones what the provider
+#: thinks it is.
+LABELS = frozenset(
+    {
+        "inbox",
+        "sent",
+        "draft",
+        "spam",
+        "trash",
+        "unread",
+        "starred",
+        "important",
+        "promotions",
+        "social",
+        "updates",
+        "forums",
+        "personal",
+    }
+)
 
 
 @dataclass

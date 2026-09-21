@@ -51,6 +51,7 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `user.update` | `OrgUserDetailView` | admin | User | changed field names (never the password) |
 | `user.deactivate` / `user.reactivate` | `OrgUserDetailView` | admin | User | — |
 | `mailbox.connect` / `mailbox.disconnect` | `services.mail.views` | user | MailboxConnection | provider, address |
+| `mailbox.reply` | `services.mail.views.MailReplyView` | user | MailMessage (the one answered) | to, subject; mail left through a credential we hold |
 | `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
 | `file.upload` / `file.delete` | `services.customers.views` (Files tab) | user | Attachment | name, size, content_type |
 | `call.log` | `services.customers.views` (CallSense) | user | Call | title, whether a transcript was attached |

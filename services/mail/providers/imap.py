@@ -74,10 +74,11 @@ class ImapProvider(MailProvider):
                 if status != "OK" or not ids or not ids[0]:
                     continue
                 for uid in ids[0].split()[-300:]:
-                    status, parts = client.fetch(uid, "(RFC822)")
+                    status, parts = client.fetch(uid, "(FLAGS RFC822)")
                     if status != "OK" or not parts or not isinstance(parts[0], tuple):
                         continue
                     message = parse_rfc822(parts[0][1], fallback_id=f"{folder}:{uid.decode()}")
+                    message.labels = _labels(folder, parts[0][0])
                     if message.date >= since_date:
                         found.append(message)
         finally:
@@ -111,6 +112,19 @@ class ImapProvider(MailProvider):
             date=datetime.now(timezone.utc),
             body=body,
         )
+
+
+def _labels(folder, envelope):
+    """Where an IMAP message sits and how it was left, from the folder it
+    came out of and the FLAGS the server put in the fetch envelope."""
+    name = folder.lower()
+    labels = ["sent" if "sent" in name else "inbox"]
+    flags = envelope.decode(errors="replace") if isinstance(envelope, bytes) else str(envelope)
+    if "\\Seen" not in flags:
+        labels.append("unread")
+    if "\\Flagged" in flags:
+        labels.append("starred")
+    return labels
 
 
 def _decoded(value):
@@ -156,6 +170,9 @@ def parse_rfc822(raw: bytes, fallback_id: str = "") -> Message:
     except (TypeError, ValueError):
         date = datetime.now(timezone.utc)
     from_name, from_address = parse_address(_decoded(parsed.get("From")))
+    headers = {}
+    if parsed.get("List-Unsubscribe"):
+        headers["list-unsubscribe"] = str(parsed.get("List-Unsubscribe"))
     return Message(
         provider_id=(parsed.get("Message-ID") or fallback_id).strip(),
         thread_id=(
@@ -170,4 +187,5 @@ def parse_rfc822(raw: bytes, fallback_id: str = "") -> Message:
         + parse_address_list(_decoded(parsed.get("Cc"))),
         date=date,
         body=body[:20000],
+        headers=headers,
     )
