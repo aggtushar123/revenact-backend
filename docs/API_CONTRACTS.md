@@ -4125,8 +4125,8 @@ Unpaginated, most revenue first:
 
 ### `GET /api/v1/requests/<id>/`
 
-The row above plus `companies` (each `{id, name, arr}`, most revenue
-first) and `evidence` (each `{id, kind, record_id, snippet, occurred_at,
+The row above plus `companies_asking` (each `{id, name, arr}`, most
+revenue first; `companies` stays the count) and `evidence` (each `{id, kind, record_id, snippet, occurred_at,
 company: {type, id, name}}`), both limited to what the reader may open.
 
 ### `PATCH /api/v1/requests/<id>/`
@@ -4138,7 +4138,8 @@ the detail body. `view_all_accounts` only; audited as `request.update`.
 
 Files every unfiled classified ask: into an existing request when its
 embedding is close enough, else into new titled requests, one model call
-each. 200 `{"created": 2, "linked": 3, "remaining": 0}`. When the model
+each (naming reads a sample of at most 20 asks, not the whole cluster).
+200 `{"created": 2, "linked": 3, "remaining": 0}`. When the model
 stops part-way the work already done is kept and returned with the
 failure code (429 budget, 503 not configured, 502 upstream) plus
 `remaining`. `view_all_accounts` only; 403 when the Copilot is off. Each

@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -9,7 +10,7 @@ from core import audit
 from services.accounts.permissions import CanViewAllAccounts
 from services.copilot.anthropic_client import BudgetExceeded, CopilotNotConfigured
 
-from .gather import GatherStopped, arr_field, gather, summarise, visible_evidence
+from .gather import Companies, GatherStopped, gather, recentre, summarise, visible_evidence
 from .models import FeatureRequest, RequestEvidence
 from .serializers import FeatureRequestWriteSerializer, evidence_row, request_row
 
@@ -21,32 +22,44 @@ def _org_requests(request):
 
 
 class FeatureRequestListView(APIView):
-    """GET /api/v1/requests/?status= — every request, with the revenue and
-    counts computed over the companies the reader may open, most revenue
-    first. Any member may read; what they see is their book."""
+    """GET /api/v1/requests/?status= — every request the reader has evidence
+    for, with the revenue and counts computed over the companies they may
+    open, most revenue first.
+
+    A request whose evidence is all outside their book is left out entirely
+    rather than shown with a zero: its title and summary were written from
+    records they may not read."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         organisation = request.user.organisation
-        rows = _org_requests(request)
         wanted = request.query_params.get("status")
+        if wanted and wanted not in FeatureRequest.Status.values:
+            return Response({"detail": f"Unknown status {wanted!r}."}, status=400)
+        rows = _org_requests(request)
         if wanted:
             rows = rows.filter(status=wanted)
+        evidence = list(visible_evidence(organisation, request.user))
+        companies = Companies(evidence, organisation, request.user)
         by_request = {}
-        for row in visible_evidence(organisation, request.user):
+        for row in evidence:
             by_request.setdefault(row.request_id, []).append(row)
         out = [
-            request_row(feature, summarise(feature, by_request.get(feature.id, []), organisation))
+            request_row(feature, summarise(by_request[feature.id], companies))
             for feature in rows
+            if feature.id in by_request
         ]
         out.sort(key=lambda r: (-float(r["arr"]), -r["interactions"], r["title"]))
         return Response(out)
 
 
 class FeatureRequestDetailView(APIView):
-    """GET /api/v1/requests/<id>/ — the request with its evidence and the
-    companies asking (both limited to what the reader may open).
+    """GET /api/v1/requests/<id>/ — the request with the evidence and the
+    companies asking that this reader may see. A request they have no
+    evidence for is a 404, the same "404, not an empty page" rule the
+    customer-scoped views use.
+
     PATCH title, summary, status, owner — leadership only, audited."""
 
     permission_classes = [IsAuthenticated]
@@ -54,12 +67,14 @@ class FeatureRequestDetailView(APIView):
     def get(self, request, pk):
         feature = get_object_or_404(_org_requests(request), pk=pk)
         organisation = request.user.organisation
-        rows = visible_evidence(feature, request.user)
-        summary = summarise(feature, rows, organisation)
-        field = arr_field(organisation)
-        companies = sorted(
+        rows = list(visible_evidence(organisation, request.user, request=feature))
+        if not rows:
+            raise Http404("No evidence you can read.")
+        companies = Companies(rows, organisation, request.user)
+        summary = summarise(rows, companies)
+        asking = sorted(
             (
-                {"id": c.id, "name": c.name, "arr": str(getattr(c, field, 0) or 0)}
+                {"id": c.id, "name": c.name, "arr": str(companies.arr_of(c))}
                 for c in summary["customers"].values()
             ),
             key=lambda c: -float(c["arr"]),
@@ -67,7 +82,9 @@ class FeatureRequestDetailView(APIView):
         return Response(
             {
                 **request_row(feature, summary),
-                "companies": companies,
+                # `companies` stays the count from request_row; the list is
+                # its own field so one name never means two shapes.
+                "companies_asking": asking,
                 "evidence": [evidence_row(r) for r in rows],
             }
         )
@@ -85,7 +102,8 @@ class FeatureRequestDetailView(APIView):
             "request.update",
             request=request,
             target=feature,
-            metadata={key: str(value) for key, value in request.data.items()},
+            # Only what the serializer accepted: a client may send anything.
+            metadata={key: str(value) for key, value in serializer.validated_data.items()},
         )
         return self.get(request, pk)
 
@@ -134,7 +152,9 @@ class MergeView(APIView):
                 metadata={"from": source.title, "into": target.title, "evidence": moved},
             )
             source.delete()
-            target.save(update_fields=["updated_at"])
+            # Without this the merge would undo itself: the survivor's
+            # centroid would still not match the asks folded into it.
+            recentre(target)
         return Response({"id": target.id, "moved": moved})
 
 
@@ -148,8 +168,18 @@ class EvidenceMoveView(APIView):
             RequestEvidence.objects.filter(organisation=request.user.organisation), pk=pk
         )
         target = get_object_or_404(_org_requests(request), pk=request.data.get("request") or 0)
+        was = row.request
         row.request, row.dismissed = target, False
         row.save(update_fields=["request", "dismissed"])
+        audit.record(
+            "request.evidence_move",
+            request=request,
+            target=target,
+            metadata={"evidence": row.id, "from": was.title if was else None, "into": target.title},
+        )
+        recentre(target)
+        if was and was.id != target.id:
+            recentre(was)
         return Response(evidence_row(row))
 
 
@@ -163,6 +193,15 @@ class EvidenceDismissView(APIView):
         row = get_object_or_404(
             RequestEvidence.objects.filter(organisation=request.user.organisation), pk=pk
         )
+        was = row.request
         row.request, row.dismissed = None, True
         row.save(update_fields=["request", "dismissed"])
+        audit.record(
+            "request.evidence_dismiss",
+            request=request,
+            target=was,
+            metadata={"evidence": row.id, "kind": row.kind, "from": was.title if was else None},
+        )
+        if was:
+            recentre(was)
         return Response({"id": row.id, "dismissed": True})

@@ -8,10 +8,12 @@ group gets a title and summary from the model (one call per group,
 purpose `feature_request`)."""
 
 import json
+from collections import defaultdict
 from datetime import datetime, time
 from decimal import Decimal
 
-from django.db.models import Q
+from django.db import IntegrityError, transaction
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from core import audit
@@ -23,7 +25,7 @@ from services.copilot.anthropic_client import (
 )
 from services.copilot.embeddings import embed
 from services.customers.classification import _text_for
-from services.customers.models import Account, Call, Customer, Email, Ticket
+from services.customers.models import Account, Call, Email, Ticket
 from services.customers.scoping import visible_customers
 from services.customers.taxonomy import AICategory
 
@@ -35,6 +37,10 @@ MATCH = 0.6
 GROUP = 0.6
 #: Asks read per gather; the rest wait for the next one.
 GATHER_CAP = 200
+#: How many of a group's asks the naming call reads. Naming needs a sample,
+#: not the corpus: 200 full email bodies would be a six-figure token bill for
+#: a two-line answer.
+NAME_SAMPLE = 20
 SNIPPET = 300
 
 MODELS = {
@@ -45,6 +51,11 @@ MODELS = {
 
 
 def _dot(a, b) -> float:
+    """Cosine similarity of two unit vectors. Different lengths mean they came
+    from different embedding models, and scoring a prefix would read nonsense
+    as a match, so they simply do not match."""
+    if len(a) != len(b):
+        return -1.0
     return sum(x * y for x, y in zip(a, b))
 
 
@@ -103,27 +114,46 @@ def _when(record) -> datetime:
     return stamp
 
 
+#: The field each model dates its ask by, for "oldest first".
+DATED_BY = {
+    RequestEvidence.Kind.EMAIL: "sent_at",
+    RequestEvidence.Kind.TICKET: "opened_at",
+    RequestEvidence.Kind.CALL: "occurred_at",
+}
+
+
 def _candidates(organisation):
-    """Unfiled feature-request asks across the organisation, oldest first."""
-    filed = {
-        (row.kind, row.record_id)
-        for row in RequestEvidence.objects.filter(organisation=organisation).only(
-            "kind", "record_id"
-        )
-    }
+    """Unfiled feature-request asks across the organisation, oldest first.
+
+    "Not filed yet" is a subquery rather than a set built in Python: the
+    evidence ledger only grows, and reading all of it on every nightly pass
+    would cost more every night."""
     scope = Q(customer__organisation=organisation) | Q(
         account__customers__organisation=organisation
     )
     out = []
     for kind, model in MODELS.items():
+        already = RequestEvidence.objects.filter(
+            organisation=organisation, kind=kind, record_id=OuterRef("pk")
+        )
         rows = (
             model.objects.filter(scope, ai_category=AICategory.FEATURE_REQUEST)
+            .annotate(filed=Exists(already))
+            .filter(filed=False)
             .select_related("customer", "account")
-            .distinct()
+            .order_by(DATED_BY[kind])
+            .distinct()[:GATHER_CAP]
         )
-        out += [(kind, r) for r in rows if (kind, r.id) not in filed]
+        out += [(kind, r) for r in rows]
     out.sort(key=lambda pair: _when(pair[1]))
     return out[:GATHER_CAP]
+
+
+def _as_data(text: str) -> str:
+    """Customer-written text, made safe inside an <ask> element: the angle
+    brackets go, so nothing in a body can close the block and be read as an
+    instruction instead of as data."""
+    return text.replace("<", "(").replace(">", ")")[:SNIPPET]
 
 
 def _name(organisation, texts: list[str], *, actor=None) -> tuple[str, str]:
@@ -133,7 +163,9 @@ def _name(organisation, texts: list[str], *, actor=None) -> tuple[str, str]:
         'JSON only: {"title": "<at most eight words, a noun phrase>", '
         '"summary": "<one sentence on what they want and why>"}.'
     )
-    asks = "\n".join(f'<ask index="{i}">{t}</ask>' for i, t in enumerate(texts))
+    asks = "\n".join(
+        f'<ask index="{i}">{_as_data(t)}</ask>' for i, t in enumerate(texts[:NAME_SAMPLE])
+    )
     raw = get_completion(
         system=system,
         messages=[{"role": "user", "content": f"<asks>\n{asks}\n</asks>\n\nName the request."}],
@@ -145,17 +177,46 @@ def _name(organisation, texts: list[str], *, actor=None) -> tuple[str, str]:
     return parse_title(raw)
 
 
-def _file(organisation, request, kind, record, snippet):
-    return RequestEvidence.objects.create(
-        request=request,
-        organisation=organisation,
-        kind=kind,
-        record_id=record.id,
-        customer=record.customer,
-        account=record.account if record.customer_id is None else None,
-        snippet=snippet[:SNIPPET],
-        occurred_at=_when(record),
-    )
+def _file(organisation, request, kind, record, snippet, vector):
+    """One ask, filed. A concurrent pass that filed it first trips the unique
+    constraint, which is not an error: the ask is filed either way. Returns
+    the row, or None when it was already there.
+
+    The savepoint is what makes that survivable inside the caller's
+    transaction, and `bulk_create(ignore_conflicts=True)` is not an
+    alternative here: it leaves the primary key unset, so the caller could
+    not tell an insert from a no-op."""
+    try:
+        with transaction.atomic():
+            return RequestEvidence.objects.create(
+                request=request,
+                organisation=organisation,
+                kind=kind,
+                record_id=record.id,
+                customer=record.customer,
+                account=record.account if record.customer_id is None else None,
+                snippet=snippet[:SNIPPET],
+                mailbox_owner=getattr(record, "mailbox_owner", None),
+                department=getattr(record, "department", "") or "",
+                embedding=vector,
+                occurred_at=_when(record),
+            )
+    except IntegrityError:
+        return None
+
+
+def recentre(request) -> None:
+    """A request's centroid is the mean of its asks' own vectors, recomputed
+    whenever its evidence changes. Without this a merge would silently undo
+    itself: the survivor's centroid would still not match the asks folded
+    into it, and the next gather would raise the same request again."""
+    vectors = [
+        row.embedding
+        for row in request.evidence.filter(dismissed=False).only("embedding")
+        if row.embedding
+    ]
+    request.embedding = _centroid(vectors) if vectors else []
+    request.save(update_fields=["embedding", "updated_at"])
 
 
 class GatherStopped(Exception):
@@ -173,18 +234,24 @@ def gather(organisation, *, actor=None, request=None) -> dict:
         return result
     texts = [_text_for(record) for _, record in candidates]
     vectors = embed(texts)
-    existing = {
-        r.id: r.embedding
-        for r in FeatureRequest.objects.filter(organisation=organisation).exclude(embedding=[])
+    known = {
+        feature.id: feature
+        for feature in FeatureRequest.objects.filter(organisation=organisation).exclude(
+            embedding=[]
+        )
     }
-    unmatched = []
+    existing = {request_id: feature.embedding for request_id, feature in known.items()}
+    unmatched, touched = [], set()
     for index, (kind, record) in enumerate(candidates):
         request_id = match_existing(vectors[index], existing, MATCH)
         if request_id is None:
             unmatched.append(index)
             continue
-        _file(organisation, FeatureRequest.objects.get(id=request_id), kind, record, texts[index])
-        result["linked"] += 1
+        if _file(organisation, known[request_id], kind, record, texts[index], vectors[index]):
+            result["linked"] += 1
+            touched.add(request_id)
+    for request_id in touched:
+        recentre(known[request_id])
     groups = group_new([vectors[i] for i in unmatched], GROUP)
     for position, group in enumerate(groups):
         members = [unmatched[i] for i in group]
@@ -194,25 +261,32 @@ def gather(organisation, *, actor=None, request=None) -> dict:
             result["remaining"] = sum(len(g) for g in groups[position:])
             raise GatherStopped(result, exc) from exc
         except ValueError:
-            title, summary = texts[members[0]][:80], ""
-        feature = FeatureRequest.objects.create(
-            organisation=organisation,
-            title=title,
-            summary=summary,
-            embedding=_centroid([vectors[i] for i in members]),
-        )
-        for i in members:
-            kind, record = candidates[i]
-            _file(organisation, feature, kind, record, texts[i])
+            # The model answered, but not with a title. A neutral name beats
+            # putting raw customer text in a heading; the next pass can retry.
+            title, summary = "Unnamed request", ""
+        # A group is all or nothing: a half-filed request would hold some of
+        # its asks while the rest were neither filed nor ever read again.
+        with transaction.atomic():
+            feature = FeatureRequest.objects.create(
+                organisation=organisation,
+                title=title,
+                summary=summary,
+                embedding=_centroid([vectors[i] for i in members]),
+            )
+            filed = 0
+            for i in members:
+                kind, record = candidates[i]
+                if _file(organisation, feature, kind, record, texts[i], vectors[i]):
+                    filed += 1
         result["created"] += 1
-        result["linked"] += len(members)
+        result["linked"] += filed
         audit.record(
             "request.create",
             request=request,
             actor=actor,
             organisation=organisation,
             target=feature,
-            metadata={"title": title, "evidence": len(members)},
+            metadata={"title": title, "evidence": filed},
         )
     return result
 
@@ -243,51 +317,88 @@ def arr_field(organisation) -> str:
     return organisation.effective_global_attributes()["arr"]
 
 
-def customers_of(evidence_rows) -> dict:
-    """Distinct customers behind a set of evidence: a customer's own asks,
-    and an account's asks counted for its parent organisations."""
-    customers: dict[int, Customer] = {}
-    account_ids = set()
-    for row in evidence_rows:
-        if row.customer_id:
-            customers[row.customer_id] = row.customer
-        elif row.account_id:
-            account_ids.add(row.account_id)
-    if account_ids:
-        for account in Account.objects.filter(id__in=account_ids).prefetch_related("customers"):
-            for customer in account.customers.all():
-                customers[customer.id] = customer
-    return customers
+def readable_q(viewer) -> Q:
+    """Evidence whose *source record* this person may read.
 
+    The company rule is not enough: a snippet is the record's own text, so
+    mail stays with its mailbox owner and their chain and a ticket with its
+    department, exactly as services.mail.visibility and
+    services.customers.personal rule them everywhere else. A call belongs to
+    no one person."""
+    from services.accounts.hierarchy import chain_visible_q
+    from services.accounts.models import User
 
-def visible_evidence(request_or_org, viewer):
-    """Evidence rows the viewer may read: those on a company they may open."""
-    if isinstance(request_or_org, FeatureRequest):
-        rows = request_or_org.evidence.filter(dismissed=False)
+    mail = Q(kind=RequestEvidence.Kind.EMAIL) & chain_visible_q(viewer, "mailbox_owner")
+    if getattr(viewer, "function", None) == User.Function.LEADERSHIP:
+        tickets = Q(kind=RequestEvidence.Kind.TICKET)
     else:
-        rows = RequestEvidence.objects.filter(organisation=request_or_org, dismissed=False)
+        tickets = Q(kind=RequestEvidence.Kind.TICKET) & (
+            Q(department="") | Q(department=getattr(viewer, "function", "") or "")
+        )
+    return mail | tickets | Q(kind=RequestEvidence.Kind.CALL)
+
+
+def visible_evidence(organisation, viewer, *, request=None):
+    """Every evidence row this person may read, as a queryset: on a company
+    they may open, and a record they may read."""
     customer_ids = set(visible_customers(viewer).values_list("id", flat=True))
-    return [
-        row
-        for row in rows.select_related("customer", "account")
-        if (row.customer_id in customer_ids)
-        or (row.account_id and row.account.customers.filter(id__in=customer_ids).exists())
-    ]
+    account_ids = set(
+        Account.objects.filter(customers__id__in=customer_ids).values_list("id", flat=True)
+    )
+    rows = RequestEvidence.objects.filter(organisation=organisation, dismissed=False)
+    if request is not None:
+        rows = rows.filter(request=request)
+    return (
+        rows.filter(Q(customer_id__in=customer_ids) | Q(account_id__in=account_ids))
+        .filter(readable_q(viewer))
+        .select_related("customer", "account")
+    )
 
 
-def summarise(request, rows, organisation) -> dict:
-    field = arr_field(organisation)
-    customers = customers_of(rows)
+class Companies:
+    """The companies behind a page of evidence, resolved once for the page.
+
+    An account's ask counts for the parent organisations the reader may
+    open, and only those: another parent's revenue is not theirs to see."""
+
+    def __init__(self, rows, organisation, viewer):
+        self.field = arr_field(organisation)
+        visible = {c.id: c for c in visible_customers(viewer)}
+        self.customers = {
+            row.customer_id: visible[row.customer_id] for row in rows if row.customer_id in visible
+        }
+        self.by_account = defaultdict(list)
+        account_ids = {row.account_id for row in rows if row.account_id}
+        if account_ids:
+            for account in Account.objects.filter(id__in=account_ids).prefetch_related("customers"):
+                for customer in account.customers.all():
+                    if customer.id in visible:
+                        self.by_account[account.id].append(visible[customer.id])
+
+    def behind(self, rows) -> dict:
+        out = {}
+        for row in rows:
+            if row.customer_id and row.customer_id in self.customers:
+                out[row.customer_id] = self.customers[row.customer_id]
+            elif row.account_id:
+                for customer in self.by_account.get(row.account_id, []):
+                    out[customer.id] = customer
+        return out
+
+    def arr_of(self, customer) -> Decimal:
+        return Decimal(getattr(customer, self.field, 0) or 0)
+
+
+def summarise(rows, companies: "Companies") -> dict:
+    behind = companies.behind(rows)
     now = timezone.now()
     recent = now - timezone.timedelta(days=90)
     earlier = recent - timezone.timedelta(days=90)
     return {
-        "arr": str(
-            sum((Decimal(getattr(c, field, 0) or 0) for c in customers.values()), Decimal(0))
-        ),
-        "companies": len(customers),
+        "arr": str(sum((companies.arr_of(c) for c in behind.values()), Decimal(0))),
+        "companies": len(behind),
         "interactions": len(rows),
         "last_90_days": sum(1 for r in rows if r.occurred_at >= recent),
         "previous_90_days": sum(1 for r in rows if earlier <= r.occurred_at < recent),
-        "customers": customers,
+        "customers": behind,
     }

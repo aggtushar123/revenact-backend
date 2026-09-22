@@ -52,7 +52,16 @@ class RequestEvidence(models.Model):
     text is kept so the request page reads without touching the record).
     A dismissed row keeps its place so the next gather does not file the
     same interaction again. Exactly one of customer/account, like every
-    other record that hangs off a company."""
+    other record that hangs off a company.
+
+    `mailbox_owner` and `department` are copied from the source at filing
+    time, because the snippet is that record's own text and must stay
+    behind the same rules: mail is its owner's and their chain's
+    (services.mail.visibility), a ticket is its department's
+    (services.customers.personal). Copied rather than joined so the rule
+    still holds once the source record is gone. `embedding` is the ask's
+    own vector, kept so a request's centroid can be recomputed after a
+    merge without re-reading the model."""
 
     class Kind(models.TextChoices):
         EMAIL = "email", "Email"
@@ -89,6 +98,17 @@ class RequestEvidence(models.Model):
         Account, related_name="request_evidence", on_delete=models.CASCADE, null=True, blank=True
     )
     snippet = models.CharField(max_length=500)
+    #: The mailbox this arrived in, when it was mail; null means shared.
+    mailbox_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="+",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    #: The department a ticket came through; blank means everyone's.
+    department = models.CharField(max_length=16, blank=True, default="")
+    embedding = models.JSONField(default=list, blank=True)
     occurred_at = models.DateTimeField()
     dismissed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)

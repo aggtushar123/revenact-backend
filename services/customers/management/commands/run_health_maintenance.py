@@ -101,8 +101,13 @@ class Command(BaseCommand):
         if not options["dry_run"]:
             from services.requests.gather import gather_nightly
 
-            named = gather_nightly(organisation)
-            self.stdout.write(self.style.SUCCESS(f"named {named} new feature request(s)"))
+            # Never fatal: the scores, snapshots and nudges below must run
+            # even when the embedding model or the API is having a bad night.
+            try:
+                named = gather_nightly(organisation)
+                self.stdout.write(self.style.SUCCESS(f"named {named} new feature request(s)"))
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                self.stdout.write(self.style.WARNING(f"feature requests skipped: {exc}"))
 
         # AI attributes marked nightly, for companies with classified activity
         # newer than their last answer. Budget or a missing key ends the pass

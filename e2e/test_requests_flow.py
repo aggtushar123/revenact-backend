@@ -7,6 +7,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import LiveServerTestCase
+from django.utils import timezone
 
 from e2e.http import http_get, http_patch, http_post
 from services.customers.models import Customer, Email
@@ -36,6 +37,7 @@ class RequestsFlowTests(LiveServerTestCase):
         )
         self.assertEqual(status, 201)
         globex = Customer.objects.get(id=body["id"])
+        when = timezone.now() - timezone.timedelta(days=3)
         for subject, body_text in [
             ("Slack alerts", "Alerts in Slack?"),
             ("Dark mode", "A dark theme please"),
@@ -44,9 +46,9 @@ class RequestsFlowTests(LiveServerTestCase):
                 customer=globex,
                 subject=subject,
                 body=body_text,
-                sent_at="2026-09-01T09:00:00Z",
+                sent_at=when,
                 ai_category=AICategory.FEATURE_REQUEST,
-                ai_classified_at="2026-09-01T09:00:00Z",
+                ai_classified_at=when,
             )
         vectors = {
             "Slack alerts. Alerts in Slack?": [1.0, 0.0],

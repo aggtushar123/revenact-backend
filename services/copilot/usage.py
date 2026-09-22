@@ -21,6 +21,9 @@ PURPOSES = {
     "proposals": "Ops agent proposals",
     "facilitator": "Session facilitator",
     "explain": "Metric explanations",
+    "draft_reply": "Reply drafts",
+    "attribute": "AI attributes",
+    "feature_request": "Feature requests",
 }
 
 
