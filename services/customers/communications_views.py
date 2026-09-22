@@ -9,57 +9,28 @@ HTTP.
 """
 
 from rest_framework import views
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.utils.urls import replace_query_param
 
 from . import communications
 
-#: Same page size as DRF's default elsewhere, so the frontend's existing
-#: `next`/`previous` walking works unchanged.
-PAGE_SIZE = 25
-MAX_PAGE_SIZE = 100
+
+class QueuePagination(PageNumberPagination):
+    """DRF's own paginator over the merged list: the merge happens in Python,
+    and `Paginator` slices plain lists. The queue is bounded by
+    `communications.MAX_PER_KIND` before it gets here, which keeps that
+    honest."""
+
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 
-def _int(raw, default, *, low, high):
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return default
-    return max(low, min(high, value))
-
-
-def _page(request, rows):
-    """Slice `rows` into DRF's list shape.
-
-    The merge happens in Python, so pagination does too. The queue is bounded
-    by `communications.MAX_PER_KIND` before it gets here, which is what keeps
-    that honest.
-    """
-    page = _int(request.query_params.get("page"), 1, low=1, high=10_000)
-    size = _int(request.query_params.get("page_size"), PAGE_SIZE, low=1, high=MAX_PAGE_SIZE)
-
-    count = len(rows)
-    start = (page - 1) * size
-    end = start + size
-
-    def link(target):
-        """The `next`/`previous` link for a page, keeping every other filter.
-
-        Built with DRF's own `replace_query_param` rather than by formatting a
-        string: it is what `PageNumberPagination` uses, so these links are
-        escaped exactly the way the rest of the API's are.
-        """
-        if target < 1 or (target - 1) * size >= count:
-            return None
-        return replace_query_param(request.build_absolute_uri(), "page", target)
-
-    return {
-        "count": count,
-        "next": link(page + 1),
-        "previous": link(page - 1) if page > 1 else None,
-        "results": rows[start:end],
-    }
+def _page(request, rows, view):
+    paginator = QueuePagination()
+    return paginator.get_paginated_response(
+        paginator.paginate_queryset(rows, request, view=view)
+    ).data
 
 
 def _scope(request):
@@ -90,7 +61,7 @@ class CommunicationsListView(views.APIView):
 
         if request.query_params.get("needs") == "false":
             rows = communications.everything_rows(request.user, kinds=kinds)
-            payload = _page(request, rows)
+            payload = _page(request, rows, self)
             payload["truncated"] = False
             payload["mode"] = "everything"
             return Response(payload)
@@ -102,7 +73,7 @@ class CommunicationsListView(views.APIView):
         if search:
             rows = [row for row in rows if _matches(row, search)]
 
-        payload = _page(request, rows)
+        payload = _page(request, rows, self)
         payload["truncated"] = truncated
         payload["mode"] = "needs"
         payload["scope"] = scope
