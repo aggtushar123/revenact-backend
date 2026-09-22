@@ -3392,6 +3392,23 @@ call: over budget, the call is logged as `over_budget`, never sent, and
 A call with no organisation (none of ours today) is logged but not
 budgeted.
 
+### `POST /api/v1/copilot/draft-reply/`
+
+`{"kind": "email" | "mail_message", "id": <int>}` → `{"draft": "…", "sources": [...]}`.
+
+A reply written as the current user, for them to edit and send: nothing is sent
+and no conversation is stored. `email` is a filed `customers.Email` under the
+mailbox visibility rule (the whole thread on that mailbox goes into the prompt);
+`mail_message` is a row of the person's own inbox, owner only. The prompt
+carries the thread plus up to eight of the account's most relevant records from
+the same retrieval the Copilot answers with (`retrieve_with_sources`), and those
+records come back as `sources` in the message-source shape (`type, id, label,
+date, company, company_type, company_id`) so the UI can say "N sources used"
+and link each one. A mailbox message that matched nobody in the book gets an
+empty `sources`. Charged as a `draft_reply` model call; 400 for an unknown kind
+or missing id, 403 when the organisation's AI agent is off, 404 when the record
+is not the caller's to read, 429/503/502 exactly as `POST /copilot/messages/`.
+
 ### `GET /api/v1/copilot/usage/`
 
 Purposes: `copilot`, `headlines`, `classification`, `brief`, `proposals`, `facilitator`, `explain`.
@@ -4612,6 +4629,23 @@ exactly what that cap keeps honest.
 Merged, not unioned, for the same reason `interactions.recent_rows` is: aliasing
 four different shapes into one SQL union to sort them would cost more than
 reading a bounded number of rows per model.
+
+### `POST /api/v1/communications/emails/<id>/reply/`
+
+Answer a queue email from the person's own mailbox. Body `{"body": "…"}`. The
+email must be readable under the mailbox rule (owner and management chain) and
+must be one somebody wrote to them (`direction=received` with a sender); the
+reply goes to that sender under `Re: <subject>`, through the requesting user's
+own `MailboxConnection`, and the copy is filed on the same customer or account,
+which is what takes the debt out of the queue. Returns **201**
+`{id, direction: "sent", subject, sent_at, thread_id}`. 400 when empty or when
+the email has nobody to reply to; 404 outside the chain; 409 when the person has
+no mailbox connected; 502 with the provider's reason. Audited as
+`mailbox.reply`.
+
+The frontend's `ReplyBox` (shared by the queue's detail pane and the mailbox
+view) sends here for email rows; the mailbox view sends to
+`/mail/messages/<id>/reply/` instead.
 
 ### `GET /api/v1/communications/stats/`
 

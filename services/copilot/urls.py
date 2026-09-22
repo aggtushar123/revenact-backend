@@ -10,6 +10,7 @@ urlpatterns = [
         name="copilot-conversation-detail",
     ),
     path("messages/", views.SendMessageView.as_view(), name="copilot-send-message"),
+    path("draft-reply/", views.DraftReplyView.as_view(), name="copilot-draft-reply"),
     path("usage/", views.ModelUsageView.as_view(), name="copilot-model-usage"),
     path("usage/budgets/", views.ModelBudgetView.as_view(), name="copilot-model-budget"),
     path("skills/", views.SkillsView.as_view(), name="copilot-skills"),

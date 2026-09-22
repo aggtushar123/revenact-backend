@@ -20,6 +20,7 @@ from drf_spectacular.views import (
 from services.customers.communications_views import (
     CommunicationsListView,
     CommunicationsStatsView,
+    EmailReplyView,
 )
 from services.customers.views import (
     AccountListView,
@@ -222,4 +223,9 @@ urlpatterns = [
         name="communications-stats",
     ),
     path("api/v1/communications/", CommunicationsListView.as_view(), name="communications-list"),
+    path(
+        "api/v1/communications/emails/<int:pk>/reply/",
+        EmailReplyView.as_view(),
+        name="communications-email-reply",
+    ),
 ]

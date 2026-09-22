@@ -8,12 +8,20 @@ What waiting means lives in `communications.py`; this file only turns it into
 HTTP.
 """
 
-from rest_framework import views
+from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from rest_framework import status, views
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core import audit
+from services.mail.providers.base import ProviderError
+from services.mail.sync import send_email
+from services.mail.visibility import visible_emails
+
 from . import communications
+from .models import Email
 
 
 class QueuePagination(PageNumberPagination):
@@ -106,3 +114,67 @@ class CommunicationsStatsView(views.APIView):
         payload["stale_questions"] = communications.stale_question_count(request.user, scope=scope)
         payload["has_mailbox"] = hasattr(request.user, "mailbox")
         return Response(payload)
+
+
+class EmailReplyView(views.APIView):
+    """POST /api/v1/communications/emails/<id>/reply/ {body}
+
+    Answer a queue email from the person's own mailbox. The email must be
+    one they may read (the mailbox rule: owner and management chain) and
+    one somebody wrote to them; the reply goes to its sender under
+    `Re: <subject>` and is filed on the same customer or account, so the
+    debt leaves the queue. 409 without a connected mailbox."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        organisation = request.user.organisation
+        rows = Email.objects.filter(
+            Q(customer__organisation=organisation)
+            | Q(account__customers__organisation=organisation)
+        ).distinct()
+        email = get_object_or_404(visible_emails(request.user, rows), pk=pk)
+        body = (request.data.get("body") or "").strip()
+        if not body:
+            return Response({"detail": "Reply can't be empty."}, status=status.HTTP_400_BAD_REQUEST)
+        if email.direction != Email.Direction.RECEIVED or not email.from_address:
+            return Response(
+                {"detail": "This email has nobody to reply to."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        connection = getattr(request.user, "mailbox", None)
+        if connection is None:
+            return Response(
+                {"detail": "Connect a mailbox to reply from Revenact."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        subject = (
+            email.subject if email.subject.lower().startswith("re:") else f"Re: {email.subject}"
+        )
+        try:
+            sent = send_email(
+                connection,
+                to=[email.from_address],
+                subject=subject[:255],
+                body=body,
+                customer=email.customer,
+                account=email.account,
+            )
+        except ProviderError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        # SOC2:LOG-01 mail left through a credential we hold
+        audit.record(
+            "mailbox.reply",
+            request=request,
+            target=email,
+            metadata={"to": [email.from_address], "subject": subject},
+        )
+        return Response(
+            {
+                "id": sent.id,
+                "direction": sent.direction,
+                "subject": sent.subject,
+                "sent_at": sent.sent_at,
+                "thread_id": sent.thread_id,
+            },
+            status=status.HTTP_201_CREATED,
+        )

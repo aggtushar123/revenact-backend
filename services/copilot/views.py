@@ -10,13 +10,15 @@ from rest_framework.views import APIView
 
 from services.accounts.models import Organisation, User
 from services.accounts.permissions import CanManageOrgSettings, CanViewAllAccounts
-from services.customers.models import Account, Customer
+from services.customers.models import Account, Customer, Email
 from services.knowledge.mentions import (
     ask_suggestions_for,
     resolve_routes,
     route_questions,
     routing_summary,
 )
+from services.mail.models import MailMessage
+from services.mail.visibility import visible_emails
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
@@ -36,6 +38,7 @@ from .models import (
     SessionParticipant,
 )
 from .realtime import broadcast_session_update
+from .retrieval import retrieve_with_sources
 from .serializers import (
     ConversationDetailSerializer,
     ConversationListSerializer,
@@ -953,3 +956,111 @@ class ModelBudgetView(APIView):
                 organisation=organisation, purpose=purpose, defaults={"monthly_tokens": tokens}
             )
         return Response(usage.summary(organisation))
+
+
+#: How many records of the account's history a draft may lean on.
+DRAFT_SOURCES = 8
+
+
+def _org_emails(user):
+    """Every filed email the person may read: their organisation's, then
+    the mailbox rule (owner and management chain) on top."""
+    organisation = user.organisation
+    rows = Email.objects.filter(
+        Q(customer__organisation=organisation) | Q(account__customers__organisation=organisation)
+    ).distinct()
+    return visible_emails(user, rows)
+
+
+class DraftReplyView(APIView):
+    """POST /api/v1/copilot/draft-reply/ {kind: email|mail_message, id}
+
+    A reply written as the person, from the thread and the account's
+    history, with the records it leaned on. Nothing is sent and no
+    conversation is stored: the draft lands in the reply box for the
+    person to edit and send. Charged as a model call (`draft_reply`).
+
+    `email` is a filed `customers.Email` under the mailbox visibility rule;
+    `mail_message` is a row of the person's own inbox, owner only.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        kind = request.data.get("kind")
+        pk = request.data.get("id")
+        if kind not in ("email", "mail_message") or not pk:
+            return Response(
+                {"detail": "kind must be email or mail_message, with an id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        organisation = request.user.organisation
+        if not organisation.ai_agent_enabled:
+            return Response(
+                {"detail": "AI Copilot is disabled for your organisation."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if kind == "email":
+            email = get_object_or_404(_org_emails(request.user), pk=pk)
+            company = email.customer or email.account
+            subject = email.subject
+            thread = (
+                list(
+                    _org_emails(request.user)
+                    .filter(mailbox=email.mailbox, thread_id=email.thread_id)
+                    .order_by("sent_at")
+                )
+                if email.mailbox_id and email.thread_id
+                else [email]
+            )
+            thread_text = "\n\n".join(
+                f"{e.sender_name or e.from_address} ({e.sent_at:%Y-%m-%d}): {e.body}"
+                for e in thread
+            )
+            sender = email.sender_name or email.from_address
+        else:
+            row = get_object_or_404(MailMessage.objects.filter(owner=request.user), pk=pk)
+            company = (row.email.customer or row.email.account) if row.email_id else None
+            subject = row.subject
+            sender = row.from_name or row.from_address
+            thread_text = f"{sender} ({row.sent_at:%Y-%m-%d}): {row.body or row.snippet}"
+
+        items = (
+            retrieve_with_sources(
+                company, DRAFT_SOURCES, query=f"{subject}\n{thread_text}", viewer=request.user
+            )
+            if company is not None
+            else []
+        )
+        history = "\n".join(item.line for item in items) or "none on record"
+        tone = TONE_INSTRUCTIONS.get(
+            organisation.ai_agent_tone, TONE_INSTRUCTIONS[Organisation.AgentTone.PROFESSIONAL]
+        )
+        first_name = (request.user.name or "").split(" ")[0]
+        system = (
+            f"{SYSTEM_PERSONA}\n\n{tone}\n\n"
+            f"You are drafting a reply that {request.user.name} will send from their own "
+            f"mailbox to {sender}. Write only the body of the reply, in plain text, in the "
+            f"first person as {request.user.name}, and sign off with '{first_name}'. No subject "
+            "line, no preamble, no placeholders. Use only what the thread and the account "
+            "history say; where something is not known, say you will confirm it rather than "
+            "inventing it.\n\n"
+            f"Subject: {subject}\n\nThread:\n{thread_text}\n\n"
+            f"Account history{f' ({company.name})' if company is not None else ''}:\n{history}"
+        )
+        try:
+            draft = get_completion(
+                system=system,
+                messages=[{"role": "user", "content": "Draft the reply to the latest message."}],
+                purpose="draft_reply",
+                organisation=organisation,
+                user=request.user,
+            )
+        except BudgetExceeded as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        except CopilotNotConfigured as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except CopilotRequestFailed as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"draft": draft.strip(), "sources": [item.source for item in items]})
