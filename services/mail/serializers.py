@@ -59,7 +59,6 @@ class MailMessageSerializer(serializers.ModelSerializer):
             "priority",
             "account",
         ]
-        read_only_fields = [f for f in fields if f not in ("state", "is_read", "is_starred")]
 
     def get_account(self, message):
         email = message.email
@@ -75,7 +74,6 @@ class MailMessageSerializer(serializers.ModelSerializer):
 class MailMessageDetailSerializer(MailMessageSerializer):
     class Meta(MailMessageSerializer.Meta):
         fields = MailMessageSerializer.Meta.fields + ["body"]
-        read_only_fields = MailMessageSerializer.Meta.read_only_fields + ["body"]
 
 
 class MailMessageUpdateSerializer(serializers.ModelSerializer):

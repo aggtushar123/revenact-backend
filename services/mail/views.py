@@ -290,12 +290,6 @@ def _truthy(raw):
     return str(raw).lower() in ("1", "true", "yes")
 
 
-class MailPagination(PageNumberPagination):
-    page_size = 25
-    page_size_query_param = "page_size"
-    max_page_size = 100
-
-
 def _own_messages(request):
     return MailMessage.objects.filter(owner=request.user).select_related(
         "email__customer", "email__account"
@@ -338,7 +332,7 @@ class MailMessageListView(APIView):
                 | Q(from_address__icontains=q)
                 | Q(snippet__icontains=q)
             )
-        paginator = MailPagination()
+        paginator = PageNumberPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         return paginator.get_paginated_response(MailMessageSerializer(page, many=True).data)
 
@@ -370,13 +364,10 @@ class MailSummaryView(APIView):
                 .order_by("-sent_at")
                 .values_list("subject", "from_name", "from_address")[:12]
             )
-            subjects, senders = [], []
-            for subject, name, address in latest:
-                if subject not in subjects:
-                    subjects.append(subject)
-                who = name or address
-                if who and who not in senders:
-                    senders.append(who)
+            subjects = list(dict.fromkeys(subject for subject, _, _ in latest))
+            senders = list(
+                dict.fromkeys(name or address for _, name, address in latest if name or address)
+            )
             categories.append(
                 {
                     "category": category,

@@ -33,8 +33,6 @@ SYSTEM_SENDERS = {
     "postmaster",
 }
 
-NEWSLETTER_SENDERS = ("newsletter", "digest", "news", "hello", "team")
-
 
 def categorise(message) -> str:
     """The category for a provider `Message`."""
@@ -49,7 +47,7 @@ def categorise(message) -> str:
     if FINANCIAL.search(message.subject or ""):
         return MailMessage.Category.FINANCIAL
     unsubscribe = any(key.lower() == "list-unsubscribe" for key in (message.headers or {}))
-    if unsubscribe and (local.startswith(NEWSLETTER_SENDERS) or "updates" not in labels):
+    if unsubscribe and "updates" not in labels:
         return MailMessage.Category.NEWSLETTERS
     if "updates" in labels or "forums" in labels or local in SYSTEM_SENDERS:
         return MailMessage.Category.NOTIFICATIONS
