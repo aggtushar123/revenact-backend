@@ -164,6 +164,7 @@ urlpatterns = [
     # Customer or Account, same shape as Opportunity/Risk/etc.
     path("api/v1/custom-objects/", include("services.custom_objects.urls")),
     path("api/v1/attributes/", include("services.attributes.urls")),
+    path("api/v1/requests/", include("services.requests.urls")),
     # FX rates — its own app, same "tenant-wide, admin-only-both-ways"
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).

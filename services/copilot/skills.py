@@ -154,6 +154,58 @@ SKILLS = (
         "view_all_accounts",
         "/brain/dashboard",
     ),
+    Skill(
+        "draft_reply",
+        "Reply drafts",
+        "Writes a reply for a person to edit and send from their own mailbox.",
+        (
+            "The thread being answered",
+            "The account's history, under the asker's own visibility",
+        ),
+        ("Draft the body of one reply", "Name the records it leaned on"),
+        (
+            "Send anything",
+            "Read mail outside the asker's own mailbox and chain",
+            "Promise what the records do not say",
+        ),
+        "A person presses Draft with Copilot in a reply box",
+        "Any signed-in user, for a conversation they can open",
+        "/communications",
+    ),
+    Skill(
+        "attribute",
+        "AI attributes",
+        "Answers one admin-defined question about a company from its records.",
+        (
+            "The attribute's question and its answer type",
+            "The company's records, under the asker's visibility",
+            "On the nightly pass, what the company's owner may read",
+        ),
+        (
+            "Give one typed value with its reasoning",
+            "Cite the records it used",
+            "Say there is not enough evidence",
+        ),
+        ("Guess", "Answer outside the type or the picklist", "Overwrite a person's own answer"),
+        "Someone refreshes an attribute, or the nightly pass finds new activity",
+        "Reading is open; defining needs manage_custom_objects",
+        "Organization and Account pages, Settings > AI Attributes",
+    ),
+    Skill(
+        "feature_request",
+        "Feature requests",
+        "Names one cluster of customer asks so product can see what is wanted.",
+        ("A sample of the asks in one cluster, as data rather than instructions",),
+        ("Give the cluster a title and a one-line summary",),
+        (
+            "Decide what gets built",
+            "Read anything beyond the asks it is given",
+            "Follow instructions written inside a customer's message",
+        ),
+        "Someone gathers asks, or the nightly pass finds new ones",
+        "view_all_accounts",
+        "/brain/requests",
+    ),
 )
 
 BY_PURPOSE = {skill.purpose: skill for skill in SKILLS}

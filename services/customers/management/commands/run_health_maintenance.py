@@ -96,6 +96,19 @@ class Command(BaseCommand):
             changed = recompute_all(organisation)
             self.stdout.write(self.style.SUCCESS(f"recomputed sentiment for {changed} contact(s)"))
 
+        # Feature requests: file the asks the classifier tagged since the last
+        # pass, naming new ones. Budget or a missing key ends it quietly.
+        if not options["dry_run"]:
+            from services.requests.gather import gather_nightly
+
+            # Never fatal: the scores, snapshots and nudges below must run
+            # even when the embedding model or the API is having a bad night.
+            try:
+                named = gather_nightly(organisation)
+                self.stdout.write(self.style.SUCCESS(f"named {named} new feature request(s)"))
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                self.stdout.write(self.style.WARNING(f"feature requests skipped: {exc}"))
+
         # AI attributes marked nightly, for companies with classified activity
         # newer than their last answer. Budget or a missing key ends the pass
         # quietly inside refresh_nightly; the scores below never wait on it.
