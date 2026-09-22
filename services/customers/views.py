@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from django.db import transaction
 from django.db.models import CharField, Count, Prefetch, Q
@@ -25,6 +25,7 @@ from services.notifications.realtime import notify as send_notification
 
 from . import activity_tracking, forecast, interactions, portfolio, product_usage, usage
 from .headline_generation import NothingToSummarise, generate_headlines
+from .interactions import _parse_date, _parse_int
 from .models import (
     Account,
     Attachment,
@@ -2511,29 +2512,6 @@ class TicketStatsView(views.APIView):
                 "filters": _filter_options(request.user),
             }
         )
-
-
-def _parse_int(raw):
-    """Shared by every id-shaped filter above. Returns None for
-    anything unparseable, which the caller treats as "no filter" —
-    this module's own ignore-don't-400 convention."""
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def _parse_date(raw):
-    """`YYYY-MM-DD` only. Anything else is ignored rather than 400ing,
-    same as _parse_int."""
-    if not raw:
-        return None
-    try:
-        return datetime.strptime(raw, "%Y-%m-%d").date()
-    except ValueError:
-        return None
 
 
 def _assignee_breakdown(tickets):
