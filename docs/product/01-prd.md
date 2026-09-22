@@ -183,6 +183,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Model audit and budgets | Built | One `ModelCall` row per call, per-purpose monthly token budgets, 429 when exceeded |
 | Knowledge graph | Built | Owners, customers, products, initiatives, proposals; edges only where a foreign key exists |
 | AI-filled attributes | Built | An admin's plain-English question answered per company with reasoning and cited sources; append-only history with human overrides; nightly refresh reads as the owner |
+| Feature requests with revenue | Built | Classified asks clustered into named requests by embedding; ARR, company and interaction counts computed over the reader's own book |
 
 ### 5.4 Multiplayer Copilot (the centerpiece)
 

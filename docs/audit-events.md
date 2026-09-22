@@ -57,6 +57,9 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `attribute.delete` | `services.attributes.views.AIAttributeDetailView` | admin | AIAttribute | name, `values`: how many answers went with it |
 | `attribute.fill` | `services.attributes.fill.fill` | user, or nobody (nightly, read as the company's owner) | AIAttributeValue | attribute, company, status; one model call per row |
 | `attribute.override` | `services.attributes.views.ValueListView` | user | AIAttributeValue | attribute, company; a person's answer on top of the model's |
+| `request.create` | `services.requests.gather.gather` | user, or nobody (nightly) | FeatureRequest | title, evidence count; one model call named it |
+| `request.update` | `services.requests.views.FeatureRequestDetailView` | leadership | FeatureRequest | the fields changed |
+| `request.merge` | `services.requests.views.MergeView` | leadership | FeatureRequest (the survivor) | from, into, evidence moved |
 | `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
 | `file.upload` / `file.delete` | `services.customers.views` (Files tab) | user | Attachment | name, size, content_type |
 | `call.log` | `services.customers.views` (CallSense) | user | Call | title, whether a transcript was attached |

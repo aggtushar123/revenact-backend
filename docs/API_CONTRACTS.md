@@ -4081,6 +4081,81 @@ definition's own fields.
 
 ---
 
+## `requests` — Feature requests with revenue (Brain > Feature Requests, `FeatureRequests.tsx`)
+
+Every email, ticket and call the classifier tagged `feature_request`
+(`services.customers.taxonomy`) becomes evidence for a named request, so
+product can see which asks carry the most ARR. Grouping is done with the
+Copilot's local embeddings; only naming a **new** request costs a model
+call (purpose `feature_request`).
+
+### Models
+
+- `FeatureRequest` — `organisation`, `title`, `summary`, `status` (`open` |
+  `planned` | `shipped` | `declined`), `owner`, `embedding` (the group's
+  centroid, used to match later asks without re-reading its evidence),
+  `created_at`, `updated_at`.
+- `RequestEvidence` — `request` (null when dismissed), `organisation`,
+  `kind` (`email` | `ticket` | `call`) + `record_id` (unique together: one
+  filing per interaction), `customer`/`account` (exactly one), `snippet`,
+  `occurred_at`, `dismissed`.
+
+### Conventions specific to this app
+
+**Reading** is open to any member, but the revenue, the counts and the
+evidence are computed **over the companies that member may open**
+(`visible_customers`): two people legitimately see different ARR on the
+same request. **Gathering and curating** (`PATCH`, merge, evidence move
+and dismiss) need `view_all_accounts`, since gather spends credits and
+curation is an organisation-wide judgement. An account's ask counts the
+ARR of its parent organisations, under the org's own `arr` global
+attribute mapping.
+
+### `GET /api/v1/requests/?status=<status>`
+
+Unpaginated, most revenue first:
+
+```json
+[{"id": 4, "title": "Slack alerts", "summary": "Push alerts into Slack.",
+  "status": "open", "owner": {"id": 5, "name": "Dana"},
+  "arr": "200000", "companies": 2, "interactions": 2,
+  "last_90_days": 2, "previous_90_days": 0,
+  "created_at": "...", "updated_at": "..."}]
+```
+
+### `GET /api/v1/requests/<id>/`
+
+The row above plus `companies` (each `{id, name, arr}`, most revenue
+first) and `evidence` (each `{id, kind, record_id, snippet, occurred_at,
+company: {type, id, name}}`), both limited to what the reader may open.
+
+### `PATCH /api/v1/requests/<id>/`
+
+`{"status": "planned", "owner": 5, "title": "...", "summary": "..."}` →
+the detail body. `view_all_accounts` only; audited as `request.update`.
+
+### `POST /api/v1/requests/gather/`
+
+Files every unfiled classified ask: into an existing request when its
+embedding is close enough, else into new titled requests, one model call
+each. 200 `{"created": 2, "linked": 3, "remaining": 0}`. When the model
+stops part-way the work already done is kept and returned with the
+failure code (429 budget, 503 not configured, 502 upstream) plus
+`remaining`. `view_all_accounts` only; 403 when the Copilot is off. Each
+new request is audited as `request.create`. The nightly
+`run_health_maintenance` pass runs the same thing per organisation.
+
+### `POST /api/v1/requests/<id>/merge/`
+
+`{"into": 7}` moves every piece of evidence and deletes this request →
+`{"id": 7, "moved": 2}`. 400 when merging into itself. Audited as
+`request.merge`.
+
+### `POST /api/v1/requests/evidence/<id>/move/` and `.../dismiss/`
+
+Refile one ask under another request, or drop it (it stays filed as
+`dismissed` so the next gather leaves it alone).
+
 ## `attributes` — AI-filled attributes (Settings > AI Attributes, `AIAttributesPage.tsx`; Organization/Account Details' pinned panel, `AIAttributesPanel.tsx`)
 
 An admin asks a question of every company in plain English ("Which tier

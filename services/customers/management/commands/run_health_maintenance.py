@@ -96,6 +96,14 @@ class Command(BaseCommand):
             changed = recompute_all(organisation)
             self.stdout.write(self.style.SUCCESS(f"recomputed sentiment for {changed} contact(s)"))
 
+        # Feature requests: file the asks the classifier tagged since the last
+        # pass, naming new ones. Budget or a missing key ends it quietly.
+        if not options["dry_run"]:
+            from services.requests.gather import gather_nightly
+
+            named = gather_nightly(organisation)
+            self.stdout.write(self.style.SUCCESS(f"named {named} new feature request(s)"))
+
         # AI attributes marked nightly, for companies with classified activity
         # newer than their last answer. Budget or a missing key ends the pass
         # quietly inside refresh_nightly; the scores below never wait on it.

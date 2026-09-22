@@ -295,6 +295,15 @@ contributions_30d.
 
 ---
 
+### `requests`
+
+| Model | Purpose |
+|---|---|
+| `FeatureRequest` | One thing customers keep asking for: title, summary, status, owner, and the centroid `embedding` new asks are matched against |
+| `RequestEvidence` | One classified interaction filed under a request: `kind` + `record_id` (unique together), the company it came from (exactly one of customer/account), a snippet and its date. `dismissed` keeps a rejected ask out of the next gather |
+
+---
+
 ## 11. Visibility rules
 
 Each rule has exactly one definition. Add a new reading endpoint and you must
