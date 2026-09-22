@@ -4081,6 +4081,122 @@ definition's own fields.
 
 ---
 
+## `attributes` — AI-filled attributes (Settings > AI Attributes, `AIAttributesPage.tsx`; Organization/Account Details' pinned panel, `AIAttributesPanel.tsx`)
+
+An admin asks a question of every company in plain English ("Which tier
+do they use?") and the model answers it per company from the same
+evidence the Copilot retrieves, with its reasoning and the records it
+cited. Every answer is an append-only row, so the history of a value is
+readable, and a person can override in the same timeline.
+
+### Models
+
+- `AIAttribute` — `organisation`, `name`, `api_name` (slug, server-derived,
+  unique per organisation), `prompt`, `value_type` (`text` | `number` |
+  `boolean` | `picklist`), `picklist_options`, `applies_to_customer` /
+  `applies_to_account` (at least one), `refresh` (`manual` | `nightly`),
+  `created_by`, `created_at`, `updated_at`.
+- `AIAttributeValue` — `attribute`, `customer`/`account` (exactly one),
+  `value` (JSON, typed by the attribute; null when insufficient), `reasoning`,
+  `sources` (citation snapshots, same shape as a Copilot message's), `status`
+  (`filled` | `insufficient` | `failed`), `origin` (`ai` | `human`), `set_by`,
+  `computed_at`. Never updated; the newest row is the current value.
+
+### Conventions specific to this app
+
+Defining, updating, deleting and **filling every company at once** are
+gated by `manage_custom_objects` (tenant-wide schema and tenant-wide
+spend); reading definitions, filling one company and overriding are open
+to any member **for companies they may open** (`visible_customers` /
+`visible_accounts`; an invisible company is a 404, a non-numeric id a
+400). Filling is a model call charged as purpose `attribute`, so it
+answers 429 when the budget is spent, 503 when no model is configured and
+403 when the organisation's Copilot is off.
+
+**Evidence is read under the asker's own visibility** (personal mail,
+private notes, departmental tickets, knowledge contributions: the same
+rules as the Copilot). The nightly pass (`run_health_maintenance`) reads
+as the company's **owner** would; a company with no owner gets only the
+shared records. It fills `refresh=nightly` attributes for companies with
+no answer yet or with evidence newer than their last one, oldest answers
+first, at most 100 companies per attribute per organisation per night,
+and never on top of a person's own answer. One tenant's spent budget skips
+that tenant only.
+
+**What a reader sees is filtered again:** `sources` lists only the
+citations the reader may open, `hidden_sources` counts the rest, and
+`reasoning` is an empty string whenever anything was withheld (it quotes
+the records).
+
+### `GET/POST /api/v1/attributes/definitions/`
+
+GET (any member): unpaginated list. POST (`manage_custom_objects`):
+
+```json
+{"name": "Product tier", "prompt": "Which tier of our product does this company use?",
+ "value_type": "picklist", "picklist_options": ["SMB", "Enterprise"],
+ "applies_to_customer": true, "applies_to_account": true, "refresh": "nightly"}
+```
+
+201 → the definition with `id`, `api_name` (`product_tier`), timestamps.
+400 when a picklist has no options or neither parent type applies.
+Audited as `attribute.define`.
+
+### `GET/PATCH/DELETE /api/v1/attributes/definitions/<id>/`
+
+Same read-open / write-gated split. Deleting removes every value ever
+recorded; audited as `attribute.update` / `attribute.delete` (with the
+number of values that went).
+
+### `POST /api/v1/attributes/definitions/<id>/fill/`
+
+`{"customer": 12}` or `{"account": 7}` → 201, the new value row:
+
+```json
+{"id": 90, "attribute": 3, "customer": 12, "account": null,
+ "value": "Enterprise", "status": "filled", "origin": "ai",
+ "reasoning": "Two notes and a ticket mention the Enterprise tier.",
+ "sources": [{"type": "note", "id": 41, "label": "Product usage", "date": "2026-09-22",
+              "company": "Pizza Hut", "company_type": "customer", "company_id": 12}],
+ "hidden_sources": 0,
+ "set_by": {"id": 5, "name": "Dana"}, "computed_at": "2026-09-22T09:00:00Z"}
+```
+
+`status` is `insufficient` (value null) when the records do not support
+an answer, and `failed` when the answer did not fit the type (the
+`reasoning` says why). 400 when the attribute does not apply to that kind
+of company.
+
+Empty body (`manage_custom_objects`) → every applicable company the
+caller may open, up to 25 per request: 200 `{"filled": 25, "remaining":
+40, "values": [...]}`. The rest is picked up by the nightly pass or
+another call. Each fill is audited as `attribute.fill`.
+
+### `GET /api/v1/attributes/values/?customer=<id>` (or `?account=<id>`)
+
+Every attribute that applies to the company, with its latest row or null:
+
+```json
+[{"attribute": {"id": 3, "name": "Product tier", "api_name": "product_tier",
+                "prompt": "...", "value_type": "picklist",
+                "picklist_options": ["SMB", "Enterprise"], "refresh": "nightly"},
+  "latest": {...value row...}},
+ {"attribute": {...}, "latest": null}]
+```
+
+400 without a company, 404 for one the caller may not open.
+
+### `POST /api/v1/attributes/values/`
+
+A person's own answer: `{"attribute": 3, "customer": 12, "value": "SMB"}` →
+201, a row with `origin: "human"`, `set_by`, no reasoning or sources.
+400 when the value does not fit the type or the picklist. Audited as
+`attribute.override`.
+
+### `GET /api/v1/attributes/values/history/?attribute=<id>&customer=<id>`
+
+Every row for that attribute on that company, newest first.
+
 <!--
 Template for each new feature section below:
 

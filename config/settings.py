@@ -84,6 +84,7 @@ INSTALLED_APPS = [
     "services.identity",
     "services.platform",
     "services.billing",
+    "services.attributes",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app

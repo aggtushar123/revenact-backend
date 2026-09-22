@@ -52,6 +52,11 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `user.deactivate` / `user.reactivate` | `OrgUserDetailView` | admin | User | — |
 | `mailbox.connect` / `mailbox.disconnect` | `services.mail.views` | user | MailboxConnection | provider, address |
 | `mailbox.reply` | `services.mail.views.MailReplyView`, `services.customers.communications_views.EmailReplyView` | user | MailMessage or Email (the one answered) | to, subject; mail left through a credential we hold |
+| `attribute.define` | `services.attributes.views.AIAttributeListCreateView` | admin | AIAttribute | name, value_type |
+| `attribute.update` | `services.attributes.views.AIAttributeDetailView` | admin | AIAttribute | name, fields changed |
+| `attribute.delete` | `services.attributes.views.AIAttributeDetailView` | admin | AIAttribute | name, `values`: how many answers went with it |
+| `attribute.fill` | `services.attributes.fill.fill` | user, or nobody (nightly, read as the company's owner) | AIAttributeValue | attribute, company, status; one model call per row |
+| `attribute.override` | `services.attributes.views.ValueListView` | user | AIAttributeValue | attribute, company; a person's answer on top of the model's |
 | `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
 | `file.upload` / `file.delete` | `services.customers.views` (Files tab) | user | Attachment | name, size, content_type |
 | `call.log` | `services.customers.views` (CallSense) | user | Call | title, whether a transcript was attached |
