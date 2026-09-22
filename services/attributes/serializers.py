@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from services.custom_objects.serializers import _unique_slug
 
-from .fill import coerce
+from .fill import coerce, visible_sources
 from .models import AIAttribute, AIAttributeValue
 
 
@@ -62,7 +62,15 @@ class AttributeBriefSerializer(serializers.ModelSerializer):
 
 
 class AIAttributeValueSerializer(serializers.ModelSerializer):
+    """Pass `context={"reader": user}`: citations the reader may not open
+    are dropped and the reasoning, which quotes them, is withheld when any
+    was; `hidden_sources` says how many. Without a reader nothing is
+    filtered, so a view must always give one."""
+
     set_by = serializers.SerializerMethodField()
+    sources = serializers.SerializerMethodField()
+    reasoning = serializers.SerializerMethodField()
+    hidden_sources = serializers.SerializerMethodField()
 
     class Meta:
         model = AIAttributeValue
@@ -74,12 +82,29 @@ class AIAttributeValueSerializer(serializers.ModelSerializer):
             "value",
             "reasoning",
             "sources",
+            "hidden_sources",
             "status",
             "origin",
             "set_by",
             "computed_at",
         ]
         read_only_fields = fields
+
+    def _visible(self, row):
+        cache = self.context.setdefault("_visible", {})
+        if row.id not in cache:
+            reader = self.context.get("reader")
+            cache[row.id] = visible_sources(reader, row.sources) if reader else (row.sources, 0)
+        return cache[row.id]
+
+    def get_sources(self, row):
+        return self._visible(row)[0]
+
+    def get_hidden_sources(self, row):
+        return self._visible(row)[1]
+
+    def get_reasoning(self, row):
+        return "" if self._visible(row)[1] else row.reasoning
 
     def get_set_by(self, row):
         return {"id": row.set_by.id, "name": row.set_by.name} if row.set_by else None

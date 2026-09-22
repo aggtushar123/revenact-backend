@@ -32,6 +32,14 @@ def _org_attributes(request):
     return AIAttribute.objects.filter(organisation=request.user.organisation)
 
 
+def _int(value):
+    """An id from a query string or body: an int, or None when it is not one."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _company(request, data_or_params, *, required=True):
     """The customer or account named by `customer=`/`account=`, visible to the
     viewer or 404. Returns None when neither is given and not required."""
@@ -41,13 +49,20 @@ def _company(request, data_or_params, *, required=True):
             {"detail": "Give one of customer or account, not both."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if customer_id or account_id:
+        if _int(customer_id or account_id) is None:
+            return Response({"detail": "customer or account must be an id."}, status=400)
     if customer_id:
-        return get_object_or_404(visible_customers(request.user), pk=customer_id)
+        return get_object_or_404(visible_customers(request.user), pk=_int(customer_id))
     if account_id:
-        return get_object_or_404(visible_accounts(request.user), pk=account_id)
+        return get_object_or_404(visible_accounts(request.user), pk=_int(account_id))
     if required:
         return Response({"detail": "customer or account is required."}, status=400)
     return None
+
+
+def _row(row, request, many=False):
+    return AIAttributeValueSerializer(row, many=many, context={"reader": request.user}).data
 
 
 class AIAttributeListCreateView(generics.ListCreateAPIView):
@@ -78,6 +93,9 @@ class AIAttributeListCreateView(generics.ListCreateAPIView):
 
 
 class AIAttributeDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Deleting takes every answer ever recorded with it, so the audit row
+    says how many went."""
+
     serializer_class = AIAttributeSerializer
 
     def get_permissions(self):
@@ -88,6 +106,25 @@ class AIAttributeDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         return _org_attributes(self.request)
 
+    def perform_update(self, serializer):
+        attribute = serializer.save()
+        audit.record(
+            "attribute.update",
+            request=self.request,
+            target=attribute,
+            metadata={"name": attribute.name, "fields": sorted(self.request.data.keys())},
+        )
+
+    def perform_destroy(self, attribute):
+        values = attribute.values.count()
+        audit.record(
+            "attribute.delete",
+            request=self.request,
+            target=attribute,
+            metadata={"name": attribute.name, "values": values},
+        )
+        attribute.delete()
+
 
 class FillView(APIView):
     """POST /api/v1/attributes/definitions/<id>/fill/ {customer|account}
@@ -95,7 +132,8 @@ class FillView(APIView):
     Answers the attribute for one company (201, the new row), or with an
     empty body for every applicable company the viewer may open, up to
     FILL_CAP (200, {filled, remaining}). Each answer is a model call
-    charged as `attribute`."""
+    charged as `attribute`, so the org-wide form needs the same capability
+    as defining the attribute."""
 
     permission_classes = [IsAuthenticated]
 
@@ -109,6 +147,11 @@ class FillView(APIView):
         company = _company(request, request.data, required=False)
         if isinstance(company, Response):
             return company
+        if company is None and not CanManageCustomObjects().has_permission(request, self):
+            return Response(
+                {"detail": "Filling every company needs the manage custom objects capability."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             if company is not None:
                 if not attribute.applies_to(company):
@@ -119,9 +162,7 @@ class FillView(APIView):
                 row = fill(
                     attribute, company, actor=request.user, viewer=request.user, request=request
                 )
-                return Response(
-                    AIAttributeValueSerializer(row).data, status=status.HTTP_201_CREATED
-                )
+                return Response(_row(row, request), status=status.HTTP_201_CREATED)
             companies = companies_for(attribute, request.user)
             rows = [
                 fill(attribute, c, actor=request.user, viewer=request.user, request=request)
@@ -137,7 +178,7 @@ class FillView(APIView):
             {
                 "filled": len(rows),
                 "remaining": max(len(companies) - len(rows), 0),
-                "values": AIAttributeValueSerializer(rows, many=True).data,
+                "values": _row(rows, request, many=True),
             }
         )
 
@@ -165,7 +206,7 @@ class ValueListView(APIView):
             out.append(
                 {
                     "attribute": AttributeBriefSerializer(attribute).data,
-                    "latest": AIAttributeValueSerializer(latest).data if latest else None,
+                    "latest": _row(latest, request) if latest else None,
                 }
             )
         return Response(out)
@@ -198,7 +239,7 @@ class ValueListView(APIView):
             target=row,
             metadata={"attribute": attribute.api_name, "company": company.name},
         )
-        return Response(AIAttributeValueSerializer(row).data, status=status.HTTP_201_CREATED)
+        return Response(_row(row, request), status=status.HTTP_201_CREATED)
 
 
 class ValueHistoryView(APIView):
@@ -208,9 +249,10 @@ class ValueHistoryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        attribute = get_object_or_404(
-            _org_attributes(request), pk=request.query_params.get("attribute")
-        )
+        attribute_id = _int(request.query_params.get("attribute"))
+        if attribute_id is None:
+            return Response({"detail": "attribute must be an id."}, status=400)
+        attribute = get_object_or_404(_org_attributes(request), pk=attribute_id)
         company = _company(request, request.query_params)
         if isinstance(company, Response):
             return company
@@ -218,4 +260,4 @@ class ValueHistoryView(APIView):
         rows = AIAttributeValue.objects.filter(
             attribute=attribute, **({"account": company} if is_account else {"customer": company})
         ).select_related("set_by")
-        return Response(AIAttributeValueSerializer(rows, many=True).data)
+        return Response(_row(rows, request, many=True))

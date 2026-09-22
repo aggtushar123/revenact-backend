@@ -52,3 +52,11 @@ class Coerce(SimpleTestCase):
     def test_none_stays_none(self):
         self.assertIsNone(coerce("number", None))
         self.assertIsNone(coerce("text", ""))
+
+
+class CoerceRejectsStructures(SimpleTestCase):
+    def test_text_must_be_a_scalar(self):
+        with self.assertRaises(ValueError):
+            coerce("text", {"tier": "Enterprise"})
+        with self.assertRaises(ValueError):
+            coerce("text", ["a"])

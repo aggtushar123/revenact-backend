@@ -62,6 +62,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         queryset = Customer.objects.all()
+        organisation = None
 
         if options["org_email"]:
             try:
@@ -70,7 +71,8 @@ class Command(BaseCommand):
                 raise CommandError(f"No user with email {options['org_email']!r}.") from exc
             if user.organisation is None:
                 raise CommandError(f"{user.email} has no organisation.")
-            queryset = queryset.filter(organisation=user.organisation)
+            organisation = user.organisation
+            queryset = queryset.filter(organisation=organisation)
 
         # Sentiment first: anything logged since yesterday — synced mail that
         # could not be classified at the time, tickets, calls — gets its tags
@@ -91,11 +93,6 @@ class Command(BaseCommand):
         if not options["dry_run"]:
             from services.customers.contact_sentiment import recompute_all
 
-            organisation = (
-                queryset.first().organisation
-                if options["org_email"] and queryset.exists()
-                else None
-            )
             changed = recompute_all(organisation)
             self.stdout.write(self.style.SUCCESS(f"recomputed sentiment for {changed} contact(s)"))
 

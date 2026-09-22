@@ -4081,9 +4081,6 @@ definition's own fields.
 
 ---
 
-<!--
-Template for each new feature section below:
-
 ## `attributes` — AI-filled attributes (Settings > AI Attributes, `AIAttributesPage.tsx`; Organization/Account Details' pinned panel, `AIAttributesPanel.tsx`)
 
 An admin asks a question of every company in plain English ("Which tier
@@ -4107,15 +4104,29 @@ readable, and a person can override in the same timeline.
 
 ### Conventions specific to this app
 
-Defining is gated by `manage_custom_objects` (tenant-wide schema, like
-custom objects); reading definitions, filling and overriding are open to
-any member **for companies they may open** (`visible_customers` /
-`visible_accounts`; an invisible company is a 404). Filling is a model
-call charged as purpose `attribute`, so it answers 429 when the budget is
-spent, 503 when no model is configured and 403 when the organisation's
-Copilot is off. The nightly pass (`run_health_maintenance`) fills
-`refresh=nightly` attributes for companies with classified activity newer
-than their last value.
+Defining, updating, deleting and **filling every company at once** are
+gated by `manage_custom_objects` (tenant-wide schema and tenant-wide
+spend); reading definitions, filling one company and overriding are open
+to any member **for companies they may open** (`visible_customers` /
+`visible_accounts`; an invisible company is a 404, a non-numeric id a
+400). Filling is a model call charged as purpose `attribute`, so it
+answers 429 when the budget is spent, 503 when no model is configured and
+403 when the organisation's Copilot is off.
+
+**Evidence is read under the asker's own visibility** (personal mail,
+private notes, departmental tickets, knowledge contributions: the same
+rules as the Copilot). The nightly pass (`run_health_maintenance`) reads
+as the company's **owner** would; a company with no owner gets only the
+shared records. It fills `refresh=nightly` attributes for companies with
+no answer yet or with evidence newer than their last one, oldest answers
+first, at most 100 companies per attribute per organisation per night,
+and never on top of a person's own answer. One tenant's spent budget skips
+that tenant only.
+
+**What a reader sees is filtered again:** `sources` lists only the
+citations the reader may open, `hidden_sources` counts the rest, and
+`reasoning` is an empty string whenever anything was withheld (it quotes
+the records).
 
 ### `GET/POST /api/v1/attributes/definitions/`
 
@@ -4133,7 +4144,9 @@ Audited as `attribute.define`.
 
 ### `GET/PATCH/DELETE /api/v1/attributes/definitions/<id>/`
 
-Same read-open / write-gated split. Deleting removes every value.
+Same read-open / write-gated split. Deleting removes every value ever
+recorded; audited as `attribute.update` / `attribute.delete` (with the
+number of values that went).
 
 ### `POST /api/v1/attributes/definitions/<id>/fill/`
 
@@ -4145,6 +4158,7 @@ Same read-open / write-gated split. Deleting removes every value.
  "reasoning": "Two notes and a ticket mention the Enterprise tier.",
  "sources": [{"type": "note", "id": 41, "label": "Product usage", "date": "2026-09-22",
               "company": "Pizza Hut", "company_type": "customer", "company_id": 12}],
+ "hidden_sources": 0,
  "set_by": {"id": 5, "name": "Dana"}, "computed_at": "2026-09-22T09:00:00Z"}
 ```
 
@@ -4153,10 +4167,10 @@ an answer, and `failed` when the answer did not fit the type (the
 `reasoning` says why). 400 when the attribute does not apply to that kind
 of company.
 
-Empty body → every applicable company the caller may open, up to 25 per
-request: 200 `{"filled": 25, "remaining": 40, "values": [...]}`. The rest
-is picked up by the nightly pass or another call. Each fill is audited as
-`attribute.fill`.
+Empty body (`manage_custom_objects`) → every applicable company the
+caller may open, up to 25 per request: 200 `{"filled": 25, "remaining":
+40, "values": [...]}`. The rest is picked up by the nightly pass or
+another call. Each fill is audited as `attribute.fill`.
 
 ### `GET /api/v1/attributes/values/?customer=<id>` (or `?account=<id>`)
 
@@ -4182,6 +4196,9 @@ A person's own answer: `{"attribute": 3, "customer": 12, "value": "SMB"}` →
 ### `GET /api/v1/attributes/values/history/?attribute=<id>&customer=<id>`
 
 Every row for that attribute on that company, newest first.
+
+<!--
+Template for each new feature section below:
 
 ## `metrics` — The metric layer (`/api/v1/metrics/`)
 
