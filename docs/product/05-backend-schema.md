@@ -286,6 +286,15 @@ contributions_30d.
 
 ---
 
+### `attributes`
+
+| Model | Purpose |
+|---|---|
+| `AIAttribute` | A plain-English question asked of every company: `prompt`, typed `value_type` (text, number, boolean, picklist), `applies_to_customer` / `applies_to_account`, `refresh` (manual or nightly). Defined under `manage_custom_objects` |
+| `AIAttributeValue` | One answer, append-only: `value`, `reasoning`, `sources` (citation snapshots), `status` (filled, insufficient, failed), `origin` (ai or human), `set_by`, `computed_at`. Exactly one of customer or account. The newest row is the current value |
+
+---
+
 ## 11. Visibility rules
 
 Each rule has exactly one definition. Add a new reading endpoint and you must

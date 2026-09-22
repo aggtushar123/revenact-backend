@@ -43,6 +43,7 @@ customer records.
 | `metrics.MetricSnapshot`, `metrics.Initiative`, `metrics.Proposal`, `metrics.Feedback` | internal | owner, created_by, decided_by, made_by | aggregates and decisions |
 | `metrics.Brief`, `metrics.Explanation` | internal | — | AI narrative over aggregates; evidence may name accounts |
 | `custom_objects.*` | confidential | — | `CustomObjectRecord.data` is tenant-defined; assume it can hold personal data |
+| `attributes.*` | confidential | — | `AIAttributeValue.value`/`reasoning` are model output about a customer, derived from the same records the Copilot reads; `sources` are citation snapshots (labels and dates, no bodies) |
 | `connectors.Connector` | internal | — | provider and name only; no credentials stored |
 | `scenarios.Scenario`, `scenarios.ScenarioRun` | internal | triggered_by | automation graphs and run logs |
 | `fx_rates.FxRate` | internal | — | |

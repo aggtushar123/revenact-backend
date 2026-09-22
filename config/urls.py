@@ -163,6 +163,7 @@ urlpatterns = [
     # its own views.py) while its *records* each belong to exactly one
     # Customer or Account, same shape as Opportunity/Risk/etc.
     path("api/v1/custom-objects/", include("services.custom_objects.urls")),
+    path("api/v1/attributes/", include("services.attributes.urls")),
     # FX rates — its own app, same "tenant-wide, admin-only-both-ways"
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).

@@ -99,6 +99,15 @@ class Command(BaseCommand):
             changed = recompute_all(organisation)
             self.stdout.write(self.style.SUCCESS(f"recomputed sentiment for {changed} contact(s)"))
 
+        # AI attributes marked nightly, for companies with classified activity
+        # newer than their last answer. Budget or a missing key ends the pass
+        # quietly inside refresh_nightly; the scores below never wait on it.
+        if not options["dry_run"]:
+            from services.attributes.fill import refresh_nightly
+
+            filled = refresh_nightly(organisation)
+            self.stdout.write(self.style.SUCCESS(f"filled {filled} AI attribute value(s)"))
+
         # Scores first: the snapshot should record the freshly computed value,
         # not yesterday's.
         recalculate_args = ["recalculate_health"]
