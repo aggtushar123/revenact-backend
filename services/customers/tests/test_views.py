@@ -282,9 +282,19 @@ class CustomerIdsFilterTests(APITestCase):
     def test_scoping_still_applies(self):
         self.assertEqual(self.names({"ids": f"{self.a.pk},{self.theirs.pk}"}), ["A"])
 
-    def test_bad_parts_are_ignored_and_all_bad_means_no_filter(self):
+    def test_bad_parts_are_ignored_when_one_is_good(self):
         self.assertEqual(self.names({"ids": f"x,{self.b.pk},"}), ["B"])
-        self.assertEqual(self.names({"ids": "x,y"}), ["A", "B", "C"])
+
+    def test_all_bad_or_empty_ids_means_nothing(self):
+        self.assertEqual(self.names({"ids": "x,y"}), [])
+        self.assertEqual(self.names({"ids": ""}), [])
+
+    def test_a_named_archived_customer_is_returned(self):
+        archived = Customer.objects.create(
+            organisation=self.org, name="Gone", owner=self.csm, is_archived=True
+        )
+        self.assertEqual(self.names({"ids": f"{self.a.pk},{archived.pk}"}), ["A", "Gone"])
+        self.assertEqual(self.names({}), ["A", "B", "C"])
 
 
 class CustomerRenewalWindowTests(APITestCase):

@@ -120,12 +120,13 @@ class CustomerListCreateView(generics.ListCreateAPIView):
     Organizations page's "Renewal" card/popover. A non-integer value is
     ignored rather than raising an error.
 
-    GET also supports `?ids=1,2,3` — narrows to those customers (the
-    dashboard's 'Open as a list'); non-integers are ignored, at most
-    500 are read, and scoping still applies.
+    GET also supports `?ids=1,2,3` — narrows to exactly those customers
+    (the dashboard's 'Open as a list'), archived ones included; non-integers
+    are ignored, at most 500 are read, and scoping still applies. `ids`
+    present with no usable id (empty or all bad) returns nothing.
 
-    Archived customers (`is_archived=True`) never appear here — soft-
-    hidden, same as from the stats endpoint below. They're still
+    Archived customers (`is_archived=True`) never appear here unless named
+    by `?ids=` — soft-hidden, same as from the stats endpoint below. They're still
     reachable directly via the detail endpoint (not deleted), and PATCH
     `is_archived` on it to unarchive; there's just no "show archived"
     view yet."""
@@ -137,9 +138,22 @@ class CustomerListCreateView(generics.ListCreateAPIView):
         # Annotated up front: every serialized row renders health_breakdown,
         # which needs a last-touch date and an open-ticket count. Without this
         # each row runs two more queries — 120 extra on a 60-customer page.
-        queryset = with_customer_pulse_inputs(
-            with_health_inputs(visible_customers(self.request.user).filter(is_archived=False))
-        )
+        params = self.request.query_params
+        ids = None
+        if "ids" in params:
+            ids = []
+            for part in params["ids"].split(",")[:500]:
+                try:
+                    ids.append(int(part))
+                except ValueError:
+                    continue
+
+        customers = visible_customers(self.request.user)
+        # An explicit id list (the dashboard's "Open as a list") asks for
+        # exactly those records, archived ones included; scoping still applies.
+        if not ids:
+            customers = customers.filter(is_archived=False)
+        queryset = with_customer_pulse_inputs(with_health_inputs(customers))
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -161,14 +175,9 @@ class CustomerListCreateView(generics.ListCreateAPIView):
                     .order_by("renewal_date")
                 )
 
-        ids = []
-        for part in self.request.query_params.get("ids", "").split(",")[:500]:
-            try:
-                ids.append(int(part))
-            except ValueError:
-                continue
-        if ids:
-            queryset = queryset.filter(pk__in=ids)
+        if ids is not None:
+            # Present but with no usable id names nothing, not the whole book.
+            queryset = queryset.filter(pk__in=ids) if ids else queryset.none()
 
         return queryset
 
