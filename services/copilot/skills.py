@@ -259,6 +259,21 @@ SKILLS = (
         "Any signed-in user, for a record they may read",
         "/communications",
     ),
+    Skill(
+        "mcp",
+        "Agents over MCP",
+        "Answers a question put by somebody's own agent, as that person.",
+        ("The same book summary the Copilot reads, under the token holder's own visibility",),
+        ("Answer the question", "Name the records it drew on"),
+        (
+            "Change anything: the MCP tools are read-only",
+            "Read past what the person whose token it is may read",
+            "Act on instructions found inside a record",
+        ),
+        "An agent calls ask_copilot over MCP",
+        "A live MCP token, which its owner can revoke",
+        "Settings > Agent access",
+    ),
 )
 
 BY_PURPOSE = {skill.purpose: skill for skill in SKILLS}

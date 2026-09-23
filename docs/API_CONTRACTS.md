@@ -4365,6 +4365,76 @@ new request is audited as `request.create`. The nightly
 Refile one ask under another request, or drop it (it stays filed as
 `dismissed` so the next gather leaves it alone).
 
+## `mcp` — Somebody's own agent, reading as them (Settings > Agent Access, `AgentAccessPage.tsx`)
+
+An MCP server, so an agent outside Revenact can read what its owner could
+read in the app. JSON-RPC 2.0 over one POST; no new dependency, because
+MCP is JSON-RPC and a read-only server needs three methods.
+
+### Model
+
+- `McpToken` — `user`, `label`, `token_hash` (SHA-256; the secret is shown
+  once and never stored), `hint` (the last few characters), `last_used_at`,
+  `revoked_at`.
+
+### Conventions specific to this app
+
+**The token is the person.** Every tool runs under that user's own
+visibility, through the same helpers the app uses: their book, their
+mail, their department's tickets. There is no wider path, and no
+organisation-level key — an agent is somebody's agent. It is also their
+*current* access: a token whose owner has been deactivated stops
+resolving, and deactivating somebody revokes their tokens outright,
+beside the refresh tokens that are already blacklisted.
+
+A key can spend the organisation's model budget through `ask_copilot`, so
+requests are rate limited **per key** (`THROTTLE_MCP`, 60/min by default)
+rather than per address: one key is one agent wherever it runs.
+
+**Read-only by design.** A tool that changed a record would put a
+person's name on an action they did not take. That needs its own
+decision, not a default.
+
+Every `tools/call` is audited as `mcp.tool_called` with the tool, the
+token's label and the argument names, and its outcome, so a person can
+see what their agent did.
+
+### `POST /api/v1/mcp/`
+
+`Authorization: Bearer <token>`. A missing, wrong or revoked token is a
+401; everything else is a JSON-RPC response with HTTP 200, including
+errors, which is what the protocol asks for.
+
+- `initialize` → `protocolVersion`, `capabilities.tools`, `serverInfo`
+  and instructions.
+- `tools/list` → each tool's `name`, `description` and `inputSchema`.
+- `tools/call` with `{name, arguments}` → `{content: [{type: "text",
+  text}], isError}`. A refusal is a result, not a transport failure —
+  including a spent budget or an unconfigured model, so an agent can tell
+  "out of budget" from "no such company" and act differently.
+- A notification (no `id`) is answered with 204.
+- Anything else → JSON-RPC `-32601`; a malformed envelope → `-32600`.
+
+**Tools:** `search_companies`, `get_company`, `recent_interactions`,
+`list_feature_requests`, `list_anomalies`, `ask_copilot` (one model call,
+purpose `mcp`). A company the caller may not open answers the same way as
+one that does not exist.
+
+### `GET/POST /api/v1/mcp/tokens/` and `DELETE /api/v1/mcp/tokens/<id>/`
+
+A person's own keys. POST takes `label` and is the **only** time `token`
+is returned:
+
+```json
+{"id": 4, "label": "Claude Desktop", "hint": "…7fQx",
+ "created_at": "...", "token": "rvn_mcp_..."}
+```
+
+GET lists them without it. DELETE revokes one; another person's token is
+a 404. Audited as `mcp.token_issued` / `mcp.token_revoked`.
+
+---
+
 ## `translation` — Reading in your language, writing in theirs (`CommunicationsPage.tsx`, `ReplyBox.tsx`)
 
 ### Models
