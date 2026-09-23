@@ -330,6 +330,14 @@ contributions_30d.
 
 ---
 
+### `mcp`
+
+| Model | Purpose |
+|---|---|
+| `McpToken` | One person's key for an agent that reads Revenact as them. Stored hashed, shown once, revocable. Every MCP tool runs under that person's own visibility |
+
+---
+
 ## 11. Visibility rules
 
 Each rule has exactly one definition. Add a new reading endpoint and you must

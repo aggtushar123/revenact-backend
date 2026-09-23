@@ -88,6 +88,7 @@ INSTALLED_APPS = [
     "services.requests",
     "services.anomalies",
     "services.translation",
+    "services.mcp",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
@@ -307,6 +308,10 @@ REST_FRAMEWORK = {
 
 # SOC2:AUTH-06 rate limits on the public auth endpoints (core/throttling.py,
 # applied per view in services/accounts/views.py). None under test.
+#: An MCP key can spend the organisation's model budget, so how fast one
+#: key may ask is worth a ceiling of its own (core/throttling.py).
+MCP_THROTTLE_RATE = env("THROTTLE_MCP", default="60/min")
+
 AUTH_THROTTLE_RATES = {
     "login": env("THROTTLE_LOGIN", default="10/min"),  # per source IP
     "login_account": env("THROTTLE_LOGIN_ACCOUNT", default="5/min"),  # per email
@@ -317,6 +322,7 @@ AUTH_THROTTLE_RATES = {
 REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
     scope: (None if TESTING else rate) for scope, rate in AUTH_THROTTLE_RATES.items()
 }
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["mcp"] = None if TESTING else MCP_THROTTLE_RATE
 
 if DEBUG:
     # Browsable API is convenient in dev only.
