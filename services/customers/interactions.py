@@ -180,6 +180,38 @@ def filtered_querysets(user, params):
     return out
 
 
+#: The drill segments this endpoint understands, and whether each needs a
+#: `:value` — see `drill.parse_segment`, which reads this to accept or ignore
+#: a `?drill=` value before `drill_querysets` narrows anything.
+DRILL_KINDS = {
+    "all": False,
+    "type": True,
+    "sentiment": True,
+    "area": True,
+    "category": True,
+    "subcategory": True,
+}
+
+_TAXONOMY_FIELD = {"area": "ai_area", "category": "ai_category", "subcategory": "ai_subcategory"}
+
+
+def drill_querysets(querysets, kind, value):
+    """The per-type querysets narrowed to one drill segment, or `None` when
+    `value` isn't a real type/sentiment — same ignore-don't-400 convention as
+    every other filter here."""
+
+    if kind == "all":
+        return list(querysets.values())
+    if kind == "type":
+        return [querysets[value]] if value in querysets else None
+    if kind == "sentiment":
+        if value not in taxonomy.Sentiment.values:
+            return None
+        return [qs.filter(sentiment=value) for qs in querysets.values()]
+    field = _TAXONOMY_FIELD[kind]
+    return [qs.filter(**{field: value}) for qs in querysets.values()]
+
+
 def _grouped_rows(name, queryset):
     """One group-by per model: every dimension the six charts need, counted once.
 

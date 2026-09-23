@@ -2245,8 +2245,41 @@ than returning `400`, the house convention for dashboard filters:
 | `account` | Account id. |
 | `revenue_bracket` | `under_25k`/`25k_50k`/`50k_100k`/`over_100k`, read off the parent's ARR (`Customer.arr_billed_at_account` or `Account.arr`). |
 | `from`, `to` | `YYYY-MM-DD`, inclusive, against each model's own "when it happened" field. |
+| `drill` | Opens one chart segment into the companies behind it — see below. |
 
-**Response `200`**
+**Drill.** `?drill=` narrows the same filtered querysets the rollups
+above use, same shape and same visibility rules as `/tickets/stats/`'s
+own drill: `all`; `type:<email\|call\|ticket>`; `sentiment:<value>`;
+`area:<value>`; `category:<value>`; `subcategory:<value>`. An unknown
+type or an invalid choice value ignores the drill and the endpoint
+falls back to its normal response above — never `400`. When it applies,
+the response is *only*:
+
+```json
+{
+  "drill": {
+    "segment": "type:email",
+    "value_label": "interactions",
+    "count": 12,
+    "truncated": false,
+    "companies": [
+      {"id": 41, "name": "Hyatt Regency", "owner": "Dana", "arr": 240000.0, "value": 7}
+    ]
+  },
+  "currency": "USD"
+}
+```
+
+`value` is the number of interactions in that segment belonging to the
+company; `arr` is converted to the org's own currency
+(`convert_to_org_currency`), `null` when no rate exists. `companies` is
+capped at 500 (`count` is the true total, `truncated` says whether the
+list was cut); a company the totals above wouldn't have counted — one
+the viewer can't see, or personal mail belonging to someone else's
+mailbox chain — never appears, same `visible_customers`/`visible_emails`
+rules the rest of this endpoint already applies.
+
+**Response `200`** (no `drill`, or an unrecognised one)
 
 ```json
 {

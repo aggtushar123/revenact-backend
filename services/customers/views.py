@@ -2349,12 +2349,31 @@ class InteractionStatsView(views.APIView):
     `total`/`classified` come back so the screen can say so rather than
     implying an empty AI Area donut means nobody talked about anything.
     Nothing classifies on write — `manage.py classify_interactions` does,
-    and it costs a real model call per batch."""
+    and it costs a real model call per batch.
+
+    **Drill.** `?drill=` opens any chart segment into the companies behind
+    it: `all`; `type:<email|call|ticket>`; `sentiment:<value>`;
+    `area:<value>`; `category:<value>`; `subcategory:<value>` — same
+    ignore-a-bad-value convention as every filter above."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         querysets = interactions.filtered_querysets(request.user, request.query_params)
+
+        segment = drill.parse_segment(request.query_params, interactions.DRILL_KINDS)
+        if segment is not None:
+            narrowed = interactions.drill_querysets(querysets, *segment)
+            if narrowed is not None:
+                return Response(
+                    drill.companies_payload(
+                        request.user,
+                        request.query_params["drill"].strip(),
+                        dict(drill.record_counts(narrowed)),
+                        value_label="interactions",
+                    )
+                )
+
         return Response(
             {
                 **interactions.build_stats(querysets),
