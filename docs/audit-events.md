@@ -68,6 +68,8 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `anomaly.found` | `services.anomalies.detect.detect` | user, or nobody (nightly) | Anomaly | title, how many companies, how many reports |
 | `anomaly.update` | `services.anomalies.views.AnomalyDetailView` | leadership | Anomaly | title, new status |
 | `translation.made` | `services.translation.translate.of_record` | user | Translation | kind, record id, the language asked for and the one detected |
+| `brief.schedule` | `services.metrics.views.BriefScheduleView` | admin | BriefSchedule | cadence, the hint of the hook it posts to |
+| `brief.sent` | `services.metrics.delivery.send` | user, or nobody (nightly) | BriefSchedule | the brief's date and the hook hint; the company's own figures left the building |
 | `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
 | `file.upload` / `file.delete` | `services.customers.views` (Files tab) | user | Attachment | name, size, content_type |
 | `call.log` | `services.customers.views` (CallSense) | user | Call | title, whether a transcript was attached |

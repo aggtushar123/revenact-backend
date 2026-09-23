@@ -300,3 +300,53 @@ class Feedback(models.Model):
 
     def __str__(self):
         return f"{self.get_kind_display()}: {self.subject_label}"
+
+
+class BriefSchedule(models.Model):
+    """Where the management brief goes, and when.
+
+    One per organisation: a brief is the company's own summary, and two
+    schedules would be two answers to the same question. `destination` is
+    a Slack incoming webhook, which is a credential — anyone holding it
+    can post to that channel — so it is never sent back to a client; the
+    API returns `destination_hint` instead.
+
+    Nothing is generated on a schedule. The pass posts the brief that
+    exists; if nobody has written one for the period, it says so rather
+    than spending a model call nobody asked for."""
+
+    class Cadence(models.TextChoices):
+        WEEKLY = "weekly", "Weekly"
+        MONTHLY = "monthly", "Monthly"
+
+    organisation = models.OneToOneField(
+        Organisation, related_name="brief_schedule", on_delete=models.CASCADE
+    )
+    destination = models.URLField(max_length=500)
+    cadence = models.CharField(max_length=16, choices=Cadence.choices, default=Cadence.WEEKLY)
+    #: Monday is 0, matching Python's own weekday(). Weekly schedules only.
+    weekday = models.PositiveSmallIntegerField(default=0)
+    #: Day of the month, for monthly schedules. A month too short for it
+    #: sends on its last day rather than skipping the month.
+    day = models.PositiveSmallIntegerField(default=1)
+    #: Local hour, 0-23. The pass runs nightly, so this is "not before".
+    hour = models.PositiveSmallIntegerField(default=8)
+    is_active = models.BooleanField(default=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="+",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def destination_hint(self) -> str:
+        """Enough of the URL to recognise it, never enough to use it."""
+        return f"…{self.destination[-4:]}" if self.destination else ""
+
+    def __str__(self):
+        return f"{self.organisation} brief → Slack ({self.cadence})"
