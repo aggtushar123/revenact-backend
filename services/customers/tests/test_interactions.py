@@ -526,6 +526,17 @@ class InteractionStatsTests(APITestCase):
                 companies = self.client.get(self.url, {"drill": drill}).json()["drill"]["companies"]
                 self.assertEqual([c["value"] for c in companies], [expected])
 
+    def test_a_customer_filter_drills_to_that_customer_only(self):
+        sibling = Customer.objects.create(organisation=self.org, name="Sibling", owner=self.csm)
+        account = Account.objects.create(name="Shared")
+        account.customers.add(self.mine, sibling)
+        self._email(1, customer=None, account=account)
+
+        both = self.client.get(self.url, {"drill": "all"}).json()["drill"]["companies"]
+        self.assertEqual(sorted(c["name"] for c in both), ["Mine", "Sibling"])
+        body = self.client.get(self.url, {"drill": "all", "customer": self.mine.pk}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+
     def test_drill_keeps_personal_mail_rules(self):
         """The same visible_emails rule the totals use: another person's
         mailbox mail is never counted towards a company."""

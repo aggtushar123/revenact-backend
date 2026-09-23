@@ -5544,6 +5544,38 @@ class TicketStatsTests(APITestCase):
                 companies = self.client.get(self.url, {"drill": drill}).json()["drill"]["companies"]
                 self.assertEqual([c["value"] for c in companies], [expected])
 
+    def _shared_account_ticket(self, sibling_owner=None, account_owner=None):
+        """An account-level ticket on an account Mine shares with a sibling
+        the viewer can also see (unowned, or their own)."""
+        sibling = Customer.objects.create(
+            organisation=self.org, name="Sibling", owner=sibling_owner
+        )
+        account = Account.objects.create(name="Shared", owner=account_owner)
+        account.customers.add(self.mine, sibling)
+        self._ticket(1, customer=None, account=account)
+        return account
+
+    def test_a_customer_filter_drills_to_that_customer_only(self):
+        self._shared_account_ticket(sibling_owner=self.csm)
+        both = self.client.get(self.url, {"drill": "all"}).json()["drill"]["companies"]
+        self.assertEqual(sorted(c["name"] for c in both), ["Mine", "Sibling"])
+        body = self.client.get(self.url, {"drill": "all", "customer": self.mine.pk}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+
+    def test_an_owner_filter_drills_to_that_owners_customers_only(self):
+        self._shared_account_ticket(account_owner=self.csm)
+        body = self.client.get(self.url, {"drill": "all", "owner": self.csm.pk}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+
+    def test_an_account_filter_drills_to_that_accounts_customers_only(self):
+        account = self._shared_account_ticket(sibling_owner=self.csm)
+        elsewhere = Customer.objects.create(organisation=self.org, name="Elsewhere", owner=self.csm)
+        other_account = Account.objects.create(name="Other")
+        other_account.customers.add(elsewhere)
+        self._ticket(2, customer=None, account=other_account)
+        body = self.client.get(self.url, {"drill": "all", "account": account.pk}).json()
+        self.assertEqual(sorted(c["name"] for c in body["drill"]["companies"]), ["Mine", "Sibling"])
+
     def test_a_bad_drill_returns_the_normal_stats(self):
         self._ticket(1)
         for drill in ["priority:nope", "bogus", "all:x", "origin:abc"]:

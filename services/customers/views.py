@@ -2446,6 +2446,7 @@ class InteractionStatsView(views.APIView):
                         request.query_params["drill"].strip(),
                         dict(drill.record_counts(narrowed)),
                         value_label="interactions",
+                        restrict_to=drill.filter_restriction(request.query_params),
                     )
                 )
 
@@ -2583,6 +2584,7 @@ class TicketStatsView(views.APIView):
                         request.query_params["drill"].strip(),
                         dict(counts),
                         value_label="tickets",
+                        restrict_to=drill.filter_restriction(request.query_params, owner=True),
                     )
                 )
 

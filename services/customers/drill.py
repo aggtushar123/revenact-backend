@@ -8,15 +8,29 @@ here needs: an account-level record belongs to all of the account's
 customers, and some of those may sit outside the viewer's book, so the
 result is always intersected with ``visible_customers``.
 
+The same fan-out means a filter naming one company (``?customer=``,
+``?owner=``, ``?account=``) keeps a shared account's record, and with it
+every sibling customer of that account. So the record-derived drills also
+pass ``restrict_to`` (see ``filter_restriction``): the list names only the
+companies the filter named.
+
 A bad ``drill`` is ignored, like every other dashboard filter: the caller
 gets the normal stats back rather than a 400.
+
+Known limit: ``record_counts`` streams every matching row through Python
+and ``companies_payload`` filters with an unbounded ``pk__in``. Fine at
+current scale; revisit if one org's drill ever covers tens of thousands
+of records or customers.
 """
 
 from collections import Counter
 
+from django.db.models import Q
+
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
 
-from .models import Account
+from .interactions import _parse_int
+from .models import Account, Customer
 from .scoping import visible_customers
 
 LIMIT = 500
@@ -58,10 +72,36 @@ def record_counts(querysets):
     return counts
 
 
-def companies_payload(user, segment, values, *, value_label, none_first=False):
+def filter_restriction(params, *, owner=False):
+    """A Q over Customer naming the companies the caller's own filters named:
+    ``?customer=`` that customer, ``?account=`` that account's customers and,
+    where the endpoint filters by it, ``?owner=`` that owner's customers.
+    ``None`` when no such filter is set."""
+
+    q = Q()
+    customer_id = _parse_int(params.get("customer"))
+    if customer_id is not None:
+        q &= Q(pk=customer_id)
+    account_id = _parse_int(params.get("account"))
+    if account_id is not None:
+        q &= Q(accounts__id=account_id)
+    owner_id = _parse_int(params.get("owner")) if owner else None
+    if owner_id is not None:
+        q &= Q(owner_id=owner_id)
+    return q or None
+
+
+def companies_payload(user, segment, values, *, value_label, none_first=False, restrict_to=None):
     organisation = user.organisation
     rates = rates_for(organisation)
-    customers = visible_customers(user).filter(pk__in=list(values)).select_related("owner")
+    customers = Customer.objects.all()
+    if restrict_to is not None:
+        customers = customers.filter(restrict_to)
+    customers = (
+        visible_customers(user)
+        .filter(pk__in=customers.filter(pk__in=list(values)).values("pk"))
+        .select_related("owner")
+    )
 
     rows = []
     for customer in customers:
