@@ -28,6 +28,7 @@ mean one unusual email blocking a nightly run for everything behind it.
 import json
 import logging
 
+from django.dispatch import Signal
 from django.utils import timezone
 
 from services.copilot.anthropic_client import get_completion
@@ -326,8 +327,14 @@ def clear_classification(record):
     record.save(update_fields=["ai_area", "ai_category", "ai_subcategory", "ai_classified_at"])
 
 
+#: Sent once a record has been tagged, so anything that waits on the meaning
+#: of an interaction rather than its arrival can run. `services.scenarios`
+#: listens for it; the signal exists so that dependency stays one-way.
+interaction_classified = Signal()
+
+
 def apply_classification(record, fields):
-    """Writes one record's tags and stamps `ai_classified_at`.
+    """Writes one record's tags, stamps `ai_classified_at`, and announces it.
 
     Saved field by field rather than with a full `save()` so a concurrent edit
     to the same row's other columns — a ticket being resolved while a nightly
@@ -337,6 +344,7 @@ def apply_classification(record, fields):
         setattr(record, field, value)
     record.ai_classified_at = timezone.now()
     record.save(update_fields=[*fields, "ai_classified_at"])
+    interaction_classified.send(sender=type(record), record=record)
 
 
 def classify_records(records, *, organisation=None, user=None):
