@@ -45,6 +45,8 @@ customer records.
 | `custom_objects.*` | confidential | — | `CustomObjectRecord.data` is tenant-defined; assume it can hold personal data |
 | `attributes.*` | confidential | — | `AIAttributeValue.value`/`reasoning` are model output about a customer, derived from the same records the Copilot reads; `sources` are citation snapshots (labels and dates, no bodies) |
 | `requests.*` | confidential | — | `RequestEvidence.snippet` is customer-written text copied from an email, ticket or call; read only by members who may open the company it came from |
+| `knowledge.KnowledgeGap` | internal | — | A question and a count, no record text; readable company-wide by design so whoever can answer sees it |
+| `knowledge.AccountBrief` | confidential | — | Model-written summary of one customer, generated as that customer's owner reads; `sources` are citation snapshots filtered again per reader |
 | `connectors.Connector` | internal | — | provider and name only; no credentials stored |
 | `scenarios.Scenario`, `scenarios.ScenarioRun` | internal | triggered_by | automation graphs and run logs |
 | `fx_rates.FxRate` | internal | — | |

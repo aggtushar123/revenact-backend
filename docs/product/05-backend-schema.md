@@ -260,6 +260,15 @@ contributions_30d.
 
 ---
 
+### `knowledge` (gaps and the brief)
+
+| Model | Purpose |
+|---|---|
+| `KnowledgeGap` | A question the company could not answer about a customer: subject, how often it has been asked, which function owes the answer, and the `Contribution` that eventually filled it. Raised from a Copilot answer with no sources, or a routed question left open |
+| `AccountBrief` | One per customer: use cases, stakeholders, open threads and the records it was written from. Generated on request, never on a schedule |
+
+---
+
 ## 9. `mail`, `connectors`, `webhooks`, `campaigns`
 
 | Model | Purpose |

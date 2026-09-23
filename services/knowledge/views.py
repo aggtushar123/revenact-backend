@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
@@ -5,13 +6,20 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core import audit
 from services.accounts.models import User
 from services.accounts.permissions import CanViewAllAccounts
+from services.copilot.anthropic_client import (
+    BudgetExceeded,
+    CopilotNotConfigured,
+    CopilotRequestFailed,
+)
 from services.customers.models import Customer
 
-from . import mentions
-from .models import Contribution, FunctionOwner, Question
-from .serializers import ContributionSerializer, QuestionSerializer
+from . import brief, mentions
+from .gaps import fill_from_contribution
+from .models import Contribution, FunctionOwner, KnowledgeGap, Question
+from .serializers import ContributionSerializer, KnowledgeGapSerializer, QuestionSerializer
 
 
 def _company_customer(request, pk):
@@ -42,12 +50,19 @@ class CustomerContributionListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         customer = _company_customer(self.request, self.kwargs["pk"])
-        serializer.save(
-            organisation=self.request.user.organisation,
-            customer=customer,
-            author=self.request.user,
-            function=self.request.user.function,
-        )
+        with transaction.atomic():
+            contribution = serializer.save(
+                organisation=self.request.user.organisation,
+                customer=customer,
+                author=self.request.user,
+                function=self.request.user.function,
+            )
+            # Writing something down is how a gap closes, wherever it is
+            # written: the Company View box and the gap's own answer box
+            # are the same act (services.knowledge.gaps). One transaction,
+            # so a contribution never lands with only some of the gaps it
+            # answers marked.
+            fill_from_contribution(contribution, request=self.request)
 
 
 class ContributionDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -362,3 +377,131 @@ class KnowledgeActivityView(APIView):
         except (TypeError, ValueError):
             days = 30
         return Response(by_function(request.user.organisation, days))
+
+
+class KnowledgeGapListView(APIView):
+    """GET /api/v1/knowledge/gaps/?customer=&status= — what the company
+    cannot answer, most-asked first. Open by default; `status` reads the
+    closed ones.
+
+    Company-wide, like every other part of the knowledge layer (see
+    `_company_customer`): the person who owes an answer is usually in
+    another function and does not own the account, so scoping this to a
+    CSM's own book would hide the question from exactly the person who
+    could close it. A gap carries a subject and a count, never a record's
+    words, so there is nothing personal in it to protect."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        wanted = request.query_params.get("status") or KnowledgeGap.Status.OPEN
+        if wanted not in KnowledgeGap.Status.values:
+            return Response({"detail": f"Unknown status {wanted!r}."}, status=400)
+        rows = KnowledgeGap.objects.filter(
+            organisation=request.user.organisation, status=wanted
+        ).select_related("customer", "assignee")
+        customer_id = request.query_params.get("customer")
+        if customer_id:
+            if not str(customer_id).isdigit():
+                return Response({"detail": "customer must be an id."}, status=400)
+            rows = rows.filter(customer_id=customer_id)
+        return Response(KnowledgeGapSerializer(rows, many=True).data)
+
+
+def _visible_gap(request, pk):
+    return get_object_or_404(
+        KnowledgeGap.objects.filter(organisation=request.user.organisation), pk=pk
+    )
+
+
+class KnowledgeGapAnswerView(APIView):
+    """POST /api/v1/knowledge/gaps/<id>/answer/ {body} — write the answer
+    down and close the loop. The answer is an ordinary Contribution, so it
+    lives with everything else the company knows rather than in a second
+    place nobody reads."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        gap = _visible_gap(request, pk)
+        if gap.status != KnowledgeGap.Status.OPEN:
+            return Response(
+                {"detail": "This one is already closed."}, status=status.HTTP_409_CONFLICT
+            )
+        body = (request.data.get("body") or "").strip()
+        if not body:
+            return Response({"detail": "An answer needs a body."}, status=400)
+        with transaction.atomic():
+            contribution = Contribution.objects.create(
+                organisation=request.user.organisation,
+                customer=gap.customer,
+                author=request.user,
+                function=request.user.function,
+                body=body,
+            )
+            fill_from_contribution(contribution, request=request)
+            gap.refresh_from_db()
+            if gap.status != KnowledgeGap.Status.FILLED:
+                # Answered by someone from another function: the gap still
+                # belongs to whoever owes it, but the knowledge is recorded.
+                gap.status = KnowledgeGap.Status.FILLED
+                gap.filled_by = contribution
+                gap.save(update_fields=["status", "filled_by"])
+        return Response(
+            {
+                "gap": KnowledgeGapSerializer(gap).data,
+                "contribution": ContributionSerializer(contribution).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class KnowledgeGapDismissView(APIView):
+    """POST /api/v1/knowledge/gaps/<id>/dismiss/ — not worth answering."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        gap = _visible_gap(request, pk)
+        if gap.status != KnowledgeGap.Status.OPEN:
+            return Response(
+                {"detail": "This one is already closed."}, status=status.HTTP_409_CONFLICT
+            )
+        gap.status = KnowledgeGap.Status.DISMISSED
+        gap.save(update_fields=["status"])
+        audit.record(
+            "knowledge.gap_dismissed",
+            request=request,
+            target=gap,
+            metadata={"subject": gap.subject, "customer": gap.customer.name},
+        )
+        return Response(KnowledgeGapSerializer(gap).data)
+
+
+class AccountBriefView(APIView):
+    """GET/POST /api/v1/customers/<id>/brief/ — the standing brief on this
+    account, and writing a new one.
+
+    GET never 404s on a customer that simply has no brief yet: an empty
+    brief is the honest answer, and the page needs the open gaps beside it
+    either way. POST costs a model call, so it only happens when asked."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        customer = _company_customer(request, pk)
+        return Response(brief.as_seen_by(customer, request.user))
+
+    def post(self, request, pk):
+        customer = _company_customer(request, pk)
+        if not request.user.organisation.ai_agent_enabled:
+            return Response({"detail": "AI Copilot is disabled for your organisation."}, status=403)
+        try:
+            brief.generate(customer, actor=request.user, request=request)
+        except BudgetExceeded as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        except CopilotNotConfigured as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except CopilotRequestFailed as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(brief.as_seen_by(customer, request.user), status=status.HTTP_201_CREATED)

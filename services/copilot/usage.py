@@ -24,6 +24,7 @@ PURPOSES = {
     "draft_reply": "Reply drafts",
     "attribute": "AI attributes",
     "feature_request": "Feature requests",
+    "account_brief": "Account briefs",
 }
 
 

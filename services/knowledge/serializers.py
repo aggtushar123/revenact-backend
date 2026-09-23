@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Contribution, Question
+from .models import Contribution, KnowledgeGap, Question
 
 
 class ContributionSerializer(serializers.ModelSerializer):
@@ -76,3 +76,34 @@ class QuestionSerializer(serializers.ModelSerializer):
 
         end = obj.answered_at or timezone.now()
         return (end - obj.created_at).days
+
+
+class KnowledgeGapSerializer(serializers.ModelSerializer):
+    """A gap is a question and a count, never any record's words."""
+
+    customer = serializers.SerializerMethodField()
+    assignee = serializers.SerializerMethodField()
+    function_display = serializers.CharField(source="get_function_display", read_only=True)
+
+    class Meta:
+        model = KnowledgeGap
+        fields = [
+            "id",
+            "subject",
+            "customer",
+            "function",
+            "function_display",
+            "assignee",
+            "source",
+            "times_asked",
+            "status",
+            "first_asked_at",
+            "last_asked_at",
+        ]
+        read_only_fields = fields
+
+    def get_customer(self, gap):
+        return {"id": gap.customer_id, "name": gap.customer.name}
+
+    def get_assignee(self, gap):
+        return {"id": gap.assignee.id, "name": gap.assignee.name} if gap.assignee_id else None
