@@ -3064,15 +3064,72 @@ this codebase (`Customer.lifecycle_stage`, etc.) — the frontend's
 `ApplyToTarget` type uses the same lowercase strings, not the
 Title Case the radio labels display.
 
-A Condition/Filter node's saved clause is intentionally narrower than
-its own fancier-looking canvas UI: one attribute (`lifecycle_stage`/
-`health_score`/`nps_score` — a fixed allowlist, not any model field) +
-one operator (`equals`/`not_equals`/`greater_than`/`less_than`) + one
-value, stored on the node's own `data` as `conditionAttribute`/
-`conditionOperator`/`conditionValue`. Condition branches by which
-outgoing edge has `label: "Yes"`/`"No"` — the same manually-set label
-`CustomEdge.tsx`'s own "Set Label" pill already produces, not a new
-concept.
+A Condition/Filter node's saved clause is one of two kinds, stored on
+the node's own `data`. Condition branches by which outgoing edge has
+`label: "Yes"`/`"No"` — the same manually-set label `CustomEdge.tsx`'s
+own "Set Label" pill already produces, not a new concept.
+
+**A field clause** (the default) is `conditionAttribute` +
+`conditionOperator` + `conditionValue`. The attribute is a fixed
+allowlist, never an arbitrary model field: `lifecycle_stage`, `name`,
+`owner` (their email), `health_score`, `nps_score`, `arr` (read through
+the organisation's own `arr` global attribute mapping), `renewal_days`
+(days until renewal, negative once past), `open_tickets`, or
+`attr:<api_name>` for any AI attribute, whose current value is its
+newest row and therefore a person's correction when there has been one.
+Operators: `equals`, `not_equals`, `greater_than`, `less_than`,
+`contains`, `is_one_of` (a comma-separated list), `is_empty`,
+`is_not_empty`.
+
+**A semantic clause** is `conditionKind: "semantic"` with
+`conditionPhrase` and an optional `conditionThreshold` (default 0.6).
+The phrase and the company's most recent emails, tickets and calls go
+through the same local embedding model the Copilot uses, and the clause
+passes when the closest record clears the threshold. It spends no
+credits and answers the same way every run.
+
+The records it reads are the ones the **customer's owner** may read (the
+same principal the nightly AI-attribute pass uses), so a scenario never
+matches on mail from a mailbox nobody on the account may open or on
+another department's tickets; a customer with no owner sees only the
+records nobody owns personally. The run log says what matched by kind
+and date ("an email from 12 Sep") and how closely, never a subject or
+any of the record's words: run history is filtered by customer, not by
+record.
+
+Anything missing or unrecognised — an attribute, an operator, an
+uncoercible value, a company with nothing on record — is `false`, never
+an exception: a half-configured node skips its Yes branch rather than
+stopping the run.
+
+### What a node can actually do
+
+| Action | What it does |
+|---|---|
+| `Send Email` | Sends to the customer's address through `send_scenario_email` |
+| `Create Task` | A Task on the customer, due today |
+| `Set Attribute` | Sets `lifecycle_stage` to one of its own valid values |
+| `Churn Entity` | Marks churned and dates it |
+| `Assign Owner` | Routes the customer to a person: `assignTo` (a user id in this organisation, checked rather than trusted) or `assignRule: "least_loaded"` with an optional `assignFunction`, which picks whoever in that function carries the fewest live customers, ties by lowest id. Notifies the new owner |
+| `Notify` | Notifies `notifyWho`: `owner`, `manager` (the owner's manager) or `user` with `notifyUser`, carrying `notifyMessage` |
+| `Wait` / `Conditional Wait` | A no-op that logs why: there is no task queue to wait on |
+
+A node that names nobody reachable fails that node and marks the run
+failed; the walk continues, because the side effects earlier nodes
+committed are real either way.
+
+### Triggers
+
+`entry.data.eventTrigger` says what starts a scenario besides Run Now:
+
+- `new_entity` — a Customer is created.
+- `interaction_classified` — an email, ticket or call has just been
+  tagged by the classifier. This is the trigger a semantic condition is
+  for: the ticket arrives, the classifier says what it is about, the
+  scenario decides where it goes. Only the record's own customer is run;
+  an account-level interaction has no engine path yet.
+
+Both run after the transaction commits, synchronously, in-request.
 
 ### `GET/POST /api/v1/scenarios/`
 

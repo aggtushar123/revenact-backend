@@ -16,6 +16,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from services.customers.classification import interaction_classified
 from services.customers.models import Customer
 
 from .engine import run_scenario
@@ -48,3 +49,35 @@ def _entry_event(scenario):
     if entry is None:
         return None
     return entry.get("data", {}).get("eventTrigger")
+
+
+@receiver(interaction_classified)
+def run_on_classified_scenarios(sender, record, **kwargs):
+    """A ticket arrives, the classifier says what it is about, and a
+    scenario decides what to do with it — the one trigger that makes a
+    semantic condition worth having.
+
+    Only the record's own customer is run: an account-level interaction has
+    no engine path yet (see engine.py's own docstring)."""
+
+    customer = getattr(record, "customer", None)
+    if customer is None:
+        return
+
+    matching = [
+        scenario
+        for scenario in Scenario.objects.filter(
+            organisation=customer.organisation,
+            apply_to=Scenario.ApplyTo.ORGANIZATIONS,
+            is_active=True,
+        )
+        if _entry_event(scenario) == "interaction_classified"
+    ]
+    if not matching:
+        return
+
+    def _run_all():
+        for scenario in matching:
+            run_scenario(scenario, customer, triggered_by="event")
+
+    transaction.on_commit(_run_all)

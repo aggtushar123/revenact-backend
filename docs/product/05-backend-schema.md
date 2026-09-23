@@ -279,7 +279,7 @@ contributions_30d.
 | `CustomObjectDefinition` | A tenant-defined object; applies to customers, accounts or both |
 | `CustomFieldDefinition` | A field on it: text, number, currency, date, boolean or picklist, with ordering and required flag |
 | `CustomObjectRecord` | One instance, `data` JSON keyed by field api_name, attached to exactly one parent |
-| `Scenario` | An automation graph: `apply_to`, `nodes` and `edges` JSON, `is_active` gating event runs |
+| `Scenario` | An automation graph: `apply_to`, `nodes` and `edges` JSON, `is_active` gating event runs. A condition reads an allowlist of customer facts, an AI attribute by name, or matches a plain-English phrase against recent interactions by embedding; actions include routing the customer to a person |
 | `ScenarioRun` | One execution with a per-node log |
 | `Notification` | copilot_invite, copilot_handoff, customer_assigned, account_assigned, question_asked, question_answered; message, relative link, read flag |
 | `FxRate` | Current rate to the organisation's currency. No history; cleared when the organisation changes currency |
