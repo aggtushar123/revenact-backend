@@ -49,6 +49,7 @@ customer records.
 | `knowledge.AccountBrief` | confidential | — | Model-written summary of one customer, generated as that customer's owner reads; `sources` are citation snapshots filtered again per reader |
 | `anomalies.*` | confidential | — | `AnomalyEvidence.snippet` copies a report's own text; read only by members who may open the company and may read the source record. `Anomaly.title`/`summary` are written **only from reports nobody owns personally** (no mailbox owner, no department), because anyone who can see one report in a cluster sees its name |
 | `translation.Translation` | confidential | — | A record's own words in another language; every read is gated on the source record, so it is exactly as restricted as the original |
+| `metrics.BriefSchedule.destination` | **restricted** | — | A Slack incoming webhook: anyone holding it can post to that channel. Never serialised; the API returns the last few characters only |
 | `mcp.McpToken.token_hash` | **restricted** | — | A personal key: whoever holds the secret reads everything its owner can. Stored as SHA-256, returned once at issue, never again; revocable by its owner |
 | `connectors.Connector` | internal | — | provider and name only; no credentials stored |
 | `scenarios.Scenario`, `scenarios.ScenarioRun` | internal | triggered_by | automation graphs and run logs |

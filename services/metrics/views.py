@@ -5,14 +5,16 @@ the whole organisation's, and a CSM whose book is scoped to their own
 customers would otherwise read the company's ARR off this endpoint.
 """
 
-from rest_framework import generics, views
+from rest_framework import generics, status, views
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from services.accounts.permissions import CanViewAllAccounts
+from core import audit
+from services.accounts.permissions import CanManageOrgSettings, CanViewAllAccounts
 
-from .models import MetricSnapshot
+from .delivery import NotASlackHook, check_destination, send
+from .models import BriefSchedule, MetricSnapshot
 from .registry import BY_KEY, METRICS, as_of, compute_all
 from .signals import describe as _describe
 from .signals import latest_by_member as _latest_by_member
@@ -586,3 +588,141 @@ class ClassificationCorrectionView(views.APIView):
                 "feedback": _feedback_payload(entry) if entry else None,
             }
         )
+
+
+class BriefScheduleView(views.APIView):
+    """GET/POST/PATCH/DELETE /api/v1/metrics/brief/schedule/
+
+    Where the management brief goes and when. One per organisation, and
+    configuration rather than content, so it is gated on
+    `manage_org_settings` like webhooks are — not on who may read a brief.
+
+    The Slack URL is a credential: anyone holding it can post to that
+    channel. It goes in and is never returned; `destination_hint` is the
+    last few characters, enough to recognise which hook is set."""
+
+    permission_classes = [IsAuthenticated, CanManageOrgSettings]
+
+    def _schedule(self, request):
+        return BriefSchedule.objects.filter(organisation=request.user.organisation).first()
+
+    def _body(self, schedule):
+        if schedule is None:
+            return {
+                "cadence": None,
+                "destination_hint": "",
+                "weekday": None,
+                "day": None,
+                "is_active": False,
+                "last_sent_at": None,
+            }
+        return {
+            "cadence": schedule.cadence,
+            "destination_hint": schedule.destination_hint,
+            "weekday": schedule.weekday,
+            "day": schedule.day,
+            "is_active": schedule.is_active,
+            "last_sent_at": schedule.last_sent_at,
+        }
+
+    def get(self, request):
+        return Response(self._body(self._schedule(request)))
+
+    def post(self, request):
+        destination = (request.data.get("destination") or "").strip()
+        try:
+            check_destination(destination)
+        except NotASlackHook as exc:
+            return Response({"detail": str(exc)}, status=400)
+        fields = self._fields(request.data)
+        if isinstance(fields, Response):
+            return fields
+        schedule, _ = BriefSchedule.objects.update_or_create(
+            organisation=request.user.organisation,
+            defaults={**fields, "destination": destination, "created_by": request.user},
+        )
+        audit.record(
+            "brief.schedule",
+            request=request,
+            target=schedule,
+            metadata={"cadence": schedule.cadence, "to": schedule.destination_hint},
+        )
+        return Response(self._body(schedule), status=status.HTTP_201_CREATED)
+
+    def patch(self, request):
+        schedule = self._schedule(request)
+        if schedule is None:
+            return Response({"detail": "Nothing is scheduled yet."}, status=404)
+        if "destination" in request.data:
+            destination = (request.data.get("destination") or "").strip()
+            try:
+                check_destination(destination)
+            except NotASlackHook as exc:
+                return Response({"detail": str(exc)}, status=400)
+            schedule.destination = destination
+        fields = self._fields(request.data, current=schedule)
+        if isinstance(fields, Response):
+            return fields
+        for key, value in fields.items():
+            setattr(schedule, key, value)
+        schedule.save()
+        audit.record(
+            "brief.schedule",
+            request=request,
+            target=schedule,
+            metadata={"cadence": schedule.cadence, "to": schedule.destination_hint},
+        )
+        return Response(self._body(schedule))
+
+    def delete(self, request):
+        schedule = self._schedule(request)
+        if schedule is not None:
+            schedule.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _fields(self, data, current=None):
+        """The scheduling fields, validated. A bad number is a 400 rather
+        than a schedule that never fires and never says why."""
+        out = {}
+        cadence = data.get("cadence", current.cadence if current else BriefSchedule.Cadence.WEEKLY)
+        if cadence not in BriefSchedule.Cadence.values:
+            return Response({"detail": f"Unknown cadence {cadence!r}."}, status=400)
+        out["cadence"] = cadence
+        for key, low, high, fallback in (("weekday", 0, 6, 0), ("day", 1, 31, 1)):
+            if key in data:
+                try:
+                    value = int(data[key])
+                except (TypeError, ValueError):
+                    return Response({"detail": f"{key} must be a number."}, status=400)
+                if not low <= value <= high:
+                    return Response(
+                        {"detail": f"{key} must be between {low} and {high}."}, status=400
+                    )
+                out[key] = value
+            elif current is None:
+                out[key] = fallback
+        if "is_active" in data:
+            out["is_active"] = bool(data["is_active"])
+        elif current is None:
+            out["is_active"] = True
+        return out
+
+
+class BriefSendNowView(views.APIView):
+    """POST /api/v1/metrics/brief/schedule/send/ — post the latest brief to
+    the configured channel right now, so a new schedule can be proved
+    before anybody waits a week for it."""
+
+    permission_classes = [IsAuthenticated, CanManageOrgSettings]
+
+    def post(self, request):
+        schedule = BriefSchedule.objects.filter(organisation=request.user.organisation).first()
+        if schedule is None:
+            return Response({"detail": "Nothing is scheduled yet."}, status=404)
+        try:
+            sent, detail = send(schedule, actor=request.user, request=request)
+        except NotASlackHook as exc:
+            return Response({"detail": str(exc)}, status=400)
+        if not sent and detail != "No brief has been written yet.":
+            return Response({"sent": False, "detail": detail}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"sent": sent, "detail": detail})

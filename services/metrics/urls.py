@@ -9,6 +9,12 @@ urlpatterns = [
     path("graph/", views.GraphView.as_view(), name="metric-graph"),
     path("brief/", views.BriefView.as_view(), name="metric-brief"),
     path("brief/generate/", views.BriefGenerateView.as_view(), name="metric-brief-generate"),
+    path("brief/schedule/", views.BriefScheduleView.as_view(), name="metric-brief-schedule"),
+    path(
+        "brief/schedule/send/",
+        views.BriefSendNowView.as_view(),
+        name="metric-brief-schedule-send",
+    ),
     path("feedback/", views.FeedbackListView.as_view(), name="feedback-list"),
     path("proposals/", views.ProposalListView.as_view(), name="proposal-list"),
     path("proposals/generate/", views.ProposalGenerateView.as_view(), name="proposal-generate"),

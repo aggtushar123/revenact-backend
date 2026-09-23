@@ -96,6 +96,18 @@ class Command(BaseCommand):
             changed = recompute_all(organisation)
             self.stdout.write(self.style.SUCCESS(f"recomputed sentiment for {changed} contact(s)"))
 
+        # The management brief, where a schedule says it goes. Posts what
+        # exists rather than generating: a schedule never quietly spends a
+        # model call (services.metrics.delivery).
+        if not options["dry_run"]:
+            from services.metrics.delivery import send_due
+
+            try:
+                posted = send_due()
+                self.stdout.write(self.style.SUCCESS(f"posted {posted} brief(s) to Slack"))
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                self.stdout.write(self.style.WARNING(f"brief delivery skipped: {exc}"))
+
         # What suddenly started going wrong: clusters of the same report
         # across several companies (services.anomalies).
         if not options["dry_run"]:

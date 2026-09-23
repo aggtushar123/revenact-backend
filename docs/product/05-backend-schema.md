@@ -327,6 +327,11 @@ contributions_30d.
 | Model | Purpose |
 |---|---|
 | `Translation` | One record's words in one language, kept so the next reader pays nothing. `source_hash` makes an edited record miss the cache. Read only under the source record's own rule |
+### `metrics` (brief delivery)
+
+| Model | Purpose |
+|---|---|
+| `BriefSchedule` | One per organisation: where the management brief is posted (a Slack incoming webhook, never returned to a client) and on which day. Posts what exists; never generates, and has no hour because the job that posts it runs once a night |
 
 ---
 

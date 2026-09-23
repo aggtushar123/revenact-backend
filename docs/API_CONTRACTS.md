@@ -3035,6 +3035,54 @@ underneath.
 
 ---
 
+## `metrics` — The management brief on a schedule (Settings > Brief delivery)
+
+### Model
+
+- `BriefSchedule` — one per organisation: `destination` (a Slack incoming
+  webhook), `cadence` (`weekly` | `monthly`), `weekday` (Monday is 0),
+  `day` (of the month), `is_active`, `last_sent_at`, `created_by`.
+
+### Conventions specific to this app
+
+The Slack URL is a **credential** — anyone holding it can post to that
+channel — so it goes in and never comes back out. Responses carry
+`destination_hint`, the last few characters, enough to recognise which
+hook is set. Only `https://hooks.slack.com/services/...` is accepted, and
+it is checked against the same SSRF rules outbound webhooks use.
+
+Configuring is gated on `manage_org_settings`, like webhooks: it is
+configuration, not content. **Nothing is generated on a schedule.** The
+pass posts the brief that exists; if nobody has written one, it says so
+rather than spending a model call nobody asked for. A month too short for
+the chosen day sends on its last day rather than skipping the month.
+
+**There is no hour to choose.** `run_health_maintenance` runs once a
+night, so a brief goes out on its day when that job runs. An hour the job
+could never honour would be a promise the product cannot keep; a specific
+time of day needs a more frequent job first.
+
+### `GET/POST/PATCH/DELETE /api/v1/metrics/brief/schedule/`
+
+```json
+{"cadence": "weekly", "destination_hint": "…xxxx", "weekday": 1,
+ "day": 1, "is_active": true, "last_sent_at": null}
+```
+
+POST takes `destination` plus any of the scheduling fields and returns
+201. GET on an organisation with no schedule returns the same shape with
+`cadence: null` rather than a 404. 400 for a destination that is not a
+Slack hook, or a number out of range. Audited as `brief.schedule`.
+
+### `POST /api/v1/metrics/brief/schedule/send/`
+
+Posts the latest brief now, so a new schedule can be proved without
+waiting a week → `{"sent": true, "detail": "Sent."}`. 404 with nothing
+scheduled, 502 when Slack refuses it, and `{"sent": false}` with a reason
+when no brief has been written yet. Audited as `brief.sent`.
+
+---
+
 ## `scenarios` — Automation builder (`/scenarios`, `CreateScenario.tsx`)
 
 Mirrors: `src/pages/scenarios/CreateScenario.tsx`, `types.ts`,

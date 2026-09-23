@@ -68,6 +68,8 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `anomaly.found` | `services.anomalies.detect.detect` | user, or nobody (nightly) | Anomaly | title, how many companies, how many reports |
 | `anomaly.update` | `services.anomalies.views.AnomalyDetailView` | leadership | Anomaly | title, new status |
 | `translation.made` | `services.translation.translate.of_record` | user | Translation | kind, record id, the language asked for and the one detected |
+| `brief.schedule` | `services.metrics.views.BriefScheduleView` | admin | BriefSchedule | cadence, the hint of the hook it posts to |
+| `brief.sent` | `services.metrics.delivery.send` | user, or nobody (nightly) | BriefSchedule | the brief's date and the hook hint; the company's own figures left the building |
 | `mcp.token_issued` / `mcp.token_revoked` | `services.mcp.views.McpTokenView` | the person | McpToken | label |
 | `mcp.tool_called` | `services.mcp.views.McpView` | the token's owner | McpToken | tool, token label, argument names; somebody's agent read this company's records |
 | `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
