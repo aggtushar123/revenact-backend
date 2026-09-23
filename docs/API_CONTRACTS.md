@@ -1364,11 +1364,43 @@ inside ninety days); this is financial, over a year, and it is the only
 place that reads renewals, open Risks and open Opportunities together.
 
 Query params: `horizon_days` (default 365, **clamped** to 30–1095 rather
-than rejected), plus the usual `owner` / `lifecycle` / `customer`.
+than rejected), plus the usual `owner` / `lifecycle` / `customer`, plus
+`drill`.
 
-**Response `200`** — `bridge`, `scenarios`, `pipeline`, `swing`,
-`horizon_days`, `accounts`, `renewing_count`, `unpriced_count`,
-`currency`, `filters`.
+**Drill.** `?drill=` opens a bridge step into the companies behind it:
+`at_risk` (every account carrying downside — churn and contraction
+together), `churn`, `contraction` or `expansion`. These are the exact
+predicates `forecast.build_bridge` sums (churn = rows whose
+`churn_exposure >= risk_exposure`, contraction = the rest; both value
+`downside`; expansion values `expansion`), so a drill's values always
+add up to the step it opened. An unknown value ignores the drill — never
+`400` — and the endpoint falls back to its normal response below. When
+it applies, the response is *only*:
+
+```json
+{
+  "drill": {
+    "segment": "churn",
+    "value_label": "downside",
+    "count": 4,
+    "truncated": false,
+    "companies": [
+      {"id": 14, "name": "Uber", "owner": "Dana", "arr": 95000.0, "value": 57000.0}
+    ]
+  },
+  "currency": "USD"
+}
+```
+
+`value` is `downside` (or `expansion` for the `expansion` segment) for
+that company; `arr` is converted to the org's own currency, `null` when
+no rate exists. `companies` is capped at 500 (`count` is the true
+total, `truncated` says whether the list was cut), and it is
+intersected with the viewer's visible book, same as every other drill.
+
+**Response `200`** (no `drill`, or an unrecognised one) — `bridge`,
+`scenarios`, `pipeline`, `swing`, `horizon_days`, `accounts`,
+`renewing_count`, `unpriced_count`, `currency`, `filters`.
 
 ```json
 {

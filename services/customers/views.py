@@ -484,6 +484,12 @@ class CustomerForecastView(views.APIView):
     `?horizon_days=` moves the window (default 365, clamped to 30–1095).
     The other three params match every other dashboard: `owner`,
     `lifecycle`, `customer`.
+
+    **Drill.** `?drill=` opens a bridge step into the companies behind it:
+    `at_risk` (every account carrying downside, churn or contraction
+    together), `churn`, `contraction` or `expansion` — same predicates
+    `forecast.build_bridge` sums, so a drill's values always add up to
+    the step it opened.
     """
 
     permission_classes = [IsAuthenticated]
@@ -493,6 +499,32 @@ class CustomerForecastView(views.APIView):
         customers = list(forecast.filtered_customers(request.user, request.query_params))
         horizon = forecast.horizon_days(request.query_params)
         rows = forecast.build_rows(customers, organisation, horizon=horizon)
+
+        segment = drill.parse_segment(
+            request.query_params,
+            {"at_risk": False, "churn": False, "contraction": False, "expansion": False},
+        )
+        if segment is not None:
+            kind = segment[0]
+            if kind == "expansion":
+                values = {row.customer.pk: row.expansion for row in rows if row.expansion > 0}
+                label = "expected expansion"
+            else:
+                picked = [row for row in rows if row.downside > 0]
+                if kind == "churn":
+                    picked = [r for r in picked if r.churn_exposure >= r.risk_exposure]
+                elif kind == "contraction":
+                    picked = [r for r in picked if r.churn_exposure < r.risk_exposure]
+                values = {row.customer.pk: row.downside for row in picked}
+                label = "downside"
+            return Response(
+                drill.companies_payload(
+                    request.user,
+                    kind,
+                    {k: round(float(v), 2) for k, v in values.items()},
+                    value_label=label,
+                )
+            )
 
         return Response(
             {

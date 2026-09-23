@@ -382,3 +382,37 @@ class ForecastViewTests(APITestCase):
 
         self.assertEqual(data["unpriced_count"], 1)
         self.assertEqual(data["bridge"]["opening_arr"], 100_000.0)
+
+    # ── drill ────────────────────────────────────────────────────────
+
+    def test_drill_values_sum_to_the_bridge_step(self):
+        self._customer("Risky", 100_000, renews_in_days=30, health="2.0")
+        self._customer("Safe", 50_000, renews_in_days=400)
+        stats = self.client.get(self.url).json()
+        bridge = stats["bridge"]
+        for segment, step in [("churn", "churn"), ("contraction", "contraction")]:
+            with self.subTest(segment=segment):
+                drill = self.client.get(self.url, {"drill": segment}).json()["drill"]
+                self.assertAlmostEqual(
+                    sum(c["value"] for c in drill["companies"]), bridge[step], places=2
+                )
+        at_risk = self.client.get(self.url, {"drill": "at_risk"}).json()["drill"]
+        self.assertAlmostEqual(
+            sum(c["value"] for c in at_risk["companies"]),
+            bridge["churn"] + bridge["contraction"],
+            places=2,
+        )
+        self.assertEqual(at_risk["value_label"], "downside")
+
+    def test_drill_is_the_whole_list_not_the_top_fifteen(self):
+        for i in range(20):
+            self._customer(f"Risky {i}", 10_000 + i, renews_in_days=30, health="2.0")
+        drill = self.client.get(self.url, {"drill": "at_risk"}).json()["drill"]
+        self.assertEqual(drill["count"], 20)
+
+    def test_drill_respects_the_horizon_and_filters(self):
+        self._customer("Later", 100_000, renews_in_days=200, health="2.0")
+        short = self.client.get(self.url, {"drill": "churn", "horizon_days": 90}).json()["drill"]
+        long = self.client.get(self.url, {"drill": "churn", "horizon_days": 365}).json()["drill"]
+        self.assertEqual(short["companies"], [])
+        self.assertEqual([c["name"] for c in long["companies"]], ["Later"])
