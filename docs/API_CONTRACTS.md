@@ -825,6 +825,75 @@ count toward your own ARR.
    closing that needs a `created_by` on Campaign, which is a data-model
    decision rather than a queryset one.
 
+### Dashboard drill (`?drill=`)
+
+Five dashboard-stats endpoints share one drill-down convention rather
+than inventing their own, all built on `services/customers/drill.py`:
+`GET /api/v1/customers/overview/`, `GET /api/v1/customers/activity/`,
+`GET /api/v1/customers/forecast/`, `GET /api/v1/interactions/stats/` and
+`GET /api/v1/tickets/stats/`. Each accepts `?drill=<segment>` (some
+segments take a value, written `kind:value`) that turns one chart figure
+into the real list of companies behind it.
+
+**Same set as the totals.** The drill list is computed from the exact
+filtered queryset or customer list the endpoint's own totals use for
+that figure, then intersected with `visible_customers(request.user)` — a
+company the totals didn't count never appears, and a company the viewer
+may not see never appears either (an account-level record belongs to all
+of the account's customers, and some of those can sit outside the
+viewer's own book).
+
+**A bad `drill` is ignored, never `400`.** An unrecognised segment name,
+a value that isn't on the field's real choice list, or a `:value` on a
+segment that doesn't take one all fall back silently to the endpoint's
+normal stats response — the same "ignore, don't reject" convention every
+dashboard filter in this app already follows.
+
+When a drill applies, the response is *only*:
+
+```json
+{
+  "drill": {
+    "segment": "type:email",
+    "value_label": "interactions",
+    "count": 12,
+    "truncated": false,
+    "companies": [
+      {"id": 41, "name": "Hyatt Regency", "owner": "Dana", "arr": 240000.0, "value": 7}
+    ]
+  },
+  "currency": "USD"
+}
+```
+
+`count` is the true total; `companies` is capped at `LIMIT = 500`
+(`truncated` says whether the list was cut). `arr` is
+`arr_billed_at_account` converted with `convert_to_org_currency` (the
+org's own FX rates), `null` when no rate exists. `value` is whatever
+that segment counts for the company — meaning differs per endpoint, see
+the table below. Read-only: no audit event, no data-classification
+change.
+
+| Endpoint | Segments | `value_label` |
+|---|---|---|
+| `GET /api/v1/customers/overview/` | `churned_12m` | `ARR` |
+| `GET /api/v1/customers/activity/` | `gone_quiet` | `days since contact` |
+| `GET /api/v1/customers/forecast/` | `at_risk`, `churn`, `contraction` | `downside` |
+| `GET /api/v1/customers/forecast/` | `expansion` | `expected expansion` |
+| `GET /api/v1/interactions/stats/` | `all`; `type:<email\|call\|ticket>`; `sentiment:<value>`; `area:<value>`; `category:<value>`; `subcategory:<value>` | `interactions` |
+| `GET /api/v1/tickets/stats/` | `all`; `on_hold`; `sentiment:<value>`; `priority:<value>`; `status:<value>`; `origin:<connector id>` or `origin:none`; `assignee:<name>` (exact match) | `tickets` |
+
+`GET /api/v1/tickets/stats/` has no section of its own yet — see the
+Status table above, `TicketStatsView`'s own docstring is still the
+contract for its non-drill response — so its drill segments are
+documented here, the one place a caller would look for them.
+
+**Open as a list.** `GET /api/v1/customers/?ids=1,2,3` (below) is how a
+dashboard opens a drill's companies as a real, paginated list view —
+useful past the drill response's own `LIMIT = 500` cap, or when the
+caller wants full customer rows rather than a drill's `{id, name, owner,
+arr, value}` shape.
+
 ### `GET /api/v1/customers/`, `POST /api/v1/customers/`
 
 Auth: `IsAuthenticated` (any role). Scoped to the caller's own organisation.
@@ -843,6 +912,10 @@ Powers the Organizations page's Renewal card/popover (1-month/3-month
 toggle). A non-integer value is ignored, not an error.
 `?ids=1,2,3` narrows to those customers (the dashboard's 'Open as a list');
 non-integers are ignored, at most 500 are read, and scoping still applies.
+The response is still the standard paginated envelope (`PAGE_SIZE = 25`,
+`?page=`), not the whole filtered set at once — a caller opening more
+than a page of ids pages through with `?ids=...&page=2`, same as any
+other list here.
 Archived customers (`is_archived=true`) never appear in this list, or
 in `?renewal_within=`, or in the stats endpoint below — soft-hidden,
 not deleted; see the detail endpoint below for how to archive/unarchive.
@@ -1237,32 +1310,11 @@ because being unable to filter to one here would be strange.
 
 **Drill.** `?drill=churned_12m` opens every customer who churned in the
 last year — the exact set `portfolio.churned_last_year` builds for
-`kpis.churned_12m`, so a drill's count always matches the KPI. An
-unknown value ignores the drill — never `400` — and the endpoint falls
-back to its normal response below. When it applies, the response is
-*only*:
-
-```json
-{
-  "drill": {
-    "segment": "churned_12m",
-    "value_label": "ARR",
-    "count": 3,
-    "truncated": false,
-    "companies": [
-      {"id": 22, "name": "Left recently", "owner": "Carl", "arr": 40000.0, "value": 40000.0}
-    ]
-  },
-  "currency": "USD"
-}
-```
-
-`value` is the customer's converted ARR, same figure as `arr`; `null`
-when no rate exists. `companies` is capped at 500 (`count` is the true
-total, `truncated` says whether the list was cut), and it is intersected
-with the viewer's visible book, same as every other drill — nothing is
-lost there since this endpoint's own book already includes churned and
-archived customers.
+`kpis.churned_12m`, so a drill's count always matches the KPI. Response
+shape and the two drill rules: see **Dashboard drill (`?drill=`)** above.
+`value` is the customer's converted ARR, same figure as `arr`; nothing is
+lost to the visible-book intersection here since this endpoint's own
+book already includes churned and archived customers.
 
 **Response `200`** (no `drill`, or an unrecognised one) — `kpis`,
 `concentration`, `cohorts`, `churn_reasons`, `segments`, `lifecycle`,
@@ -1342,32 +1394,10 @@ accounts covered, cadence kept, follow-through on tasks.
 **Drill.** `?drill=gone_quiet` opens every account past the going-dark
 threshold — the exact list `activity_tracking.dark_accounts` builds for
 `kpis.dark_accounts` and the page's own capped `going_dark`, so a drill's
-count always matches the KPI. An unknown value ignores the drill — never
-`400` — and the endpoint falls back to its normal response below. When it
-applies, the response is *only*:
-
-```json
-{
-  "drill": {
-    "segment": "gone_quiet",
-    "value_label": "days since contact",
-    "count": 19,
-    "truncated": false,
-    "companies": [
-      {"id": 31, "name": "Never", "owner": "Carl", "arr": null, "value": null},
-      {"id": 14, "name": "Uber", "owner": "Dana", "arr": 95000.0, "value": 120}
-    ]
-  },
-  "currency": "USD"
-}
-```
-
-`value` is `days_since_contact`; `null` means never contacted, and those
-rows sort first, longest silence next. `arr` is converted to the org's
-own currency, `null` when no rate exists. `companies` is capped at 500
-(`count` is the true total, `truncated` says whether the list was cut),
-and it is intersected with the viewer's visible book, same as every
-other drill.
+count always matches the KPI. Response shape and the two drill rules:
+see **Dashboard drill (`?drill=`)** above. `value` is
+`days_since_contact`; `null` means never contacted, and those rows sort
+first, longest silence next.
 
 **Response `200`** (no `drill`, or an unrecognised one) — `kpis`,
 `timeline`, `sources`, `cadence`, `by_owner`, `going_dark`,
@@ -1434,31 +1464,9 @@ than rejected), plus the usual `owner` / `lifecycle` / `customer`, plus
 together), `churn`, `contraction` or `expansion`. These are the exact
 predicates `forecast.build_bridge` sums (churn = rows whose
 `churn_exposure >= risk_exposure`, contraction = the rest; both value
-`downside`; expansion values `expansion`), so a drill's values always
-add up to the step it opened. An unknown value ignores the drill — never
-`400` — and the endpoint falls back to its normal response below. When
-it applies, the response is *only*:
-
-```json
-{
-  "drill": {
-    "segment": "churn",
-    "value_label": "downside",
-    "count": 4,
-    "truncated": false,
-    "companies": [
-      {"id": 14, "name": "Uber", "owner": "Dana", "arr": 95000.0, "value": 57000.0}
-    ]
-  },
-  "currency": "USD"
-}
-```
-
-`value` is `downside` (or `expansion` for the `expansion` segment) for
-that company; `arr` is converted to the org's own currency, `null` when
-no rate exists. `companies` is capped at 500 (`count` is the true
-total, `truncated` says whether the list was cut), and it is
-intersected with the viewer's visible book, same as every other drill.
+`downside`; expansion values `expansion`), so a drill's values always add
+up to the step it opened. Response shape and the two drill rules: see
+**Dashboard drill (`?drill=`)** above.
 
 **Response `200`** (no `drill`, or an unrecognised one) — `bridge`,
 `scenarios`, `pipeline`, `swing`, `horizon_days`, `accounts`,
@@ -2339,39 +2347,20 @@ than returning `400`, the house convention for dashboard filters:
 | `account` | Account id. |
 | `revenue_bracket` | `under_25k`/`25k_50k`/`50k_100k`/`over_100k`, read off the parent's ARR (`Customer.arr_billed_at_account` or `Account.arr`). |
 | `from`, `to` | `YYYY-MM-DD`, inclusive, against each model's own "when it happened" field. |
-| `drill` | Opens one chart segment into the companies behind it — see below. |
+| `drill` | Opens one chart segment into the companies behind it — see **Dashboard drill (`?drill=`)** above. |
 
 **Drill.** `?drill=` narrows the same filtered querysets the rollups
-above use, same shape and same visibility rules as `/tickets/stats/`'s
-own drill: `all`; `type:<email\|call\|ticket>`; `sentiment:<value>`;
-`area:<value>`; `category:<value>`; `subcategory:<value>`. An unknown
-type or an invalid choice value ignores the drill and the endpoint
-falls back to its normal response above — never `400`. When it applies,
-the response is *only*:
-
-```json
-{
-  "drill": {
-    "segment": "type:email",
-    "value_label": "interactions",
-    "count": 12,
-    "truncated": false,
-    "companies": [
-      {"id": 41, "name": "Hyatt Regency", "owner": "Dana", "arr": 240000.0, "value": 7}
-    ]
-  },
-  "currency": "USD"
-}
-```
-
-`value` is the number of interactions in that segment belonging to the
-company; `arr` is converted to the org's own currency
-(`convert_to_org_currency`), `null` when no rate exists. `companies` is
-capped at 500 (`count` is the true total, `truncated` says whether the
-list was cut); a company the totals above wouldn't have counted — one
-the viewer can't see, or personal mail belonging to someone else's
-mailbox chain — never appears, same `visible_customers`/`visible_emails`
-rules the rest of this endpoint already applies.
+above use: `all`; `type:<email\|call\|ticket>`; `sentiment:<value>`;
+`area:<value>`; `category:<value>`; `subcategory:<value>`; `value_label`
+`interactions`. Response shape and the two drill rules (same filtered
+set as the totals, intersected with the viewer's own book; a bad value
+falls back to the normal response, never `400`) are in **Dashboard drill
+(`?drill=`)** above. `value` is the number of interactions in that
+segment belonging to the company; a company the totals above wouldn't
+have counted — one the viewer can't see, or personal mail belonging to
+someone else's mailbox chain — never appears, same
+`visible_customers`/`visible_emails` rules the rest of this endpoint
+already applies.
 
 **Response `200`** (no `drill`, or an unrecognised one)
 
