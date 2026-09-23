@@ -178,6 +178,8 @@ def dark_accounts(customers, latest, today, organisation, rates):
                 "lifecycle_stage": customer.get_lifecycle_stage_display(),
                 "last_contact": last.isoformat() if last else None,
                 "days_since_contact": age,
+                # The rubric's own narrower measure, beside it, because the
+                # two can differ — see the module docstring.
                 "renewal_date": (
                     customer.renewal_date.isoformat() if customer.renewal_date else None
                 ),
