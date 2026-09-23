@@ -206,6 +206,29 @@ SKILLS = (
         "view_all_accounts",
         "/brain/requests",
     ),
+    Skill(
+        "account_brief",
+        "Account briefs",
+        "Writes the standing brief on one account: use cases, stakeholders, open threads.",
+        (
+            "What colleagues have written about the customer",
+            "The customer's own records, as their owner may read them",
+            "The people on record as contacts",
+        ),
+        (
+            "Say what they use the product for and who cares about what",
+            "List what is still open",
+            "Leave a list empty when the records do not support one",
+        ),
+        (
+            "Invent a use case, a person, or a thread",
+            "Read past what the account's owner may read",
+            "Rewrite itself on a schedule",
+        ),
+        "Someone asks for a brief, or refreshes one",
+        "Any member, for a customer they can open",
+        "Organization Details › Company View",
+    ),
 )
 
 BY_PURPOSE = {skill.purpose: skill for skill in SKILLS}

@@ -96,6 +96,18 @@ class Command(BaseCommand):
             changed = recompute_all(organisation)
             self.stdout.write(self.style.SUCCESS(f"recomputed sentiment for {changed} contact(s)"))
 
+        # Questions nobody answered become the company's problem rather
+        # than a reminder's: gaps are what the Company View shows as
+        # "what we cannot answer".
+        if not options["dry_run"]:
+            from services.knowledge.gaps import raise_from_stale_questions
+
+            try:
+                raised = raise_from_stale_questions(organisation)
+                self.stdout.write(self.style.SUCCESS(f"raised {raised} knowledge gap(s)"))
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                self.stdout.write(self.style.WARNING(f"knowledge gaps skipped: {exc}"))
+
         # Feature requests: file the asks the classifier tagged since the last
         # pass, naming new ones. Budget or a missing key ends it quietly.
         if not options["dry_run"]:

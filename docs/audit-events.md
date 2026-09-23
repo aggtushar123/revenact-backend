@@ -60,6 +60,11 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `request.create` | `services.requests.gather.gather` | user, or nobody (nightly) | FeatureRequest | title, evidence count; one model call named it |
 | `request.update` | `services.requests.views.FeatureRequestDetailView` | leadership | FeatureRequest | the fields changed |
 | `request.merge` | `services.requests.views.MergeView` | leadership | FeatureRequest (the survivor) | from, into, evidence moved |
+| `request.evidence_move` | `services.requests.views.EvidenceMoveView` | leadership | FeatureRequest (the new home) | evidence id, from, into |
+| `request.evidence_dismiss` | `services.requests.views.EvidenceDismissView` | leadership | FeatureRequest it left | evidence id, kind, from |
+| `knowledge.gap_filled` | `services.knowledge.gaps.fill_from_contribution` | the person who wrote it down | KnowledgeGap | subject, customer |
+| `knowledge.gap_dismissed` | `services.knowledge.views.KnowledgeGapDismissView` | user | KnowledgeGap | subject, customer |
+| `knowledge.brief` | `services.knowledge.brief.generate` | user | AccountBrief | customer, how many records it read |
 | `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
 | `file.upload` / `file.delete` | `services.customers.views` (Files tab) | user | Attachment | name, size, content_type |
 | `call.log` | `services.customers.views` (CallSense) | user | Call | title, whether a transcript was attached |

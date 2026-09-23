@@ -9,6 +9,22 @@ urlpatterns = [
         name="customer-contributions",
     ),
     path(
+        "customers/<int:pk>/brief/",
+        views.AccountBriefView.as_view(),
+        name="customer-brief",
+    ),
+    path("knowledge/gaps/", views.KnowledgeGapListView.as_view(), name="knowledge-gaps"),
+    path(
+        "knowledge/gaps/<int:pk>/answer/",
+        views.KnowledgeGapAnswerView.as_view(),
+        name="knowledge-gap-answer",
+    ),
+    path(
+        "knowledge/gaps/<int:pk>/dismiss/",
+        views.KnowledgeGapDismissView.as_view(),
+        name="knowledge-gap-dismiss",
+    ),
+    path(
         "customers/<int:pk>/responsible/",
         views.CustomerResponsibleView.as_view(),
         name="customer-responsible",

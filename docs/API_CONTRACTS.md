@@ -3852,6 +3852,93 @@ Demo: `seed_demo_functions --org-email alice@acme.io` (Priya Nair /
 Raj Mehta / Mei Tanaka, responsibilities and contributions on the
 Analytics Suite accounts).
 
+## `knowledge` — Gaps and the account brief (Organization Details › Company View, `CompanyViewTab.tsx`)
+
+Two additions to the knowledge layer: what the company **cannot** answer
+about a customer, and the standing brief on what it can.
+
+### Models
+
+- `KnowledgeGap` — `organisation`, `customer`, `subject`, `fingerprint`
+  (the lowercased subject; unique per customer so the same question
+  counts twice rather than raising twice), `function` and `assignee`
+  (from `FunctionOwner` when there is one), `source` (`copilot` |
+  `question`), `question` (the routed `Question` it came from, at most
+  one gap each), `times_asked`, `status` (`open` | `filled` |
+  `dismissed`), `filled_by` (the `Contribution` that answered it),
+  `first_asked_at`, `last_asked_at`.
+- `AccountBrief` — one per customer: `use_cases`, `stakeholders`
+  (`{name, cares_about}`), `open_threads`, `sources` (citation
+  snapshots), `generated_by`, `generated_at`.
+
+### Conventions specific to this app
+
+Both are **company-wide**, like the rest of the knowledge layer (see
+`_company_customer`): whoever can answer a question about an account is
+usually in another function and does not own it, so scoping either to a
+CSM's own book would hide the question from the person who could close
+it. A gap holds a subject and a count, never a record's words.
+
+The brief is generated as the **customer's owner** reads (the same
+principal the nightly AI-attribute pass uses), and what a reader is
+shown of its citations is filtered again for them: `sources` holds only
+what they may open and `hidden_sources` counts the rest, exactly as an
+AI attribute's reasoning is treated.
+
+Gaps are raised from real events, never invented: a Copilot answer about
+a company where retrieval returned no sources, and a routed `Question`
+still open after three days (`aging.STALE_DAYS`), swept nightly by
+`run_health_maintenance`. Writing a `Contribution` on that customer from
+the function that owed the answer fills every open gap it covers,
+wherever it was written.
+
+### `GET /api/v1/knowledge/gaps/?customer=<id>&status=<status>`
+
+Unpaginated, most-asked first. `status` defaults to `open`; an unknown
+one is a 400.
+
+```json
+[{"id": 12, "subject": "Which integrations do they run?",
+  "customer": {"id": 7, "name": "Pizza Hut"},
+  "function": "engineering", "function_display": "Engineering",
+  "assignee": {"id": 5, "name": "Mei"}, "source": "copilot",
+  "times_asked": 3, "status": "open",
+  "first_asked_at": "...", "last_asked_at": "..."}]
+```
+
+### `POST /api/v1/knowledge/gaps/<id>/answer/`
+
+`{"body": "They run Salesforce and Slack."}` → 201 `{gap, contribution}`.
+The answer is an ordinary `Contribution`, so it lives with everything
+else the company knows. Audited as `knowledge.gap_filled`.
+
+### `POST /api/v1/knowledge/gaps/<id>/dismiss/`
+
+Closes it without an answer → the gap. Audited as
+`knowledge.gap_dismissed`.
+
+### `GET/POST /api/v1/customers/<id>/brief/`
+
+GET returns the brief as this reader sees it, and never 404s for a
+customer that has none: an empty brief with `generated_at: null` is the
+honest answer, and the open gaps come back beside it either way.
+
+```json
+{"use_cases": ["Dispatching field crews"],
+ "stakeholders": [{"name": "Priya", "cares_about": "Fewer no-shows"}],
+ "open_threads": ["Waiting on the multi-year quote"],
+ "sources": [...], "hidden_sources": 1,
+ "generated_at": "...", "generated_by": {"id": 5, "name": "Dana"},
+ "gaps": [{"id": 12, "subject": "...", "times_asked": 3, "function": "engineering"}]}
+```
+
+POST writes a new one (one model call, purpose `account_brief`) and
+returns the same shape with 201. 403 when the organisation's Copilot is
+off, 429 over budget, 503 unconfigured, 502 upstream. Audited as
+`knowledge.brief`.
+
+---
+
 ## `webhooks` — Outbound integrations (Settings > Webhooks, `WebhooksPage.tsx`)
 
 Mirrors: `src/pages/settings/WebhooksPage.tsx`. Its own top-level app,

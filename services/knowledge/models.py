@@ -154,3 +154,102 @@ class Question(models.Model):
 
     def __str__(self):
         return f"{self.asked_by} → {self.assignee}: {self.text[:40]}"
+
+
+class KnowledgeGap(models.Model):
+    """Something the company cannot answer about a customer.
+
+    Raised from two real events rather than invented: a Copilot question
+    about a company where retrieval found nothing to go on, and a routed
+    Question that went stale unanswered (services.knowledge.aging). Both
+    mean the same thing — somebody wanted to know and nobody here knew.
+
+    A gap holds the subject and how often it has come up, never the words
+    of any record: it is a question, and questions are the company's, not
+    one person's. Writing a Contribution on the customer from the function
+    that should answer closes it, which is the whole loop: ask, notice
+    nobody knows, write it down, stop being asked."""
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        FILLED = "filled", "Filled"
+        DISMISSED = "dismissed", "Dismissed"
+
+    class Source(models.TextChoices):
+        COPILOT = "copilot", "Asked the Copilot"
+        QUESTION = "question", "Routed question went unanswered"
+
+    organisation = models.ForeignKey(
+        Organisation, related_name="knowledge_gaps", on_delete=models.CASCADE
+    )
+    customer = models.ForeignKey(Customer, related_name="knowledge_gaps", on_delete=models.CASCADE)
+    subject = models.CharField(max_length=500)
+    #: Lowercased subject, so the same question asked twice counts twice
+    #: rather than raising a second gap. Stored because the uniqueness is
+    #: the point, and a database can only enforce what it can see.
+    fingerprint = models.CharField(max_length=500)
+    function = models.CharField(
+        max_length=16, choices=User.Function.choices, blank=True, default=""
+    )
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="knowledge_gaps",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.COPILOT)
+    #: The routed question this came from, so a stale one is never raised twice.
+    question = models.OneToOneField(
+        "Question", related_name="gap", on_delete=models.CASCADE, null=True, blank=True
+    )
+    times_asked = models.PositiveIntegerField(default=1)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
+    filled_by = models.ForeignKey(
+        Contribution, related_name="+", on_delete=models.SET_NULL, null=True, blank=True
+    )
+    first_asked_at = models.DateTimeField(auto_now_add=True)
+    last_asked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-times_asked", "-last_asked_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["customer", "fingerprint"], name="one_open_gap_per_question_per_customer"
+            )
+        ]
+        indexes = [models.Index(fields=["organisation", "status", "-times_asked"])]
+
+    def __str__(self):
+        return f"{self.customer}: {self.subject[:40]}"
+
+
+class AccountBrief(models.Model):
+    """What an account actually does with the product, written down once.
+
+    Not a second Headline: a Headline is a card about what just happened,
+    this is the standing answer to "what do they use us for, who cares
+    about what, and what is still open". Regenerated when someone asks,
+    never on a schedule — it costs a model call, and a brief that quietly
+    rewrites itself is one nobody trusts.
+
+    `sources` are citation snapshots like a Copilot answer's, and are
+    filtered again for whoever reads them: the brief is generated as the
+    customer's owner reads, which is wider than some readers."""
+
+    customer = models.OneToOneField(Customer, related_name="brief", on_delete=models.CASCADE)
+    use_cases = models.JSONField(default=list, blank=True)
+    stakeholders = models.JSONField(default=list, blank=True)
+    open_threads = models.JSONField(default=list, blank=True)
+    sources = models.JSONField(default=list, blank=True)
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="+",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    generated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Brief for {self.customer}"

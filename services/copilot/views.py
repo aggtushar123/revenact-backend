@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from services.accounts.models import Organisation, User
 from services.accounts.permissions import CanManageOrgSettings, CanViewAllAccounts
 from services.customers.models import Account, Customer, Email
+from services.knowledge.gaps import record_unanswered
 from services.knowledge.mentions import (
     ask_suggestions_for,
     resolve_routes,
@@ -422,6 +423,17 @@ class SendMessageView(APIView):
                 customer=asked_about,
                 message=user_message,
                 assignees=asked,
+            )
+        elif asked_about is not None and not grounding.sources:
+            # The question was about a company and retrieval found nothing
+            # to answer it from. That is not a failure of the model, it is
+            # something the company does not know about its own customer —
+            # see services.knowledge.gaps.
+            record_unanswered(
+                organisation=organisation,
+                customer=asked_about,
+                question=content,
+                asked_by=request.user,
             )
 
         session = getattr(conversation, "session", None)
