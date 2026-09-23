@@ -843,6 +843,18 @@ may not see never appears either (an account-level record belongs to all
 of the account's customers, and some of those can sit outside the
 viewer's own book).
 
+**A filter that names companies narrows the list too.** On the ticket
+and interaction drills, `?customer=` lists only that customer,
+`?account=` only that account's customers and, for tickets, `?owner=`
+only that owner's customers — an account-level record kept by the
+filter would otherwise list every sibling customer of its account.
+
+**Per-company values can add up to more than the chart.** On the
+interaction and ticket drills, a record filed on an account counts once
+for each of that account's customers, so the companies' `value`s can sum
+to more than the chart figure the drill opened. The blank-assignee bar
+on the ticket dashboard is not drillable: `assignee:` needs a name.
+
 **A bad `drill` is ignored, never `400`.** An unrecognised segment name,
 a value that isn't on the field's real choice list, or a `:value` on a
 segment that doesn't take one all fall back silently to the endpoint's
@@ -889,10 +901,12 @@ contract for its non-drill response — so its drill segments are
 documented here, the one place a caller would look for them.
 
 **Open as a list.** `GET /api/v1/customers/?ids=1,2,3` (below) is how a
-dashboard opens a drill's companies as a real, paginated list view —
-useful past the drill response's own `LIMIT = 500` cap, or when the
-caller wants full customer rows rather than a drill's `{id, name, owner,
-arr, value}` shape.
+dashboard opens a drill's companies as a real, paginated list view with
+full customer rows rather than a drill's `{id, name, owner, arr, value}`
+shape. It does not get past the cap: a drill returns at most 500
+companies (`truncated` says when there are more) and `?ids=` reads at
+most 500 ids, so a truncated drill cannot be opened in full. The
+frontend hides "Open as a list" when `truncated` is true.
 
 ### `GET /api/v1/customers/`, `POST /api/v1/customers/`
 
@@ -910,14 +924,17 @@ already-overdue renewal (more urgent, not less) is included, not
 filtered out; ordered soonest/most-overdue-first instead of by name.
 Powers the Organizations page's Renewal card/popover (1-month/3-month
 toggle). A non-integer value is ignored, not an error.
-`?ids=1,2,3` narrows to those customers (the dashboard's 'Open as a list');
-non-integers are ignored, at most 500 are read, and scoping still applies.
+`?ids=1,2,3` narrows to exactly those customers (the dashboard's 'Open as
+a list'), archived ones included — an explicit id list asks for those
+records; non-integers are ignored, at most 500 are read, and scoping still
+applies. `ids` present but empty or all-bad returns nothing, not the whole
+book.
 The response is still the standard paginated envelope (`PAGE_SIZE = 25`,
 `?page=`), not the whole filtered set at once — a caller opening more
 than a page of ids pages through with `?ids=...&page=2`, same as any
 other list here.
-Archived customers (`is_archived=true`) never appear in this list, or
-in `?renewal_within=`, or in the stats endpoint below — soft-hidden,
+Archived customers (`is_archived=true`) never appear in this list unless
+named by `?ids=`, nor in `?renewal_within=`, or in the stats endpoint below — soft-hidden,
 not deleted; see the detail endpoint below for how to archive/unarchive.
 POST: only `name` is required — every other field above is optional.
 **Response `201`** — the created customer, `owner`/`created_by`/`modified_by`
