@@ -196,3 +196,78 @@ class TheirLanguage(Fixture):
         self.client.post(URL, {"kind": "email", "id": self.email.id, "to": "en"}, format="json")
         contact.refresh_from_db()
         self.assertEqual(contact.language, "de")
+
+
+class AccountRecords(Fixture):
+    """A record on an Account belongs to that account's contacts, never to
+    a Customer that happens to share its id."""
+
+    def setUp(self):
+        super().setUp()
+        from services.customers.models import Account
+
+        self.apac = Account.objects.create(name="APAC", domain="apac.pizzahut.com")
+        self.apac.customers.add(self.pizza)
+        self.theirs = Email.objects.create(
+            account=self.apac,
+            subject="Facture",
+            body="Pouvez-vous expliquer ?",
+            from_address="priya@pizzahut.com",
+            sent_at=timezone.now(),
+        )
+
+    @patch(COMPLETION, return_value=answer("Can you explain?"))
+    def test_the_language_lands_on_the_accounts_contact_only(self, completion):
+        on_account = Contact.objects.create(
+            account=self.apac, name="Priya", email="priya@pizzahut.com"
+        )
+        elsewhere = Contact.objects.create(
+            customer=self.pizza, name="Priya elsewhere", email="priya@pizzahut.com"
+        )
+        response = self.client.post(
+            URL, {"kind": "email", "id": self.theirs.id, "to": "en"}, format="json"
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        on_account.refresh_from_db()
+        elsewhere.refresh_from_db()
+        self.assertEqual(on_account.language, "fr")
+        self.assertEqual(elsewhere.language, "")
+
+    @patch(COMPLETION, return_value=answer("Can you explain?"))
+    def test_another_tenants_contact_is_never_touched(self, completion):
+        other = Organisation.objects.create(name="Other")
+        theirs = Customer.objects.create(organisation=other, name="Wendy's", domain="wendys.com")
+        # Same address, another company entirely.
+        outsider = Contact.objects.create(customer=theirs, name="Priya", email="priya@pizzahut.com")
+        self.client.post(URL, {"kind": "email", "id": self.theirs.id, "to": "en"}, format="json")
+        outsider.refresh_from_db()
+        self.assertEqual(outsider.language, "")
+
+
+class SenderAddresses(Fixture):
+    @patch(COMPLETION, return_value=answer("Cannot log in"))
+    def test_a_tickets_requester_teaches_their_language_too(self, completion):
+        ticket = Ticket.objects.create(
+            customer=self.pizza,
+            ticket_number="T-1",
+            title="Problème de connexion",
+            description="Je ne peux pas me connecter.",
+            priority=Ticket.Priority.MEDIUM,
+            requester_email="priya@pizzahut.com",
+            opened_at=timezone.localdate(),
+        )
+        contact = Contact.objects.create(
+            customer=self.pizza, name="Priya", email="priya@pizzahut.com"
+        )
+        response = self.client.post(
+            URL, {"kind": "ticket", "id": ticket.id, "to": "en"}, format="json"
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        contact.refresh_from_db()
+        self.assertEqual(contact.language, "fr")
+
+    def test_an_id_that_is_not_a_number_is_a_400(self):
+        response = self.client.post(URL, {"kind": "email", "id": "abc", "to": "en"}, format="json")
+        self.assertEqual(response.status_code, 400, response.data)
+        response = self.client.post(URL, {"kind": "email", "to": "en"}, format="json")
+        self.assertEqual(response.status_code, 400, response.data)

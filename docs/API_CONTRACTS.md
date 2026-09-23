@@ -4343,7 +4343,13 @@ written — keeps nothing, because a draft is not a record.
 When a record is translated for the first time, the sender's contact
 learns the language it was written in, but only if nobody has set one:
 `Contact.language` set by a person is their answer and a detection never
-overrules it.
+overrules it. The sender is read from `from_address` for mail and
+`requester_email` for a ticket; a call has no writer, so nothing is
+learned from one. The contact is looked up on the company the record
+actually hangs off, customer or account.
+
+The communications queue carries `writer_language` on the rows somebody
+wrote, so the reply box can offer to write back in it.
 
 ### `POST /api/v1/translations/`
 

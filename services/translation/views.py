@@ -25,6 +25,16 @@ def _on_a_company_i_can_open(user):
     return Q(customer__in=visible_customers(user)) | Q(account__in=visible_accounts(user))
 
 
+def record_id_of(raw):
+    """An id from a JSON body: an int, or None when it is not one. Straight
+    into a pk lookup it would be a 500 rather than the 400 it is."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _readable(request, kind, record_id):
     """The record, if this person may read it — the record's own rule, not
     just its company's. A translation is a copy of its words, so it is read
@@ -88,7 +98,12 @@ class TranslateView(APIView):
 
         try:
             if kind:
-                record = _readable(request, kind, request.data.get("id"))
+                record_id = record_id_of(request.data.get("id"))
+                if record_id is None:
+                    return Response({"detail": "id must be a record id."}, status=400)
+                record = _readable(request, kind, record_id)
+                # So remember_language knows which field holds the sender.
+                record._translation_kind = kind
                 text = _text_of(kind, record)
                 if not text:
                     return Response({"detail": "There is nothing to translate."}, status=400)

@@ -105,21 +105,34 @@ def of_record(kind, record_id, text, to, *, organisation, actor=None, request=No
     return row, True
 
 
+#: Where each kind keeps the address of whoever wrote it. A call has none:
+#: nobody writes a call, and it is nobody's inbox.
+SENDER_FIELD = {
+    "email": "from_address",
+    "mail_message": "from_address",
+    "ticket": "requester_email",
+}
+
+
 def remember_language(record, detected: str) -> None:
     """What a sender writes in is worth keeping: the next reply can be
     written in it without anybody guessing.
 
     Only ever fills a blank. A language someone set by hand is their
-    answer, and a detection is not evidence enough to overrule it."""
-    from services.customers.models import Contact
+    answer, and a detection is not evidence enough to overrule it. The
+    contact is looked up on the company the record actually hangs off —
+    a record on an Account belongs to that Account's contacts, not to a
+    Customer that happens to share its id."""
+    from services.customers.models import Account, Contact
 
     if not looks_like_language(detected):
         return
-    address = (getattr(record, "from_address", "") or "").strip().lower()
+    field = SENDER_FIELD.get(getattr(record, "_translation_kind", "") or "")
+    address = (getattr(record, field, "") or "").strip().lower() if field else ""
     if not address:
         return
     company = getattr(record, "customer", None) or getattr(record, "account", None)
     if company is None:
         return
-    key = {"customer": company} if record.__class__.__name__ != "Account" else {}
-    Contact.objects.filter(email__iexact=address, language="", **key).update(language=detected)
+    where = {"account": company} if isinstance(company, Account) else {"customer": company}
+    Contact.objects.filter(email__iexact=address, language="", **where).update(language=detected)
