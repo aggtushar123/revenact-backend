@@ -319,12 +319,12 @@ class TheBrief(Fixture):
 
     @patch(COMPLETION, return_value=brief_answer())
     def test_citations_a_reader_may_not_open_are_withheld_from_them(self, completion):
-        # Dana's note is hers and her chain's. Mei reads the brief because
-        # knowledge is company-wide, but not the note behind it.
+        # Dana's note is hers and her chain's. Mei may read the brief,
+        # because knowledge is company-wide, but neither the note nor the
+        # words written from it (see WhatAColleagueSeesOfTheBrief).
         self.client.post(self.url, {}, format="json")
         self.client.force_authenticate(self.mei)
         body = self.client.get(self.url).data
-        self.assertEqual(body["use_cases"], ["Dispatching field crews"])
         self.assertNotIn("Renewal", [source["label"] for source in body["sources"]])
         self.assertGreaterEqual(body["hidden_sources"], 1)
 
@@ -367,3 +367,114 @@ class FromTheCopilot(Fixture):
         response = self.client.post(self.url, {"content": "How is the book doing?"}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertFalse(KnowledgeGap.objects.exists())
+
+
+class WhatAColleagueSeesOfTheBrief(Fixture):
+    """The brief's prose is written from what the owner may read, so a
+    reader who may not read those records does not get it paraphrased."""
+
+    def setUp(self):
+        super().setUp()
+        Note.objects.create(
+            customer=self.pizza,
+            author=self.dana,
+            title="Renewal",
+            logged_at=timezone.now(),
+            body="Priya wants fewer no-shows.",
+        )
+        self.url = f"/api/v1/customers/{self.pizza.id}/brief/"
+
+    @patch(COMPLETION, return_value=brief_answer())
+    def test_the_prose_is_withheld_when_any_citation_is(self, completion):
+        self.client.post(self.url, {}, format="json")
+        self.client.force_authenticate(self.mei)
+        body = self.client.get(self.url).data
+        self.assertEqual(body["use_cases"], [])
+        self.assertEqual(body["stakeholders"], [])
+        self.assertEqual(body["open_threads"], [])
+        self.assertGreaterEqual(body["hidden_sources"], 1)
+        # The gaps beside it are the company's, so they still show.
+        self.assertIn("gaps", body)
+
+    @patch(COMPLETION, return_value=brief_answer())
+    def test_the_owner_sees_all_of_it(self, completion):
+        self.client.post(self.url, {}, format="json")
+        body = self.client.get(self.url).data
+        self.assertEqual(body["use_cases"], ["Dispatching field crews"])
+        self.assertEqual(body["hidden_sources"], 0)
+
+    @patch(COMPLETION, return_value=brief_answer())
+    def test_every_record_behind_the_prose_is_citable(self, completion):
+        # A contribution reaches the model through retrieval, which cites
+        # it; nothing may reach the prompt without a citation, or it could
+        # never be counted as withheld.
+        Contribution.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            author=self.mei,
+            function=User.Function.ENGINEERING,
+            body="They dispatch field crews with our scheduler.",
+        )
+        self.client.post(self.url, {}, format="json")
+        prompt = completion.call_args.kwargs["messages"][0]["content"]
+        cited = {source["label"] for source in self.client.get(self.url).data["sources"]}
+        self.assertIn("dispatch field crews", prompt)
+        self.assertTrue(any("Engineering" in label for label in cited), cited)
+
+
+class StaleQuestionSweep(Fixture):
+    def _stale(self, text, assignee):
+        question = Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.dana,
+            assignee=assignee,
+            text=text,
+        )
+        Question.objects.filter(pk=question.pk).update(
+            created_at=timezone.now() - timezone.timedelta(days=5)
+        )
+        return question
+
+    def test_two_people_asking_the_same_thing_are_both_swept_once(self):
+        from services.knowledge.gaps import raise_from_stale_questions
+
+        self._stale("What do they use the API for?", self.mei)
+        self._stale("what do they use the API for?", self.eve)
+        self.assertEqual(raise_from_stale_questions(), 1)
+        gap = KnowledgeGap.objects.get()
+        self.assertEqual(gap.times_asked, 2)
+        # Neither question is ever swept again, however often it runs.
+        self.assertEqual(raise_from_stale_questions(), 0)
+        self.assertEqual(raise_from_stale_questions(), 0)
+        gap.refresh_from_db()
+        self.assertEqual(gap.times_asked, 2)
+
+
+class AlreadyClosed(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.gap = KnowledgeGap.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            subject="Which integrations do they run?",
+            fingerprint="which integrations do they run?",
+            function=User.Function.ENGINEERING,
+        )
+
+    def test_answering_a_closed_gap_is_a_conflict_and_writes_nothing(self):
+        self.gap.status = KnowledgeGap.Status.DISMISSED
+        self.gap.save(update_fields=["status"])
+        response = self.client.post(f"{GAPS}{self.gap.id}/answer/", {"body": "x"}, format="json")
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertFalse(Contribution.objects.exists())
+        self.gap.refresh_from_db()
+        self.assertEqual(self.gap.status, KnowledgeGap.Status.DISMISSED)
+
+    def test_dismissing_an_answered_gap_is_a_conflict(self):
+        self.gap.status = KnowledgeGap.Status.FILLED
+        self.gap.save(update_fields=["status"])
+        response = self.client.post(f"{GAPS}{self.gap.id}/dismiss/", {}, format="json")
+        self.assertEqual(response.status_code, 409, response.data)
+        self.gap.refresh_from_db()
+        self.assertEqual(self.gap.status, KnowledgeGap.Status.FILLED)

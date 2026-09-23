@@ -145,6 +145,10 @@ class Question(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     answered_at = models.DateTimeField(null=True, blank=True)
+    #: When the nightly sweep turned this into a KnowledgeGap. Set once,
+    #: whether or not this question is the one the gap is named after, so
+    #: the sweep never looks at it again.
+    gap_raised_at = models.DateTimeField(null=True, blank=True)
     last_nudged_at = models.DateTimeField(
         null=True, blank=True, help_text="When the assignee was last reminded — see aging.py."
     )
@@ -199,9 +203,14 @@ class KnowledgeGap(models.Model):
         blank=True,
     )
     source = models.CharField(max_length=16, choices=Source.choices, default=Source.COPILOT)
-    #: The routed question this came from, so a stale one is never raised twice.
-    question = models.OneToOneField(
-        "Question", related_name="gap", on_delete=models.CASCADE, null=True, blank=True
+    #: The routed question that first raised this. A plain key rather than
+    #: a one-to-one: two people can ask the same thing in the same words,
+    #: and both questions then belong to the one gap. Whether a question
+    #: has been swept is recorded on the question itself
+    #: (`Question.gap_raised_at`), so a second one is never re-swept
+    #: nightly for want of somewhere to record it.
+    question = models.ForeignKey(
+        "Question", related_name="raised_gaps", on_delete=models.CASCADE, null=True, blank=True
     )
     times_asked = models.PositiveIntegerField(default=1)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)

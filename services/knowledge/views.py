@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
@@ -49,16 +50,19 @@ class CustomerContributionListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         customer = _company_customer(self.request, self.kwargs["pk"])
-        contribution = serializer.save(
-            organisation=self.request.user.organisation,
-            customer=customer,
-            author=self.request.user,
-            function=self.request.user.function,
-        )
-        # Writing something down is how a gap closes, wherever it is
-        # written: the Company View box and the gap's own answer box are
-        # the same act (services.knowledge.gaps).
-        fill_from_contribution(contribution, request=self.request)
+        with transaction.atomic():
+            contribution = serializer.save(
+                organisation=self.request.user.organisation,
+                customer=customer,
+                author=self.request.user,
+                function=self.request.user.function,
+            )
+            # Writing something down is how a gap closes, wherever it is
+            # written: the Company View box and the gap's own answer box
+            # are the same act (services.knowledge.gaps). One transaction,
+            # so a contribution never lands with only some of the gaps it
+            # answers marked.
+            fill_from_contribution(contribution, request=self.request)
 
 
 class ContributionDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -420,24 +424,29 @@ class KnowledgeGapAnswerView(APIView):
 
     def post(self, request, pk):
         gap = _visible_gap(request, pk)
+        if gap.status != KnowledgeGap.Status.OPEN:
+            return Response(
+                {"detail": "This one is already closed."}, status=status.HTTP_409_CONFLICT
+            )
         body = (request.data.get("body") or "").strip()
         if not body:
             return Response({"detail": "An answer needs a body."}, status=400)
-        contribution = Contribution.objects.create(
-            organisation=request.user.organisation,
-            customer=gap.customer,
-            author=request.user,
-            function=request.user.function,
-            body=body,
-        )
-        fill_from_contribution(contribution, request=request)
-        gap.refresh_from_db()
-        if gap.status != KnowledgeGap.Status.FILLED:
-            # Answered by someone from another function: the gap still
-            # belongs to whoever owes it, but the knowledge is recorded.
-            gap.status = KnowledgeGap.Status.FILLED
-            gap.filled_by = contribution
-            gap.save(update_fields=["status", "filled_by"])
+        with transaction.atomic():
+            contribution = Contribution.objects.create(
+                organisation=request.user.organisation,
+                customer=gap.customer,
+                author=request.user,
+                function=request.user.function,
+                body=body,
+            )
+            fill_from_contribution(contribution, request=request)
+            gap.refresh_from_db()
+            if gap.status != KnowledgeGap.Status.FILLED:
+                # Answered by someone from another function: the gap still
+                # belongs to whoever owes it, but the knowledge is recorded.
+                gap.status = KnowledgeGap.Status.FILLED
+                gap.filled_by = contribution
+                gap.save(update_fields=["status", "filled_by"])
         return Response(
             {
                 "gap": KnowledgeGapSerializer(gap).data,
@@ -454,6 +463,10 @@ class KnowledgeGapDismissView(APIView):
 
     def post(self, request, pk):
         gap = _visible_gap(request, pk)
+        if gap.status != KnowledgeGap.Status.OPEN:
+            return Response(
+                {"detail": "This one is already closed."}, status=status.HTTP_409_CONFLICT
+            )
         gap.status = KnowledgeGap.Status.DISMISSED
         gap.save(update_fields=["status"])
         audit.record(

@@ -3863,8 +3863,8 @@ about a customer, and the standing brief on what it can.
   (the lowercased subject; unique per customer so the same question
   counts twice rather than raising twice), `function` and `assignee`
   (from `FunctionOwner` when there is one), `source` (`copilot` |
-  `question`), `question` (the routed `Question` it came from, at most
-  one gap each), `times_asked`, `status` (`open` | `filled` |
+  `question`), `question` (the routed `Question` that first
+  raised it), `times_asked`, `status` (`open` | `filled` |
   `dismissed`), `filled_by` (the `Contribution` that answered it),
   `first_asked_at`, `last_asked_at`.
 - `AccountBrief` — one per customer: `use_cases`, `stakeholders`
@@ -3880,15 +3880,28 @@ CSM's own book would hide the question from the person who could close
 it. A gap holds a subject and a count, never a record's words.
 
 The brief is generated as the **customer's owner** reads (the same
-principal the nightly AI-attribute pass uses), and what a reader is
-shown of its citations is filtered again for them: `sources` holds only
-what they may open and `hidden_sources` counts the rest, exactly as an
-AI attribute's reasoning is treated.
+principal the nightly AI-attribute pass uses), and what a reader is shown
+is filtered again for them. `sources` holds only the citations they may
+open and `hidden_sources` counts the rest; when anything was withheld the
+brief's own words go with it — `use_cases`, `stakeholders` and
+`open_threads` come back empty — because they were written from those
+records. This is exactly how an AI attribute's `reasoning` is treated. A
+written brief that comes back empty with `hidden_sources` above zero
+means "not yours to read", not "nothing to say".
+
+Everything the model reads is citable, so nothing can reach the brief
+that could not be counted as withheld: contributions arrive through
+retrieval, already scoped, rather than through a second unscoped pass.
+The only exception is the customer's own contact list, which anyone who
+can open the customer can read anyway.
 
 Gaps are raised from real events, never invented: a Copilot answer about
 a company where retrieval returned no sources, and a routed `Question`
 still open after three days (`aging.STALE_DAYS`), swept nightly by
-`run_health_maintenance`. Writing a `Contribution` on that customer from
+`run_health_maintenance`. Every question the sweep sees is stamped with
+`Question.gap_raised_at`, whether it named a new gap or joined one
+somebody else had already raised in the same words, so no question is
+swept twice. Writing a `Contribution` on that customer from
 the function that owed the answer fills every open gap it covers,
 wherever it was written.
 
@@ -3910,11 +3923,14 @@ one is a 400.
 
 `{"body": "They run Salesforce and Slack."}` → 201 `{gap, contribution}`.
 The answer is an ordinary `Contribution`, so it lives with everything
-else the company knows. Audited as `knowledge.gap_filled`.
+else the company knows. 409 when the gap is already closed, so a second
+press never writes a second contribution. Audited as
+`knowledge.gap_filled`.
 
 ### `POST /api/v1/knowledge/gaps/<id>/dismiss/`
 
-Closes it without an answer → the gap. Audited as
+Closes it without an answer → the gap. 409 when it is already closed, so
+a dismissal never overwrites an answer. Audited as
 `knowledge.gap_dismissed`.
 
 ### `GET/POST /api/v1/customers/<id>/brief/`

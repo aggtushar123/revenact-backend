@@ -11,6 +11,7 @@ the loop ends where the knowledge layer already was.
 """
 
 from django.db import IntegrityError, transaction
+from django.db.models import F
 from django.utils import timezone
 
 from core import audit
@@ -40,9 +41,11 @@ def record_unanswered(*, organisation, customer, question, asked_by=None, functi
     existing = KnowledgeGap.objects.filter(customer=customer, fingerprint=fingerprint).first()
     if existing is not None:
         if existing.status == KnowledgeGap.Status.OPEN:
-            existing.times_asked += 1
-            existing.last_asked_at = timezone.now()
-            existing.save(update_fields=["times_asked", "last_asked_at"])
+            # F(), so two people asking at the same moment both count.
+            KnowledgeGap.objects.filter(pk=existing.pk).update(
+                times_asked=F("times_asked") + 1, last_asked_at=timezone.now()
+            )
+            existing.refresh_from_db(fields=["times_asked", "last_asked_at"])
         return existing
     try:
         with transaction.atomic():
@@ -63,11 +66,16 @@ def record_unanswered(*, organisation, customer, question, asked_by=None, functi
 
 def raise_from_stale_questions(organisation=None, days=STALE_DAYS, now=None) -> int:
     """Routed questions still open after `days` become gaps: the person
-    asked has been reminded and it is now the company's problem, not a
-    reminder problem. One gap per question, ever."""
+    asked has been reminded and it is now the company's problem rather than
+    a reminder's.
+
+    Every question the sweep looks at is marked, whether it named a new gap
+    or joined one somebody else's question already raised. Without that
+    mark a second question with the same words would have nowhere to record
+    that it had been seen, and would be swept again every night forever."""
     now = now or timezone.now()
     questions = (
-        Question.objects.filter(status=Question.Status.OPEN, gap__isnull=True)
+        Question.objects.filter(status=Question.Status.OPEN, gap_raised_at__isnull=True)
         .filter(created_at__lte=now - timezone.timedelta(days=days))
         .select_related("customer", "assignee")
     )
@@ -78,21 +86,24 @@ def raise_from_stale_questions(organisation=None, days=STALE_DAYS, now=None) -> 
         if question.customer is None:
             continue
         function = question.assignee.function if question.assignee_id else ""
-        gap = record_unanswered(
-            organisation=question.organisation,
-            customer=question.customer,
-            question=question.text,
-            asked_by=question.asked_by,
-            function=function,
-            source=KnowledgeGap.Source.QUESTION,
-        )
-        if gap is None:
-            continue
-        if gap.question_id is None:
-            gap.question = question
-            gap.assignee = gap.assignee or question.assignee
-            gap.save(update_fields=["question", "assignee"])
-            raised += 1
+        with transaction.atomic():
+            gap = record_unanswered(
+                organisation=question.organisation,
+                customer=question.customer,
+                question=question.text,
+                asked_by=question.asked_by,
+                function=function,
+                source=KnowledgeGap.Source.QUESTION,
+            )
+            Question.objects.filter(pk=question.pk).update(gap_raised_at=now)
+            if gap is None:
+                continue
+            if gap.question_id is None:
+                gap.question = question
+                gap.assignee = gap.assignee or question.assignee
+                gap.function = gap.function or function
+                gap.save(update_fields=["question", "assignee", "function"])
+                raised += 1
     return raised
 
 

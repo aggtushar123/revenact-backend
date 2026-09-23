@@ -18,12 +18,11 @@ from services.copilot.anthropic_client import get_completion
 from services.copilot.retrieval import retrieve_with_sources
 from services.customers.models import Contact
 
-from .models import AccountBrief, Contribution, KnowledgeGap
+from .models import AccountBrief, KnowledgeGap
 
 #: Records the brief reads. Wider than an attribute's: it is describing a
 #: whole relationship rather than answering one question.
 EVIDENCE = 20
-CONTRIBUTIONS = 15
 CONTACTS = 15
 
 SYSTEM = (
@@ -73,7 +72,14 @@ def _parse(raw: str) -> dict:
 
 
 def _material(customer):
-    """Everything the brief is written from, and the citations for it."""
+    """Everything the brief is written from, and the citations for it.
+
+    Everything here must be citable: a line of the brief can only be
+    withheld from a reader if the record behind it is in `sources` to be
+    counted. Retrieval already includes colleagues' contributions, scoped
+    to what this viewer may read, so there is no second unscoped pass over
+    them. Contacts are the company's own list, readable by anyone who can
+    open the customer, so they need no citation."""
     items = retrieve_with_sources(
         customer,
         EVIDENCE,
@@ -82,10 +88,6 @@ def _material(customer):
     )
     records = [item.line for item in items]
     sources = [item.source for item in items]
-    for row in Contribution.objects.filter(customer=customer).select_related("author")[
-        :CONTRIBUTIONS
-    ]:
-        records.append(f"{row.get_function_display()} ({row.author.name}): {row.body}")
     contacts = Contact.objects.filter(customer=customer)[:CONTACTS]
     if contacts:
         people = ", ".join(
@@ -161,10 +163,16 @@ def as_seen_by(customer, reader) -> dict:
             "gaps": gap_rows,
         }
     sources, hidden = visible_sources(reader, brief.sources)
+    # The brief's own words are written from those records, so they go the
+    # same way its citations do: a reader who may not open one of them does
+    # not get it paraphrased either. The same rule as an AI attribute's
+    # reasoning (services.attributes.serializers), and the reason
+    # `hidden_sources` is on the response at all.
+    withheld = hidden > 0
     return {
-        "use_cases": brief.use_cases,
-        "stakeholders": brief.stakeholders,
-        "open_threads": brief.open_threads,
+        "use_cases": [] if withheld else brief.use_cases,
+        "stakeholders": [] if withheld else brief.stakeholders,
+        "open_threads": [] if withheld else brief.open_threads,
         "sources": sources,
         "hidden_sources": hidden,
         "generated_at": brief.generated_at,
