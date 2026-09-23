@@ -388,8 +388,20 @@ class ForecastViewTests(APITestCase):
     def test_drill_values_sum_to_the_bridge_step(self):
         self._customer("Risky", 100_000, renews_in_days=30, health="2.0")
         self._customer("Safe", 50_000, renews_in_days=400)
+        # A risk-driven row: its weighted risk (12k/yr × 0.6 = 7.2k) exceeds
+        # its churn exposure (renews outside the horizon), so it is contraction.
+        wobbly = self._customer("Wobbly", 100_000, renews_in_days=800)
+        Risk.objects.create(
+            customer=wobbly,
+            title="Sponsor left",
+            mrr=Decimal("1000"),
+            priority=Risk.Priority.HIGH,
+            stage=Risk.Stage.OPEN,
+        )
         stats = self.client.get(self.url).json()
         bridge = stats["bridge"]
+        self.assertEqual(bridge["contraction"], 7_200.0)
+        self.assertGreater(bridge["churn"], 0)
         for segment, step in [("churn", "churn"), ("contraction", "contraction")]:
             with self.subTest(segment=segment):
                 drill = self.client.get(self.url, {"drill": segment}).json()["drill"]
