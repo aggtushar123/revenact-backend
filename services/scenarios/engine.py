@@ -128,21 +128,40 @@ def _coerce(as_text, raw_value):
 
 
 def _recent_texts(customer):
-    """What the company has recently said, for a semantic condition: the
-    same interactions the Copilot would read, newest first."""
+    """What the company has recently said, for a semantic condition.
+
+    Read as the customer's **owner** would read it — the same principal the
+    nightly AI-attribute pass uses — so a scenario never matches on mail
+    from a mailbox nobody on this account may open, or on another
+    department's tickets. A customer with no owner sees only the records
+    nobody owns personally.
+
+    Each row carries a label for the run log that identifies the record
+    without quoting it: a run's history is filtered by customer, not by
+    record, so a subject line in the log would be readable by someone who
+    may not read the email it came from."""
     from services.customers.models import Call, Email, Ticket
+    from services.customers.personal import visible_tickets
+    from services.mail.visibility import visible_emails
+
+    owner = customer.owner
+    emails = Email.objects.filter(customer=customer)
+    tickets = Ticket.objects.filter(customer=customer)
+    if owner is not None:
+        emails = visible_emails(owner, emails)
+        tickets = visible_tickets(owner, tickets)
+    else:
+        emails = emails.filter(mailbox_owner__isnull=True)
+        tickets = tickets.filter(department="")
 
     rows = []
-    for email in Email.objects.filter(customer=customer).order_by("-sent_at")[:SEMANTIC_RECORDS]:
-        rows.append((f"{email.subject}. {email.body}", f"Email: {email.subject}"))
-    for ticket in Ticket.objects.filter(customer=customer).order_by("-opened_at")[
-        :SEMANTIC_RECORDS
-    ]:
-        rows.append((ticket.title, f"Ticket {ticket.ticket_number}: {ticket.title}"))
+    for email in emails.order_by("-sent_at")[:SEMANTIC_RECORDS]:
+        rows.append((f"{email.subject}. {email.body}", f"an email from {email.sent_at:%d %b %Y}"))
+    for ticket in tickets.order_by("-opened_at")[:SEMANTIC_RECORDS]:
+        rows.append((ticket.title, f"a ticket from {ticket.opened_at:%d %b %Y}"))
     for call in Call.objects.filter(customer=customer).order_by("-occurred_at")[:SEMANTIC_RECORDS]:
-        rows.append(
-            (f"{call.title}. {call.summary}" if call.summary else call.title, f"Call: {call.title}")
-        )
+        text = f"{call.title}. {call.summary}" if call.summary else call.title
+        rows.append((text, f"a call from {call.occurred_at:%d %b %Y}"))
     return rows[: SEMANTIC_RECORDS * 3]
 
 

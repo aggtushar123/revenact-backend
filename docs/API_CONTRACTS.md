@@ -3086,9 +3086,16 @@ Operators: `equals`, `not_equals`, `greater_than`, `less_than`,
 The phrase and the company's most recent emails, tickets and calls go
 through the same local embedding model the Copilot uses, and the clause
 passes when the closest record clears the threshold. It spends no
-credits and answers the same way every run. The run log records which
-record matched and how closely, by label and score, never the record's
-own words.
+credits and answers the same way every run.
+
+The records it reads are the ones the **customer's owner** may read (the
+same principal the nightly AI-attribute pass uses), so a scenario never
+matches on mail from a mailbox nobody on the account may open or on
+another department's tickets; a customer with no owner sees only the
+records nobody owns personally. The run log says what matched by kind
+and date ("an email from 12 Sep") and how closely, never a subject or
+any of the record's words: run history is filtered by customer, not by
+record.
 
 Anything missing or unrecognised — an attribute, an operator, an
 uncoercible value, a company with nothing on record — is `false`, never

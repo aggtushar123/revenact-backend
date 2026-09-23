@@ -195,9 +195,11 @@ class SemanticConditions(Fixture):
             run = run_scenario(scenario, self.pizza, triggered_by="manual")
         self.assertEqual(self.pizza.tasks.order_by("-id").first().title, "Yes")
         detail = next(row["detail"] for row in run.log if row["action"] == "Condition")
-        self.assertIn("Pricing", detail)
+        self.assertIn("an email from", detail)
         self.assertIn("0.9", detail)
-        # The record's own words never reach the log.
+        # A run's history is filtered by customer, not by record, so the
+        # log identifies what matched without quoting any of it.
+        self.assertNotIn("Pricing", detail)
         self.assertNotIn("enterprise plan cost", detail)
 
     def test_a_phrase_that_matches_nothing_fails(self):
@@ -232,6 +234,63 @@ class SemanticConditions(Fixture):
             run_scenario(scenario, self.pizza, triggered_by="manual")
         self.assertEqual(self.pizza.tasks.order_by("-id").first().title, "No")
         embed.assert_not_called()
+
+
+class SemanticScope(Fixture):
+    """A scenario matches on what the account's owner may read, never on
+    another person's mailbox or another department's queue."""
+
+    def test_a_colleagues_mail_and_another_departments_ticket_are_not_matched(self):
+        self.dana.function = User.Function.CS
+        self.dana.save(update_fields=["function"])
+        Email.objects.create(
+            customer=self.pizza,
+            subject="Pricing",
+            body="What would the enterprise plan cost us?",
+            sent_at=timezone.now(),
+            mailbox_owner=self.eve,
+        )
+        Ticket.objects.create(
+            customer=self.pizza,
+            ticket_number="T-9",
+            title="Pricing of the enterprise plan",
+            priority=Ticket.Priority.MEDIUM,
+            opened_at=timezone.localdate(),
+            department=User.Function.ENGINEERING,
+        )
+        table = {"asking about pricing": [1.0, 0.0]}
+        scenario = self.branch(conditionKind="semantic", conditionPhrase="asking about pricing")
+        with patch(EMBED, side_effect=vectors(table)) as embed:
+            run_scenario(scenario, self.pizza, triggered_by="manual")
+        self.assertEqual(self.pizza.tasks.order_by("-id").first().title, "No")
+        # Nothing Dana may read, so nothing to embed beyond the phrase.
+        embed.assert_not_called()
+
+    def test_an_unowned_company_reads_only_what_nobody_owns(self):
+        self.pizza.owner = None
+        self.pizza.save(update_fields=["owner"])
+        Email.objects.create(
+            customer=self.pizza,
+            subject="Pricing",
+            body="What would the enterprise plan cost us?",
+            sent_at=timezone.now(),
+            mailbox_owner=self.dana,
+        )
+        shared = Email.objects.create(
+            customer=self.pizza,
+            subject="Pricing again",
+            body="Still waiting on a quote.",
+            sent_at=timezone.now(),
+        )
+        table = {
+            "asking about pricing": [1.0, 0.0],
+            "Pricing again. Still waiting on a quote.": [0.97, 0.24],
+        }
+        scenario = self.branch(conditionKind="semantic", conditionPhrase="asking about pricing")
+        with patch(EMBED, side_effect=vectors(table)):
+            run_scenario(scenario, self.pizza, triggered_by="manual")
+        self.assertEqual(self.pizza.tasks.order_by("-id").first().title, "Yes")
+        self.assertTrue(shared.id)
 
 
 class Routing(Fixture):
