@@ -449,11 +449,27 @@ class ActivityTrackingView(views.APIView):
 
     `?days=` sets the window (default 90, clamped 7–730). `owner`,
     `lifecycle` and `customer` match every other dashboard.
+
+    **Drill.** `?drill=gone_quiet` opens every account past the going-dark
+    threshold — the same list `activity_tracking.dark_accounts` builds for
+    the KPI and the page's own capped `going_dark`, so a drill's count
+    always matches `kpis.dark_accounts`. `value` is `days_since_contact`
+    (`null` = never contacted, listed first).
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if drill.parse_segment(request.query_params, {"gone_quiet": False}) is not None:
+            return Response(
+                drill.companies_payload(
+                    request.user,
+                    "gone_quiet",
+                    activity_tracking.gone_quiet_values(request.user, request.query_params),
+                    value_label="days since contact",
+                    none_first=True,
+                )
+            )
         return Response(
             {
                 **activity_tracking.build_stats(request.user, request.query_params),

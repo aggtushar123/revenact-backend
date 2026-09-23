@@ -154,6 +154,54 @@ def _bucket_for(days):
     return CADENCE_BUCKETS[-1][0]
 
 
+def dark_accounts(customers, latest, today, organisation, rates):
+    """Every account nobody has touched in GOING_DARK_DAYS, never-contacted
+    first, then longest silence. The KPI, the page's capped list and the
+    drill all read this one list."""
+
+    rows = []
+    for customer in customers:
+        last = latest.get(customer.pk)
+        age = None if last is None else (today - last).days
+        if age is not None and age < GOING_DARK_DAYS:
+            continue
+        converted = convert_to_org_currency(
+            customer.arr_billed_at_account, customer.currency, organisation, rates=rates
+        )
+        rows.append(
+            {
+                "id": customer.id,
+                "name": customer.name,
+                "owner": customer.owner.name if customer.owner else "Unassigned",
+                "arr": None if converted is None else float(converted),
+                "health_category": customer.health_category,
+                "lifecycle_stage": customer.get_lifecycle_stage_display(),
+                "last_contact": last.isoformat() if last else None,
+                "days_since_contact": age,
+                "renewal_date": (
+                    customer.renewal_date.isoformat() if customer.renewal_date else None
+                ),
+            }
+        )
+    # Longest silence first; "never" sorts to the top, since an account nobody
+    # has ever logged a contact for is the worst case, not a missing value.
+    rows.sort(
+        key=lambda row: (row["days_since_contact"] is not None, -(row["days_since_contact"] or 0))
+    )
+    return rows
+
+
+def gone_quiet_values(user, params):
+    customers = list(filtered_customers(user, params))
+    ids = [c.pk for c in customers]
+    latest = last_contact_by_customer(ids) if ids else {}
+    organisation = user.organisation
+    rows = dark_accounts(
+        customers, latest, timezone.localdate(), organisation, rates_for(organisation)
+    )
+    return {row["id"]: row["days_since_contact"] for row in rows}
+
+
 def build_stats(user, params):
     """Every rollup the Activity Tracking tab draws."""
 
@@ -200,7 +248,6 @@ def build_stats(user, params):
     never = {"key": "never", "name": "No contact logged", "accounts": 0, "arr": 0.0}
 
     touched_in_window = 0
-    dark_accounts = []
     for customer in customers:
         converted = convert_to_org_currency(
             customer.arr_billed_at_account, customer.currency, organisation, rates=rates
@@ -219,31 +266,7 @@ def build_stats(user, params):
             if last >= since:
                 touched_in_window += 1
 
-        age = None if last is None else (today - last).days
-        if age is None or age >= GOING_DARK_DAYS:
-            dark_accounts.append(
-                {
-                    "id": customer.id,
-                    "name": customer.name,
-                    "owner": customer.owner.name if customer.owner else "Unassigned",
-                    "arr": arr,
-                    "health_category": customer.health_category,
-                    "lifecycle_stage": customer.get_lifecycle_stage_display(),
-                    "last_contact": last.isoformat() if last else None,
-                    "days_since_contact": age,
-                    # The rubric's own narrower measure, beside it, because the
-                    # two can differ — see the module docstring.
-                    "renewal_date": (
-                        customer.renewal_date.isoformat() if customer.renewal_date else None
-                    ),
-                }
-            )
-
-    # Longest silence first; "never" sorts to the top, since an account nobody
-    # has ever logged a contact for is the worst case, not a missing value.
-    dark_accounts.sort(
-        key=lambda row: (row["days_since_contact"] is not None, -(row["days_since_contact"] or 0))
-    )
+    dark = dark_accounts(customers, latest, today, organisation, rates)
 
     # ── tasks ────────────────────────────────────────────────────────
     tasks = Task.objects.filter(parent_q(ids)).distinct() if ids else Task.objects.none()
@@ -280,8 +303,8 @@ def build_stats(user, params):
             "accounts": len(customers),
             "touched_accounts": touched_in_window,
             "coverage": (round(touched_in_window / len(customers) * 100, 1) if customers else None),
-            "dark_accounts": len(dark_accounts),
-            "dark_arr": round(sum(row["arr"] or 0.0 for row in dark_accounts), 2),
+            "dark_accounts": len(dark),
+            "dark_arr": round(sum(row["arr"] or 0.0 for row in dark), 2),
             "open_tasks": open_tasks,
             "overdue_tasks": overdue,
             "completed_tasks": completed,
@@ -290,7 +313,7 @@ def build_stats(user, params):
         "sources": by_source,
         "cadence": [cadence[key] for key, _l, _f, _c in CADENCE_BUCKETS] + [never],
         "by_owner": by_owner,
-        "going_dark": dark_accounts[:LIST_LIMIT],
+        "going_dark": dark[:LIST_LIMIT],
         "going_dark_threshold": GOING_DARK_DAYS,
         "currency": organisation.currency,
     }

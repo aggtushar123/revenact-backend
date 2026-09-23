@@ -1305,11 +1305,41 @@ Not the same question as AI Trending Topics, which counts what
 accounts covered, cadence kept, follow-through on tasks.
 
 `?days=` sets the window (default 90, **clamped** 7–730), plus the usual
-`owner` / `lifecycle` / `customer`.
+`owner` / `lifecycle` / `customer`, plus `drill`.
 
-**Response `200`** — `kpis`, `timeline`, `sources`, `cadence`,
-`by_owner`, `going_dark`, `going_dark_threshold`, `window_days`,
-`currency`, `filters`.
+**Drill.** `?drill=gone_quiet` opens every account past the going-dark
+threshold — the exact list `activity_tracking.dark_accounts` builds for
+`kpis.dark_accounts` and the page's own capped `going_dark`, so a drill's
+count always matches the KPI. An unknown value ignores the drill — never
+`400` — and the endpoint falls back to its normal response below. When it
+applies, the response is *only*:
+
+```json
+{
+  "drill": {
+    "segment": "gone_quiet",
+    "value_label": "days since contact",
+    "count": 19,
+    "truncated": false,
+    "companies": [
+      {"id": 31, "name": "Never", "owner": "Carl", "arr": null, "value": null},
+      {"id": 14, "name": "Uber", "owner": "Dana", "arr": 95000.0, "value": 120}
+    ]
+  },
+  "currency": "USD"
+}
+```
+
+`value` is `days_since_contact`; `null` means never contacted, and those
+rows sort first, longest silence next. `arr` is converted to the org's
+own currency, `null` when no rate exists. `companies` is capped at 500
+(`count` is the true total, `truncated` says whether the list was cut),
+and it is intersected with the viewer's visible book, same as every
+other drill.
+
+**Response `200`** (no `drill`, or an unrecognised one) — `kpis`,
+`timeline`, `sources`, `cadence`, `by_owner`, `going_dark`,
+`going_dark_threshold`, `window_days`, `currency`, `filters`.
 
 Three definitions decide what these numbers mean, and all three are
 places a screen like this can mislead:
