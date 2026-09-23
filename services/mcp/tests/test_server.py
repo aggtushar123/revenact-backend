@@ -220,3 +220,96 @@ class Tools(Fixture):
         )
         result = self.tool("get_company", {"id": theirs.id})
         self.assertTrue(result["result"]["isError"])
+
+
+class WhenSomebodyLeaves(Fixture):
+    """A key is its owner's access. Someone who has lost their access has
+    lost the key's access too, the moment they lose it."""
+
+    def test_a_deactivated_persons_key_stops_working_at_once(self):
+        self.assertEqual(self.rpc(call("tools/list")).status_code, 200)
+        self.dana.is_active = False
+        self.dana.save(update_fields=["is_active"])
+        self.assertEqual(self.rpc(call("tools/list")).status_code, 401)
+
+    def test_deactivating_someone_revokes_their_keys(self):
+        self.client.force_authenticate(self.alice)
+        response = self.client.patch(
+            f"/api/v1/auth/users/{self.dana.id}/", {"is_active": False}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            McpToken.objects.filter(user=self.dana, revoked_at__isnull=True).count(), 0
+        )
+        # And still refused after they are brought back: a revoked key is
+        # revoked, not paused.
+        self.dana.is_active = True
+        self.dana.save(update_fields=["is_active"])
+        self.assertEqual(self.rpc(call("tools/list")).status_code, 401)
+
+
+class WhenTheModelIsUnavailable(Fixture):
+    @patch(
+        "services.mcp.tools.get_completion",
+        side_effect=__import__(
+            "services.copilot.anthropic_client", fromlist=["BudgetExceeded"]
+        ).BudgetExceeded("spent"),
+    )
+    def test_a_spent_budget_is_a_tool_error_not_a_crash(self, completion):
+        result = self.tool("ask_copilot", {"question": "What does Pizza Hut want?"})
+        self.assertTrue(result["result"]["isError"])
+        # The reason travels: an agent can tell "out of budget" from
+        # "no such company" and act differently.
+        self.assertIn("spent", result["result"]["content"][0]["text"])
+        # Still audited: a call that failed is a call that happened.
+        self.assertTrue(
+            AuditEvent.objects.filter(action="mcp.tool_called", outcome="failure").exists()
+        )
+
+
+class MoreTools(Fixture):
+    def test_feature_requests_and_anomalies_come_back_scoped(self):
+        from services.anomalies.models import Anomaly, AnomalyEvidence
+        from services.requests.models import FeatureRequest, RequestEvidence
+
+        feature = FeatureRequest.objects.create(organisation=self.org, title="Slack alerts")
+        RequestEvidence.objects.create(
+            request=feature,
+            organisation=self.org,
+            kind="ticket",
+            record_id=1,
+            customer=self.pizza,
+            snippet="Slack please",
+            occurred_at=timezone.now(),
+        )
+        # On a company Dana cannot open: she must not see this one at all.
+        hidden = FeatureRequest.objects.create(organisation=self.org, title="Hidden ask")
+        RequestEvidence.objects.create(
+            request=hidden,
+            organisation=self.org,
+            kind="ticket",
+            record_id=2,
+            customer=self.burger,
+            snippet="Not hers",
+            occurred_at=timezone.now(),
+        )
+        anomaly = Anomaly.objects.create(
+            organisation=self.org,
+            title="SSO login failures",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        AnomalyEvidence.objects.create(
+            anomaly=anomaly,
+            organisation=self.org,
+            kind="ticket",
+            record_id=3,
+            customer=self.pizza,
+            snippet="SSO broken",
+            occurred_at=timezone.now(),
+        )
+
+        asks = json.loads(self.tool("list_feature_requests")["result"]["content"][0]["text"])
+        self.assertEqual([row["title"] for row in asks], ["Slack alerts"])
+        clusters = json.loads(self.tool("list_anomalies")["result"]["content"][0]["text"])
+        self.assertEqual([row["title"] for row in clusters], ["SSO login failures"])

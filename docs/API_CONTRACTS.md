@@ -4334,7 +4334,14 @@ MCP is JSON-RPC and a read-only server needs three methods.
 **The token is the person.** Every tool runs under that user's own
 visibility, through the same helpers the app uses: their book, their
 mail, their department's tickets. There is no wider path, and no
-organisation-level key — an agent is somebody's agent.
+organisation-level key — an agent is somebody's agent. It is also their
+*current* access: a token whose owner has been deactivated stops
+resolving, and deactivating somebody revokes their tokens outright,
+beside the refresh tokens that are already blacklisted.
+
+A key can spend the organisation's model budget through `ask_copilot`, so
+requests are rate limited **per key** (`THROTTLE_MCP`, 60/min by default)
+rather than per address: one key is one agent wherever it runs.
 
 **Read-only by design.** A tool that changed a record would put a
 person's name on an action they did not take. That needs its own
@@ -4354,7 +4361,9 @@ errors, which is what the protocol asks for.
   and instructions.
 - `tools/list` → each tool's `name`, `description` and `inputSchema`.
 - `tools/call` with `{name, arguments}` → `{content: [{type: "text",
-  text}], isError}`. A refusal is a result, not a transport failure.
+  text}], isError}`. A refusal is a result, not a transport failure —
+  including a spent budget or an unconfigured model, so an agent can tell
+  "out of budget" from "no such company" and act differently.
 - A notification (no `id`) is answered with 204.
 - Anything else → JSON-RPC `-32601`; a malformed envelope → `-32600`.
 

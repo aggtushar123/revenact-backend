@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import generics, status, views
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -556,6 +557,13 @@ class OrgUserDetailView(generics.RetrieveUpdateAPIView):
         if was_active and not user.is_active:
             for token in OutstandingToken.objects.filter(user=user):
                 BlacklistedToken.objects.get_or_create(token=token)
+            # Their agents lose their keys too: an MCP token reads as its
+            # owner, so it is part of the same access (services.mcp).
+            from services.mcp.models import McpToken
+
+            McpToken.objects.filter(user=user, revoked_at__isnull=True).update(
+                revoked_at=timezone.now()
+            )
             # SOC2:AUTH-07 / LOG-01 deprovisioning is auditable
             audit.record("user.deactivate", request=request, target=user)
         elif not was_active and user.is_active:

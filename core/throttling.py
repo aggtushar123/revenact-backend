@@ -49,3 +49,19 @@ class PasswordResetThrottle(_PerIPThrottle):
 
 class TokenRefreshThrottle(_PerIPThrottle):
     scope = "token_refresh"
+
+
+class McpTokenThrottle(SimpleRateThrottle):
+    """Per MCP token, not per IP: an agent is one key, wherever it runs
+    from, and the thing worth limiting is how fast one key can spend the
+    organisation's model budget."""
+
+    scope = "mcp"
+
+    def get_cache_key(self, request, view):
+        header = request.headers.get("Authorization", "")
+        raw = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        if not raw:
+            return None
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return self.cache_format % {"scope": self.scope, "ident": digest}

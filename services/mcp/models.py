@@ -60,7 +60,14 @@ class McpToken(models.Model):
         if not raw or not raw.startswith(PREFIX):
             return None
         return (
-            cls.objects.filter(token_hash=cls.hash(raw), revoked_at__isnull=True)
+            cls.objects.filter(
+                token_hash=cls.hash(raw),
+                revoked_at__isnull=True,
+                # A key is its owner's own access. Somebody who has been
+                # deactivated has lost theirs, and the key goes with it the
+                # same moment — not whenever somebody remembers to revoke it.
+                user__is_active=True,
+            )
             .select_related("user", "user__organisation")
             .first()
         )

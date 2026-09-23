@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core import audit
+from core.throttling import McpTokenThrottle
 
 from . import tools
 from .models import McpToken
@@ -46,6 +47,9 @@ class McpView(APIView):
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
+    #: Per key rather than per IP: one key is one agent wherever it runs,
+    #: and what is worth limiting is how fast it can spend the budget.
+    throttle_classes = [McpTokenThrottle]
 
     def post(self, request):
         header = request.headers.get("Authorization", "")
