@@ -187,6 +187,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Knowledge gaps and the account brief | Built | What the company cannot answer, raised from unanswered Copilot questions and stale routed ones; the standing brief on use cases, stakeholders and open threads |
 | Anomaly clusters | Built | The same fault across several companies, found by embedding the fortnight's classified reports and kept only when it is a real spike |
 | Translation | Built | Read an inbound message in your own language and write the reply in theirs; cached per record, and contacts learn the language they write in |
+| MCP server | Built | An agent outside Revenact reads as the person whose token it holds, read-only, under their own visibility |
 
 ### 5.4 Multiplayer Copilot (the centerpiece)
 

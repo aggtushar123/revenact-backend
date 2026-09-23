@@ -27,6 +27,7 @@ PURPOSES = {
     "account_brief": "Account briefs",
     "anomaly": "Anomaly clusters",
     "translate": "Translation",
+    "mcp": "Agents over MCP",
 }
 
 
