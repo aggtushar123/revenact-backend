@@ -5586,6 +5586,36 @@ class TicketStatsTests(APITestCase):
         body = self.client.get(self.url, {"drill": "all", "account": account.pk}).json()
         self.assertEqual(sorted(c["name"] for c in body["drill"]["companies"]), ["Mine", "Sibling"])
 
+    def test_a_shared_account_ticket_drills_to_the_viewers_book_only(self):
+        """The twice-filter end to end: the account-level ticket is visible to
+        Carl through his own customer, and fans out to both customers of the
+        account — but Theirs is outside his book, so only someone who sees
+        every account gets it in the list."""
+        from services.accounts.capabilities import Capability
+        from services.accounts.models import Role
+
+        account = Account.objects.create(name="Joint venture")
+        account.customers.add(self.mine, self.theirs)
+        self._ticket(1, customer=None, account=account)
+
+        body = self.client.get(self.url, {"drill": "all"}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+
+        lead = Role.objects.create(
+            organisation=self.org,
+            name="Lead",
+            slug="lead",
+            permissions=[Capability.VIEW_ALL_ACCOUNTS],
+        )
+        viewer = User.objects.create_user(
+            email="lee@acme.io", password="supersecret1", name="Lee", organisation=self.org
+        )
+        User.objects.filter(pk=viewer.pk).update(role=lead)
+        viewer.refresh_from_db()
+        self.client.force_authenticate(viewer)
+        body = self.client.get(self.url, {"drill": "all"}).json()
+        self.assertEqual(sorted(c["name"] for c in body["drill"]["companies"]), ["Mine", "Theirs"])
+
     def test_a_bad_drill_returns_the_normal_stats(self):
         self._ticket(1)
         for drill in ["priority:nope", "bogus", "all:x", "origin:abc"]:
