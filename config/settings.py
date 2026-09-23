@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     "services.billing",
     "services.attributes",
     "services.requests",
+    "services.anomalies",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app

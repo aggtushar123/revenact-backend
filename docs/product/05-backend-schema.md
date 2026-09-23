@@ -313,6 +313,15 @@ contributions_30d.
 
 ---
 
+### `anomalies`
+
+| Model | Purpose |
+|---|---|
+| `Anomaly` | A cluster of reports that mean the same thing across several companies: title, summary, status, and the centroid later reports are matched against |
+| `AnomalyEvidence` | One interaction in a cluster, with the company it came from and copies of the source's `mailbox_owner` and `department` so the snippet stays behind the record's own rule |
+
+---
+
 ## 11. Visibility rules
 
 Each rule has exactly one definition. Add a new reading endpoint and you must

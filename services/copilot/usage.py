@@ -25,6 +25,7 @@ PURPOSES = {
     "attribute": "AI attributes",
     "feature_request": "Feature requests",
     "account_brief": "Account briefs",
+    "anomaly": "Anomaly clusters",
 }
 
 

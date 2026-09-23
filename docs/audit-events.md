@@ -65,6 +65,8 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `knowledge.gap_filled` | `services.knowledge.gaps.fill_from_contribution` | the person who wrote it down | KnowledgeGap | subject, customer |
 | `knowledge.gap_dismissed` | `services.knowledge.views.KnowledgeGapDismissView` | user | KnowledgeGap | subject, customer |
 | `knowledge.brief` | `services.knowledge.brief.generate` | user | AccountBrief | customer, how many records it read |
+| `anomaly.found` | `services.anomalies.detect.detect` | user, or nobody (nightly) | Anomaly | title, how many companies, how many reports |
+| `anomaly.update` | `services.anomalies.views.AnomalyDetailView` | leadership | Anomaly | title, new status |
 | `connector.connect` / `connector.disconnect` | `services.connectors.views` | integration manager | Connector | provider, department |
 | `file.upload` / `file.delete` | `services.customers.views` (Files tab) | user | Attachment | name, size, content_type |
 | `call.log` | `services.customers.views` (CallSense) | user | Call | title, whether a transcript was attached |

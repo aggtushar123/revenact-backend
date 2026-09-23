@@ -96,6 +96,17 @@ class Command(BaseCommand):
             changed = recompute_all(organisation)
             self.stdout.write(self.style.SUCCESS(f"recomputed sentiment for {changed} contact(s)"))
 
+        # What suddenly started going wrong: clusters of the same report
+        # across several companies (services.anomalies).
+        if not options["dry_run"]:
+            from services.anomalies.detect import detect_nightly
+
+            try:
+                found = detect_nightly(organisation)
+                self.stdout.write(self.style.SUCCESS(f"found {found} anomaly cluster(s)"))
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                self.stdout.write(self.style.WARNING(f"anomaly detection skipped: {exc}"))
+
         # Questions nobody answered become the company's problem rather
         # than a reminder's: gaps are what the Company View shows as
         # "what we cannot answer".

@@ -4317,6 +4317,85 @@ new request is audited as `request.create`. The nightly
 Refile one ask under another request, or drop it (it stays filed as
 `dismissed` so the next gather leaves it alone).
 
+## `anomalies` — What suddenly started going wrong (Brain > Anomalies, `Anomalies.tsx`)
+
+One fault reported by eight accounts reads as eight tickets everywhere
+else in this product. Here it reads as one thing to fix.
+
+### Models
+
+- `Anomaly` — `organisation`, `title`, `summary`, `status` (`live` |
+  `acknowledged` | `resolved`), `embedding` (the cluster's centroid, so a
+  later report joins it without another model call), `acknowledged_by`,
+  `first_seen_at`, `last_seen_at`.
+- `AnomalyEvidence` — `anomaly`, `organisation`, `kind` + `record_id`
+  (unique together: one filing per interaction), `customer`/`account`
+  (exactly one), `snippet`, `mailbox_owner` and `department` copied from
+  the source, `occurred_at`.
+
+### How a cluster is found
+
+Over the classified interactions of the last 14 days, detection embeds
+each one with the local model, attaches it to an open cluster whose
+centroid it is close to, and groups the rest among themselves. A group
+becomes an anomaly only when it spans at least **3 different companies**
+and is at least **twice** what the same subject drew in the preceding 14
+days — a subject that draws the same traffic every fortnight is the
+weather, not news. Each window is read by its own query per kind, so a
+busy fortnight cannot crowd out the history it is being compared against.
+A `resolved` cluster takes no new evidence.
+
+**Naming reads only what nobody owns personally.** Anyone who can see one
+report in a cluster sees its name, so the name is written from reports
+with no mailbox owner and no department — never from one person's mail or
+one department's queue. A cluster with nothing shared in it is named from
+its own shape ("Unnamed cluster across 4 companies") and costs no model
+call at all. When a name is written, it is one call (purpose `anomaly`),
+from a sample of at most 15 reports, told to describe the problem in its
+own words and never to quote a report, a person or a company.
+
+### Conventions specific to this app
+
+Reading is open to any member and scoped twice, as everywhere else that
+copies record text: the companies they may open, and the records they may
+read (`services.customers.personal.readable_evidence_q`, shared with
+feature requests). A cluster a reader can see nothing of is left out
+rather than shown as a zero, and its detail is a 404 for them: its title
+was written from reports they may not read. Detecting and setting a
+status need `view_all_accounts`.
+
+### `GET /api/v1/anomalies/?status=<status>`
+
+Unpaginated, most revenue first.
+
+```json
+[{"id": 3, "title": "SSO login failures", "summary": "...",
+  "status": "live", "arr": "30000", "companies": 3, "interactions": 7,
+  "first_seen_at": "...", "last_seen_at": "...", "acknowledged_by": null}]
+```
+
+### `GET /api/v1/anomalies/<id>/`
+
+The row above plus `companies_hit` (each `{id, name, arr}`, most revenue
+first) and `evidence` (each `{id, kind, record_id, snippet, occurred_at,
+company}`), both as this reader may see them.
+
+### `PATCH /api/v1/anomalies/<id>/`
+
+`{"status": "acknowledged"}` → the detail body. `view_all_accounts` only;
+audited as `anomaly.update`.
+
+### `POST /api/v1/anomalies/detect/`
+
+Runs detection now → 200 `{"found": 1, "attached": 4}`. The nightly
+`run_health_maintenance` pass runs the same thing per organisation. When
+the model stops part-way, what was found is kept and returned with the
+failure code (429 budget, 503 unconfigured, 502 upstream).
+`view_all_accounts` only; 403 when the Copilot is off. Each new cluster is
+audited as `anomaly.found`.
+
+---
+
 ## `attributes` — AI-filled attributes (Settings > AI Attributes, `AIAttributesPage.tsx`; Organization/Account Details' pinned panel, `AIAttributesPanel.tsx`)
 
 An admin asks a question of every company in plain English ("Which tier

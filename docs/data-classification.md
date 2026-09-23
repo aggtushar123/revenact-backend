@@ -47,6 +47,7 @@ customer records.
 | `requests.*` | confidential | — | `RequestEvidence.snippet` is customer-written text copied from an email, ticket or call; read only by members who may open the company it came from |
 | `knowledge.KnowledgeGap` | internal | — | A question and a count, no record text; readable company-wide by design so whoever can answer sees it |
 | `knowledge.AccountBrief` | confidential | — | Model-written summary of one customer, generated as that customer's owner reads; `sources` are citation snapshots filtered again per reader |
+| `anomalies.*` | confidential | — | `AnomalyEvidence.snippet` copies a report's own text; read only by members who may open the company and may read the source record. `Anomaly.title`/`summary` are written **only from reports nobody owns personally** (no mailbox owner, no department), because anyone who can see one report in a cluster sees its name |
 | `connectors.Connector` | internal | — | provider and name only; no credentials stored |
 | `scenarios.Scenario`, `scenarios.ScenarioRun` | internal | triggered_by | automation graphs and run logs |
 | `fx_rates.FxRate` | internal | — | |

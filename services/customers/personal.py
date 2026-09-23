@@ -43,3 +43,28 @@ def visible_tickets(user, queryset):
         return queryset
     # SOC2:AUTH-02 object-level rule for departmental tickets
     return queryset.filter(Q(department="") | Q(department=user.function))
+
+
+def readable_evidence_q(viewer, *, email="email", ticket="ticket", call="call"):
+    """Rows that *copy* a record's text — a feature request's evidence, an
+    anomaly's — read under the rule the record itself lives by.
+
+    Any model with a `kind` and copies of `mailbox_owner` and `department`
+    can use this: mail is its mailbox owner's and their chain's, a ticket
+    is its department's, and a call belongs to no one person. Kept here,
+    beside the rules it mirrors, because a second copy of a security rule
+    is a second place for it to go wrong — and two apps already need it.
+    """
+    from django.db.models import Q
+
+    from services.accounts.hierarchy import chain_visible_q
+    from services.accounts.models import User
+
+    mail = Q(kind=email) & chain_visible_q(viewer, "mailbox_owner")
+    if getattr(viewer, "function", None) == User.Function.LEADERSHIP:
+        tickets = Q(kind=ticket)
+    else:
+        tickets = Q(kind=ticket) & (
+            Q(department="") | Q(department=getattr(viewer, "function", "") or "")
+        )
+    return mail | tickets | Q(kind=call)
