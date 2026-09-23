@@ -23,7 +23,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from . import activity_tracking, forecast, interactions, portfolio, product_usage, usage
+from . import activity_tracking, drill, forecast, interactions, portfolio, product_usage, usage
 from .headline_generation import NothingToSummarise, generate_headlines
 from .interactions import _parse_date, _parse_int
 from .models import (
@@ -2389,9 +2389,47 @@ class TicketStatsView(views.APIView):
 
     Colours are not in this response. Every real-data chart in this
     frontend maps its own name -> CSS variable (see SurveyTrendChart);
-    only the mock this replaces carried `fill` in its data."""
+    only the mock this replaces carried `fill` in its data.
+
+    **Drill.** `?drill=` opens any chart segment into the companies
+    behind it: `all`; `on_hold`; `sentiment:<value>`; `priority:<value>`;
+    `status:<value>`; `origin:<connector id>` or `origin:none` (no
+    connector, shown as "Revenact"); `assignee:<assignee_name>` (exact
+    match). An unknown choice value ignores the drill, same as every
+    other filter here."""
 
     permission_classes = [IsAuthenticated]
+
+    DRILL_KINDS = {
+        "all": False,
+        "on_hold": False,
+        "sentiment": True,
+        "priority": True,
+        "status": True,
+        "origin": True,
+        "assignee": True,
+    }
+
+    def _drill_filter(self, kind, value):
+        """A Q for one segment, or None when the value is not a real choice."""
+        if kind == "all":
+            return Q()
+        if kind == "on_hold":
+            return Q(status=Ticket.Status.ON_HOLD)
+        if kind == "sentiment":
+            return Q(sentiment=value) if value in Ticket.Sentiment.values else None
+        if kind == "priority":
+            return Q(priority=value) if value in Ticket.Priority.values else None
+        if kind == "status":
+            return Q(status=value) if value in Ticket.Status.values else None
+        if kind == "origin":
+            if value == "none":
+                return Q(connector__isnull=True)
+            connector_id = _parse_int(value)
+            return Q(connector_id=connector_id) if connector_id is not None else None
+        if kind == "assignee":
+            return Q(assignee_name=value)
+        return None
 
     def _filtered_tickets(self, request):
         """Visibility first, then the caller's filters narrow from
@@ -2439,6 +2477,21 @@ class TicketStatsView(views.APIView):
 
     def get(self, request):
         tickets = self._filtered_tickets(request)
+
+        segment = drill.parse_segment(request.query_params, self.DRILL_KINDS)
+        if segment is not None:
+            condition = self._drill_filter(*segment)
+            if condition is not None:
+                counts = drill.record_counts([tickets.filter(condition)])
+                return Response(
+                    drill.companies_payload(
+                        request.user,
+                        request.query_params["drill"].strip(),
+                        dict(counts),
+                        value_label="tickets",
+                    )
+                )
+
         total = tickets.count()
 
         resolved = tickets.filter(status__in=Ticket.RESOLVED_STATUSES)

@@ -5460,6 +5460,59 @@ class TicketStatsTests(APITestCase):
         self.assertIn("Mine", names)
         self.assertNotIn("Theirs", names)
 
+    # ── drill ────────────────────────────────────────────────────────
+
+    def test_drill_lists_companies_with_their_ticket_counts(self):
+        also = Customer.objects.create(organisation=self.org, name="Also mine", owner=self.csm)
+        self._ticket(1)
+        self._ticket(2)
+        self._ticket(3, customer=also)
+        self._ticket(4, priority=Ticket.Priority.LOW)
+        body = self.client.get(self.url, {"drill": "priority:high"}).json()
+        self.assertEqual(set(body), {"drill", "currency"})
+        companies = body["drill"]["companies"]
+        self.assertEqual(
+            [(c["name"], c["value"]) for c in companies], [("Mine", 2), ("Also mine", 1)]
+        )
+        self.assertEqual(body["drill"]["value_label"], "tickets")
+
+    def test_drill_respects_the_other_filters_and_the_viewers_book(self):
+        self._ticket(1)
+        self._ticket(2, customer=self.theirs)
+        body = self.client.get(self.url, {"drill": "all", "from": "2026-02-01"}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+        body = self.client.get(self.url, {"drill": "all", "from": "2026-04-01"}).json()
+        self.assertEqual(body["drill"]["companies"], [])
+
+    def test_each_segment_kind(self):
+        self._ticket(
+            1,
+            status=Ticket.Status.ON_HOLD,
+            sentiment=Ticket.Sentiment.NEGATIVE,
+            connector=self.zendesk,
+            assignee_name="Ada",
+        )
+        self._ticket(2)
+        for drill, expected in [
+            ("on_hold", 1),
+            ("sentiment:negative", 1),
+            ("status:on-hold", 1),
+            (f"origin:{self.zendesk.pk}", 1),
+            ("origin:none", 1),
+            ("assignee:Ada", 1),
+        ]:
+            with self.subTest(drill=drill):
+                companies = self.client.get(self.url, {"drill": drill}).json()["drill"]["companies"]
+                self.assertEqual([c["value"] for c in companies], [expected])
+
+    def test_a_bad_drill_returns_the_normal_stats(self):
+        self._ticket(1)
+        for drill in ["priority:nope", "bogus", "all:x", "origin:abc"]:
+            with self.subTest(drill=drill):
+                body = self.client.get(self.url, {"drill": drill}).json()
+                self.assertIn("kpis", body)
+                self.assertNotIn("drill", body)
+
 
 class PulseFieldsAPITests(APITestCase):
     """The AI pulse moved from a stored category to a stored 1-5 value with the
