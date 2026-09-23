@@ -4341,8 +4341,18 @@ centroid it is close to, and groups the rest among themselves. A group
 becomes an anomaly only when it spans at least **3 different companies**
 and is at least **twice** what the same subject drew in the preceding 14
 days — a subject that draws the same traffic every fortnight is the
-weather, not news. Only a new cluster costs a model call, to name it
-(purpose `anomaly`). A `resolved` cluster takes no new evidence.
+weather, not news. Each window is read by its own query per kind, so a
+busy fortnight cannot crowd out the history it is being compared against.
+A `resolved` cluster takes no new evidence.
+
+**Naming reads only what nobody owns personally.** Anyone who can see one
+report in a cluster sees its name, so the name is written from reports
+with no mailbox owner and no department — never from one person's mail or
+one department's queue. A cluster with nothing shared in it is named from
+its own shape ("Unnamed cluster across 4 companies") and costs no model
+call at all. When a name is written, it is one call (purpose `anomaly`),
+from a sample of at most 15 reports, told to describe the problem in its
+own words and never to quote a report, a person or a company.
 
 ### Conventions specific to this app
 
