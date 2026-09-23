@@ -993,6 +993,7 @@ class ContactSerializer(serializers.ModelSerializer):
             "role_display",
             "email",
             "phone",
+            "language",
             "status",
             "sentiment",
             "sentiment_source",

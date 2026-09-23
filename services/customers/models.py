@@ -2025,6 +2025,11 @@ class Contact(models.Model):
     role = models.CharField(max_length=32, choices=Role.choices, default=Role.OTHER)
     email = models.EmailField()
     phone = models.CharField(max_length=32, blank=True)
+    #: The language this person writes in, as a short code ("fr", "pt-br").
+    #: Set by hand, or learned the first time one of their messages is
+    #: translated — a detection only ever fills a blank, never overrules a
+    #: person (see services.translation.translate.remember_language).
+    language = models.CharField(max_length=12, blank=True, default="")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
     sentiment = models.CharField(
         max_length=16, choices=Sentiment.choices, default=Sentiment.NEUTRAL

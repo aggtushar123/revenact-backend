@@ -166,6 +166,7 @@ urlpatterns = [
     path("api/v1/attributes/", include("services.attributes.urls")),
     path("api/v1/requests/", include("services.requests.urls")),
     path("api/v1/anomalies/", include("services.anomalies.urls")),
+    path("api/v1/translations/", include("services.translation.urls")),
     # FX rates — its own app, same "tenant-wide, admin-only-both-ways"
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).

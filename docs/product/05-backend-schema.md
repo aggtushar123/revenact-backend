@@ -322,6 +322,14 @@ contributions_30d.
 
 ---
 
+### `translation`
+
+| Model | Purpose |
+|---|---|
+| `Translation` | One record's words in one language, kept so the next reader pays nothing. `source_hash` makes an edited record miss the cache. Read only under the source record's own rule |
+
+---
+
 ## 11. Visibility rules
 
 Each rule has exactly one definition. Add a new reading endpoint and you must

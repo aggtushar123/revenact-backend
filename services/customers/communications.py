@@ -215,10 +215,27 @@ def _account_of(record):
     }
 
 
+def _writer_language(record) -> str:
+    """The language the person who wrote this writes in, when a contact of
+    theirs says so — what the reply box offers to write back in."""
+    from services.customers.models import Account, Contact
+
+    address = (
+        getattr(record, "from_address", "") or getattr(record, "requester_email", "") or ""
+    ).strip()
+    company = record.customer or record.account
+    if not address or company is None:
+        return ""
+    where = {"account": company} if isinstance(company, Account) else {"customer": company}
+    contact = Contact.objects.filter(email__iexact=address, **where).exclude(language="").first()
+    return contact.language if contact else ""
+
+
 def _email_row(record, today):
     when = _as_date(record.sent_at)
     return {
         "kind": "email",
+        "writer_language": _writer_language(record),
         "who": record.sender_name or record.from_address or "Unknown sender",
         "detail": "",
         "subject": record.subject,

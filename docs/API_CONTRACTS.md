@@ -4317,6 +4317,62 @@ new request is audited as `request.create`. The nightly
 Refile one ask under another request, or drop it (it stays filed as
 `dismissed` so the next gather leaves it alone).
 
+## `translation` — Reading in your language, writing in theirs (`CommunicationsPage.tsx`, `ReplyBox.tsx`)
+
+### Models
+
+- `Translation` — `organisation`, `kind` (`email` | `ticket` | `call` |
+  `mail_message`) + `record_id` + `language` (unique together: one
+  translation per record per language), `detected_language`, `text`, and
+  `source_hash`, a digest of the words it was made from so an edited
+  record misses the cache rather than showing a translation of what it
+  used to say.
+
+### Conventions specific to this app
+
+A translation is a **copy of the record's words**, so reading one is
+gated on the record itself, every time: mail under its mailbox owner and
+their chain, a ticket under its department, a mailbox message under its
+owner, and everything under the company rule as well. A record the
+caller may not read is a 404, cached translation or not.
+
+Translating a record keeps the result, so the second person to open the
+same message pays nothing. Translating loose text — a reply being
+written — keeps nothing, because a draft is not a record.
+
+When a record is translated for the first time, the sender's contact
+learns the language it was written in, but only if nobody has set one:
+`Contact.language` set by a person is their answer and a detection never
+overrules it. The sender is read from `from_address` for mail and
+`requester_email` for a ticket; a call has no writer, so nothing is
+learned from one. The contact is looked up on the company the record
+actually hangs off, customer or account.
+
+The communications queue carries `writer_language` on the rows somebody
+wrote, so the reply box can offer to write back in it.
+
+### `POST /api/v1/translations/`
+
+`{"kind": "email", "id": 412, "to": "en"}` → 201 when it was translated
+now, 200 when it came from the cache:
+
+```json
+{"text": "Can you explain the September invoice?", "to": "en",
+ "detected_language": "fr", "made_now": true}
+```
+
+`{"text": "Hello there", "to": "fr"}` translates a draft and stores
+nothing. 400 without a valid language code or with nothing to translate,
+403 when the organisation's Copilot is off, 404 for a record the caller
+may not read, 429 over budget, 503 unconfigured, 502 upstream. One model
+call, purpose `translate`. Audited as `translation.made` when a record's
+translation is written.
+
+`Contact` gains `language`, readable and writable on the contact
+endpoints.
+
+---
+
 ## `anomalies` — What suddenly started going wrong (Brain > Anomalies, `Anomalies.tsx`)
 
 One fault reported by eight accounts reads as eight tickets everywhere
