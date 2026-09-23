@@ -1229,12 +1229,42 @@ reasons are questions about exactly those rows, and computing retention
 over survivors returns 100% every time. So this reads the whole visible
 book, and every figure says which population it speaks for.
 
-Params: `owner`, `lifecycle`, `customer` — and its filter options
-include churned customers, unlike every other dashboard's, because being
-unable to filter to one here would be strange.
+Params: `owner`, `lifecycle`, `customer`, plus `drill` — and its filter
+options include churned customers, unlike every other dashboard's,
+because being unable to filter to one here would be strange.
 
-**Response `200`** — `kpis`, `concentration`, `cohorts`,
-`churn_reasons`, `segments`, `lifecycle`, `currency`, `filters`.
+**Drill.** `?drill=churned_12m` opens every customer who churned in the
+last year — the exact set `portfolio.churned_last_year` builds for
+`kpis.churned_12m`, so a drill's count always matches the KPI. An
+unknown value ignores the drill — never `400` — and the endpoint falls
+back to its normal response below. When it applies, the response is
+*only*:
+
+```json
+{
+  "drill": {
+    "segment": "churned_12m",
+    "value_label": "ARR",
+    "count": 3,
+    "truncated": false,
+    "companies": [
+      {"id": 22, "name": "Left recently", "owner": "Carl", "arr": 40000.0, "value": 40000.0}
+    ]
+  },
+  "currency": "USD"
+}
+```
+
+`value` is the customer's converted ARR, same figure as `arr`; `null`
+when no rate exists. `companies` is capped at 500 (`count` is the true
+total, `truncated` says whether the list was cut), and it is intersected
+with the viewer's visible book, same as every other drill — nothing is
+lost there since this endpoint's own book already includes churned and
+archived customers.
+
+**Response `200`** (no `drill`, or an unrecognised one) — `kpis`,
+`concentration`, `cohorts`, `churn_reasons`, `segments`, `lifecycle`,
+`currency`, `filters`.
 
 ```json
 {

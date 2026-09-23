@@ -421,11 +421,25 @@ class CustomerOverviewView(views.APIView):
     time.
 
     `owner`, `lifecycle` and `customer` match every other dashboard.
+
+    **Drill.** `?drill=churned_12m` opens every customer who churned in the
+    last year — the same set `portfolio.churned_last_year` builds for the
+    `kpis.churned_12m` KPI, so a drill's count always matches it. `value`
+    is each customer's converted ARR.
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if drill.parse_segment(request.query_params, {"churned_12m": False}) is not None:
+            return Response(
+                drill.companies_payload(
+                    request.user,
+                    "churned_12m",
+                    portfolio.churned_12m_values(request.user, request.query_params),
+                    value_label="ARR",
+                )
+            )
         return Response(
             {
                 **portfolio.build_stats(request.user, request.query_params),
