@@ -194,11 +194,21 @@ DRILL_KINDS = {
 
 _TAXONOMY_FIELD = {"area": "ai_area", "category": "ai_category", "subcategory": "ai_subcategory"}
 
+#: Same choices `filtered_querysets` validates each of these params against —
+#: a drill segment is a stricter version of that same filter, so a value it
+#: would reject there must be rejected here too, not turned into an empty
+#: queryset.
+_TAXONOMY_CHOICES = {
+    "area": taxonomy.AIArea,
+    "category": taxonomy.AICategory,
+    "subcategory": taxonomy.AISubcategory,
+}
+
 
 def drill_querysets(querysets, kind, value):
     """The per-type querysets narrowed to one drill segment, or `None` when
-    `value` isn't a real type/sentiment — same ignore-don't-400 convention as
-    every other filter here."""
+    `value` isn't a real type/sentiment/taxonomy value — same
+    ignore-don't-400 convention as every other filter here."""
 
     if kind == "all":
         return list(querysets.values())
@@ -208,6 +218,8 @@ def drill_querysets(querysets, kind, value):
         if value not in taxonomy.Sentiment.values:
             return None
         return [qs.filter(sentiment=value) for qs in querysets.values()]
+    if value not in _TAXONOMY_CHOICES[kind].values:
+        return None
     field = _TAXONOMY_FIELD[kind]
     return [qs.filter(**{field: value}) for qs in querysets.values()]
 

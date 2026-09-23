@@ -538,7 +538,14 @@ class InteractionStatsTests(APITestCase):
     def test_a_bad_drill_returns_the_normal_stats(self):
         self._email(1)
 
-        for drill in ["type:fax", "sentiment:furious", "nope"]:
+        for drill in [
+            "type:fax",
+            "sentiment:furious",
+            "area:bogus",
+            "category:bogus",
+            "subcategory:bogus",
+            "nope",
+        ]:
             with self.subTest(drill=drill):
                 self.assertNotIn("drill", self.client.get(self.url, {"drill": drill}).json())
 
