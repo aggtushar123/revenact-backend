@@ -51,7 +51,7 @@ class Fixture(APITestCase):
 class Scheduling(Fixture):
     def test_an_admin_sets_a_weekly_schedule_and_the_url_never_comes_back(self):
         response = self.client.post(
-            URL, {"destination": HOOK, "cadence": "weekly", "weekday": 1, "hour": 8}, format="json"
+            URL, {"destination": HOOK, "cadence": "weekly", "weekday": 1}, format="json"
         )
         self.assertEqual(response.status_code, 201, response.data)
         self.assertNotIn(HOOK, json.dumps(response.data))
@@ -148,11 +148,12 @@ class TheScheduledPass(Fixture):
             destination=HOOK,
             cadence=BriefSchedule.Cadence.WEEKLY,
             weekday=0,
-            hour=8,
         )
 
-    def monday(self, hour=8):
-        return timezone.make_aware(timezone.datetime(2026, 9, 21, hour, 0))
+    def monday(self, hour=0):
+        """The nightly job runs a little after midnight, so that is when
+        the pass is asked — not at some hour a schedule chose."""
+        return timezone.make_aware(timezone.datetime(2026, 9, 21, hour, 5))
 
     @patch(POST_TO_SLACK, return_value=(True, 200, ""))
     def test_sends_on_its_day_and_hour_and_not_twice(self, post):
@@ -162,17 +163,31 @@ class TheScheduledPass(Fixture):
         self.assertEqual(send_due(now=self.monday()), 1)
         self.assertEqual(post.call_count, 1)
         # Same day, later hour: already sent.
-        self.assertEqual(send_due(now=self.monday(hour=11)), 0)
+        self.assertEqual(send_due(now=self.monday(hour=23)), 0)
 
     @patch(POST_TO_SLACK, return_value=(True, 200, ""))
-    def test_waits_for_the_hour_and_the_day(self, post):
+    def test_waits_for_its_day(self, post):
         from services.metrics.delivery import send_due
 
         self.brief()
-        self.assertEqual(send_due(now=self.monday(hour=7)), 0)
-        tuesday = timezone.make_aware(timezone.datetime(2026, 9, 22, 9, 0))
+        tuesday = timezone.make_aware(timezone.datetime(2026, 9, 22, 0, 5))
         self.assertEqual(send_due(now=tuesday), 0)
         post.assert_not_called()
+
+    @patch(POST_TO_SLACK, return_value=(True, 200, ""))
+    def test_the_nightly_job_is_what_actually_posts_it(self, post):
+        """The pass as the cron entry really calls it: no injected time,
+        no chosen hour. A schedule that only fires for a caller who picks
+        the right moment is a schedule that never fires."""
+        from django.core.management import call_command
+
+        self.brief()
+        self.schedule.weekday = timezone.localtime(timezone.now()).weekday()
+        self.schedule.save(update_fields=["weekday"])
+        call_command("run_health_maintenance", "--org-email", "alice@acme.io")
+        self.schedule.refresh_from_db()
+        self.assertIsNotNone(self.schedule.last_sent_at)
+        self.assertEqual(post.call_count, 1)
 
     @patch(POST_TO_SLACK, return_value=(True, 200, ""))
     def test_a_monthly_schedule_waits_for_its_day_of_the_month(self, post):

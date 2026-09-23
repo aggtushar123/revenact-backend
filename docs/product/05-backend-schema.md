@@ -331,7 +331,7 @@ contributions_30d.
 
 | Model | Purpose |
 |---|---|
-| `BriefSchedule` | One per organisation: where the management brief is posted (a Slack incoming webhook, never returned to a client) and when. Posts what exists; never generates |
+| `BriefSchedule` | One per organisation: where the management brief is posted (a Slack incoming webhook, never returned to a client) and on which day. Posts what exists; never generates, and has no hour because the job that posts it runs once a night |
 
 ---
 

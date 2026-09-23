@@ -613,7 +613,6 @@ class BriefScheduleView(views.APIView):
                 "destination_hint": "",
                 "weekday": None,
                 "day": None,
-                "hour": None,
                 "is_active": False,
                 "last_sent_at": None,
             }
@@ -622,7 +621,6 @@ class BriefScheduleView(views.APIView):
             "destination_hint": schedule.destination_hint,
             "weekday": schedule.weekday,
             "day": schedule.day,
-            "hour": schedule.hour,
             "is_active": schedule.is_active,
             "last_sent_at": schedule.last_sent_at,
         }
@@ -690,11 +688,7 @@ class BriefScheduleView(views.APIView):
         if cadence not in BriefSchedule.Cadence.values:
             return Response({"detail": f"Unknown cadence {cadence!r}."}, status=400)
         out["cadence"] = cadence
-        for key, low, high, fallback in (
-            ("weekday", 0, 6, 0),
-            ("day", 1, 31, 1),
-            ("hour", 0, 23, 8),
-        ):
+        for key, low, high, fallback in (("weekday", 0, 6, 0), ("day", 1, 31, 1)):
             if key in data:
                 try:
                     value = int(data[key])

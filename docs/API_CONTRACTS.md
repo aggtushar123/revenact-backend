@@ -3041,8 +3041,7 @@ underneath.
 
 - `BriefSchedule` — one per organisation: `destination` (a Slack incoming
   webhook), `cadence` (`weekly` | `monthly`), `weekday` (Monday is 0),
-  `day` (of the month), `hour` (local, "not before"), `is_active`,
-  `last_sent_at`, `created_by`.
+  `day` (of the month), `is_active`, `last_sent_at`, `created_by`.
 
 ### Conventions specific to this app
 
@@ -3058,11 +3057,16 @@ pass posts the brief that exists; if nobody has written one, it says so
 rather than spending a model call nobody asked for. A month too short for
 the chosen day sends on its last day rather than skipping the month.
 
+**There is no hour to choose.** `run_health_maintenance` runs once a
+night, so a brief goes out on its day when that job runs. An hour the job
+could never honour would be a promise the product cannot keep; a specific
+time of day needs a more frequent job first.
+
 ### `GET/POST/PATCH/DELETE /api/v1/metrics/brief/schedule/`
 
 ```json
 {"cadence": "weekly", "destination_hint": "…xxxx", "weekday": 1,
- "day": 1, "hour": 8, "is_active": true, "last_sent_at": null}
+ "day": 1, "is_active": true, "last_sent_at": null}
 ```
 
 POST takes `destination` plus any of the scheduling fields and returns

@@ -16,7 +16,11 @@ from urllib.parse import urlparse
 from django.utils import timezone
 
 from core import audit
-from services.webhooks.engine import UnsafeWebhookURLError, validate_webhook_url
+from services.webhooks.engine import (
+    UnsafeWebhookURLError,
+    _opener,
+    validate_webhook_url,
+)
 
 from .models import Brief, BriefSchedule
 
@@ -46,7 +50,11 @@ def check_destination(url: str) -> None:
 
 def _post(url: str, payload: dict):
     """(delivered, status, error). Never raises for a refusal: a channel
-    that has gone away is news for the caller, not an exception."""
+    that has gone away is news for the caller, not an exception.
+
+    Sent through the webhooks app's own opener, which refuses redirects —
+    the destination is pinned to Slack's host before this runs, and a
+    redirect away from it is the one way that could stop being true."""
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -55,7 +63,7 @@ def _post(url: str, payload: dict):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        with _opener.open(request, timeout=TIMEOUT_SECONDS) as response:
             return 200 <= response.status < 300, response.status, ""
     except urllib.error.HTTPError as exc:
         return False, exc.code, exc.reason or ""
@@ -105,10 +113,12 @@ def send(schedule, *, actor=None, request=None, now=None):
 
 
 def _due(schedule, now) -> bool:
-    """Is this schedule due, and not already sent today?"""
+    """Is this schedule due, and not already sent today?
+
+    Day granularity, because the job that asks runs once a night: a
+    schedule is due on its day, and `last_sent_at` keeps a second run the
+    same day from posting twice."""
     local = timezone.localtime(now)
-    if local.hour < schedule.hour:
-        return False
     if schedule.last_sent_at and timezone.localtime(schedule.last_sent_at).date() == local.date():
         return False
     if schedule.cadence == BriefSchedule.Cadence.WEEKLY:

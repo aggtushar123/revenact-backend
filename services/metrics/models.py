@@ -313,7 +313,12 @@ class BriefSchedule(models.Model):
 
     Nothing is generated on a schedule. The pass posts the brief that
     exists; if nobody has written one for the period, it says so rather
-    than spending a model call nobody asked for."""
+    than spending a model call nobody asked for.
+
+    There is no hour to choose. The job that posts this runs once a night
+    (`run_health_maintenance`), so a brief goes out on its day when that
+    job runs, and offering an hour the job could never honour would be a
+    promise the product cannot keep."""
 
     class Cadence(models.TextChoices):
         WEEKLY = "weekly", "Weekly"
@@ -329,8 +334,6 @@ class BriefSchedule(models.Model):
     #: Day of the month, for monthly schedules. A month too short for it
     #: sends on its last day rather than skipping the month.
     day = models.PositiveSmallIntegerField(default=1)
-    #: Local hour, 0-23. The pass runs nightly, so this is "not before".
-    hour = models.PositiveSmallIntegerField(default=8)
     is_active = models.BooleanField(default=True)
     last_sent_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
