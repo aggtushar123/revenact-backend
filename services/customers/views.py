@@ -120,6 +120,10 @@ class CustomerListCreateView(generics.ListCreateAPIView):
     Organizations page's "Renewal" card/popover. A non-integer value is
     ignored rather than raising an error.
 
+    GET also supports `?ids=1,2,3` — narrows to those customers (the
+    dashboard's 'Open as a list'); non-integers are ignored, at most
+    500 are read, and scoping still applies.
+
     Archived customers (`is_archived=True`) never appear here — soft-
     hidden, same as from the stats endpoint below. They're still
     reachable directly via the detail endpoint (not deleted), and PATCH
@@ -156,6 +160,15 @@ class CustomerListCreateView(generics.ListCreateAPIView):
                     .filter(renewal_date__isnull=False, renewal_date__lte=deadline)
                     .order_by("renewal_date")
                 )
+
+        ids = []
+        for part in self.request.query_params.get("ids", "").split(",")[:500]:
+            try:
+                ids.append(int(part))
+            except ValueError:
+                continue
+        if ids:
+            queryset = queryset.filter(pk__in=ids)
 
         return queryset
 

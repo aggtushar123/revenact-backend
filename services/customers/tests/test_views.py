@@ -248,6 +248,45 @@ class CustomerSearchTests(APITestCase):
         self.assertEqual(response.data["results"][0]["id"], self.globex.id)
 
 
+class CustomerIdsFilterTests(APITestCase):
+    url = "/api/v1/customers/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.other = User.objects.create_user(
+            email="dana@acme.io",
+            password="supersecret1",
+            name="Dana",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.a = Customer.objects.create(organisation=self.org, name="A", owner=self.csm)
+        self.b = Customer.objects.create(organisation=self.org, name="B", owner=self.csm)
+        self.c = Customer.objects.create(organisation=self.org, name="C", owner=self.csm)
+        self.theirs = Customer.objects.create(organisation=self.org, name="T", owner=self.other)
+        self.client.force_authenticate(self.csm)
+
+    def names(self, params):
+        return sorted(row["name"] for row in self.client.get(self.url, params).json()["results"])
+
+    def test_only_the_named_customers(self):
+        self.assertEqual(self.names({"ids": f"{self.a.pk},{self.c.pk}"}), ["A", "C"])
+
+    def test_scoping_still_applies(self):
+        self.assertEqual(self.names({"ids": f"{self.a.pk},{self.theirs.pk}"}), ["A"])
+
+    def test_bad_parts_are_ignored_and_all_bad_means_no_filter(self):
+        self.assertEqual(self.names({"ids": f"x,{self.b.pk},"}), ["B"])
+        self.assertEqual(self.names({"ids": "x,y"}), ["A", "B", "C"])
+
+
 class CustomerRenewalWindowTests(APITestCase):
     """?renewal_within= on GET /api/v1/customers/ — powers the
     Organizations page's Renewal card/popover."""

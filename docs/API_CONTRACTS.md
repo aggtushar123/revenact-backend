@@ -841,6 +841,8 @@ already-overdue renewal (more urgent, not less) is included, not
 filtered out; ordered soonest/most-overdue-first instead of by name.
 Powers the Organizations page's Renewal card/popover (1-month/3-month
 toggle). A non-integer value is ignored, not an error.
+`?ids=1,2,3` narrows to those customers (the dashboard's 'Open as a list');
+non-integers are ignored, at most 500 are read, and scoping still applies.
 Archived customers (`is_archived=true`) never appear in this list, or
 in `?renewal_within=`, or in the stats endpoint below — soft-hidden,
 not deleted; see the detail endpoint below for how to archive/unarchive.
