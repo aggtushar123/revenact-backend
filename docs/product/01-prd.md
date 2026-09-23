@@ -185,6 +185,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | AI-filled attributes | Built | An admin's plain-English question answered per company with reasoning and cited sources; append-only history with human overrides; nightly refresh reads as the owner |
 | Feature requests with revenue | Built | Classified asks clustered into named requests by embedding; ARR, company and interaction counts computed over the reader's own book |
 | Knowledge gaps and the account brief | Built | What the company cannot answer, raised from unanswered Copilot questions and stale routed ones; the standing brief on use cases, stakeholders and open threads |
+| Anomaly clusters | Built | The same fault across several companies, found by embedding the fortnight's classified reports and kept only when it is a real spike |
 
 ### 5.4 Multiplayer Copilot (the centerpiece)
 

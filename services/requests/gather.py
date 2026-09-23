@@ -26,6 +26,7 @@ from services.copilot.anthropic_client import (
 from services.copilot.embeddings import embed
 from services.customers.classification import _text_for
 from services.customers.models import Account, Call, Email, Ticket
+from services.customers.personal import readable_evidence_q
 from services.customers.scoping import visible_customers
 from services.customers.taxonomy import AICategory
 
@@ -318,24 +319,15 @@ def arr_field(organisation) -> str:
 
 
 def readable_q(viewer) -> Q:
-    """Evidence whose *source record* this person may read.
-
-    The company rule is not enough: a snippet is the record's own text, so
-    mail stays with its mailbox owner and their chain and a ticket with its
-    department, exactly as services.mail.visibility and
-    services.customers.personal rule them everywhere else. A call belongs to
-    no one person."""
-    from services.accounts.hierarchy import chain_visible_q
-    from services.accounts.models import User
-
-    mail = Q(kind=RequestEvidence.Kind.EMAIL) & chain_visible_q(viewer, "mailbox_owner")
-    if getattr(viewer, "function", None) == User.Function.LEADERSHIP:
-        tickets = Q(kind=RequestEvidence.Kind.TICKET)
-    else:
-        tickets = Q(kind=RequestEvidence.Kind.TICKET) & (
-            Q(department="") | Q(department=getattr(viewer, "function", "") or "")
-        )
-    return mail | tickets | Q(kind=RequestEvidence.Kind.CALL)
+    """Evidence whose *source record* this person may read — the shared
+    rule in services.customers.personal, which the anomaly clusters use
+    too."""
+    return readable_evidence_q(
+        viewer,
+        email=RequestEvidence.Kind.EMAIL,
+        ticket=RequestEvidence.Kind.TICKET,
+        call=RequestEvidence.Kind.CALL,
+    )
 
 
 def visible_evidence(organisation, viewer, *, request=None):
