@@ -490,6 +490,76 @@ class InteractionStatsTests(APITestCase):
         self.assertEqual(ui_bug["category"], "bug_report")
         self.assertEqual(len(options), len(taxonomy.AISubcategory.choices))
 
+    # ── drill ────────────────────────────────────────────────────────
+
+    def test_drill_counts_interactions_per_company(self):
+        self._email(1)
+        self._email(2)
+        self._call(1)
+
+        body = self.client.get(self.url, {"drill": "all"}).json()
+
+        self.assertEqual(set(body), {"drill", "currency"})
+        self.assertEqual(
+            [(c["name"], c["value"]) for c in body["drill"]["companies"]], [("Mine", 3)]
+        )
+        self.assertEqual(body["drill"]["value_label"], "interactions")
+
+    def test_drill_by_type_and_by_taxonomy(self):
+        self._email(1)
+        call = self._call(1)
+        self._classified(
+            call,
+            area=taxonomy.AIArea.CUSTOMER_SUCCESS,
+            category=taxonomy.AICategory.ONBOARDING,
+            subcategory=taxonomy.AISubcategory.SETUP_ASSISTANCE,
+        )
+        cases = {
+            "type:email": 1,
+            "type:call": 1,
+            "area:customer_success": 1,
+            "category:onboarding": 1,
+            "subcategory:setup_assistance": 1,
+        }
+        for drill, expected in cases.items():
+            with self.subTest(drill=drill):
+                companies = self.client.get(self.url, {"drill": drill}).json()["drill"]["companies"]
+                self.assertEqual([c["value"] for c in companies], [expected])
+
+    def test_a_customer_filter_drills_to_that_customer_only(self):
+        sibling = Customer.objects.create(organisation=self.org, name="Sibling", owner=self.csm)
+        account = Account.objects.create(name="Shared")
+        account.customers.add(self.mine, sibling)
+        self._email(1, customer=None, account=account)
+
+        both = self.client.get(self.url, {"drill": "all"}).json()["drill"]["companies"]
+        self.assertEqual(sorted(c["name"] for c in both), ["Mine", "Sibling"])
+        body = self.client.get(self.url, {"drill": "all", "customer": self.mine.pk}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+
+    def test_drill_keeps_personal_mail_rules(self):
+        """The same visible_emails rule the totals use: another person's
+        mailbox mail is never counted towards a company."""
+        self._email(1, mailbox_owner=self.other)
+
+        companies = self.client.get(self.url, {"drill": "type:email"}).json()["drill"]["companies"]
+
+        self.assertEqual(companies, [])
+
+    def test_a_bad_drill_returns_the_normal_stats(self):
+        self._email(1)
+
+        for drill in [
+            "type:fax",
+            "sentiment:furious",
+            "area:bogus",
+            "category:bogus",
+            "subcategory:bogus",
+            "nope",
+        ]:
+            with self.subTest(drill=drill):
+                self.assertNotIn("drill", self.client.get(self.url, {"drill": drill}).json())
+
 
 class SeedDemoCallsTests(TestCase):
     """The seeder is demo plumbing, but two of its properties are load-bearing:

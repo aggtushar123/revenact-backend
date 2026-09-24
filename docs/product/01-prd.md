@@ -241,6 +241,11 @@ Usage Overview, Revenue Forecast, AI Trending Topics, Activity Tracking, Ticket
 Overview, Customer Overview, Product Usage. Plus standalone Lifecycle and Health
 rollup pages. Custom Dashboard is a placeholder.
 
+Five of them — Customer Overview, Activity Tracking, Revenue Forecast, AI
+Trending Topics, Ticket Overview — support drill-down: a chart figure's
+`?drill=` opens the real companies behind it, scoped to the same filtered
+set the figure itself counts and the viewer's own book.
+
 ---
 
 ## 6. Non-goals

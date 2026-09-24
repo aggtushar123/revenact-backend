@@ -248,6 +248,55 @@ class CustomerSearchTests(APITestCase):
         self.assertEqual(response.data["results"][0]["id"], self.globex.id)
 
 
+class CustomerIdsFilterTests(APITestCase):
+    url = "/api/v1/customers/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.other = User.objects.create_user(
+            email="dana@acme.io",
+            password="supersecret1",
+            name="Dana",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.a = Customer.objects.create(organisation=self.org, name="A", owner=self.csm)
+        self.b = Customer.objects.create(organisation=self.org, name="B", owner=self.csm)
+        self.c = Customer.objects.create(organisation=self.org, name="C", owner=self.csm)
+        self.theirs = Customer.objects.create(organisation=self.org, name="T", owner=self.other)
+        self.client.force_authenticate(self.csm)
+
+    def names(self, params):
+        return sorted(row["name"] for row in self.client.get(self.url, params).json()["results"])
+
+    def test_only_the_named_customers(self):
+        self.assertEqual(self.names({"ids": f"{self.a.pk},{self.c.pk}"}), ["A", "C"])
+
+    def test_scoping_still_applies(self):
+        self.assertEqual(self.names({"ids": f"{self.a.pk},{self.theirs.pk}"}), ["A"])
+
+    def test_bad_parts_are_ignored_when_one_is_good(self):
+        self.assertEqual(self.names({"ids": f"x,{self.b.pk},"}), ["B"])
+
+    def test_all_bad_or_empty_ids_means_nothing(self):
+        self.assertEqual(self.names({"ids": "x,y"}), [])
+        self.assertEqual(self.names({"ids": ""}), [])
+
+    def test_a_named_archived_customer_is_returned(self):
+        archived = Customer.objects.create(
+            organisation=self.org, name="Gone", owner=self.csm, is_archived=True
+        )
+        self.assertEqual(self.names({"ids": f"{self.a.pk},{archived.pk}"}), ["A", "Gone"])
+        self.assertEqual(self.names({}), ["A", "B", "C"])
+
+
 class CustomerRenewalWindowTests(APITestCase):
     """?renewal_within= on GET /api/v1/customers/ — powers the
     Organizations page's Renewal card/popover."""
@@ -5459,6 +5508,121 @@ class TicketStatsTests(APITestCase):
 
         self.assertIn("Mine", names)
         self.assertNotIn("Theirs", names)
+
+    # ── drill ────────────────────────────────────────────────────────
+
+    def test_drill_lists_companies_with_their_ticket_counts(self):
+        also = Customer.objects.create(organisation=self.org, name="Also mine", owner=self.csm)
+        self._ticket(1)
+        self._ticket(2)
+        self._ticket(3, customer=also)
+        self._ticket(4, priority=Ticket.Priority.LOW)
+        body = self.client.get(self.url, {"drill": "priority:high"}).json()
+        self.assertEqual(set(body), {"drill", "currency"})
+        companies = body["drill"]["companies"]
+        self.assertEqual(
+            [(c["name"], c["value"]) for c in companies], [("Mine", 2), ("Also mine", 1)]
+        )
+        self.assertEqual(body["drill"]["value_label"], "tickets")
+
+    def test_drill_respects_the_other_filters_and_the_viewers_book(self):
+        self._ticket(1)
+        self._ticket(2, customer=self.theirs)
+        body = self.client.get(self.url, {"drill": "all", "from": "2026-02-01"}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+        body = self.client.get(self.url, {"drill": "all", "from": "2026-04-01"}).json()
+        self.assertEqual(body["drill"]["companies"], [])
+
+    def test_each_segment_kind(self):
+        self._ticket(
+            1,
+            status=Ticket.Status.ON_HOLD,
+            sentiment=Ticket.Sentiment.NEGATIVE,
+            connector=self.zendesk,
+            assignee_name="Ada",
+        )
+        self._ticket(2)
+        for drill, expected in [
+            ("on_hold", 1),
+            ("sentiment:negative", 1),
+            ("status:on-hold", 1),
+            (f"origin:{self.zendesk.pk}", 1),
+            ("origin:none", 1),
+            ("assignee:Ada", 1),
+        ]:
+            with self.subTest(drill=drill):
+                companies = self.client.get(self.url, {"drill": drill}).json()["drill"]["companies"]
+                self.assertEqual([c["value"] for c in companies], [expected])
+
+    def _shared_account_ticket(self, sibling_owner=None, account_owner=None):
+        """An account-level ticket on an account Mine shares with a sibling
+        the viewer can also see (unowned, or their own)."""
+        sibling = Customer.objects.create(
+            organisation=self.org, name="Sibling", owner=sibling_owner
+        )
+        account = Account.objects.create(name="Shared", owner=account_owner)
+        account.customers.add(self.mine, sibling)
+        self._ticket(1, customer=None, account=account)
+        return account
+
+    def test_a_customer_filter_drills_to_that_customer_only(self):
+        self._shared_account_ticket(sibling_owner=self.csm)
+        both = self.client.get(self.url, {"drill": "all"}).json()["drill"]["companies"]
+        self.assertEqual(sorted(c["name"] for c in both), ["Mine", "Sibling"])
+        body = self.client.get(self.url, {"drill": "all", "customer": self.mine.pk}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+
+    def test_an_owner_filter_drills_to_that_owners_customers_only(self):
+        self._shared_account_ticket(account_owner=self.csm)
+        body = self.client.get(self.url, {"drill": "all", "owner": self.csm.pk}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+
+    def test_an_account_filter_drills_to_that_accounts_customers_only(self):
+        account = self._shared_account_ticket(sibling_owner=self.csm)
+        elsewhere = Customer.objects.create(organisation=self.org, name="Elsewhere", owner=self.csm)
+        other_account = Account.objects.create(name="Other")
+        other_account.customers.add(elsewhere)
+        self._ticket(2, customer=None, account=other_account)
+        body = self.client.get(self.url, {"drill": "all", "account": account.pk}).json()
+        self.assertEqual(sorted(c["name"] for c in body["drill"]["companies"]), ["Mine", "Sibling"])
+
+    def test_a_shared_account_ticket_drills_to_the_viewers_book_only(self):
+        """The twice-filter end to end: the account-level ticket is visible to
+        Carl through his own customer, and fans out to both customers of the
+        account — but Theirs is outside his book, so only someone who sees
+        every account gets it in the list."""
+        from services.accounts.capabilities import Capability
+        from services.accounts.models import Role
+
+        account = Account.objects.create(name="Joint venture")
+        account.customers.add(self.mine, self.theirs)
+        self._ticket(1, customer=None, account=account)
+
+        body = self.client.get(self.url, {"drill": "all"}).json()
+        self.assertEqual([c["name"] for c in body["drill"]["companies"]], ["Mine"])
+
+        lead = Role.objects.create(
+            organisation=self.org,
+            name="Lead",
+            slug="lead",
+            permissions=[Capability.VIEW_ALL_ACCOUNTS],
+        )
+        viewer = User.objects.create_user(
+            email="lee@acme.io", password="supersecret1", name="Lee", organisation=self.org
+        )
+        User.objects.filter(pk=viewer.pk).update(role=lead)
+        viewer.refresh_from_db()
+        self.client.force_authenticate(viewer)
+        body = self.client.get(self.url, {"drill": "all"}).json()
+        self.assertEqual(sorted(c["name"] for c in body["drill"]["companies"]), ["Mine", "Theirs"])
+
+    def test_a_bad_drill_returns_the_normal_stats(self):
+        self._ticket(1)
+        for drill in ["priority:nope", "bogus", "all:x", "origin:abc"]:
+            with self.subTest(drill=drill):
+                body = self.client.get(self.url, {"drill": drill}).json()
+                self.assertIn("kpis", body)
+                self.assertNotIn("drill", body)
 
 
 class PulseFieldsAPITests(APITestCase):

@@ -74,6 +74,9 @@ class ActivityTrackingViewTests(APITestCase):
             occurred_at=self.today - timedelta(days=days_ago),
         )
 
+    def _customer_without_contact(self, name):
+        return Customer.objects.create(organisation=self.org, name=name, owner=self.csm)
+
     def _ticket(self, days_ago, n=1):
         return Ticket.objects.create(
             customer=self.customer,
@@ -263,6 +266,26 @@ class ActivityTrackingViewTests(APITestCase):
         self.assertEqual(row["days_since_contact"], 70)
         self.assertEqual(self.customer.health_inputs()["days_since_touch"], 70)
         self.assertNotIn("days_since_activity", row)
+
+    # ── the gone-quiet drill ─────────────────────────────────────────
+
+    def test_gone_quiet_drill_lists_every_dark_account(self):
+        for i in range(18):
+            self._customer_without_contact(f"Quiet {i}")
+        stats = self.client.get(self.url).json()
+        drill = self.client.get(self.url, {"drill": "gone_quiet"}).json()["drill"]
+        self.assertEqual(drill["count"], stats["kpis"]["dark_accounts"])
+        self.assertEqual(len(stats["going_dark"]), 15)  # the page's own list stays capped
+        self.assertEqual(drill["value_label"], "days since contact")
+
+    def test_never_contacted_is_listed_first(self):
+        self._activity(3)  # keep the setUp customer out of this drill entirely
+        self._customer_without_contact("Never")
+        old = self._customer_without_contact("Old")
+        self._activity(days_ago=120, customer=old)
+        companies = self.client.get(self.url, {"drill": "gone_quiet"}).json()["drill"]["companies"]
+        self.assertEqual([c["name"] for c in companies][:2], ["Never", "Old"])
+        self.assertIsNone(companies[0]["value"])
 
     # ── owners and tasks ─────────────────────────────────────────────
 

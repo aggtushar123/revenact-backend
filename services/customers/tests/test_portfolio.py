@@ -9,7 +9,7 @@ figures that are always 100%.
 from datetime import date, timedelta
 from decimal import Decimal
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -117,6 +117,19 @@ class CustomerOverviewTests(APITestCase):
         self.assertEqual(kpis["churned"], 2)
         self.assertEqual(kpis["churned_12m"], 1)
         self.assertEqual(kpis["churned_arr_12m"], 40_000.0)
+
+    # ── drill ────────────────────────────────────────────────────────
+
+    def test_churned_12m_drill_matches_the_kpi(self):
+        today = timezone.localdate()
+        self._customer("Left recently", churn_date=today - timedelta(days=30))
+        self._customer("Left long ago", churn_date=today - timedelta(days=500))
+        self._customer("Still here")
+        stats = self.client.get(self.url).json()
+        drill = self.client.get(self.url, {"drill": "churned_12m"}).json()["drill"]
+        self.assertEqual(drill["count"], stats["kpis"]["churned_12m"])
+        self.assertEqual([c["name"] for c in drill["companies"]], ["Left recently"])
+        self.assertEqual(drill["value_label"], "ARR")
 
     def test_retention_and_average_are_null_rather_than_flattering_on_an_empty_book(self):
         kpis = self.client.get(self.url).data["kpis"]
@@ -321,3 +334,11 @@ class CustomerOverviewTests(APITestCase):
         options = self.client.get(self.url).data["filters"]
 
         self.assertIn("Left", [row["name"] for row in options["customers"]])
+
+
+class YearAgoTests(SimpleTestCase):
+    def test_leap_day(self):
+        self.assertEqual(portfolio.year_ago(date(2028, 2, 29)), date(2027, 2, 28))
+
+    def test_ordinary_day(self):
+        self.assertEqual(portfolio.year_ago(date(2026, 9, 24)), date(2025, 9, 24))

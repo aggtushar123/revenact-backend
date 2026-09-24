@@ -106,6 +106,35 @@ def is_churned(customer):
     return customer.churn_date is not None
 
 
+def year_ago(today):
+    """The same calendar day a year earlier; 29 Feb falls back to 28 Feb
+    rather than raising, which `date.replace` does."""
+    try:
+        return today.replace(year=today.year - 1)
+    except ValueError:
+        return today.replace(year=today.year - 1, day=28)
+
+
+def churned_last_year(customers, today):
+    """Churn inside the last year, which is the rate anyone quotes."""
+    cutoff = year_ago(today)
+    return [c for c in customers if is_churned(c) and c.churn_date >= cutoff]
+
+
+def churned_12m_values(user, params):
+    """Converted ARR per customer churned in the last year — the same set
+    `build_stats`'s `churned_12m` KPI counts — for the drill behind it."""
+    organisation = user.organisation
+    rates = rates_for(organisation)
+    values = {}
+    for customer in churned_last_year(list(filtered_customers(user, params)), timezone.localdate()):
+        converted = convert_to_org_currency(
+            customer.arr_billed_at_account, customer.currency, organisation, rates=rates
+        )
+        values[customer.pk] = None if converted is None else round(float(converted), 2)
+    return values
+
+
 def build_stats(user, params):
     organisation = user.organisation
     customers = list(filtered_customers(user, params))
@@ -127,8 +156,7 @@ def build_stats(user, params):
 
     # Churn inside the last year, which is the rate anyone quotes. All-time
     # churn is a fact about history, not about how this year is going.
-    year_ago = today.replace(year=today.year - 1)
-    churned_12m = [c for c in churned if c.churn_date and c.churn_date >= year_ago]
+    churned_12m = churned_last_year(customers, today)
 
     return {
         "kpis": {

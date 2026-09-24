@@ -23,7 +23,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from . import activity_tracking, forecast, interactions, portfolio, product_usage, usage
+from . import activity_tracking, drill, forecast, interactions, portfolio, product_usage, usage
 from .headline_generation import NothingToSummarise, generate_headlines
 from .interactions import _parse_date, _parse_int
 from .models import (
@@ -120,8 +120,13 @@ class CustomerListCreateView(generics.ListCreateAPIView):
     Organizations page's "Renewal" card/popover. A non-integer value is
     ignored rather than raising an error.
 
-    Archived customers (`is_archived=True`) never appear here — soft-
-    hidden, same as from the stats endpoint below. They're still
+    GET also supports `?ids=1,2,3` — narrows to exactly those customers
+    (the dashboard's 'Open as a list'), archived ones included; non-integers
+    are ignored, at most 500 are read, and scoping still applies. `ids`
+    present with no usable id (empty or all bad) returns nothing.
+
+    Archived customers (`is_archived=True`) never appear here unless named
+    by `?ids=` — soft-hidden, same as from the stats endpoint below. They're still
     reachable directly via the detail endpoint (not deleted), and PATCH
     `is_archived` on it to unarchive; there's just no "show archived"
     view yet."""
@@ -133,9 +138,22 @@ class CustomerListCreateView(generics.ListCreateAPIView):
         # Annotated up front: every serialized row renders health_breakdown,
         # which needs a last-touch date and an open-ticket count. Without this
         # each row runs two more queries — 120 extra on a 60-customer page.
-        queryset = with_customer_pulse_inputs(
-            with_health_inputs(visible_customers(self.request.user).filter(is_archived=False))
-        )
+        params = self.request.query_params
+        ids = None
+        if "ids" in params:
+            ids = []
+            for part in params["ids"].split(",")[:500]:
+                try:
+                    ids.append(int(part))
+                except ValueError:
+                    continue
+
+        customers = visible_customers(self.request.user)
+        # An explicit id list (the dashboard's "Open as a list") asks for
+        # exactly those records, archived ones included; scoping still applies.
+        if not ids:
+            customers = customers.filter(is_archived=False)
+        queryset = with_customer_pulse_inputs(with_health_inputs(customers))
 
         search = self.request.query_params.get("search", "").strip()
         if search:
@@ -156,6 +174,10 @@ class CustomerListCreateView(generics.ListCreateAPIView):
                     .filter(renewal_date__isnull=False, renewal_date__lte=deadline)
                     .order_by("renewal_date")
                 )
+
+        if ids is not None:
+            # Present but with no usable id names nothing, not the whole book.
+            queryset = queryset.filter(pk__in=ids) if ids else queryset.none()
 
         return queryset
 
@@ -421,11 +443,25 @@ class CustomerOverviewView(views.APIView):
     time.
 
     `owner`, `lifecycle` and `customer` match every other dashboard.
+
+    **Drill.** `?drill=churned_12m` opens every customer who churned in the
+    last year — the same set `portfolio.churned_last_year` builds for the
+    `kpis.churned_12m` KPI, so a drill's count always matches it. `value`
+    is each customer's converted ARR.
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if drill.parse_segment(request.query_params, {"churned_12m": False}) is not None:
+            return Response(
+                drill.companies_payload(
+                    request.user,
+                    "churned_12m",
+                    portfolio.churned_12m_values(request.user, request.query_params),
+                    value_label="ARR",
+                )
+            )
         return Response(
             {
                 **portfolio.build_stats(request.user, request.query_params),
@@ -449,11 +485,27 @@ class ActivityTrackingView(views.APIView):
 
     `?days=` sets the window (default 90, clamped 7–730). `owner`,
     `lifecycle` and `customer` match every other dashboard.
+
+    **Drill.** `?drill=gone_quiet` opens every account past the going-dark
+    threshold — the same list `activity_tracking.dark_accounts` builds for
+    the KPI and the page's own capped `going_dark`, so a drill's count
+    always matches `kpis.dark_accounts`. `value` is `days_since_contact`
+    (`null` = never contacted, listed first).
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if drill.parse_segment(request.query_params, {"gone_quiet": False}) is not None:
+            return Response(
+                drill.companies_payload(
+                    request.user,
+                    "gone_quiet",
+                    activity_tracking.gone_quiet_values(request.user, request.query_params),
+                    value_label="days since contact",
+                    none_first=True,
+                )
+            )
         return Response(
             {
                 **activity_tracking.build_stats(request.user, request.query_params),
@@ -484,6 +536,12 @@ class CustomerForecastView(views.APIView):
     `?horizon_days=` moves the window (default 365, clamped to 30–1095).
     The other three params match every other dashboard: `owner`,
     `lifecycle`, `customer`.
+
+    **Drill.** `?drill=` opens a bridge step into the companies behind it:
+    `at_risk` (every account carrying downside, churn or contraction
+    together), `churn`, `contraction` or `expansion` — same predicates
+    `forecast.build_bridge` sums, so a drill's values always add up to
+    the step it opened.
     """
 
     permission_classes = [IsAuthenticated]
@@ -493,6 +551,32 @@ class CustomerForecastView(views.APIView):
         customers = list(forecast.filtered_customers(request.user, request.query_params))
         horizon = forecast.horizon_days(request.query_params)
         rows = forecast.build_rows(customers, organisation, horizon=horizon)
+
+        segment = drill.parse_segment(
+            request.query_params,
+            {"at_risk": False, "churn": False, "contraction": False, "expansion": False},
+        )
+        if segment is not None:
+            kind = segment[0]
+            if kind == "expansion":
+                values = {row.customer.pk: row.expansion for row in rows if row.expansion > 0}
+                label = "expected expansion"
+            else:
+                picked = [row for row in rows if row.downside > 0]
+                if kind == "churn":
+                    picked = [r for r in picked if r.churn_exposure >= r.risk_exposure]
+                elif kind == "contraction":
+                    picked = [r for r in picked if r.churn_exposure < r.risk_exposure]
+                values = {row.customer.pk: row.downside for row in picked}
+                label = "downside"
+            return Response(
+                drill.companies_payload(
+                    request.user,
+                    kind,
+                    {k: round(float(v), 2) for k, v in values.items()},
+                    value_label=label,
+                )
+            )
 
         return Response(
             {
@@ -2349,12 +2433,32 @@ class InteractionStatsView(views.APIView):
     `total`/`classified` come back so the screen can say so rather than
     implying an empty AI Area donut means nobody talked about anything.
     Nothing classifies on write — `manage.py classify_interactions` does,
-    and it costs a real model call per batch."""
+    and it costs a real model call per batch.
+
+    **Drill.** `?drill=` opens any chart segment into the companies behind
+    it: `all`; `type:<email|call|ticket>`; `sentiment:<value>`;
+    `area:<value>`; `category:<value>`; `subcategory:<value>` — same
+    ignore-a-bad-value convention as every filter above."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         querysets = interactions.filtered_querysets(request.user, request.query_params)
+
+        segment = drill.parse_segment(request.query_params, interactions.DRILL_KINDS)
+        if segment is not None:
+            narrowed = interactions.drill_querysets(querysets, *segment)
+            if narrowed is not None:
+                return Response(
+                    drill.companies_payload(
+                        request.user,
+                        request.query_params["drill"].strip(),
+                        dict(drill.record_counts(narrowed)),
+                        value_label="interactions",
+                        restrict_to=drill.filter_restriction(request.query_params),
+                    )
+                )
+
         return Response(
             {
                 **interactions.build_stats(querysets),
@@ -2389,9 +2493,47 @@ class TicketStatsView(views.APIView):
 
     Colours are not in this response. Every real-data chart in this
     frontend maps its own name -> CSS variable (see SurveyTrendChart);
-    only the mock this replaces carried `fill` in its data."""
+    only the mock this replaces carried `fill` in its data.
+
+    **Drill.** `?drill=` opens any chart segment into the companies
+    behind it: `all`; `on_hold`; `sentiment:<value>`; `priority:<value>`;
+    `status:<value>`; `origin:<connector id>` or `origin:none` (no
+    connector, shown as "Revenact"); `assignee:<assignee_name>` (exact
+    match). An unknown choice value ignores the drill, same as every
+    other filter here."""
 
     permission_classes = [IsAuthenticated]
+
+    DRILL_KINDS = {
+        "all": False,
+        "on_hold": False,
+        "sentiment": True,
+        "priority": True,
+        "status": True,
+        "origin": True,
+        "assignee": True,
+    }
+
+    def _drill_filter(self, kind, value):
+        """A Q for one segment, or None when the value is not a real choice."""
+        if kind == "all":
+            return Q()
+        if kind == "on_hold":
+            return Q(status=Ticket.Status.ON_HOLD)
+        if kind == "sentiment":
+            return Q(sentiment=value) if value in Ticket.Sentiment.values else None
+        if kind == "priority":
+            return Q(priority=value) if value in Ticket.Priority.values else None
+        if kind == "status":
+            return Q(status=value) if value in Ticket.Status.values else None
+        if kind == "origin":
+            if value == "none":
+                return Q(connector__isnull=True)
+            connector_id = _parse_int(value)
+            return Q(connector_id=connector_id) if connector_id is not None else None
+        if kind == "assignee":
+            return Q(assignee_name=value)
+        return None
 
     def _filtered_tickets(self, request):
         """Visibility first, then the caller's filters narrow from
@@ -2439,6 +2581,22 @@ class TicketStatsView(views.APIView):
 
     def get(self, request):
         tickets = self._filtered_tickets(request)
+
+        segment = drill.parse_segment(request.query_params, self.DRILL_KINDS)
+        if segment is not None:
+            condition = self._drill_filter(*segment)
+            if condition is not None:
+                counts = drill.record_counts([tickets.filter(condition)])
+                return Response(
+                    drill.companies_payload(
+                        request.user,
+                        request.query_params["drill"].strip(),
+                        dict(counts),
+                        value_label="tickets",
+                        restrict_to=drill.filter_restriction(request.query_params, owner=True),
+                    )
+                )
+
         total = tickets.count()
 
         resolved = tickets.filter(status__in=Ticket.RESOLVED_STATUSES)
