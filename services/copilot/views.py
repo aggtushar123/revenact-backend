@@ -195,12 +195,24 @@ def _reply_readable_by(turn, user, user_turn=None):
     hand over (a direct, standalone check with no conversation context —
     see the mail/notes tests) passes nothing and gets the default `None`:
     no book check, no asker short-circuit, only the per-source checks
-    below — fails closed, and is exactly the pre-dashboard behaviour."""
-    from services.customers.scoping import visible_customers
+    below — fails closed, and is exactly the pre-dashboard behaviour.
+
+    Two more dashboard-only guards live here, both fail-closed:
+    a null `user_turn.author` (the asker's account was deleted) has no
+    book to check at all, so nobody but the owner — who never reaches this
+    function, see `sees_whole_conversation` — may read it; and the stored,
+    model-written anomaly title/summary (services.attention.rules) is
+    org-wide and can name a company outside this viewer's book even when
+    the asker's *filtered* book above is a subset of what they see, so a
+    reader who doesn't see everything never reads a reply that could carry
+    one from an asker who does."""
+    from services.customers.scoping import sees_everything, visible_customers
     from services.knowledge.models import Contribution
     from services.knowledge.views import visible_contributions
 
-    if user_turn is not None and user_turn.context and user_turn.author_id is not None:
+    if user_turn is not None and user_turn.context:
+        if user_turn.author_id is None:
+            return False
         if user_turn.author_id == user.id:
             return True
         from services.customers import forecast
@@ -208,6 +220,17 @@ def _reply_readable_by(turn, user, user_turn=None):
         filters = user_turn.context.get("filters") or {}
         filtered = forecast.filtered_customers(user_turn.author, filters)
         if filtered.exclude(pk__in=visible_customers(user)).exists():
+            return False
+
+        focus = user_turn.context.get("focus") or {}
+        names_a_stored_anomaly = user_turn.context.get("area") == "overview" or (
+            focus.get("kind") == "attention" and str(focus.get("key") or "").startswith("anomaly:")
+        )
+        if (
+            names_a_stored_anomaly
+            and sees_everything(user_turn.author)
+            and not sees_everything(user)
+        ):
             return False
 
     for source in turn.sources or []:
@@ -506,11 +529,16 @@ class SendMessageView(APIView):
                 message=user_message,
                 assignees=asked,
             )
-        elif asked_about is not None and not grounding.sources:
+        elif dashboard is None and asked_about is not None and not grounding.sources:
             # The question was about a company and retrieval found nothing
             # to answer it from. That is not a failure of the model, it is
             # something the company does not know about its own customer —
-            # see services.knowledge.gaps.
+            # see services.knowledge.gaps. A dashboard focus/attention
+            # question names a company through the screen, not through the
+            # asker naming it — "Why is this on my list?" on every renewal
+            # with no notes would otherwise raise a bogus gap even though
+            # the digest already answered it from the attention reason and
+            # facts (dashboard_grounding).
             record_unanswered(
                 organisation=organisation,
                 customer=asked_about,

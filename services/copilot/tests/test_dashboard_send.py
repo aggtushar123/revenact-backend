@@ -102,6 +102,21 @@ class DashboardSendTests(DashboardFixture):
             "why this is on their attention list: Shaky", completion.call_args.kwargs["system"]
         )
 
+    def test_a_dashboard_question_with_no_records_raises_no_knowledge_gap(self, completion):
+        """I2 (final review): the digest already answers "Why is this on my
+        list?" from the attention reason and facts even when retrieval finds
+        no notes/emails/tickets — a dashboard focus question must never file
+        a bogus KnowledgeGap the way a Communications "about a company"
+        question does."""
+        from services.knowledge.models import KnowledgeGap
+
+        focus = {"kind": "companies", "ids": [self.shaky.pk]}
+
+        response = self.send(self.context("overview", focus=focus), "Why is this on my list?")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(KnowledgeGap.objects.count(), 0)
+
     def test_a_key_not_on_the_list_is_the_generic_400(self, completion):
         bodies = [
             self.send(self.context(focus={"kind": "attention", "key": key})).data

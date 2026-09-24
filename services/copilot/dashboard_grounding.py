@@ -11,6 +11,8 @@ First filter, always: `forecast.filtered_customers(user, filters)`. A
 company outside it is never named, however it was asked about.
 """
 
+import re
+
 from django.utils import timezone
 
 from services.anomalies.models import Anomaly
@@ -48,7 +50,17 @@ DASHBOARD_PERSONA = (
 )
 
 
+#: A literal fence tag inside record text (a ticket title, an email or note
+#: body, an anomaly snippet — all attacker-controlled: inbound customer
+#: email in particular) would close `<dashboard_data>` early and let
+#: whatever follows sit outside the fence the persona tells the model to
+#: trust only inside it. Stripped, not escaped, so a broken tag can't be
+#: reassembled by a clever split across two records either.
+_FENCE_TAG = re.compile(r"</?\s*dashboard_data\s*>", re.IGNORECASE)
+
+
 def dashboard_system_prompt(tone_instruction, summary):
+    summary = _FENCE_TAG.sub("", summary)
     return (
         f"{DASHBOARD_PERSONA}\n\n{tone_instruction}\n\n"
         f"Dashboard data:\n<dashboard_data>\n{summary}\n</dashboard_data>"

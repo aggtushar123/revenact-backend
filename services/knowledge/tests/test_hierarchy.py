@@ -441,7 +441,16 @@ class DashboardReplyRedactionTests(ChartFixture):
     a reply and the one it actually answers. `Message.reply_to` now names
     the answered turn explicitly, and the asker short-circuit only applies
     when that turn carries dashboard `context` — a context-less reply keeps
-    exactly the per-source checks, the asker included."""
+    exactly the per-source checks, the asker included.
+
+    Final fix wave (whole-branch review): the book-subset check alone isn't
+    enough — a stored, model-written anomaly title/summary is org-wide and
+    can name a company outside the reader's book even when the asker's own
+    filtered book passes the subset check, so a reader who doesn't see
+    everything never reads a reply that could carry one from an asker who
+    does; and a dashboard turn with no author (`SET_NULL`, a deleted user)
+    fails closed for everyone but the owner, since there's no book at all
+    to check."""
 
     def setUp(self):
         super().setUp()
@@ -605,6 +614,141 @@ class DashboardReplyRedactionTests(ChartFixture):
 
         kept = [m.content for m in visible_messages(self.conversation, self.priya)]
         self.assertIn(narrow_reply.content, kept)
+
+    def test_a_mentioned_reader_cannot_see_a_stored_anomaly_title_within_their_own_book(self):
+        """I1 (final review): the stored anomaly title/summary
+        (services.attention.rules) are org-wide and can name a company
+        outside this viewer's book even when the asker's own *filtered*
+        book — all the ordinary book-subset check looks at — is entirely
+        inside what the reader can see. Alice (leadership, sees everything)
+        asks an Overview question filtered down to just Pizza Hut, which
+        Priya can already see (book check would pass); the reply is still
+        withheld because Alice sees everything and Priya doesn't, and an
+        Overview turn can carry a stored anomaly title/summary."""
+        from services.copilot.views import REDACTED_REPLY, visible_messages
+
+        overview_context = {
+            "surface": "dashboard",
+            "area": "overview",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": str(self.pizza.pk)},
+            "focus": None,
+        }
+        asked = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="@Priya Nair why is at-risk ARR up?",
+            author=self.alice,
+            context=overview_context,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.priya,
+            text=asked.content,
+            message=asked,
+        )
+        reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="Theirs and Mine both report SSO failures.",
+            sources=[],
+            reply_to=asked,
+        )
+
+        kept = [m.content for m in visible_messages(self.conversation, self.priya)]
+        self.assertNotIn(reply.content, kept)
+        self.assertIn(REDACTED_REPLY, kept)
+
+    def test_a_sees_everything_reader_is_shown_the_same_reply(self):
+        """The same shape of reply as above, but the mentioned reader also
+        sees everything (an executive on another branch) — the stored
+        title/summary rule protects readers who don't see the whole org,
+        not every partial-visibility (mentioned-only) reader indiscriminately."""
+        from services.copilot.views import visible_messages
+
+        grace = User.objects.create_user(
+            email="grace@acme.io",
+            password="x",
+            name="Grace Exec",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+            function=User.Function.LEADERSHIP,
+            reports_to=self.alice,
+        )
+        overview_context = {
+            "surface": "dashboard",
+            "area": "overview",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": ""},
+            "focus": None,
+        }
+        asked = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="@Grace Exec why is at-risk ARR up?",
+            author=self.alice,
+            context=overview_context,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=grace,
+            text=asked.content,
+            message=asked,
+        )
+        reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="Theirs and Mine both report SSO failures.",
+            sources=[],
+            reply_to=asked,
+        )
+
+        kept = [m.content for m in visible_messages(self.conversation, grace)]
+        self.assertIn(reply.content, kept)
+
+    def test_a_deleted_askers_dashboard_reply_is_unreadable_by_anyone_but_the_owner(self):
+        """Null author (final review): `Message.author` is `SET_NULL`, so a
+        dashboard turn can end up with no author at all. There is then no
+        asker's book to check, so the reply fails closed for everyone —
+        except the owner, who never reaches `_reply_readable_by` at all
+        (`sees_whole_conversation` short-circuits first)."""
+        from services.copilot.views import REDACTED_REPLY, visible_messages
+
+        orphan_context = {
+            "surface": "dashboard",
+            "area": "overview",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": ""},
+            "focus": None,
+        }
+        asked = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="Why is at-risk ARR up?",
+            author=None,
+            context=orphan_context,
+        )
+        reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="Because renewals cluster next month.",
+            sources=[],
+            reply_to=asked,
+        )
+
+        kept_by_priya = [m.content for m in visible_messages(self.conversation, self.priya)]
+        self.assertIn(REDACTED_REPLY, kept_by_priya)
+        self.assertNotIn(reply.content, kept_by_priya)
+
+        # The owner still reads it whole regardless of any of the above —
+        # sees_whole_conversation short-circuits before _reply_readable_by
+        # is ever consulted.
+        kept_by_owner = [m.content for m in visible_messages(self.conversation, self.carl)]
+        self.assertIn(reply.content, kept_by_owner)
 
 
 class ManagerSeesTeamTests(ChartFixture):
