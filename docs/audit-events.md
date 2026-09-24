@@ -78,6 +78,8 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `task.update` | `TaskDetailView` (Cockpit tick-off) | user | Task | `fields`, `from`, `to` |
 | `connector.inbound_rejected` | `ConnectorInboundView` | — (anonymous source) | Connector | outcome `failure`; a push with a wrong secret |
 | `webhook.create` / `webhook.update` / `webhook.delete` | `services.webhooks.views` | user | WebhookSubscription | url, event, changed fields |
+| `attention.snoozed` | `services.attention.views.AttentionSnoozeView` | user | AttentionSnooze | key, and days or done |
+| `attention.unsnoozed` | `services.attention.views.AttentionSnoozeDetailView` | user | — (already deleted) | key |
 
 Adding a new one: call `audit.record` at the point the change is committed, annotate the
 line `# SOC2:LOG-01`, and add a row here.

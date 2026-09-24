@@ -6,6 +6,7 @@ from services.accounts.serializers import UserSerializer
 from services.fx_rates.conversion import convert_to_org_currency
 
 from . import churn
+from . import triage as triage_module
 from .models import (
     Account,
     Activity,
@@ -420,6 +421,47 @@ class CustomerHealthRowSerializer(serializers.ModelSerializer):
     days_since_touch = serializers.SerializerMethodField()
     risk_of_loss = serializers.SerializerMethodField()
     risk_factors = serializers.SerializerMethodField()
+    triage_score = serializers.SerializerMethodField()
+    triage_factors = serializers.SerializerMethodField()
+    triage_direction = serializers.SerializerMethodField()
+
+    def _triage(self, customer):
+        """Computed once per row, cached on the instance — same reason as
+        `_risk` below: the three fields would otherwise run the same rule
+        three times per customer.
+
+        `health_snapshots` is read through the prefetch the view already
+        attaches (ordered oldest-first by `captured_on`); `.all()` on it
+        replays the cached list rather than issuing another query.
+        """
+        if not hasattr(customer, "_triage"):
+            history = [snapshot.health_category for snapshot in customer.health_snapshots.all()]
+            customer._triage = triage_module.triage(
+                health_category=customer.health_category,
+                csm_pulse=customer.csm_pulse_score,
+                ai_pulse=customer.ai_pulse_value,
+                renewal_date=customer.renewal_date,
+                history=history,
+                today=timezone.localdate(),
+            )
+        return customer._triage
+
+    def get_triage_score(self, customer):
+        """The Triage view's score for this account — see `services.customers.
+        triage` for the rule. Served rather than computed in the browser so
+        the dashboard's attention list and the Health Overview tab can't
+        drift apart about the same account."""
+        return self._triage(customer).score
+
+    def get_triage_factors(self, customer):
+        """What produced that score, each with its own contribution — the
+        row's tooltip prints them, same as `risk_factors` above."""
+        return self._triage(customer).factors
+
+    def get_triage_direction(self, customer):
+        """'declining' / 'improving' / 'flat' / 'unknown' over the last three
+        months of history."""
+        return self._triage(customer).direction
 
     def _risk(self, customer):
         """Computed once per row, cached on the instance: the field pair below
@@ -501,6 +543,9 @@ class CustomerHealthRowSerializer(serializers.ModelSerializer):
             "days_since_touch",
             "risk_of_loss",
             "risk_factors",
+            "triage_score",
+            "triage_factors",
+            "triage_direction",
             "health_score",
             "health_category",
             "csm_pulse_score",

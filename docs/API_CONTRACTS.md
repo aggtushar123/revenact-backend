@@ -78,8 +78,9 @@ expects.
 | Products (catalogue behind `primary_product`) | `customers` (`Product` model) | 🟢 Full CRUD, API-complete — see below. `GET/POST /api/v1/products/` and `GET/PATCH/DELETE /api/v1/products/<id>/`, mounted at their own top-level prefix (a product is org configuration, and `/customers/products/` already means the Product Usage rollup). Case-insensitively unique per organisation, deliberately **not** scoped by ownership, retirable via `is_active`, and un-deletable while customers are on it. Reads for any member, writes gated on `manage_org_settings`. Managed from Settings > Products (`ProductsPage.tsx`). |
 | Metric layer (`/api/v1/metrics/`) | `metrics` | 🟢 Every headline number defined once (`services/metrics/registry.py`), read through the same rollups the dashboards draw, whole-organisation via `SystemActor`, with month-end history in `MetricSnapshot` recorded by `run_health_maintenance`. Gated on `view_all_accounts`. Phases 1–2 of the company-brain work: the Brain dashboard's Business metrics panel (`MetricLayerPanel.tsx`) reads it, and `<key>/by/<dimension>/` + `signals/` are the "why" layer — cuts by owner/product/segment/lifecycle and the material moves with their drivers. See below. |
 | Dashboards — Product Usage | `customers` | 🟢 Runs on `GET /api/v1/customers/products/` — one row per product: ARR led, health mix, utilisation, satisfaction, support burden and churn. Attribution is by `primary_product` only, and the response says so. See below. |
-| Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
+| Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart, plus `open_count`/`oldest_open_days` for the Overview's own KPIs. See below. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
+| Dashboard Overview — "Needs attention" | `attention` | 🟢 `GET /api/v1/dashboard/attention/` — five kinds of item (renewal, risk, going_quiet, support, anomaly), scored `at_stake × urgency`, twice-filtered like every other dashboard. Per-user snoozing (`POST`/`DELETE …/snooze/`) — see below. |
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
@@ -895,10 +896,9 @@ change.
 | `GET /api/v1/interactions/stats/` | `all`; `type:<email\|call\|ticket>`; `sentiment:<value>`; `area:<value>`; `category:<value>`; `subcategory:<value>` | `interactions` |
 | `GET /api/v1/tickets/stats/` | `all`; `on_hold`; `sentiment:<value>`; `priority:<value>`; `status:<value>`; `origin:<connector id>` or `origin:none`; `assignee:<name>` (exact match) | `tickets` |
 
-`GET /api/v1/tickets/stats/` has no section of its own yet — see the
-Status table above, `TicketStatsView`'s own docstring is still the
-contract for its non-drill response — so its drill segments are
-documented here, the one place a caller would look for them.
+`GET /api/v1/tickets/stats/` has its own section below for its non-drill
+response; its drill segments are documented here, the one place a caller
+would look for them.
 
 **Open as a list.** `GET /api/v1/customers/?ids=1,2,3` (below) is how a
 dashboard opens a drill's companies as a real, paginated list view with
@@ -1280,6 +1280,19 @@ Notes on the shape:
   the renewal is lost, and every contribution that produced it. Served
   rather than computed in the browser so the Renewal Date tab and the
   Revenue Forecast can't drift apart about the same account.
+* `triage_score` (int, 0–155, not a percentage and never clamped: the
+  sum of its factors, at most Poor 66 + a 4-point pulse gap 44 + renewal
+  inside 90 days 18 + a Good → Poor fall 27; ≥ 40 means needs action now) /
+  `triage_factors` (`[{"label": str, "points": int}]`, highest points first) / `triage_direction`
+  (`declining` | `improving` | `flat` | `unknown`) are the Triage tab's own
+  rule (`services/customers/triage.py`) applied to that row, from exactly
+  the fields already on it plus its prefetched history — health category,
+  the CSM/AI pulse gap, days to renewal, and whether the last three months
+  of history end worse than they started. Served rather than computed in
+  the browser so the Triage tab and the dashboard's attention-list endpoint
+  (`GET /api/v1/dashboard/attention/`) can't drift apart about the same
+  account. `triage_direction` is `unknown` rather than `flat` when fewer
+  than two months of history are on record.
 * `owner_id` accompanies `owner_name` because the dashboard's Primary
   Owner filter keys on it. Two CSMs sharing a name is ordinary in a real
   org, and a filter keyed on the label would merge their books. Both are
@@ -2140,6 +2153,57 @@ organisation — same reasoning as the Activity account-level endpoint.
 Powers ActivityFeed's "Tickets" filter on the standalone Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
+
+### `GET /api/v1/tickets/stats/`
+
+Auth: `IsAuthenticated`. Every rollup the Ticket Overview
+dashboard's Controls tab needs, in one response. Unfiltered by default
+to avoid the trap of a rolling window on seeded demo data with fixed
+dates: calling today after the seeds' 2026 dates renders everything
+empty, which looks like a broken integration. Callers that want a window
+ask for one.
+
+Query params all ignore a value they don't understand rather than
+returning `400`, same convention as `?renewal_within=` and the
+interactions stats endpoint:
+
+| Param | Meaning |
+|---|---|
+| `from`, `to` | `YYYY-MM-DD`, inclusive, against `opened_at`. |
+| `priority` | `critical`/`high`/`medium`/`low`. |
+| `owner` | User id. |
+| `customer` | Customer id. Includes that customer's accounts' tickets. |
+| `account` | Account id. |
+| `connector` | Connector id. |
+| `drill` | Opens one chart segment into the companies behind it — see **Dashboard drill (`?drill=`)** above. |
+
+**Response `200`** (no `drill`, or an unrecognised one) — `kpis`,
+`priority`, `status`, `origin`, `assignees`, `sentiment_timeline`,
+`filters`:
+
+- `kpis`: `total` (all tickets), `on_hold` (on-hold status),
+  `avg_lifetime_days` (average days from open to resolved/closed, or `null`
+  if none resolved yet), `resolution_rate` (percent resolved/closed),
+  `positive_sentiment` (positive-sentiment tickets), `negative_sentiment`
+  (negative-sentiment tickets), `open_count` (tickets not in
+  resolved/closed statuses), `oldest_open_days` (days since the oldest
+  open ticket was opened, or `null` if no open tickets). Like every other
+  KPI, these two follow the request's filters, including `from`/`to` on
+  `opened_at`: a windowed call counts only the open tickets *opened* in that
+  window, so a caller that wants every open ticket (the Overview card)
+  calls without `from`/`to`.
+- `priority`: `[{name, value}, ...]` — all four priority levels, even
+  empty ones, ordered as they appear on the form.
+- `status`: `[{name, value}, ...]` — all five statuses, even empty ones.
+- `origin`: `[{name, value, provider, connector_id}, ...]` —
+  connector name or "Revenact" if unattached, ordered by count descending.
+- `assignees`: `[{name, total, [Status.label]: count, ...}, ...]` —
+  per-assignee breakdown by status, ordered by total ascending (quietest
+  first) for a horizontal chart.
+- `sentiment_timeline`: `[{date, positive, negative}, ...]` — bucketed
+  by month of `opened_at`.
+- `filters`: read-only; ships with the response so the filter bar needs
+  no second round trip.
 
 ### Models — the AI taxonomy (`Email`, `Call`, `Ticket`)
 
@@ -5557,6 +5621,148 @@ counts), Filters (Priority, Unread), Categories (Starred, Important, Spam,
 Trash, then the five categories), the Categories block, the list grouped by
 month, the open message in place with its reply box. The queue view (the four
 kinds of waiting) is unchanged for every other source.
+
+## `attention` — Dashboard Overview's "Needs attention" list
+
+Mirrors: `src/pages/dashboard/...` (the Dashboard Overview redesign,
+`react-ts-app/docs/superpowers/specs/2026-09-23-dashboard-redesign-design.md`).
+
+Five kinds of item — **renewal**, **risk**, **going_quiet**, **support**,
+**anomaly** — each built from the rule the screen it comes from already owns
+(`services.attention.rules.build_items`), so the list can never disagree with
+the page an item drills into. Every item is scored `at_stake × urgency`: ARR
+in the organisation's currency times a 0.25–1.0 urgency whose formula is
+per-kind. Twice filtered, same as every other dashboard here: companies
+through `live_customers`, tickets through `visible_tickets`, anomaly evidence
+through `visible_evidence` — a rule that reads across models never widens
+what any one of them already restricts. No record text reaches an item;
+reasons are built from fields only.
+
+**Urgency formulas** (`services.attention.rules`, floor 0.25, ceiling 1.0,
+straight line between the two points given):
+
+| Kind | Measure | Formula |
+|---|---|---|
+| `renewal`, `risk` | days to renewal (negative = overdue) | overdue or ≤ 14 days → 1.0, down to 0.25 at 90 days; no renewal date at all → 0.5 |
+| `going_quiet` | days since last contact | never contacted → 1.0; 0.25 at 60 days, up to 1.0 at 120 |
+| `support` | the oldest matching open High/Critical ticket's age in days | 0.25 at 0 days, 1.0 at 14 days |
+| `anomaly` | days since the anomaly was first seen | ≤ 7 days → 1.0, down to 0.25 at 90 days |
+
+`score = round(at_stake * urgency, 2)`.
+
+### Models
+
+- `AttentionSnooze` — `organisation`, `user`, `key` (unique together),
+  `until` (nullable; null means Done), `fingerprint` (JSON, the item's
+  fingerprint at snooze time), `created_at`.
+
+### `GET /api/v1/dashboard/attention/?owner=&lifecycle=&customer=`
+
+Auth: `IsAuthenticated`. The viewer's own candidate items — same filter
+parsing as `GET /api/v1/customers/forecast/` (bad values ignored, never a
+400) — with anything the viewer has snoozed dropped
+(`services.attention.snooze.visible_items`), sorted by score desc then
+title, capped at 25:
+
+```json
+{
+  "items": [
+    {
+      "key": "renewal:42", "kind": "renewal", "title": "Acme",
+      "reason": "renewal 5 days overdue · health Poor",
+      "at_stake": 100000.0, "urgency": 1.0, "score": 100000.0,
+      "customer_id": 42, "companies": [], "fingerprint": {"overdue": true, "health": "poor", "arr": 100000.0}
+    }
+  ],
+  "currency": "USD",
+  "filters": {"owners": [...], "lifecycles": [...], "customers": [...]}
+}
+```
+
+`fingerprint` is the item's facts at the time it was built — the snooze
+endpoint stores it, and `worse` below compares against it. Its shape is
+internal and can change; clients should not read it. Per kind:
+
+| `kind` | `fingerprint` (every one also carries `arr`, the ARR at stake) |
+|---|---|
+| `renewal` | `overdue` (bool), `health` (category), `renewal_date` (ISO date) |
+| `risk` | `score` (the Triage score) |
+| `going_quiet` | `last_contact` (ISO date, or `null` for never contacted) |
+| `support` | `count` (open High/Critical tickets), `open_ids` (their ticket ids, sorted) |
+| `anomaly` | `companies` (how many of the viewer's companies it spans) |
+
+It holds facts (dates, counts, ids), never a count of days, so time passing
+on its own never changes it.
+
+**Size.** The list is built over the viewer's whole (filtered) live book on
+every call, and is not capped before scoring — a cap would silently drop
+items. For a `view_all_accounts` viewer that is the whole organisation;
+the query count is constant, but the work grows with the book.
+
+`companies` is only ever populated for `kind: "anomaly"` (an anomaly can span
+several companies in the viewer's book); every other kind carries `[]`. ARR
+that can't be converted to the org's currency counts as 0 at stake — the item
+still appears, and its `reason` says so — rather than being dropped.
+
+**Anomaly title rule.** The stored, model-written `Anomaly.title` can name a
+company outside this viewer's book, or count companies across the whole
+organisation, so it is only shown as written to a viewer who passes
+`sees_everything` (`view_all_accounts` — `services.customers.scoping`).
+Everyone else gets a title built from fields instead: `"Similar reports
+across <n> of your companies"`, where `<n>` is the count of companies behind
+that anomaly that are actually in their own (filtered) book.
+
+### `POST /api/v1/dashboard/attention/snooze/`
+
+Auth: `IsAuthenticated`. `{"key": "renewal:42", "days": 7}` (1–90) or
+`{"key": "renewal:42", "done": true}`. `key` must be one of the viewer's own
+current items *right now*, built with no filters — the same rule the full
+list itself reads, so a key from another organisation, or one that has
+already resolved, is refused rather than silently stored:
+
+```json
+{"key": ["Not an item on your list."]}
+```
+
+(400) — also for a malformed key (anything but `<kind>:<id>`). Only the
+key's own kind is built to check it, and for a company's kind only that one
+company, still read through the viewer's visible book; an `anomaly:<id>` key
+builds the anomaly kind only. On success, upserts an `AttentionSnooze` for `(user, key)` with the
+item's current fingerprint and `until = now + days` (or `null` for Done).
+Returns **201** `{"key": "renewal:42", "until": "2026-10-01T12:00:00Z"}`
+(`until: null` for Done). Snoozing is strictly per-user: another member of
+the same organisation, or the same account's other owner, still sees the item
+until they snooze it themselves. If the item gets worse before the snooze
+would have expired, it reappears immediately — a 7-day snooze or Done
+alike. "Worse" (`services.attention.rules.worse`) compares the stored
+fingerprint with the current one, and any one of these is enough: more ARR
+at stake (every kind); a renewal that has become overdue, or whose health
+band dropped; a higher risk score; more open High/Critical tickets; an
+anomaly spanning more of the viewer's companies. A new episode is worse
+too, so a Done lasts one episode, not forever: a renewal with a different
+`renewal_date` (a new cycle), a going-quiet item with a different
+`last_contact` (a new silence after a contact), a support item with an open
+ticket id that wasn't open when it was snoozed (even if the count is the
+same). The silence growing is not a change — it is why a going-quiet item
+is on the list — and a day passing is never "worse" on its own, so a Done
+item stays hidden while its facts hold. A stored fingerprint missing a key
+(an older shape) counts as not worse on that key. Audited as `attention.snoozed` (`key`, and `days` or `done`).
+
+### `DELETE /api/v1/dashboard/attention/snooze/<key>/`
+
+Auth: `IsAuthenticated`. Deletes the viewer's own snooze for that key — 404
+if there isn't one. `<key>` is matched with Django's `path` converter because
+a key contains a `:` (e.g. `renewal:42`); the percent-encoded form a browser
+sends for `encodeURIComponent(key)` (`renewal%3A42`) is accepted too.
+Returns **204**. Audited as
+`attention.unsnoozed` (`key`).
+
+**One verb per URL.** The collection URL (`.../snooze/`) only accepts `POST`;
+the key URL (`.../snooze/<key>/`) only accepts `DELETE`. A `POST` to the key
+URL or a `DELETE` to the collection URL returns **405** — they are two
+separate view classes (`AttentionSnoozeView`, `AttentionSnoozeDetailView`)
+rather than one class answering both, precisely so neither wrong combination
+can reach a handler that doesn't take the arguments it would need.
 
 ## `<app_name>` — <Frontend feature name>
 

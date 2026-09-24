@@ -54,6 +54,7 @@ customer records.
 | `connectors.Connector` | internal | — | provider and name only; no credentials stored |
 | `scenarios.Scenario`, `scenarios.ScenarioRun` | internal | triggered_by | automation graphs and run logs |
 | `fx_rates.FxRate` | internal | — | |
+| `attention.AttentionSnooze` | internal | — | a per-user snooze on a Dashboard Overview "Needs attention" item; `key` and `fingerprint` reference an item by field values only (numbers, categories, dates and record ids), no record text |
 
 ## Flows that leave the tenant boundary
 

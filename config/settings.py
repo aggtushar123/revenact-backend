@@ -85,6 +85,7 @@ INSTALLED_APPS = [
     "services.platform",
     "services.billing",
     "services.attributes",
+    "services.attention",
     "services.requests",
     "services.anomalies",
     "services.translation",

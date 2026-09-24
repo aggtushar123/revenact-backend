@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import CharField, Count, Prefetch, Q
+from django.db.models import CharField, Count, Min, Prefetch, Q
 from django.db.models.functions import Cast, TruncMonth
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -2605,6 +2605,13 @@ class TicketStatsView(views.APIView):
             for t in resolved.exclude(resolved_at__isnull=True).only("resolved_at", "opened_at")
         ]
 
+        open_tickets = tickets.exclude(status__in=Ticket.RESOLVED_STATUSES)
+        open_stats = open_tickets.aggregate(count=Count("id"), oldest=Min("opened_at"))
+        open_count = open_stats["count"]
+        oldest_open_days = None
+        if open_count > 0 and open_stats["oldest"] is not None:
+            oldest_open_days = (timezone.localdate() - open_stats["oldest"]).days
+
         kpis = {
             "total": total,
             "on_hold": tickets.filter(status=Ticket.Status.ON_HOLD).count(),
@@ -2616,6 +2623,8 @@ class TicketStatsView(views.APIView):
             "resolution_rate": round(resolved.count() / total * 100, 2) if total else 0,
             "positive_sentiment": tickets.filter(sentiment=Ticket.Sentiment.POSITIVE).count(),
             "negative_sentiment": tickets.filter(sentiment=Ticket.Sentiment.NEGATIVE).count(),
+            "open_count": open_count,
+            "oldest_open_days": oldest_open_days,
         }
 
         # Every bucket pre-seeded so an absent one comes back as a zero
