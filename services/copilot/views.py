@@ -129,7 +129,7 @@ def visible_messages(conversation, user):
     was asked of their team and what the team replied."""
     from services.accounts.hierarchy import scope_ids
 
-    turns = list(conversation.messages.order_by("created_at", "id"))
+    turns = list(conversation.messages.select_related("reply_to").order_by("created_at", "id"))
     if sees_whole_conversation(conversation, user):
         return turns
     from services.knowledge.models import Question
@@ -161,7 +161,11 @@ def visible_messages(conversation, user):
             if previous_kept:
                 kept.append(turn)
         elif previous_kept:
-            kept.append(turn if _reply_readable_by(turn, user, last_user_turn) else _redacted(turn))
+            # The reply's own `reply_to` is the real question it answers;
+            # only a legacy row written before that FK existed falls back to
+            # whichever user turn happens to sort immediately before it.
+            answered = turn.reply_to if turn.reply_to_id else last_user_turn
+            kept.append(turn if _reply_readable_by(turn, user, answered) else _redacted(turn))
     return kept
 
 
@@ -181,15 +185,20 @@ def _reply_readable_by(turn, user, user_turn):
     records `turn.sources` names. A partial-visibility viewer therefore
     needs the asker's whole filtered book to be inside their own visible
     customers, not merely the cited records; the asker always reads their
-    own reply regardless. `user_turn` is the user turn this reply answers
-    (the turn immediately before it in the conversation), or None."""
+    own dashboard reply regardless. A context-less (Communications) reply
+    keeps exactly the per-source checks below for every viewer, the asker
+    included — there is no whole-book aggregate to guard there.
+
+    `user_turn` is the real user turn this reply answers (`turn.reply_to`
+    when set; the immediately preceding user turn only for a legacy row
+    with none — see `visible_messages`), or None."""
     from services.customers.scoping import visible_customers
     from services.knowledge.models import Contribution
     from services.knowledge.views import visible_contributions
 
-    if user_turn is not None and user_turn.author_id == user.id:
-        return True
     if user_turn is not None and user_turn.context and user_turn.author_id is not None:
+        if user_turn.author_id == user.id:
+            return True
         from services.customers import forecast
 
         filters = user_turn.context.get("filters") or {}
@@ -463,6 +472,11 @@ class SendMessageView(APIView):
             # relevant now instead.
             sources=grounding.sources,
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
+            # The real turn this reply answers, not just "whichever user turn
+            # happens to sort immediately before it" — two participants
+            # sending concurrently can interleave a second user turn in
+            # between (see _reply_readable_by's own docstring).
+            reply_to=user_message,
         )
         # Set once, from the first dashboard message, and never overwritten:
         # the history's tag says where a conversation started. A conditional

@@ -429,10 +429,19 @@ class ReplyRedactionTests(ChartFixture):
 
 class DashboardReplyRedactionTests(ChartFixture):
     """A dashboard-sourced reply carries aggregates and company names from
-    the asker's whole filtered book, not just the records it cites — Fix
-    round 1 on the dashboard Ask Revenact backend (task-8-report.md):
-    `_reply_readable_by` now also requires the asker's whole filtered book
-    to be inside the viewer's own visible customers."""
+    the asker's whole filtered book, not just the records it cites.
+
+    Fix round 1 on the dashboard Ask Revenact backend (task-8-report.md):
+    `_reply_readable_by` requires the asker's whole filtered book to be
+    inside the viewer's own visible customers.
+
+    Fix round 2: pairing a reply with "whichever user turn sorts
+    immediately before it" fails open under concurrent sends — two
+    participants posting at once can interleave a second user turn between
+    a reply and the one it actually answers. `Message.reply_to` now names
+    the answered turn explicitly, and the asker short-circuit only applies
+    when that turn carries dashboard `context` — a context-less reply keeps
+    exactly the per-source checks, the asker included."""
 
     def setUp(self):
         super().setUp()
@@ -471,6 +480,7 @@ class DashboardReplyRedactionTests(ChartFixture):
             role="assistant",
             content="At-risk ARR is up because of renewals across the book.",
             sources=[],
+            reply_to=self.asked,
         )
 
     def test_a_partial_visibility_viewer_cannot_see_the_askers_whole_book(self):
@@ -512,13 +522,15 @@ class DashboardReplyRedactionTests(ChartFixture):
     def test_a_communications_reply_with_no_context_is_unaffected(self):
         from services.copilot.views import visible_messages
 
-        # A plain follow-up from Priya, within her own mentioned slice:
-        # no `context`, so no book to check — exactly today's behaviour.
+        # A plain follow-up from Alice, who is in Priya's own scope (her
+        # manager) but is *not* Priya herself: proves the reply is kept
+        # through the ordinary per-source check (empty sources, so trivially
+        # readable), not because the viewer happens to be its author.
         Message.objects.create(
             conversation=self.conversation,
             role="user",
             content="Thanks, got it.",
-            author=self.priya,
+            author=self.alice,
         )
         plain_reply = Message.objects.create(
             conversation=self.conversation,
@@ -528,6 +540,71 @@ class DashboardReplyRedactionTests(ChartFixture):
         )
         kept = [m.content for m in visible_messages(self.conversation, self.priya)]
         self.assertIn(plain_reply.content, kept)
+
+    def test_reply_to_pins_the_answered_turn_despite_a_later_turn_from_the_viewer(self):
+        """The concurrent-send trap: U_A (Carl, dashboard context), then
+        U_B (Priya, no context — as if she posted while Carl's answer was
+        still in flight), then R_A, which really answers U_A via
+        `reply_to`. Ordering alone would pair R_A with U_B instead — no
+        context, so the book check would be skipped, and even if it did
+        carry context, U_B's own author is the viewer, so the (dashboard-
+        only) asker short-circuit would also wrongly fire. `reply_to`
+        must override that mispairing."""
+        from services.copilot.views import REDACTED_REPLY, visible_messages
+
+        Message.objects.create(
+            conversation=self.conversation, role="user", content="Thanks!", author=self.priya
+        )
+        concurrent_reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="At-risk ARR is up because of renewals across the book, again.",
+            sources=[],
+            reply_to=self.asked,
+        )
+
+        kept = [m.content for m in visible_messages(self.conversation, self.priya)]
+        self.assertNotIn(concurrent_reply.content, kept)
+        self.assertEqual(kept.count(REDACTED_REPLY), 2)
+
+    def test_a_partial_viewer_who_can_see_the_whole_filtered_book_sees_the_reply(self):
+        """Positive case: the same asker, but the screen was filtered down
+        to just the one company the viewer can already see — the book
+        check is a genuine subset check, not a blanket redaction."""
+        from services.copilot.views import visible_messages
+
+        narrow_context = {
+            "surface": "dashboard",
+            "area": "overview",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": str(self.pizza.pk)},
+            "focus": None,
+        }
+        asked_narrow = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="@Priya Nair what about Pizza Hut specifically?",
+            author=self.carl,
+            context=narrow_context,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.carl,
+            assignee=self.priya,
+            text=asked_narrow.content,
+            message=asked_narrow,
+        )
+        narrow_reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="Pizza Hut is renewing on schedule.",
+            sources=[],
+            reply_to=asked_narrow,
+        )
+
+        kept = [m.content for m in visible_messages(self.conversation, self.priya)]
+        self.assertIn(narrow_reply.content, kept)
 
 
 class ManagerSeesTeamTests(ChartFixture):

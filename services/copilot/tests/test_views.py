@@ -362,3 +362,8 @@ class CommunicationsRegressionTests(APITestCase):
         self.assertIsNone(response.data["messages"][0]["context"])
         self.assertIsNone(Message.objects.get(role=Message.Role.USER).context)
         self.assertIsNone(Conversation.objects.get().origin)
+        # `reply_to` is set for every send, dashboard or not.
+        self.assertEqual(
+            Message.objects.get(role=Message.Role.ASSISTANT).reply_to,
+            Message.objects.get(role=Message.Role.USER),
+        )

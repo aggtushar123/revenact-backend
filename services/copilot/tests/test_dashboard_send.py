@@ -54,6 +54,14 @@ class DashboardSendTests(DashboardFixture):
         self.assertEqual(data["origin"], origin)
         self.assertEqual(Conversation.objects.get().origin, origin)
 
+    def test_the_reply_records_the_turn_it_answers(self, completion):
+        self.send(self.context("overview"))
+
+        self.assertEqual(
+            Message.objects.get(role="assistant").reply_to,
+            Message.objects.get(role="user"),
+        )
+
     def test_origin_is_set_once(self, completion):
         first = self.send(self.context("overview")).data
         second = self.send(self.context("support", "tickets"), conversation_id=first["id"]).data

@@ -98,6 +98,20 @@ class Message(models.Model):
         "asker's filtered book (services/copilot/dashboard_context.py). Ids and filter "
         "values only, never record text. Null on every other turn.",
     )
+    reply_to = models.ForeignKey(
+        "self",
+        related_name="replies",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Assistant turns only: the user turn this reply answers, set by "
+        "SendMessageView at creation time. Ordering (created_at, id) alone can't be "
+        "trusted to pair a reply with its question — two participants sending "
+        "concurrently can interleave a second user turn between a reply and the one "
+        "it actually answers (services.copilot.views._reply_readable_by's own "
+        "docstring) — so redaction and history use this FK when it is set, falling "
+        "back to the immediately preceding user turn only for legacy rows with none.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
