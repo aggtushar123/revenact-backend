@@ -6062,6 +6062,26 @@ class CustomerHealthViewTests(APITestCase):
         self.assertEqual([f["label"] for f in row["risk_factors"]], [f["label"] for f in factors])
         self.assertIn("No contact in 120 days", [f["label"] for f in row["risk_factors"]])
 
+    def test_triage_score_is_computed_from_health_and_renewal(self):
+        """Average health (22) + a renewal inside 90 days (18) lands exactly
+        on the action threshold — see services.customers.triage. A fresh
+        customer, not `self.customer`, so its own csm/ai pulse gap (set in
+        setUp) doesn't add a third factor to the sum."""
+        customer = Customer.objects.create(
+            organisation=self.org,
+            name="Riverside",
+            renewal_date=timezone.localdate() + timedelta(days=30),
+        )
+
+        row = next(r for r in self.client.get(self.url).data["results"] if r["name"] == "Riverside")
+
+        self.assertEqual(row["triage_score"], 40)
+        labels = [f["label"] for f in row["triage_factors"]]
+        self.assertIn("Health is Average", labels)
+        self.assertIn("Renews in 30d", labels)
+        self.assertEqual(row["triage_direction"], "unknown")
+        self.assertEqual(customer.health_category, "average")
+
     def test_the_owner_comes_back_as_an_id_as_well_as_a_name(self):
         """The Primary Owner filter keys on the id: two CSMs sharing a name is
         ordinary, and filtering by label would silently merge their books."""
