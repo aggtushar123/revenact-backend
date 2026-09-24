@@ -99,3 +99,18 @@ class SessionInviteAndParticipantConstraintTests(TestCase):
         SessionParticipant.objects.create(session=self.session, user=self.teammate)
         with transaction.atomic(), self.assertRaises(IntegrityError):
             SessionParticipant.objects.create(session=self.session, user=self.teammate)
+
+
+class DashboardFieldsTests(TestCase):
+    def test_both_are_null_by_default(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        user = User.objects.create_user(
+            email="alice@acme.io", password="supersecret1", name="Alice", organisation=org
+        )
+        conversation = Conversation.objects.create(organisation=org, user=user)
+        message = Message.objects.create(
+            conversation=conversation, role=Message.Role.USER, content="Hi"
+        )
+
+        self.assertIsNone(conversation.origin)
+        self.assertIsNone(message.context)

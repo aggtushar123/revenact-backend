@@ -293,3 +293,37 @@ class MessageSourcesTests(APITestCase):
 
         assistant = Message.objects.get(role=Message.Role.ASSISTANT)
         self.assertEqual(assistant.sources[0]["label"], "Commercial Negotiation Summary")
+
+
+class DashboardFieldsSerializationTests(APITestCase):
+    origin = {
+        "surface": "dashboard",
+        "area": "revenue",
+        "view": "forecast",
+        "filters": {"owner": "", "lifecycle": "", "customer": ""},
+    }
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io", password="supersecret1", name="Alice", organisation=self.org
+        )
+        self.conversation = Conversation.objects.create(
+            organisation=self.org, user=self.user, title="Why?", origin=self.origin
+        )
+        Message.objects.create(
+            conversation=self.conversation,
+            role=Message.Role.USER,
+            content="Why?",
+            context={**self.origin, "focus": None},
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_the_list_carries_origin(self):
+        response = self.client.get("/api/v1/copilot/conversations/")
+        self.assertEqual(response.data[0]["origin"], self.origin)
+
+    def test_the_detail_carries_origin_and_each_turns_context(self):
+        response = self.client.get(f"/api/v1/copilot/conversations/{self.conversation.id}/")
+        self.assertEqual(response.data["origin"], self.origin)
+        self.assertEqual(response.data["messages"][0]["context"], {**self.origin, "focus": None})

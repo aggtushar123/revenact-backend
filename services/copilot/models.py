@@ -28,6 +28,14 @@ class Conversation(models.Model):
         settings.AUTH_USER_MODEL, related_name="copilot_conversations", on_delete=models.CASCADE
     )
     title = models.CharField(max_length=255, default="New Chat")
+    origin = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Where the conversation started on the Dashboard: the first dashboard "
+        "message's context without its focus ({surface, area, view, filters}). Set once, "
+        "never overwritten. Null for a conversation that never had a dashboard message. "
+        "Ids and filter values only.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -81,6 +89,14 @@ class Message(models.Model):
         "customer_id, customer_name} — so the screen can offer 'ask Mei' in one "
         "click when the answer runs out (services.knowledge). A snapshot of who "
         "was responsible when the answer was given.",
+    )
+    context = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="User turns asked on the Dashboard: the validated screen context "
+        "({surface, area, view, filters, focus}) after the focus was intersected with the "
+        "asker's filtered book (services/copilot/dashboard_context.py). Ids and filter "
+        "values only, never record text. Null on every other turn.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
