@@ -221,3 +221,36 @@ class AttentionViewTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(AttentionSnooze.objects.filter(key=key).exists())
+
+    def test_snoozing_the_same_key_again_updates_the_one_row(self):
+        customer = self._renewal_customer("Acme", days=5)
+        key = self._key(customer)
+
+        first = self._snooze(key, days=7)
+        # The item changes before the second snooze, so the refreshed
+        # fingerprint is actually a different one to assert against.
+        customer.renewal_date = self.today - timedelta(days=20)
+        customer.save(update_fields=["renewal_date"])
+        second = self._snooze(key, days=30)
+
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(AttentionSnooze.objects.filter(user=self.csm, key=key).count(), 1)
+        row = AttentionSnooze.objects.get(user=self.csm, key=key)
+        self.assertGreater(row.until, first.data["until"])
+        self.assertEqual(row.fingerprint["days"], -20)
+        self.assertNotEqual(row.fingerprint["days"], -5)
+
+    # ── one verb per URL ─────────────────────────────────────────────
+
+    def test_post_to_the_detail_url_is_not_allowed(self):
+        customer = self._renewal_customer("Acme")
+        key = self._key(customer)
+
+        response = self.client.post(f"{self.snooze_url}{key}/", {"days": 7}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_delete_to_the_collection_url_is_not_allowed(self):
+        response = self.client.delete(self.snooze_url)
+
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)

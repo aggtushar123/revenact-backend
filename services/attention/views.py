@@ -4,7 +4,12 @@
 (`rules.build_items`), drops what the viewer has snoozed (`snooze.visible_items`),
 and returns the top 25 by score. The two snooze views let a viewer act on one
 row — snooze it for a while, mark it Done, or bring it back — without ever
-touching another user's copy of the list.
+touching another user's copy of the list. They're separate classes, one verb
+each (`AttentionSnoozeView` POST-only on the collection URL,
+`AttentionSnoozeDetailView` DELETE-only on the `<key>` URL) rather than one
+class answering both: a single class on both URLs would let a POST reach the
+`<key>` URL (missing the `key` argument `post` doesn't take → 500) and a
+DELETE reach the collection URL, neither of which should exist.
 """
 
 from datetime import timedelta
@@ -100,6 +105,13 @@ class AttentionSnoozeView(APIView):
             else {"key": key, "days": serializer.validated_data["days"]},
         )
         return Response({"key": snooze.key, "until": snooze.until}, status=status.HTTP_201_CREATED)
+
+
+class AttentionSnoozeDetailView(APIView):
+    """DELETE /api/v1/dashboard/attention/snooze/<key>/ — bring the viewer's
+    own snoozed item back. 404 when they have no snooze for that key."""
+
+    permission_classes = [IsAuthenticated]
 
     def delete(self, request, key):
         snooze = get_object_or_404(AttentionSnooze, user=request.user, key=key)
