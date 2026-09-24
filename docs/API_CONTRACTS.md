@@ -5685,14 +5685,14 @@ internal and can change; clients should not read it. Per kind:
 
 | `kind` | `fingerprint` (every one also carries `arr`, the ARR at stake) |
 |---|---|
-| `renewal` | `overdue` (bool), `health` (category) |
+| `renewal` | `overdue` (bool), `health` (category), `renewal_date` (ISO date) |
 | `risk` | `score` (the Triage score) |
 | `going_quiet` | `last_contact` (ISO date, or `null` for never contacted) |
-| `support` | `count` (open High/Critical tickets) |
+| `support` | `count` (open High/Critical tickets), `open_ids` (their ticket ids, sorted) |
 | `anomaly` | `companies` (how many of the viewer's companies it spans) |
 
-It holds facts, never a count of days, so time passing on its own never
-changes it.
+It holds facts (dates, counts, ids), never a count of days, so time passing
+on its own never changes it.
 
 **Size.** The list is built over the viewer's whole (filtered) live book on
 every call, and is not capped before scoring — a cap would silently drop
@@ -5738,11 +5738,15 @@ alike. "Worse" (`services.attention.rules.worse`) compares the stored
 fingerprint with the current one, and any one of these is enough: more ARR
 at stake (every kind); a renewal that has become overdue, or whose health
 band dropped; a higher risk score; more open High/Critical tickets; an
-anomaly spanning more of the viewer's companies. A going-quiet item is worse
-only on more ARR — the silence growing is why it is on the list, not a
-change. A day passing is never "worse" on its own, so a Done item stays
-hidden until its facts change. A stored fingerprint missing a key (an older
-shape) counts as not worse on that key. Audited as `attention.snoozed` (`key`, and `days` or `done`).
+anomaly spanning more of the viewer's companies. A new episode is worse
+too, so a Done lasts one episode, not forever: a renewal with a different
+`renewal_date` (a new cycle), a going-quiet item with a different
+`last_contact` (a new silence after a contact), a support item with an open
+ticket id that wasn't open when it was snoozed (even if the count is the
+same). The silence growing is not a change — it is why a going-quiet item
+is on the list — and a day passing is never "worse" on its own, so a Done
+item stays hidden while its facts hold. A stored fingerprint missing a key
+(an older shape) counts as not worse on that key. Audited as `attention.snoozed` (`key`, and `days` or `done`).
 
 ### `DELETE /api/v1/dashboard/attention/snooze/<key>/`
 

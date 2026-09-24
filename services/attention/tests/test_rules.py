@@ -63,6 +63,10 @@ class WorseTests(SimpleTestCase):
         # Staying overdue, or no longer being overdue, is not worse.
         self.assertFalse(rules.worse("renewal", late, dict(late)))
         self.assertFalse(rules.worse("renewal", late, {**late, "overdue": False}))
+        # A different renewal date is a new cycle: a new episode, so worse.
+        dated = {**stored, "renewal_date": "2026-10-15"}
+        self.assertFalse(rules.worse("renewal", dated, dict(dated)))
+        self.assertTrue(rules.worse("renewal", dated, {**dated, "renewal_date": "2027-10-15"}))
 
     def test_risk(self):
         stored = {"score": 50, "arr": 100.0}
@@ -71,25 +75,28 @@ class WorseTests(SimpleTestCase):
         self.assertTrue(rules.worse("risk", stored, {**stored, "score": 51}))
         self.assertTrue(rules.worse("risk", stored, {**stored, "arr": 100.5}))
 
-    def test_going_quiet_is_worse_only_on_more_arr(self):
+    def test_going_quiet(self):
         stored = {"last_contact": "2026-07-01", "arr": 100.0}
+        # The same silence, longer, is not worse.
         self.assertFalse(rules.worse("going_quiet", stored, dict(stored)))
-        # A later contact date (the item would have left the list) or the
-        # same silence, longer, is not worse.
-        self.assertFalse(rules.worse("going_quiet", stored, {**stored, "last_contact": None}))
-        self.assertFalse(
+        self.assertFalse(rules.worse("going_quiet", stored, {**stored, "arr": 50.0}))
+        self.assertTrue(rules.worse("going_quiet", stored, {**stored, "arr": 200.0}))
+        # A different last contact is a new silence: a new episode, so worse.
+        self.assertTrue(
             rules.worse("going_quiet", stored, {**stored, "last_contact": "2026-08-01"})
         )
-        self.assertTrue(rules.worse("going_quiet", stored, {**stored, "arr": 200.0}))
         never = {"last_contact": None, "arr": 100.0}
         self.assertFalse(rules.worse("going_quiet", never, dict(never)))
+        self.assertTrue(rules.worse("going_quiet", never, {**never, "last_contact": "2026-08-01"}))
 
     def test_support(self):
-        stored = {"count": 2, "arr": 100.0}
+        stored = {"count": 2, "open_ids": [4, 7], "arr": 100.0}
         self.assertFalse(rules.worse("support", stored, dict(stored)))
-        self.assertFalse(rules.worse("support", stored, {"count": 1, "arr": 100.0}))
+        self.assertFalse(rules.worse("support", stored, {**stored, "count": 1, "open_ids": [7]}))
         self.assertTrue(rules.worse("support", stored, {**stored, "count": 3}))
         self.assertTrue(rules.worse("support", stored, {**stored, "arr": 150.0}))
+        # One resolved, another opened: the count holds, but it is a new ticket.
+        self.assertTrue(rules.worse("support", stored, {**stored, "open_ids": [7, 9]}))
 
     def test_anomaly(self):
         stored = {"companies": 2, "arr": 100.0}
@@ -111,9 +118,14 @@ class WorseTests(SimpleTestCase):
             "anomaly": {"arr": 100.0},
         }
         current = {
-            "renewal": {"overdue": True, "health": "average", "arr": 100.0},
-            "going_quiet": {"last_contact": None, "arr": 100.0},
-            "support": {"count": 9, "arr": 100.0},
+            "renewal": {
+                "overdue": True,
+                "health": "average",
+                "renewal_date": "2027-01-01",
+                "arr": 100.0,
+            },
+            "going_quiet": {"last_contact": "2026-08-01", "arr": 100.0},
+            "support": {"count": 9, "open_ids": [1, 2], "arr": 100.0},
             "risk": {"score": 99, "arr": 100.0},
             "anomaly": {"companies": 9, "arr": 100.0},
         }
@@ -124,6 +136,9 @@ class WorseTests(SimpleTestCase):
                 self.assertFalse(rules.worse(kind, current[kind], {}))
                 self.assertFalse(rules.worse(kind, None, current[kind]))
                 self.assertFalse(rules.worse(kind, {"arr": None}, current[kind]))
+        # Ids that aren't a list of ids never raise either.
+        self.assertFalse(rules.worse("support", {"open_ids": None}, {"open_ids": [1]}))
+        self.assertFalse(rules.worse("support", {"open_ids": [1]}, {"open_ids": 5}))
         # Health still counts on its own when "overdue" is the missing key.
         self.assertTrue(
             rules.worse("renewal", legacy["renewal"], {**current["renewal"], "health": "poor"})
@@ -246,7 +261,12 @@ class RenewalRuleTests(Fixture):
                 "score": 62500.0,
                 "customer_id": soon.pk,
                 "companies": [],
-                "fingerprint": {"overdue": False, "health": "poor", "arr": 100000.0},
+                "fingerprint": {
+                    "overdue": False,
+                    "health": "poor",
+                    "renewal_date": str(self.today + timedelta(days=52)),
+                    "arr": 100000.0,
+                },
             },
         )
         late = self.item(f"renewal:{overdue.pk}")
@@ -254,7 +274,13 @@ class RenewalRuleTests(Fixture):
         self.assertEqual(late["urgency"], 1.0)
         self.assertEqual(late["score"], 40000.0)
         self.assertEqual(
-            late["fingerprint"], {"overdue": True, "health": "average", "arr": 40000.0}
+            late["fingerprint"],
+            {
+                "overdue": True,
+                "health": "average",
+                "renewal_date": str(self.today - timedelta(days=5)),
+                "arr": 40000.0,
+            },
         )
 
 
@@ -341,8 +367,10 @@ class SupportRuleTests(Fixture):
         medium = self.customer("Medium")
         resolved = self.customer("Resolved")
         engineering = self.customer("Engineering")
-        self.ticket(1, hot, priority=Ticket.Priority.CRITICAL, opened_at=self.today - timedelta(7))
-        self.ticket(2, hot, opened_at=self.today - timedelta(days=2))
+        first = self.ticket(
+            1, hot, priority=Ticket.Priority.CRITICAL, opened_at=self.today - timedelta(7)
+        )
+        second = self.ticket(2, hot, opened_at=self.today - timedelta(days=2))
         self.ticket(3, hot, status=Ticket.Status.CLOSED)
         # Near misses: medium priority; resolved; another department's ticket.
         self.ticket(4, medium, priority=Ticket.Priority.MEDIUM)
@@ -355,7 +383,10 @@ class SupportRuleTests(Fixture):
         self.assertEqual(item["reason"], "2 open High/Critical tickets · oldest 7 days")
         self.assertEqual(item["urgency"], 0.625)
         self.assertEqual(item["score"], 62500.0)
-        self.assertEqual(item["fingerprint"], {"count": 2, "arr": 100000.0})
+        self.assertEqual(
+            item["fingerprint"],
+            {"count": 2, "open_ids": sorted([first.pk, second.pk]), "arr": 100000.0},
+        )
         self.assertNotIn("Secret", item["reason"] + item["title"])
 
     def test_an_account_ticket_counts_for_each_of_its_customers_in_the_set(self):

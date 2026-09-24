@@ -147,9 +147,9 @@ class SnoozeOverTimeTests(Fixture):
         customer.save(update_fields=["arr_billed_at_account"])
         self.assertIn(key, self.visible(30))
 
-    def test_going_quiet_leaves_and_returns_with_a_new_silence(self):
-        # A contact takes it off the list; it is only a candidate again
-        # 60 days later, and the old Done still hides it (same ARR).
+    def test_going_quiet_comes_back_with_a_new_silence(self):
+        # A contact takes it off the list; 60 days of silence later it is a
+        # new episode, and the old Done does not hide it.
         customer = self.customer("Quiet", contacted=70)
         key = f"going_quiet:{customer.pk}"
         self.snooze(key, done=True)
@@ -158,7 +158,33 @@ class SnoozeOverTimeTests(Fixture):
         )
         self.assertFalse(self.listed(key, 1))
         self.assertTrue(self.listed(key, 60))
-        self.assertNotIn(key, self.visible(60))
+        self.assertIn(key, self.visible(60))
+
+    def test_renewal_comes_back_in_its_next_cycle(self):
+        # Done this cycle; the renewal is then signed and moves to next year.
+        customer = self.customer(
+            "Soon", health_score=Decimal("5.0"), renewal_date=self.today + timedelta(days=45)
+        )
+        key = f"renewal:{customer.pk}"
+        self.snooze(key, done=True)
+        customer.renewal_date = self.today + timedelta(days=45 + 365)
+        customer.save(update_fields=["renewal_date"])
+        # Out of the 90-day window until next year...
+        self.assertFalse(self.listed(key, 30))
+        # ...and back when it is next due, not hidden by last year's Done.
+        self.assertTrue(self.listed(key, 365))
+        self.assertIn(key, self.visible(365))
+
+    def test_support_comes_back_when_one_ticket_resolves_and_another_opens(self):
+        customer = self.customer("Hot")
+        old = self.ticket(1, customer, opened_at=self.today - timedelta(days=2))
+        key = f"support:{customer.pk}"
+        self.snooze(key, done=True)
+        old.status = Ticket.Status.CLOSED
+        old.save(update_fields=["status"])
+        self.ticket(2, customer)
+        # Still one open ticket, but not the one that was dealt with.
+        self.assertIn(key, self.visible(3))
 
     def test_support_comes_back_with_another_ticket(self):
         customer = self.customer("Hot")

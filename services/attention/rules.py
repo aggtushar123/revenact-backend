@@ -187,7 +187,11 @@ def _renewal_items(customers, money, today):
                 f"{when} · health {health.capitalize()}",
                 money[customer.pk],
                 urgency_for_days_to(days),
-                {"overdue": days < 0, "health": health},
+                {
+                    "overdue": days < 0,
+                    "health": health,
+                    "renewal_date": customer.renewal_date.isoformat(),
+                },
             )
         )
     return items
@@ -256,7 +260,7 @@ def _support_items(user, customers, money, today):
         .distinct()
         .prefetch_related("account__customers")
     )
-    ages = defaultdict(list)
+    ages, open_ids = defaultdict(list), defaultdict(list)
     for ticket in tickets:
         age = max(0, (today - ticket.opened_at).days)
         targets = {ticket.customer_id} if ticket.customer_id else set()
@@ -264,6 +268,7 @@ def _support_items(user, customers, money, today):
             targets |= {customer.pk for customer in ticket.account.customers.all()}
         for customer_id in targets & by_id.keys():
             ages[customer_id].append(age)
+            open_ids[customer_id].append(ticket.pk)
 
     items = []
     for customer_id, customer_ages in ages.items():
@@ -275,7 +280,7 @@ def _support_items(user, customers, money, today):
                 f"{_plural(count, 'open High/Critical ticket')} · oldest {_plural(oldest, 'day')}",
                 money[customer_id],
                 urgency_ticket_age(oldest),
-                {"count": count},
+                {"count": count, "open_ids": sorted(open_ids[customer_id])},
             )
         )
     return items
@@ -383,17 +388,38 @@ def _rose(old, new, field, measure=lambda value: value):
         return False
 
 
+def _changed(old, new, field):
+    """Is `field` present on both sides and different? A missing key (an
+    older fingerprint shape) is not a change."""
+    return field in old and field in new and old[field] != new[field]
+
+
+def _new_ids(old, new, field):
+    """Does `new[field]` hold an id `old[field]` didn't? False when either
+    side lacks it or isn't a list of ids."""
+    try:
+        return bool(set(new[field]) - set(old[field]))
+    except (KeyError, TypeError):
+        return False
+
+
 def _severity(health):
     return SEVERITY.get(health, 0)
 
 
 #: Per kind, whether the non-money part of the fingerprint got worse.
-#: `going_quiet` has none: the silence growing is why the item exists, not a
-#: way for it to escalate, so only more ARR at stake brings it back.
+#: A new episode counts as worse too, so one Done never outlives the episode
+#: it was set on: a different renewal date (a new cycle), a different last
+#: contact (a new silence), a ticket that wasn't open before. The silence
+#: growing is not a change — it is why a going-quiet item exists.
 WORSE = {
-    "renewal": lambda old, new: _rose(old, new, "overdue") or _rose(old, new, "health", _severity),
+    "renewal": lambda old, new: (
+        _rose(old, new, "overdue")
+        or _rose(old, new, "health", _severity)
+        or _changed(old, new, "renewal_date")
+    ),
     "risk": lambda old, new: _rose(old, new, "score"),
-    "going_quiet": lambda old, new: False,
-    "support": lambda old, new: _rose(old, new, "count"),
+    "going_quiet": lambda old, new: _changed(old, new, "last_contact"),
+    "support": lambda old, new: _rose(old, new, "count") or _new_ids(old, new, "open_ids"),
     "anomaly": lambda old, new: _rose(old, new, "companies"),
 }
