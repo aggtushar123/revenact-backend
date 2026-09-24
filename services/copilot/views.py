@@ -172,7 +172,7 @@ def visible_messages(conversation, user):
 REDACTED_REPLY = "This reply isn't shared with you: it draws on records outside what you may see."
 
 
-def _reply_readable_by(turn, user, user_turn):
+def _reply_readable_by(turn, user, user_turn=None):
     """A Copilot reply was written from the asker's scope, not the viewer's.
     It is shown to a viewer who sees only a slice when every record it
     cites is one they could read themselves — a contribution within their
@@ -191,7 +191,11 @@ def _reply_readable_by(turn, user, user_turn):
 
     `user_turn` is the real user turn this reply answers (`turn.reply_to`
     when set; the immediately preceding user turn only for a legacy row
-    with none — see `visible_messages`), or None."""
+    with none — see `visible_messages`), or None. A caller with no turn to
+    hand over (a direct, standalone check with no conversation context —
+    see the mail/notes tests) passes nothing and gets the default `None`:
+    no book check, no asker short-circuit, only the per-source checks
+    below — fails closed, and is exactly the pre-dashboard behaviour."""
     from services.customers.scoping import visible_customers
     from services.knowledge.models import Contribution
     from services.knowledge.views import visible_contributions
