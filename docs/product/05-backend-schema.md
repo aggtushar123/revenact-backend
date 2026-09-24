@@ -327,6 +327,19 @@ contributions_30d.
 | Model | Purpose |
 |---|---|
 | `Translation` | One record's words in one language, kept so the next reader pays nothing. `source_hash` makes an edited record miss the cache. Read only under the source record's own rule |
+
+---
+
+### `attention`
+
+| Model | Purpose |
+|---|---|
+| `AttentionSnooze` | One viewer's snooze on one Dashboard Overview "Needs attention" item: `user` + `key` (unique together), `until` (nullable; null means Done), `fingerprint` (the item's own fields at snooze time, so a later read can tell whether it got worse) |
+
+No model backs the items themselves — `services.attention.rules.build_items`
+computes them fresh from `Customer`, `Ticket` and `Anomaly`/`AnomalyEvidence`
+each request, the same reuse-the-existing-rule shape as the forecast and
+health rollups above.
 ### `metrics` (brief delivery)
 
 | Model | Purpose |

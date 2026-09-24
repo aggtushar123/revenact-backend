@@ -189,6 +189,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Translation | Built | Read an inbound message in your own language and write the reply in theirs; cached per record, and contacts learn the language they write in |
 | Management brief to Slack | Built | Weekly or monthly delivery of the brief to a channel, posting what exists rather than generating on a schedule |
 | MCP server | Built | An agent outside Revenact reads as the person whose token it holds, read-only, under their own visibility |
+| Dashboard Overview — "Needs attention" | Built | Renewal, risk, going-quiet, support and anomaly items scored by ARR at stake × urgency, twice-filtered like every other dashboard; per-user snooze (a number of days, or Done) that reappears early if the item gets worse |
 
 ### 5.4 Multiplayer Copilot (the centerpiece)
 

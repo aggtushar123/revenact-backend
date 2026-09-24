@@ -80,6 +80,7 @@ expects.
 | Dashboards — Product Usage | `customers` | 🟢 Runs on `GET /api/v1/customers/products/` — one row per product: ARR led, health mix, utilisation, satisfaction, support burden and churn. Attribution is by `primary_product` only, and the response says so. See below. |
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
+| Dashboard Overview — "Needs attention" | `attention` | 🟢 `GET /api/v1/dashboard/attention/` — five kinds of item (renewal, risk, going_quiet, support, anomaly), scored `at_stake × urgency`, twice-filtered like every other dashboard. Per-user snoozing (`POST`/`DELETE …/snooze/`) — see below. |
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
@@ -5557,6 +5558,86 @@ counts), Filters (Priority, Unread), Categories (Starred, Important, Spam,
 Trash, then the five categories), the Categories block, the list grouped by
 month, the open message in place with its reply box. The queue view (the four
 kinds of waiting) is unchanged for every other source.
+
+## `attention` — Dashboard Overview's "Needs attention" list
+
+Mirrors: `src/pages/dashboard/...` (the Dashboard Overview redesign,
+`react-ts-app/docs/superpowers/specs/2026-09-23-dashboard-redesign-design.md`).
+
+Five kinds of item — **renewal**, **risk**, **going_quiet**, **support**,
+**anomaly** — each built from the rule the screen it comes from already owns
+(`services.attention.rules.build_items`), so the list can never disagree with
+the page an item drills into. Every item is scored `at_stake × urgency`: ARR
+in the organisation's currency times a 0.25–1.0 urgency whose formula is
+per-kind. Twice filtered, same as every other dashboard here: companies
+through `live_customers`, tickets through `visible_tickets`, anomaly evidence
+through `visible_evidence` — a rule that reads across models never widens
+what any one of them already restricts. No record text reaches an item;
+reasons are built from fields only.
+
+### Models
+
+- `AttentionSnooze` — `organisation`, `user`, `key` (unique together),
+  `until` (nullable; null means Done), `fingerprint` (JSON, the item's
+  fingerprint at snooze time), `created_at`.
+
+### `GET /api/v1/dashboard/attention/?owner=&lifecycle=&customer=`
+
+Auth: `IsAuthenticated`. The viewer's own candidate items — same filter
+parsing as `GET /api/v1/customers/forecast/` (bad values ignored, never a
+400) — with anything the viewer has snoozed dropped
+(`services.attention.snooze.visible_items`), sorted by score desc then
+title, capped at 25:
+
+```json
+{
+  "items": [
+    {
+      "key": "renewal:42", "kind": "renewal", "title": "Acme",
+      "reason": "renewal 5 days overdue · health Poor",
+      "at_stake": 100000.0, "urgency": 1.0, "score": 100000.0,
+      "customer_id": 42, "companies": [], "fingerprint": {"days": -5, "health": "poor", "arr": 100000.0}
+    }
+  ],
+  "currency": "USD",
+  "filters": {"owners": [...], "lifecycles": [...], "customers": [...]}
+}
+```
+
+`companies` is only ever populated for `kind: "anomaly"` (an anomaly can span
+several companies in the viewer's book); every other kind carries `[]`. ARR
+that can't be converted to the org's currency counts as 0 at stake — the item
+still appears, and its `reason` says so — rather than being dropped.
+
+### `POST /api/v1/dashboard/attention/snooze/`
+
+Auth: `IsAuthenticated`. `{"key": "renewal:42", "days": 7}` (1–90) or
+`{"key": "renewal:42", "done": true}`. `key` must be one of the viewer's own
+current items *right now*, built with no filters — the same rule the full
+list itself reads, so a key from another organisation, or one that has
+already resolved, is refused rather than silently stored:
+
+```json
+{"key": ["Not an item on your list."]}
+```
+
+(400). On success, upserts an `AttentionSnooze` for `(user, key)` with the
+item's current fingerprint and `until = now + days` (or `null` for Done).
+Returns **201** `{"key": "renewal:42", "until": "2026-10-01T12:00:00Z"}`
+(`until: null` for Done). Snoozing is strictly per-user: another member of
+the same organisation, or the same account's other owner, still sees the item
+until they snooze it themselves. If the item gets worse before the snooze
+would have expired — the renewal further overdue, its risk score climbing,
+support tickets piling up, and so on, per kind
+(`services.attention.rules.worse`) — it reappears immediately, snoozed or
+not. Audited as `attention.snoozed` (`key`, and `days` or `done`).
+
+### `DELETE /api/v1/dashboard/attention/snooze/<key>/`
+
+Auth: `IsAuthenticated`. Deletes the viewer's own snooze for that key — 404
+if there isn't one. `<key>` is matched with Django's `path` converter because
+a key contains a `:` (e.g. `renewal:42`). Returns **204**. Audited as
+`attention.unsnoozed` (`key`).
 
 ## `<app_name>` — <Frontend feature name>
 

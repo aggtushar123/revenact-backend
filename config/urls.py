@@ -233,4 +233,8 @@ urlpatterns = [
         EmailReplyView.as_view(),
         name="communications-email-reply",
     ),
+    # The Dashboard Overview's "Needs attention" list and per-user snoozing —
+    # its own app (services/attention/) since it reads across Customer,
+    # Ticket and Anomaly rather than belonging to any one of them.
+    path("api/v1/dashboard/", include("services.attention.urls")),
 ]
