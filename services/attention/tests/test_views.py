@@ -176,6 +176,17 @@ class AttentionViewTests(APITestCase):
         self.assertFalse(AttentionSnooze.objects.filter(user=self.csm, key=key).exists())
         self.assertIn(key, {item["key"] for item in self.client.get(self.url).data["items"]})
 
+    def test_delete_accepts_a_percent_encoded_key(self):
+        # What the browser sends for encodeURIComponent("renewal:<id>").
+        customer = self._renewal_customer("Acme")
+        key = self._key(customer)
+        self._snooze(key, days=7)
+
+        response = self.client.delete(f"{self.snooze_url}renewal%3A{customer.pk}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(AttentionSnooze.objects.filter(user=self.csm, key=key).exists())
+
     def test_malformed_keys_are_refused_like_any_other_unknown_key(self):
         customer = self._renewal_customer("Acme")
         for key in (

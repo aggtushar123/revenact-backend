@@ -1280,8 +1280,10 @@ Notes on the shape:
   the renewal is lost, and every contribution that produced it. Served
   rather than computed in the browser so the Renewal Date tab and the
   Revenue Forecast can't drift apart about the same account.
-* `triage_score` (int, 0-100) / `triage_factors` (`[{"label": str,
-  "points": int}]`, highest points first) / `triage_direction`
+* `triage_score` (int, 0–155, not a percentage and never clamped: the
+  sum of its factors, at most Poor 66 + a 4-point pulse gap 44 + renewal
+  inside 90 days 18 + a Good → Poor fall 27; ≥ 40 means needs action now) /
+  `triage_factors` (`[{"label": str, "points": int}]`, highest points first) / `triage_direction`
   (`declining` | `improving` | `flat` | `unknown`) are the Triage tab's own
   rule (`services/customers/triage.py`) applied to that row, from exactly
   the fields already on it plus its prefetched history — health category,
@@ -2185,7 +2187,11 @@ interactions stats endpoint:
   `positive_sentiment` (positive-sentiment tickets), `negative_sentiment`
   (negative-sentiment tickets), `open_count` (tickets not in
   resolved/closed statuses), `oldest_open_days` (days since the oldest
-  open ticket was opened, or `null` if no open tickets).
+  open ticket was opened, or `null` if no open tickets). Like every other
+  KPI, these two follow the request's filters, including `from`/`to` on
+  `opened_at`: a windowed call counts only the open tickets *opened* in that
+  window, so a caller that wants every open ticket (the Overview card)
+  calls without `from`/`to`.
 - `priority`: `[{name, value}, ...]` — all four priority levels, even
   empty ones, ordered as they appear on the form.
 - `status`: `[{name, value}, ...]` — all five statuses, even empty ones.
@@ -5742,7 +5748,9 @@ shape) counts as not worse on that key. Audited as `attention.snoozed` (`key`, a
 
 Auth: `IsAuthenticated`. Deletes the viewer's own snooze for that key — 404
 if there isn't one. `<key>` is matched with Django's `path` converter because
-a key contains a `:` (e.g. `renewal:42`). Returns **204**. Audited as
+a key contains a `:` (e.g. `renewal:42`); the percent-encoded form a browser
+sends for `encodeURIComponent(key)` (`renewal%3A42`) is accepted too.
+Returns **204**. Audited as
 `attention.unsnoozed` (`key`).
 
 **One verb per URL.** The collection URL (`.../snooze/`) only accepts `POST`;

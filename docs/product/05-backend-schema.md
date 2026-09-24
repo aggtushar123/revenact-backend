@@ -340,6 +340,9 @@ No model backs the items themselves — `services.attention.rules.build_items`
 computes them fresh from `Customer`, `Ticket` and `Anomaly`/`AnomalyEvidence`
 each request, the same reuse-the-existing-rule shape as the forecast and
 health rollups above.
+
+---
+
 ### `metrics` (brief delivery)
 
 | Model | Purpose |
