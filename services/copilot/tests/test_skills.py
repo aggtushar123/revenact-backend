@@ -84,6 +84,12 @@ class CatalogueTests(TestCase):
         self.assertIsNone(by["classification"]["produced"])
         self.assertIsNone(by["classification"]["last_run"])
 
+    def test_the_dashboard_has_its_own_purpose_and_skill(self):
+        self.assertEqual(usage.PURPOSES["dashboard"], "Ask Revenact on the Dashboard")
+        skill = skills.BY_PURPOSE["dashboard"]
+        self.assertEqual(skill.surface, "/dashboard")
+        self.assertIn("See accounts outside the asker's filtered book", skill.never)
+
 
 class ViewTests(APITestCase):
     def setUp(self):
