@@ -25,7 +25,7 @@ from services.notifications.realtime import notify as send_notification
 
 from . import activity_tracking, drill, forecast, interactions, portfolio, product_usage, usage
 from .headline_generation import NothingToSummarise, generate_headlines
-from .interactions import _parse_date, _parse_int
+from .interactions import _parse_int
 from .models import (
     Account,
     Attachment,
@@ -74,6 +74,7 @@ from .serializers import (
     TaskSerializer,
     TicketSerializer,
 )
+from .ticket_filters import filtered_tickets
 
 
 def _notify_owner_assigned(*, instance, actor, kind, noun, link):
@@ -2535,52 +2536,8 @@ class TicketStatsView(views.APIView):
             return Q(assignee_name=value)
         return None
 
-    def _filtered_tickets(self, request):
-        """Visibility first, then the caller's filters narrow from
-        there. Applying a raw `?account=` id before the visibility gate
-        is what previously let members read other owners' custom-object
-        records — see CustomObjectRecordListCreateView's own note."""
-
-        from .personal import visible_tickets
-
-        tickets = visible_tickets(
-            request.user, Ticket.objects.filter(visible_children_q(request.user)).distinct()
-        )
-        params = request.query_params
-
-        opened_from = _parse_date(params.get("from"))
-        if opened_from:
-            tickets = tickets.filter(opened_at__gte=opened_from)
-        opened_to = _parse_date(params.get("to"))
-        if opened_to:
-            tickets = tickets.filter(opened_at__lte=opened_to)
-
-        priority = params.get("priority")
-        if priority in Ticket.Priority.values:
-            tickets = tickets.filter(priority=priority)
-
-        owner_id = _parse_int(params.get("owner"))
-        if owner_id is not None:
-            tickets = tickets.filter(Q(customer__owner_id=owner_id) | Q(account__owner_id=owner_id))
-
-        customer_id = _parse_int(params.get("customer"))
-        if customer_id is not None:
-            tickets = tickets.filter(
-                Q(customer_id=customer_id) | Q(account__customers__id=customer_id)
-            )
-
-        account_id = _parse_int(params.get("account"))
-        if account_id is not None:
-            tickets = tickets.filter(account_id=account_id)
-
-        connector_id = _parse_int(params.get("connector"))
-        if connector_id is not None:
-            tickets = tickets.filter(connector_id=connector_id)
-
-        return tickets.distinct()
-
     def get(self, request):
-        tickets = self._filtered_tickets(request)
+        tickets = filtered_tickets(request.user, request.query_params)
 
         segment = drill.parse_segment(request.query_params, self.DRILL_KINDS)
         if segment is not None:

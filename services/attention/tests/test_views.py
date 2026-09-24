@@ -215,7 +215,7 @@ class AttentionViewTests(APITestCase):
     def test_post_builds_only_the_keys_kind_for_its_one_company(self):
         customer = self._renewal_customer("Acme")
         self._renewal_customer("Other")
-        with mock.patch("services.attention.views.build_items", wraps=rules.build_items) as build:
+        with mock.patch("services.attention.rules.build_items", wraps=rules.build_items) as build:
             response = self._snooze(self._key(customer), days=7)
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)

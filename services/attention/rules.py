@@ -25,6 +25,7 @@ Snoozes are not applied here — `build_items` returns every candidate and
 `worse` tells the caller whether a snoozed item has since got worse.
 """
 
+import re
 from collections import defaultdict
 from datetime import timedelta
 
@@ -364,6 +365,30 @@ def build_items(user, params, *, today, kinds=KINDS):
         "anomaly": lambda: _anomaly_items(user, customers, money, today, organisation),
     }
     return [item for kind in KINDS if kind in kinds for item in builders[kind]()]
+
+
+#: `<kind>:<id>` — the only shape a key ever has.
+KEY_PATTERN = re.compile(rf"^({'|'.join(KINDS)}):([1-9][0-9]*)$")
+
+
+def current_item(user, key, *, today=None):
+    """The viewer's item under `key` right now, or None — the one check both
+    snoozing and the dashboard's Ask Revenact apply to a key a client sends.
+
+    Only the key's own kind is built, and for a company's kind only that
+    company — through the filters' `customer` param, so it still has to be in
+    the viewer's visible book. An anomaly key builds the anomaly kind over the
+    whole book, since its fingerprint counts companies. Anything that is not
+    a well-formed key, including a non-string, is None."""
+    if not isinstance(key, str):
+        return None
+    match = KEY_PATTERN.match(key)
+    if match is None:
+        return None
+    kind, ident = match.groups()
+    params = {} if kind == "anomaly" else {"customer": ident}
+    items = build_items(user, params, today=today or timezone.localdate(), kinds=(kind,))
+    return next((item for item in items if item["key"] == key), None)
 
 
 def worse(kind, stored, current):
