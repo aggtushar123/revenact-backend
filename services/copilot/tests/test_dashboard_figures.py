@@ -65,6 +65,17 @@ class RevenueFiguresTests(DashboardFixture):
         self.assertEqual(figures["bridge"]["opening_arr"], 130000.0)
         self.assertNotIn(self.theirs.pk, [m["id"] for m in figures["movers"]])
 
+    def test_unpriced_count_equals_the_forecast_endpoint(self):
+        # No FxRate is configured for JPY on this organisation, so this
+        # account's ARR cannot be converted and it counts as unpriced.
+        self.customer("Tokyo", arr=100_000, currency="JPY")
+
+        figures = dashboard_figures.revenue_figures(self.csm, clean_filters({}))
+        screen = self.api.get("/api/v1/customers/forecast/", {}).data
+
+        self.assertEqual(figures["unpriced_count"], screen["unpriced_count"])
+        self.assertGreater(figures["unpriced_count"], 0)
+
 
 class HealthFiguresTests(DashboardFixture):
     def setUp(self):
@@ -127,3 +138,46 @@ class HealthFiguresTests(DashboardFixture):
         self.assertEqual(figures["needs_action_renewing_soon"], 1)
         self.assertEqual(figures["by_direction"]["declining"], 1)
         self.assertEqual(figures["accounts_needing_action"][0]["name"], "Poor soon")
+
+    def test_blind_spots_matches_the_frontend_rule(self):
+        # The frontend's `summarise()` counts a blind spot where
+        # `pulseGap >= 2` (csmPulseScore - aiPulseScore, both rated). A gap of
+        # exactly one point short of that must not count.
+        self.customer("Blind spot", csm_pulse_score=5, ai_pulse_value=3)
+        self.customer("Just misses", csm_pulse_score=5, ai_pulse_value=4)
+
+        figures = dashboard_figures.health_figures(self.csm, clean_filters({}), today=self.today)
+
+        self.assertEqual(figures["blind_spots"], 1)
+
+    def test_ignores_snapshots_outside_the_health_view_window(self):
+        # Both snapshots sit outside the Health view's default 12-month
+        # window (31 * 12 = 372 days), so they must not reach the trail —
+        # unwindowed they would read as a GOOD -> POOR decline.
+        old_trail = self.customer("Old trail", health_score=POOR, lifecycle_stage="live")
+        HealthSnapshot.objects.create(
+            customer=old_trail,
+            captured_on=self.today - timedelta(days=400),
+            health_score=GOOD,
+        )
+        HealthSnapshot.objects.create(
+            customer=old_trail,
+            captured_on=self.today - timedelta(days=380),
+            health_score=POOR,
+        )
+
+        filters = clean_filters({})
+        rows = self.api.get("/api/v1/customers/health/").data["results"]
+        ids = set(forecast.filtered_customers(self.csm, filters).values_list("pk", flat=True))
+        shown = [row for row in rows if row["id"] in ids]
+
+        screen_row = next(row for row in shown if row["id"] == old_trail.pk)
+        self.assertEqual(screen_row["triage_direction"], "unknown")
+
+        figures = dashboard_figures.health_figures(self.csm, filters, today=self.today)
+
+        for direction in dashboard_figures.DIRECTIONS:
+            self.assertEqual(
+                figures["by_direction"][direction],
+                sum(1 for row in shown if row["triage_direction"] == direction),
+            )
