@@ -30,6 +30,8 @@ from .anthropic_client import (
     get_completion,
 )
 from .context import build_grounding
+from .dashboard_context import DashboardContextSerializer, origin_of
+from .dashboard_grounding import build_dashboard_grounding, dashboard_system_prompt
 from .models import (
     Conversation,
     CopilotSession,
@@ -306,7 +308,15 @@ class SendMessageView(APIView):
     redirect (the session's own opening query was necessarily the first
     message on that conversation, sent before any session could exist —
     see CopilotSession's own docstring) — logged as a `redirected`
-    SessionEvent tagging the real new Message, not re-storing its text."""
+    SessionEvent tagging the real new Message, not re-storing its text.
+
+    Dashboard: an optional `context` ({surface, area, view, filters, focus})
+    says where on the Dashboard the question was asked. It is validated by
+    DashboardContextSerializer (a 400 `{"context": {...}}` otherwise), the
+    answer is grounded by dashboard_grounding in that screen's recomputed
+    figures and records, metered as `dashboard`, and the validated context is
+    stored on the user turn; the conversation's `origin` is set from the first
+    one and never changed."""
 
     permission_classes = [IsAuthenticated]
 
@@ -344,10 +354,23 @@ class SendMessageView(APIView):
                     {"detail": "This session has been closed."}, status=status.HTTP_403_FORBIDDEN
                 )
 
+        # A send from the Dashboard says where it was asked; the server
+        # recomputes what is there (services/copilot/dashboard_grounding.py).
+        # Absent or null, this is the Communications/Copilot send, unchanged.
+        dashboard = None
+        raw_context = request.data.get("context")
+        if raw_context is not None:
+            checked = DashboardContextSerializer(data=raw_context, context={"user": request.user})
+            if not checked.is_valid():
+                return Response({"context": checked.errors}, status=status.HTTP_400_BAD_REQUEST)
+            dashboard = checked.validated_data
+
         default_tone = TONE_INSTRUCTIONS[Organisation.AgentTone.PROFESSIONAL]
         tone_instruction = TONE_INSTRUCTIONS.get(organisation.ai_agent_tone, default_tone)
-        grounding = build_grounding(organisation, user=request.user, query=content)
-        book_summary = grounding.summary
+        if dashboard is not None:
+            grounding = build_dashboard_grounding(request.user, dashboard, content)
+        else:
+            grounding = build_grounding(organisation, user=request.user, query=content)
         # "@Mei, why is usage down?" or "@engineering, does SSO still break?"
         # — the people named, or responsible for the identified customer in
         # the named function, become a routed question once the turn is
@@ -366,10 +389,13 @@ class SendMessageView(APIView):
                 "notified and their answer will be recorded. Acknowledge that in one "
                 "sentence, then answer whatever the summary already covers."
             )
-        system = (
-            f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nReal-data summary:\n{book_summary}"
-            f"{routing_note}"
-        )
+        if dashboard is not None:
+            system = dashboard_system_prompt(tone_instruction, grounding.summary) + routing_note
+        else:
+            system = (
+                f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nReal-data summary:\n"
+                f"{grounding.summary}{routing_note}"
+            )
         prior_history = (
             [
                 {"role": m.role, "content": m.content}
@@ -384,7 +410,7 @@ class SendMessageView(APIView):
             reply = get_completion(
                 system=system,
                 messages=history,
-                purpose="copilot",
+                purpose="dashboard" if dashboard is not None else "copilot",
                 organisation=request.user.organisation,
                 user=request.user,
             )
@@ -400,7 +426,11 @@ class SendMessageView(APIView):
                 organisation=organisation, user=request.user, title=content[:50]
             )
         user_message = Message.objects.create(
-            conversation=conversation, role=Message.Role.USER, content=content, author=request.user
+            conversation=conversation,
+            role=Message.Role.USER,
+            content=content,
+            author=request.user,
+            context=dashboard,
         )
         Message.objects.create(
             conversation=conversation,
@@ -413,7 +443,13 @@ class SendMessageView(APIView):
             sources=grounding.sources,
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
         )
-        conversation.save(update_fields=["updated_at"])
+        # Set once, from the first dashboard message, and never overwritten:
+        # the history's tag says where a conversation started.
+        if dashboard is not None and conversation.origin is None:
+            conversation.origin = origin_of(dashboard)
+            conversation.save(update_fields=["origin", "updated_at"])
+        else:
+            conversation.save(update_fields=["updated_at"])
 
         if asked:
             route_questions(
