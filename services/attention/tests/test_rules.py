@@ -1,7 +1,9 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from django.db import connection
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -399,7 +401,8 @@ class AnomalyRuleTests(Fixture):
             {
                 "key": f"anomaly:{live.pk}",
                 "kind": "anomaly",
-                "title": "SSO login failures",
+                # Carl is a CSM: the stored title is not his to read.
+                "title": "Similar reports across 2 of your companies",
                 "reason": "2 companies · first seen 48 days ago",
                 "at_stake": 100000.0,
                 "urgency": 0.63,
@@ -423,6 +426,89 @@ class AnomalyRuleTests(Fixture):
         item = self.item(f"anomaly:{live.pk}", params={"customer": str(mine.pk)})
         self.assertEqual(item["companies"], [{"id": mine.pk, "name": "Mine"}])
         self.assertEqual(item["reason"], "1 company · first seen 3 days ago")
+
+    def test_only_a_viewer_who_sees_every_account_gets_the_stored_title(self):
+        mine = self.customer("Mine")
+        self.customer("Theirs", owner=self.other)
+        live = self.anomaly("Theirs and Mine both report SSO failures")
+        self.evidence(live, 1, customer=mine)
+        admin = User.objects.create_user(
+            email="boss@acme.io",
+            password="supersecret1",
+            name="Boss",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+            function=User.Function.LEADERSHIP,
+        )
+
+        csm_item = self.item(f"anomaly:{live.pk}")
+        self.assertEqual(csm_item["title"], "Similar reports across 1 of your companies")
+        self.assertNotIn("Theirs", str(csm_item))
+
+        admin_item = next(
+            item
+            for item in rules.build_items(admin, {}, today=self.today)
+            if item["key"] == f"anomaly:{live.pk}"
+        )
+        self.assertEqual(admin_item["title"], "Theirs and Mine both report SSO failures")
+
+    def test_account_evidence_lists_only_the_viewers_companies(self):
+        mine = self.customer("Mine")
+        theirs = self.customer("Theirs", owner=self.other)
+        # Owned by Dana, so the account itself doesn't put Theirs in Carl's book.
+        account = Account.objects.create(name="Shared", owner=self.other)
+        account.customers.add(mine, theirs)
+        live = self.anomaly("Spike")
+        self.evidence(live, 1, account=account)
+
+        item = self.item(f"anomaly:{live.pk}")
+        self.assertEqual(item["companies"], [{"id": mine.pk, "name": "Mine"}])
+        self.assertEqual(item["fingerprint"]["companies"], 1)
+
+
+class QueryCountTests(Fixture):
+    """The query count does not grow with the book."""
+
+    anomaly = AnomalyRuleTests.anomaly
+    evidence = AnomalyRuleTests.evidence
+
+    def book(self, size):
+        for n in range(size):
+            customer = self.customer(
+                f"C{self.made + n}",
+                contacted=None,
+                health_score=POOR,
+                renewal_date=self.today + timedelta(days=20),
+            )
+            HealthSnapshot.objects.create(
+                customer=customer, captured_on=self.today, health_score=POOR
+            )
+            self.ticket(self.made + n, customer)
+            account = Account.objects.create(name=f"A{self.made + n}", owner=self.csm)
+            account.customers.add(customer)
+            self.ticket(1000 + self.made + n, None, account=account)
+            live = self.anomaly(f"Spike {self.made + n}")
+            self.evidence(live, self.made + n, customer=customer)
+            self.evidence(live, 1000 + self.made + n, account=account)
+        self.made += size
+
+    def count(self):
+        # A fresh user each time: the user object caches its memberships
+        # after the first read, which would make the second run look cheaper.
+        user = User.objects.get(pk=self.csm.pk)
+        with CaptureQueriesContext(connection) as queries:
+            items = rules.build_items(user, {}, today=self.today)
+        return len(queries), {item["kind"] for item in items}
+
+    def test_one_customer_and_five_cost_the_same(self):
+        self.made = 0
+        self.book(1)
+        one, kinds = self.count()
+        self.assertEqual(kinds, {"renewal", "risk", "going_quiet", "support", "anomaly"})
+        self.book(4)
+        five, _ = self.count()
+        self.assertEqual(len(self.items()), 25)
+        self.assertEqual(one, five)
 
 
 class MoneyTests(Fixture):

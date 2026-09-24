@@ -38,7 +38,7 @@ from services.customers.activity_tracking import dark_accounts
 from services.customers.contact import last_contact_by_customer
 from services.customers.models import HealthSnapshot, Ticket
 from services.customers.personal import visible_tickets
-from services.customers.scoping import visible_children_q
+from services.customers.scoping import sees_everything, visible_children_q
 from services.customers.triage import ACTION_THRESHOLD, SEVERITY, triage
 from services.customers.views import CustomerHealthView
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
@@ -296,6 +296,10 @@ def _anomaly_items(user, customers, money, today, organisation):
             anomalies[row.anomaly_id] = row.anomaly
             behind[row.anomaly_id] |= hits
 
+    # A model-written title can name a company outside this viewer's book, or
+    # count companies across the whole org. Only someone who sees every
+    # account gets it as written; everyone else gets one built from fields.
+    sees_all = sees_everything(user)
     items = []
     for anomaly_id, anomaly in anomalies.items():
         companies = sorted((by_id[pk] for pk in behind[anomaly_id]), key=lambda c: (c.name, c.pk))
@@ -306,7 +310,10 @@ def _anomaly_items(user, customers, money, today, organisation):
         item = _item(
             "anomaly",
             anomaly.pk,
-            anomaly.title,
+            anomaly.title
+            if sees_all
+            # "1 of your companies" is already singular-correct.
+            else f"Similar reports across {len(companies)} of your companies",
             f"{_plural(len(companies), 'company', 'companies')} · first seen "
             f"{_plural(age, 'day')} ago",
             round(sum(known), 2),
