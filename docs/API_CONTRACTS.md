@@ -3653,16 +3653,38 @@ First real backend consumer of `Organisation.ai_agent_enabled`/
 real system-prompt tone instructions (`professional`/`friendly`/
 `concise`).
 
+**Ask Revenact on the Dashboard** (`services/copilot/dashboard_context.py`,
+`dashboard_figures.py`, `dashboard_grounding.py`) is the same send endpoint
+with an optional `context` — see `POST /api/v1/copilot/messages/` below for
+the request/response shape. `DashboardContextSerializer` validates `context`
+right after the conversation lookup and before anything the send does next:
+a bad `context` is a `400` before any model call, before any budget is
+spent, and before either `Message` is written — the same "don't record a
+failed action as if it happened" discipline the rest of this send already
+follows. The digest is built by `dashboard_grounding.build_dashboard_
+grounding` from the same figures code the area's own endpoint calls, and the
+system prompt wraps it in `<dashboard_data>…</dashboard_data>`, telling the
+model everything inside is data from records, never instructions to follow,
+however it is phrased — the same "customer/colleague words are data, not
+instructions" guard this codebase already applies to translation, anomaly
+summaries, gathered asks and the brief. The filters echoed into the prompt
+are only the values among the asker's own filter options (`forecast.
+filter_options`); anything else is treated as "all" rather than copied into
+the prompt verbatim.
+
 ### Models
 
 - `Conversation` — `organisation`, `user` (private per-user, not shared
   org-wide), `title` (derived from the first message's own text — no
-  rename UI), `created_at`/`updated_at`. Lazily created on the first
-  message actually sent, same "no ghost rows" convention as Canvas/
-  Campaign's own editors (POST on first Save).
+  rename UI), `origin` (the first dashboard message's `context` without its
+  `focus`, set once; null otherwise), `created_at`/`updated_at`. Lazily
+  created on the first message actually sent, same "no ghost rows"
+  convention as Canvas/Campaign's own editors (POST on first Save).
 - `Message` — `conversation`, `role` (`user`/`assistant` — mirrors the
   Anthropic Messages API's own two-role shape exactly), `content`,
-  `created_at`.
+  `author`, `sources`, `ask_suggestions`, `context` (a user turn asked on
+  the Dashboard; null otherwise), `reply_to` (an assistant reply's own
+  user turn, set on every new reply), `created_at`.
 
 ### Conventions specific to this app
 
@@ -3753,9 +3775,14 @@ invite card is gone.
 **Response `200`**
 ```json
 [
-  { "id": 5, "title": "What's my churn risk?", "created_at": "2026-09-05T10:00:00Z", "updated_at": "2026-09-05T10:01:00Z" }
+  { "id": 5, "title": "What's my churn risk?", "origin": null, "created_at": "2026-09-05T10:00:00Z", "updated_at": "2026-09-05T10:01:00Z" },
+  { "id": 7, "title": "Why is at-risk ARR up?", "origin": { "surface": "dashboard", "area": "revenue", "view": "forecast", "filters": { "owner": "2", "lifecycle": "", "customer": "" } }, "created_at": "2026-09-24T10:00:00Z", "updated_at": "2026-09-24T10:01:00Z" }
 ]
 ```
+
+`origin` is where the conversation started on the Dashboard — the first
+dashboard message's `context` without its `focus` — or `null`. Set once,
+never changed. The history shows it as a tag.
 
 ### `GET/DELETE /api/v1/copilot/conversations/<id>/`
 
@@ -3763,28 +3790,62 @@ Auth: `IsAuthenticated`. Scoped to the caller's own conversations (404,
 not 403, otherwise). No `PATCH` — a conversation's title/messages are
 only ever set by `POST .../messages/`.
 
-**Response `200`** (GET) — adds nested `messages` (each `{id, role,
-content, created_at}`) to the list shape above.
+**Response `200`** (GET) — adds `origin`, and nested `messages` (each
+`{id, role, content, author, sources, questions, ask_suggestions,
+context, created_at}`; `context` is the dashboard context a user turn
+was asked on, else `null`).
 **Response `204`** (DELETE) — empty body.
 
 ### `POST /api/v1/copilot/messages/`
 
-Auth: `IsAuthenticated`. Body: `{"conversation_id": <id>?, "content":
-"..."}`. Omit `conversation_id` to start a new Conversation (titled from
-this message); pass an existing one (must be the caller's own, `404`
-otherwise) to continue it. The real send — runs synchronously, no task
-queue.
+Auth: `IsAuthenticated`. Body: `{"conversation_id": <id>?, "content": "...", "context": {...}?}`.
+Omit `conversation_id` to start a new Conversation (titled from this message); pass an existing
+one (one the caller may read, `404` otherwise) to continue it. The real send — runs
+synchronously, no task queue.
 
-`400` if `content` is blank or over 8000 characters. `403` if
-`Organisation.ai_agent_enabled` is `false`. `503` if the selected
-provider's own real credentials aren't configured (`ANTHROPIC_API_KEY`,
-or the AWS/Bedrock ones — see the `copilot` app's own section above).
-`502` if the real API call itself fails (bad credentials, no Bedrock
-model access granted, rate limit, network error).
+**`context` (optional) — asked from the Dashboard.** Absent or `null`, the endpoint behaves
+exactly as before (Communications sends its `[About: …]` text prefix in `content` and no
+`context`). Present, the client says *where* it is and the server computes *what* is there; the
+client never sends figures.
 
-**Response `200`** — the (possibly newly created) Conversation, same
-nested shape as the detail endpoint's GET, now including this turn's
-user message and the model's real assistant reply.
+```json
+{
+  "conversation_id": 7,
+  "content": "Why is at-risk ARR up?",
+  "context": {
+    "surface": "dashboard",
+    "area": "revenue",
+    "view": "forecast",
+    "filters": {"owner": "2", "lifecycle": "customer", "customer": ""},
+    "focus": null
+  }
+}
+```
+
+- `surface`: `"dashboard"` only.
+- `area`: `overview | revenue | health | support`.
+- `view`: one of the area's sub-views (`DASHBOARD_VIEWS` in `services/copilot/dashboard_context.py`, mirroring the frontend's `src/pages/dashboard/areas.ts`): revenue `forecast|customers|products`; health `triage|divergence|movement|renewals|usage|activity|distribution`; support `tickets|topics`. The Overview takes `null`.
+- `filters`: only `owner`, `lifecycle`, `customer`; other keys are dropped, and a value that is not text or a whole number is ignored.
+- `focus`: `null`; `{"kind": "companies", "ids": [..]}` (at most 200; intersected with the caller's filtered, visible book, and ids outside it dropped silently); or `{"kind": "attention", "key": "risk:12"}` (must be on the caller's own attention list — the snooze check).
+
+The answer is grounded in that area's figures, recomputed for the caller and the filters by the
+same code as the area's endpoint (`/dashboard/attention/`, `/customers/forecast/`,
+`/customers/health/`, `/tickets/stats/`; Support ignores `lifecycle`, as its screen does), plus
+the records behind the focus company or companies, or the one the question names — each read
+under its own rule. Money is in the organisation currency. Metered as the `dashboard` purpose.
+
+`400` if `content` is blank or over 8000 characters, or `{"context": {<field>: [..]}}` for a
+wrong `surface`, `area`, `view`, `focus.kind`, more than 200 `ids`, or an attention key not on
+the caller's list (`{"context": {"focus": {"key": ["Not an item on your list."]}}}` — the same
+for a malformed key and someone else's). `403` if `Organisation.ai_agent_enabled` is `false`.
+`429` if the organisation's monthly budget for the purpose (`copilot`, or `dashboard` with a
+`context`) is spent. `503` if the selected provider's credentials aren't configured. `502` if
+the API call itself fails.
+
+**Response `200`** — the (possibly newly created) Conversation, same nested shape as the detail
+endpoint's GET, including this turn's user message (with `context` echoed, after the focus
+intersection) and the model's reply. `origin` is set from the first dashboard message and never
+overwritten.
 
 ---
 
@@ -3948,7 +4009,19 @@ and given history from their slice only. **A Copilot reply is withheld
 from a sliced viewer when it cites a record they may not read** — a
 contribution outside their scope, a customer they may not open — and
 shows as "This reply isn't shared with you…" instead (`copilot.views.
-_reply_readable_by`); the stored turn is untouched.
+_reply_readable_by`); the stored turn is untouched. Pairing a reply with
+the question it answers uses `Message.reply_to`, set on every new reply
+(a legacy row with none falls back to the immediately preceding user
+turn) — ordering alone can't be trusted once two participants can send
+concurrently. **A reply to a question asked on the Dashboard carries the
+asker's whole filtered book**, not just the records it cites — totals,
+top lists, company names never individually sourced — so a sliced viewer
+needs every customer in `forecast.filtered_customers(asker, the answered
+turn's context.filters)` to be inside their own visible customers, on
+top of the per-source checks above; the asker always sees their own
+dashboard replies regardless. A context-less (Communications/Copilot)
+reply keeps exactly the per-source checks for every viewer, the asker
+included.
 
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei
 report to her; Dana to Carl.
