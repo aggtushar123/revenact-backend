@@ -4,10 +4,14 @@ viewer and filters — the screen and the assistant can never disagree."""
 from datetime import timedelta
 from decimal import Decimal
 
+from django.utils import timezone
+
+from services.accounts.models import User
+from services.attention.models import AttentionSnooze
 from services.copilot import dashboard_figures
 from services.copilot.dashboard_context import clean_filters
 from services.customers import forecast
-from services.customers.models import HealthSnapshot, Opportunity
+from services.customers.models import Account, HealthSnapshot, Opportunity, Ticket
 
 from .dashboard_fixture import AVERAGE, GOOD, POOR, DashboardFixture
 
@@ -181,3 +185,118 @@ class HealthFiguresTests(DashboardFixture):
                 figures["by_direction"][direction],
                 sum(1 for row in shown if row["triage_direction"] == direction),
             )
+
+
+class SupportFiguresTests(DashboardFixture):
+    def setUp(self):
+        super().setUp()
+        self.mine = self.customer("Mine", lifecycle_stage="live")
+        self.busy = self.customer("Busy", lifecycle_stage="renewal")
+        self.theirs = self.customer("Theirs", owner=self.other)
+        self.ticket(1, self.mine, opened_at=self.today - timedelta(days=9))
+        self.ticket(2, self.busy, priority=Ticket.Priority.CRITICAL)
+        self.ticket(3, self.busy)
+        self.ticket(4, self.busy, priority=Ticket.Priority.LOW)
+        self.ticket(5, self.mine, status=Ticket.Status.RESOLVED)
+        self.engineering = self.ticket(6, self.mine, department=User.Function.ENGINEERING)
+        self.ticket(7, self.theirs)
+        account = Account.objects.create(name="Shared", owner=self.other)
+        account.customers.add(self.mine, self.theirs)
+        self.ticket(8, None, account=account)
+
+    def test_equals_the_ticket_stats_endpoint(self):
+        for params in ({}, {"customer": str(self.busy.pk)}, {"owner": str(self.csm.pk)}):
+            with self.subTest(params=params):
+                figures = dashboard_figures.support_figures(
+                    self.csm, clean_filters(params), today=self.today
+                )
+                screen = self.api.get("/api/v1/tickets/stats/", params).data
+                split = figures["priority_by_status"]
+
+                self.assertEqual(figures["open_count"], screen["kpis"]["open_count"])
+                self.assertEqual(figures["oldest_open_days"], screen["kpis"]["oldest_open_days"])
+                self.assertEqual(
+                    {Ticket.Priority(p).label: sum(row.values()) for p, row in split.items()},
+                    {row["name"]: row["value"] for row in screen["priority"]},
+                )
+                self.assertEqual(
+                    {
+                        Ticket.Status(s).label: sum(row[s] for row in split.values())
+                        for s in Ticket.Status.values
+                    },
+                    {row["name"]: row["value"] for row in screen["status"]},
+                )
+
+    def test_lifecycle_does_not_apply_as_on_the_support_screen(self):
+        with_lifecycle = dashboard_figures.support_figures(
+            self.csm, clean_filters({"lifecycle": "live"}), today=self.today
+        )
+        without = dashboard_figures.support_figures(self.csm, clean_filters({}), today=self.today)
+        self.assertEqual(with_lifecycle, without)
+
+    def test_most_urgent_accounts_within_the_viewers_book_and_department(self):
+        figures = dashboard_figures.support_figures(self.csm, clean_filters({}), today=self.today)
+
+        # Busy: two open High/Critical. Mine: one of its own plus the shared
+        # account's. Never Theirs; never the engineering ticket.
+        self.assertEqual(
+            figures["most_urgent"],
+            [
+                {"id": self.busy.pk, "name": "Busy", "open_urgent": 2},
+                {"id": self.mine.pk, "name": "Mine", "open_urgent": 2},
+            ],
+        )
+
+
+class OverviewFiguresTests(DashboardFixture):
+    def setUp(self):
+        super().setUp()
+        self.soon = self.customer(
+            "Soon", health_score=POOR, renewal_date=self.today + timedelta(days=10), arr=50_000
+        )
+        self.later = self.customer(
+            "Later", health_score=AVERAGE, renewal_date=self.today + timedelta(days=60)
+        )
+        self.customer(
+            "Theirs",
+            owner=self.other,
+            health_score=POOR,
+            renewal_date=self.today + timedelta(days=5),
+        )
+        self.ticket(1, self.soon, opened_at=self.today - timedelta(days=4))
+
+    def test_equals_the_headline_cards_and_the_attention_list(self):
+        now = timezone.now()
+        AttentionSnooze.objects.create(
+            organisation=self.org,
+            user=self.csm,
+            key=f"renewal:{self.later.pk}",
+            until=None,
+            fingerprint={
+                "arr": 100000.0,
+                "overdue": False,
+                "health": "average",
+                "renewal_date": self.later.renewal_date.isoformat(),
+            },
+        )
+        filters = clean_filters({})
+
+        figures = dashboard_figures.overview_figures(self.csm, filters, today=self.today, now=now)
+
+        attention = self.api.get("/api/v1/dashboard/attention/").data
+        self.assertEqual(figures["attention"], attention["items"][:10])
+        self.assertNotIn(f"renewal:{self.later.pk}", [i["key"] for i in figures["attention"]])
+        bridge = self.api.get("/api/v1/customers/forecast/", {"horizon_days": "365"}).data["bridge"]
+        self.assertEqual(figures["arr_today"], bridge["opening_arr"])
+        self.assertEqual(figures["at_risk"], round(bridge["churn"] + bridge["contraction"], 2))
+        health = dashboard_figures.health_figures(self.csm, filters, today=self.today)
+        self.assertEqual(
+            (figures["at_good"], figures["total"], figures["needs_action"]),
+            (health["at_good"], health["total"], health["needs_action"]),
+        )
+        kpis = self.api.get("/api/v1/tickets/stats/").data["kpis"]
+        self.assertEqual(
+            (figures["open_tickets"], figures["oldest_open_days"]),
+            (kpis["open_count"], kpis["oldest_open_days"]),
+        )
+        self.assertEqual(figures["currency"], "USD")
