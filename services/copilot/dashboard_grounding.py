@@ -54,12 +54,21 @@ DASHBOARD_PERSONA = (
 #: body, an anomaly snippet — all attacker-controlled: inbound customer
 #: email in particular) would close `<dashboard_data>` early and let
 #: whatever follows sit outside the fence the persona tells the model to
-#: trust only inside it. Stripped, not escaped, so a broken tag can't be
-#: reassembled by a clever split across two records either.
+#: trust only inside it. The token itself is renamed first (not just the
+#: two whole tags stripped) — a single tag-strip pass lets a nested tag
+#: rebuild itself (`</dashboard_</dashboard_data>data>` becomes
+#: `</dashboard_data>` after one pass), and variants like `< /dashboard_data>`
+#: or `</dashboard_data x>` don't match the tag regex at all. With no
+#: `dashboard_data` token left anywhere in the body, no opening or closing
+#: fence tag can survive or be reassembled from record text — the tag-strip
+#: below is then just a second, redundant layer over the real fence's own
+#: literal tags, which are added after this function runs.
+_DASHBOARD_DATA_TOKEN = re.compile(r"dashboard_data", re.IGNORECASE)
 _FENCE_TAG = re.compile(r"</?\s*dashboard_data\s*>", re.IGNORECASE)
 
 
 def dashboard_system_prompt(tone_instruction, summary):
+    summary = _DASHBOARD_DATA_TOKEN.sub("dashboard-data", summary)
     summary = _FENCE_TAG.sub("", summary)
     return (
         f"{DASHBOARD_PERSONA}\n\n{tone_instruction}\n\n"

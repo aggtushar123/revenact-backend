@@ -661,6 +661,46 @@ class DashboardReplyRedactionTests(ChartFixture):
         self.assertNotIn(reply.content, kept)
         self.assertIn(REDACTED_REPLY, kept)
 
+    def test_a_mentioned_reader_is_withheld_for_an_anomaly_attention_focus_too(self):
+        """I1's other branch: not just an Overview turn — an `anomaly:`
+        attention focus on any area/view can also carry a stored anomaly
+        title/summary."""
+        from services.copilot.views import REDACTED_REPLY, visible_messages
+
+        anomaly_focus_context = {
+            "surface": "dashboard",
+            "area": "health",
+            "view": "triage",
+            "filters": {"owner": "", "lifecycle": "", "customer": str(self.pizza.pk)},
+            "focus": {"kind": "attention", "key": "anomaly:1"},
+        }
+        asked = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="@Priya Nair why is this on the list?",
+            author=self.alice,
+            context=anomaly_focus_context,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.alice,
+            assignee=self.priya,
+            text=asked.content,
+            message=asked,
+        )
+        reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="Theirs and Mine both report SSO failures.",
+            sources=[],
+            reply_to=asked,
+        )
+
+        kept = [m.content for m in visible_messages(self.conversation, self.priya)]
+        self.assertNotIn(reply.content, kept)
+        self.assertIn(REDACTED_REPLY, kept)
+
     def test_a_sees_everything_reader_is_shown_the_same_reply(self):
         """The same shape of reply as above, but the mentioned reader also
         sees everything (an executive on another branch) — the stored
