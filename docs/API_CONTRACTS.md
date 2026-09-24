@@ -78,7 +78,7 @@ expects.
 | Products (catalogue behind `primary_product`) | `customers` (`Product` model) | 🟢 Full CRUD, API-complete — see below. `GET/POST /api/v1/products/` and `GET/PATCH/DELETE /api/v1/products/<id>/`, mounted at their own top-level prefix (a product is org configuration, and `/customers/products/` already means the Product Usage rollup). Case-insensitively unique per organisation, deliberately **not** scoped by ownership, retirable via `is_active`, and un-deletable while customers are on it. Reads for any member, writes gated on `manage_org_settings`. Managed from Settings > Products (`ProductsPage.tsx`). |
 | Metric layer (`/api/v1/metrics/`) | `metrics` | 🟢 Every headline number defined once (`services/metrics/registry.py`), read through the same rollups the dashboards draw, whole-organisation via `SystemActor`, with month-end history in `MetricSnapshot` recorded by `run_health_maintenance`. Gated on `view_all_accounts`. Phases 1–2 of the company-brain work: the Brain dashboard's Business metrics panel (`MetricLayerPanel.tsx`) reads it, and `<key>/by/<dimension>/` + `signals/` are the "why" layer — cuts by owner/product/segment/lifecycle and the material moves with their drivers. See below. |
 | Dashboards — Product Usage | `customers` | 🟢 Runs on `GET /api/v1/customers/products/` — one row per product: ARR led, health mix, utilisation, satisfaction, support burden and churn. Attribution is by `primary_product` only, and the response says so. See below. |
-| Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart. **Documented in the code, not here yet** — that view's own docstring is the contract for now. |
+| Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart, plus `open_count`/`oldest_open_days` for the Overview's own KPIs. See below. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
 | Dashboard Overview — "Needs attention" | `attention` | 🟢 `GET /api/v1/dashboard/attention/` — five kinds of item (renewal, risk, going_quiet, support, anomaly), scored `at_stake × urgency`, twice-filtered like every other dashboard. Per-user snoozing (`POST`/`DELETE …/snooze/`) — see below. |
 | Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
@@ -896,10 +896,9 @@ change.
 | `GET /api/v1/interactions/stats/` | `all`; `type:<email\|call\|ticket>`; `sentiment:<value>`; `area:<value>`; `category:<value>`; `subcategory:<value>` | `interactions` |
 | `GET /api/v1/tickets/stats/` | `all`; `on_hold`; `sentiment:<value>`; `priority:<value>`; `status:<value>`; `origin:<connector id>` or `origin:none`; `assignee:<name>` (exact match) | `tickets` |
 
-`GET /api/v1/tickets/stats/` has no section of its own yet — see the
-Status table above, `TicketStatsView`'s own docstring is still the
-contract for its non-drill response — so its drill segments are
-documented here, the one place a caller would look for them.
+`GET /api/v1/tickets/stats/` has its own section below for its non-drill
+response; its drill segments are documented here, the one place a caller
+would look for them.
 
 **Open as a list.** `GET /api/v1/customers/?ids=1,2,3` (below) is how a
 dashboard opens a drill's companies as a real, paginated list view with
@@ -1281,6 +1280,17 @@ Notes on the shape:
   the renewal is lost, and every contribution that produced it. Served
   rather than computed in the browser so the Renewal Date tab and the
   Revenue Forecast can't drift apart about the same account.
+* `triage_score` (int, 0-100) / `triage_factors` (`[{"label": str,
+  "points": int}]`, highest points first) / `triage_direction`
+  (`declining` | `improving` | `flat` | `unknown`) are the Triage tab's own
+  rule (`services/customers/triage.py`) applied to that row, from exactly
+  the fields already on it plus its prefetched history — health category,
+  the CSM/AI pulse gap, days to renewal, and whether the last three months
+  of history end worse than they started. Served rather than computed in
+  the browser so the Triage tab and the dashboard's attention-list endpoint
+  (`GET /api/v1/dashboard/attention/`) can't drift apart about the same
+  account. `triage_direction` is `unknown` rather than `flat` when fewer
+  than two months of history are on record.
 * `owner_id` accompanies `owner_name` because the dashboard's Primary
   Owner filter keys on it. Two CSMs sharing a name is ordinary in a real
   org, and a filter keyed on the label would merge their books. Both are
@@ -5622,6 +5632,18 @@ through `visible_evidence` — a rule that reads across models never widens
 what any one of them already restricts. No record text reaches an item;
 reasons are built from fields only.
 
+**Urgency formulas** (`services.attention.rules`, floor 0.25, ceiling 1.0,
+straight line between the two points given):
+
+| Kind | Measure | Formula |
+|---|---|---|
+| `renewal`, `risk` | days to renewal (negative = overdue) | overdue or ≤ 14 days → 1.0, down to 0.25 at 90 days; no renewal date at all → 0.5 |
+| `going_quiet` | days since last contact | never contacted → 1.0; 0.25 at 60 days, up to 1.0 at 120 |
+| `support` | the oldest matching open High/Critical ticket's age in days | 0.25 at 0 days, 1.0 at 14 days |
+| `anomaly` | days since the anomaly was first seen | ≤ 7 days → 1.0, down to 0.25 at 90 days |
+
+`score = round(at_stake * urgency, 2)`.
+
 ### Models
 
 - `AttentionSnooze` — `organisation`, `user`, `key` (unique together),
@@ -5656,6 +5678,14 @@ several companies in the viewer's book); every other kind carries `[]`. ARR
 that can't be converted to the org's currency counts as 0 at stake — the item
 still appears, and its `reason` says so — rather than being dropped.
 
+**Anomaly title rule.** The stored, model-written `Anomaly.title` can name a
+company outside this viewer's book, or count companies across the whole
+organisation, so it is only shown as written to a viewer who passes
+`sees_everything` (`view_all_accounts` — `services.customers.scoping`).
+Everyone else gets a title built from fields instead: `"Similar reports
+across <n> of your companies"`, where `<n>` is the count of companies behind
+that anomaly that are actually in their own (filtered) book.
+
 ### `POST /api/v1/dashboard/attention/snooze/`
 
 Auth: `IsAuthenticated`. `{"key": "renewal:42", "days": 7}` (1–90) or
@@ -5685,6 +5715,13 @@ Auth: `IsAuthenticated`. Deletes the viewer's own snooze for that key — 404
 if there isn't one. `<key>` is matched with Django's `path` converter because
 a key contains a `:` (e.g. `renewal:42`). Returns **204**. Audited as
 `attention.unsnoozed` (`key`).
+
+**One verb per URL.** The collection URL (`.../snooze/`) only accepts `POST`;
+the key URL (`.../snooze/<key>/`) only accepts `DELETE`. A `POST` to the key
+URL or a `DELETE` to the collection URL returns **405** — they are two
+separate view classes (`AttentionSnoozeView`, `AttentionSnoozeDetailView`)
+rather than one class answering both, precisely so neither wrong combination
+can reach a handler that doesn't take the arguments it would need.
 
 ## `<app_name>` — <Frontend feature name>
 
