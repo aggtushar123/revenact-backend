@@ -32,3 +32,7 @@ def http_get(url, token=None):
 
 def http_patch(url, payload, token=None):
     return http_request("PATCH", url, payload, token)
+
+
+def http_delete(url, token=None):
+    return http_request("DELETE", url, token=token)
