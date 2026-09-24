@@ -598,6 +598,31 @@ class MoneyTests(Fixture):
         self.assertEqual(item["reason"], "never contacted · ARR unknown")
 
 
+class CurrentItemTests(Fixture):
+    """The snooze endpoint's key check, now a function the Copilot shares."""
+
+    def test_an_item_on_the_viewers_list(self):
+        soon = self.customer(
+            "Soon", health_score=POOR, renewal_date=self.today + timedelta(days=10)
+        )
+
+        item = rules.current_item(self.csm, f"renewal:{soon.pk}", today=self.today)
+
+        self.assertEqual(item["key"], f"renewal:{soon.pk}")
+        self.assertEqual(item["kind"], "renewal")
+
+    def test_anything_else_is_none(self):
+        theirs = self.customer(
+            "Theirs",
+            owner=self.other,
+            health_score=POOR,
+            renewal_date=self.today + timedelta(days=10),
+        )
+        for key in (f"renewal:{theirs.pk}", "renewal:abc", "bogus:1", "renewal:0", "", None, 12):
+            with self.subTest(key=key):
+                self.assertIsNone(rules.current_item(self.csm, key, today=self.today))
+
+
 class ScopingAndFilterTests(Fixture):
     def test_another_csms_customer_never_appears(self):
         theirs = self.customer(

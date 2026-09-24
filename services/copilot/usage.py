@@ -15,6 +15,7 @@ from .models import ModelBudget, ModelCall
 #: shows. A purpose not listed here still logs; it just has no name.
 PURPOSES = {
     "copilot": "Copilot chat",
+    "dashboard": "Ask Revenact on the Dashboard",
     "headlines": "Account headlines",
     "classification": "Interaction classifier",
     "brief": "Management brief",

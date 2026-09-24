@@ -27,6 +27,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "sources",
             "questions",
             "ask_suggestions",
+            "context",
             "created_at",
         ]
 
@@ -56,7 +57,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Conversation
-        fields = ["id", "title", "created_at", "updated_at"]
+        fields = ["id", "title", "origin", "created_at", "updated_at"]
 
 
 class ConversationDetailSerializer(serializers.ModelSerializer):
@@ -71,7 +72,7 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Conversation
-        fields = ["id", "title", "messages", "visibility", "created_at", "updated_at"]
+        fields = ["id", "title", "origin", "messages", "visibility", "created_at", "updated_at"]
 
     def get_messages(self, obj):
         turns = getattr(obj, "_visible_messages", None)

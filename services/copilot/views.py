@@ -30,6 +30,8 @@ from .anthropic_client import (
     get_completion,
 )
 from .context import build_grounding
+from .dashboard_context import DashboardContextSerializer, origin_of
+from .dashboard_grounding import build_dashboard_grounding, dashboard_system_prompt
 from .models import (
     Conversation,
     CopilotSession,
@@ -127,7 +129,7 @@ def visible_messages(conversation, user):
     was asked of their team and what the team replied."""
     from services.accounts.hierarchy import scope_ids
 
-    turns = list(conversation.messages.order_by("created_at", "id"))
+    turns = list(conversation.messages.select_related("reply_to").order_by("created_at", "id"))
     if sees_whole_conversation(conversation, user):
         return turns
     from services.knowledge.models import Question
@@ -145,8 +147,10 @@ def visible_messages(conversation, user):
 
     mine = _me_and_my_reports(user)
     kept, previous_kept = [], False
+    last_user_turn = None
     for turn in turns:
         if turn.role == Message.Role.USER:
+            last_user_turn = turn
             targets = addressed.get(turn.id, set())
             if turn.author_id == user.id or targets & mine:
                 previous_kept = True
@@ -157,22 +161,77 @@ def visible_messages(conversation, user):
             if previous_kept:
                 kept.append(turn)
         elif previous_kept:
-            kept.append(turn if _reply_readable_by(turn, user) else _redacted(turn))
+            # The reply's own `reply_to` is the real question it answers;
+            # only a legacy row written before that FK existed falls back to
+            # whichever user turn happens to sort immediately before it.
+            answered = turn.reply_to if turn.reply_to_id else last_user_turn
+            kept.append(turn if _reply_readable_by(turn, user, answered) else _redacted(turn))
     return kept
 
 
 REDACTED_REPLY = "This reply isn't shared with you: it draws on records outside what you may see."
 
 
-def _reply_readable_by(turn, user):
+def _reply_readable_by(turn, user, user_turn=None):
     """A Copilot reply was written from the asker's scope, not the viewer's.
     It is shown to a viewer who sees only a slice when every record it
     cites is one they could read themselves — a contribution within their
     scope, a customer's record on a customer they may open — and withheld
-    otherwise, so a reply cannot quote what its reader may not read."""
-    from services.customers.scoping import visible_customers
+    otherwise, so a reply cannot quote what its reader may not read.
+
+    A dashboard reply (`user_turn.context` set) also carries aggregates and
+    company names drawn from the *asker's* filtered book — totals, top
+    lists, facts on companies never individually cited — not just the
+    records `turn.sources` names. A partial-visibility viewer therefore
+    needs the asker's whole filtered book to be inside their own visible
+    customers, not merely the cited records; the asker always reads their
+    own dashboard reply regardless. A context-less (Communications) reply
+    keeps exactly the per-source checks below for every viewer, the asker
+    included — there is no whole-book aggregate to guard there.
+
+    `user_turn` is the real user turn this reply answers (`turn.reply_to`
+    when set; the immediately preceding user turn only for a legacy row
+    with none — see `visible_messages`), or None. A caller with no turn to
+    hand over (a direct, standalone check with no conversation context —
+    see the mail/notes tests) passes nothing and gets the default `None`:
+    no book check, no asker short-circuit, only the per-source checks
+    below — fails closed, and is exactly the pre-dashboard behaviour.
+
+    Two more dashboard-only guards live here, both fail-closed:
+    a null `user_turn.author` (the asker's account was deleted) has no
+    book to check at all, so nobody but the owner — who never reaches this
+    function, see `sees_whole_conversation` — may read it; and the stored,
+    model-written anomaly title/summary (services.attention.rules) is
+    org-wide and can name a company outside this viewer's book even when
+    the asker's *filtered* book above is a subset of what they see, so a
+    reader who doesn't see everything never reads a reply that could carry
+    one from an asker who does."""
+    from services.customers.scoping import sees_everything, visible_customers
     from services.knowledge.models import Contribution
     from services.knowledge.views import visible_contributions
+
+    if user_turn is not None and user_turn.context:
+        if user_turn.author_id is None:
+            return False
+        if user_turn.author_id == user.id:
+            return True
+        from services.customers import forecast
+
+        filters = user_turn.context.get("filters") or {}
+        filtered = forecast.filtered_customers(user_turn.author, filters)
+        if filtered.exclude(pk__in=visible_customers(user)).exists():
+            return False
+
+        focus = user_turn.context.get("focus") or {}
+        names_a_stored_anomaly = user_turn.context.get("area") == "overview" or (
+            focus.get("kind") == "attention" and str(focus.get("key") or "").startswith("anomaly:")
+        )
+        if (
+            names_a_stored_anomaly
+            and sees_everything(user_turn.author)
+            and not sees_everything(user)
+        ):
+            return False
 
     for source in turn.sources or []:
         if source.get("type") == "contribution":
@@ -306,7 +365,15 @@ class SendMessageView(APIView):
     redirect (the session's own opening query was necessarily the first
     message on that conversation, sent before any session could exist —
     see CopilotSession's own docstring) — logged as a `redirected`
-    SessionEvent tagging the real new Message, not re-storing its text."""
+    SessionEvent tagging the real new Message, not re-storing its text.
+
+    Dashboard: an optional `context` ({surface, area, view, filters, focus})
+    says where on the Dashboard the question was asked. It is validated by
+    DashboardContextSerializer (a 400 `{"context": {...}}` otherwise), the
+    answer is grounded by dashboard_grounding in that screen's recomputed
+    figures and records, metered as `dashboard`, and the validated context is
+    stored on the user turn; the conversation's `origin` is set from the first
+    one and never changed."""
 
     permission_classes = [IsAuthenticated]
 
@@ -344,10 +411,23 @@ class SendMessageView(APIView):
                     {"detail": "This session has been closed."}, status=status.HTTP_403_FORBIDDEN
                 )
 
+        # A send from the Dashboard says where it was asked; the server
+        # recomputes what is there (services/copilot/dashboard_grounding.py).
+        # Absent or null, this is the Communications/Copilot send, unchanged.
+        dashboard = None
+        raw_context = request.data.get("context")
+        if raw_context is not None:
+            checked = DashboardContextSerializer(data=raw_context, context={"user": request.user})
+            if not checked.is_valid():
+                return Response({"context": checked.errors}, status=status.HTTP_400_BAD_REQUEST)
+            dashboard = checked.validated_data
+
         default_tone = TONE_INSTRUCTIONS[Organisation.AgentTone.PROFESSIONAL]
         tone_instruction = TONE_INSTRUCTIONS.get(organisation.ai_agent_tone, default_tone)
-        grounding = build_grounding(organisation, user=request.user, query=content)
-        book_summary = grounding.summary
+        if dashboard is not None:
+            grounding = build_dashboard_grounding(request.user, dashboard, content)
+        else:
+            grounding = build_grounding(organisation, user=request.user, query=content)
         # "@Mei, why is usage down?" or "@engineering, does SSO still break?"
         # — the people named, or responsible for the identified customer in
         # the named function, become a routed question once the turn is
@@ -366,10 +446,13 @@ class SendMessageView(APIView):
                 "notified and their answer will be recorded. Acknowledge that in one "
                 "sentence, then answer whatever the summary already covers."
             )
-        system = (
-            f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nReal-data summary:\n{book_summary}"
-            f"{routing_note}"
-        )
+        if dashboard is not None:
+            system = dashboard_system_prompt(tone_instruction, grounding.summary) + routing_note
+        else:
+            system = (
+                f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nReal-data summary:\n"
+                f"{grounding.summary}{routing_note}"
+            )
         prior_history = (
             [
                 {"role": m.role, "content": m.content}
@@ -384,7 +467,7 @@ class SendMessageView(APIView):
             reply = get_completion(
                 system=system,
                 messages=history,
-                purpose="copilot",
+                purpose="dashboard" if dashboard is not None else "copilot",
                 organisation=request.user.organisation,
                 user=request.user,
             )
@@ -400,7 +483,11 @@ class SendMessageView(APIView):
                 organisation=organisation, user=request.user, title=content[:50]
             )
         user_message = Message.objects.create(
-            conversation=conversation, role=Message.Role.USER, content=content, author=request.user
+            conversation=conversation,
+            role=Message.Role.USER,
+            content=content,
+            author=request.user,
+            context=dashboard,
         )
         Message.objects.create(
             conversation=conversation,
@@ -412,8 +499,26 @@ class SendMessageView(APIView):
             # relevant now instead.
             sources=grounding.sources,
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
+            # The real turn this reply answers, not just "whichever user turn
+            # happens to sort immediately before it" — two participants
+            # sending concurrently can interleave a second user turn in
+            # between (see _reply_readable_by's own docstring).
+            reply_to=user_message,
         )
-        conversation.save(update_fields=["updated_at"])
+        # Set once, from the first dashboard message, and never overwritten:
+        # the history's tag says where a conversation started. A conditional
+        # update, not an in-memory `origin is None` check — two concurrent
+        # first sends into the same conversation can't both win the race.
+        if dashboard is not None:
+            changed = Conversation.objects.filter(pk=conversation.pk, origin__isnull=True).update(
+                origin=origin_of(dashboard), updated_at=timezone.now()
+            )
+            if changed:
+                conversation.refresh_from_db(fields=["origin", "updated_at"])
+            else:
+                conversation.save(update_fields=["updated_at"])
+        else:
+            conversation.save(update_fields=["updated_at"])
 
         if asked:
             route_questions(
@@ -424,11 +529,16 @@ class SendMessageView(APIView):
                 message=user_message,
                 assignees=asked,
             )
-        elif asked_about is not None and not grounding.sources:
+        elif dashboard is None and asked_about is not None and not grounding.sources:
             # The question was about a company and retrieval found nothing
             # to answer it from. That is not a failure of the model, it is
             # something the company does not know about its own customer —
-            # see services.knowledge.gaps.
+            # see services.knowledge.gaps. A dashboard focus/attention
+            # question names a company through the screen, not through the
+            # asker naming it — "Why is this on my list?" on every renewal
+            # with no notes would otherwise raise a bogus gap even though
+            # the digest already answered it from the attention reason and
+            # facts (dashboard_grounding).
             record_unanswered(
                 organisation=organisation,
                 customer=asked_about,

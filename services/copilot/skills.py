@@ -57,6 +57,28 @@ SKILLS = (
         "/copilot",
     ),
     Skill(
+        "dashboard",
+        "Ask Revenact on the Dashboard",
+        "Answers a question about what the dashboard shows, from the same figures and "
+        "the records behind them.",
+        (
+            "The figures on the asker's screen, recomputed for its area, view and filters",
+            "The records retrieval finds for the companies asked about, under the asker's "
+            "own visibility",
+            "The conversation so far",
+        ),
+        ("Answer in prose", "Quote the records it used as sources on the reply"),
+        (
+            "Change a record",
+            "Send anything to a customer",
+            "See accounts outside the asker's filtered book",
+            "Take figures from the client",
+        ),
+        "A person asks from the Dashboard's Ask rail",
+        "Any signed-in user, while the organisation's AI agent is enabled",
+        "/dashboard",
+    ),
+    Skill(
         "headlines",
         "Account headlines",
         "Summarises one account's last three months of real activity into headlines.",

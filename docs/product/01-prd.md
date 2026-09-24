@@ -190,6 +190,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Management brief to Slack | Built | Weekly or monthly delivery of the brief to a channel, posting what exists rather than generating on a schedule |
 | MCP server | Built | An agent outside Revenact reads as the person whose token it holds, read-only, under their own visibility |
 | Dashboard Overview — "Needs attention" | Built | Renewal, risk, going-quiet, support and anomaly items scored by ARR at stake × urgency, twice-filtered like every other dashboard; per-user snooze (a number of days, or Done) that reappears early if the item gets worse |
+| Ask Revenact on the Dashboard | Built (backend) | Questions asked on the Dashboard carry where they were asked; the server recomputes that area's figures for the asker's own filtered book with the same code as the screen, adds the records behind the companies asked about under their own rules, and answers only from those. Metered as its own purpose; one history across Communications, Copilot and Dashboard, tagged with where each conversation started |
 
 ### 5.4 Multiplayer Copilot (the centerpiece)
 
@@ -305,3 +306,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-15 | SOC 2 controls: audit log, throttling, secure defaults, CI gates |
 | 2026-09-16 | Personal mailboxes, ticket connectors, files and CallSense, contact sentiment, pipeline departments, account pulse, continuous deployment |
 | 2026-09-18 | Agent skill sets vendored in both repos; Playwright agent CLI in the frontend |
+| 2026-09-24 | Dashboard attention list; Ask Revenact on the Dashboard (backend) |

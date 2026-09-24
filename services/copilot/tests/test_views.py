@@ -293,3 +293,77 @@ class MessageSourcesTests(APITestCase):
 
         assistant = Message.objects.get(role=Message.Role.ASSISTANT)
         self.assertEqual(assistant.sources[0]["label"], "Commercial Negotiation Summary")
+
+
+class DashboardFieldsSerializationTests(APITestCase):
+    origin = {
+        "surface": "dashboard",
+        "area": "revenue",
+        "view": "forecast",
+        "filters": {"owner": "", "lifecycle": "", "customer": ""},
+    }
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io", password="supersecret1", name="Alice", organisation=self.org
+        )
+        self.conversation = Conversation.objects.create(
+            organisation=self.org, user=self.user, title="Why?", origin=self.origin
+        )
+        Message.objects.create(
+            conversation=self.conversation,
+            role=Message.Role.USER,
+            content="Why?",
+            context={**self.origin, "focus": None},
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_the_list_carries_origin(self):
+        response = self.client.get("/api/v1/copilot/conversations/")
+        self.assertEqual(response.data[0]["origin"], self.origin)
+
+    def test_the_detail_carries_origin_and_each_turns_context(self):
+        response = self.client.get(f"/api/v1/copilot/conversations/{self.conversation.id}/")
+        self.assertEqual(response.data["origin"], self.origin)
+        self.assertEqual(response.data["messages"][0]["context"], {**self.origin, "focus": None})
+
+
+class CommunicationsRegressionTests(APITestCase):
+    """A send without `context` — Communications and Copilot — behaves exactly
+    as before the dashboard: the text prefix, the book summary, the copilot
+    purpose, nothing stored about a screen."""
+
+    url = "/api/v1/copilot/messages/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.user = User.objects.create_user(
+            email="alice@acme.io", password="supersecret1", name="Alice", organisation=self.org
+        )
+        Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
+        self.client.force_authenticate(self.user)
+
+    @patch("services.copilot.views.get_completion")
+    def test_a_prefixed_send_without_context(self, mock_get_completion):
+        mock_get_completion.return_value = "All quiet."
+
+        response = self.client.post(
+            self.url, {"content": "[About: Globex] What changed?"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        kwargs = mock_get_completion.call_args.kwargs
+        self.assertEqual(kwargs["purpose"], "copilot")
+        self.assertIn("Real-data summary", kwargs["system"])
+        self.assertNotIn("Screen:", kwargs["system"])
+        self.assertEqual(kwargs["messages"][-1]["content"], "[About: Globex] What changed?")
+        self.assertIsNone(response.data["origin"])
+        self.assertIsNone(response.data["messages"][0]["context"])
+        self.assertIsNone(Message.objects.get(role=Message.Role.USER).context)
+        self.assertIsNone(Conversation.objects.get().origin)
+        # `reply_to` is set for every send, dashboard or not.
+        self.assertEqual(
+            Message.objects.get(role=Message.Role.ASSISTANT).reply_to,
+            Message.objects.get(role=Message.Role.USER),
+        )

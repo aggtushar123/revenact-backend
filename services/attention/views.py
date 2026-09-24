@@ -12,7 +12,6 @@ class answering both: a single class on both URLs would let a POST reach the
 DELETE reach the collection URL, neither of which should exist.
 """
 
-import re
 from datetime import timedelta
 
 from django.shortcuts import get_object_or_404
@@ -26,14 +25,11 @@ from core import audit
 from services.customers import forecast
 
 from .models import AttentionSnooze
-from .rules import KINDS, build_items
+from .rules import build_items, current_item
 from .snooze import visible_items
 
 #: How many rows the "Needs attention" list ever shows.
 ITEM_LIMIT = 25
-
-#: `<kind>:<id>` — the only shape a key ever has.
-KEY_PATTERN = re.compile(rf"^({'|'.join(KINDS)}):([1-9][0-9]*)$")
 
 
 class AttentionListView(APIView):
@@ -89,7 +85,7 @@ class AttentionSnoozeView(APIView):
         key = serializer.validated_data["key"]
         done = serializer.validated_data["done"]
 
-        item = self._current_item(request.user, key)
+        item = current_item(request.user, key)
         if item is None:
             raise serializers.ValidationError({"key": ["Not an item on your list."]})
 
@@ -112,17 +108,6 @@ class AttentionSnoozeView(APIView):
             else {"key": key, "days": serializer.validated_data["days"]},
         )
         return Response({"key": snooze.key, "until": snooze.until}, status=status.HTTP_201_CREATED)
-
-    @staticmethod
-    def _current_item(user, key):
-        """The viewer's item under `key` right now, or None."""
-        match = KEY_PATTERN.match(key)
-        if match is None:
-            return None
-        kind, ident = match.groups()
-        params = {} if kind == "anomaly" else {"customer": ident}
-        items = build_items(user, params, today=timezone.localdate(), kinds=(kind,))
-        return next((item for item in items if item["key"] == key), None)
 
 
 class AttentionSnoozeDetailView(APIView):

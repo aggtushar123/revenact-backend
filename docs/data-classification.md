@@ -36,6 +36,8 @@ customer records.
 | `webhooks.WebhookSubscription` | internal | — | `secret`: **restricted** — HMAC signing key, currently plaintext in the column (DATA-02 gap, gap report #15); returned only on create |
 | `webhooks.WebhookDelivery` | internal | — | `error` may echo the receiver's response body; keep out of logs |
 | `copilot.Conversation`, `copilot.Message` | confidential | user, author, content, sources | Copilot chat; content quotes confidential records and names colleagues |
+| `copilot.Message.context`, `copilot.Conversation.origin` | internal | — | where on the Dashboard a question was asked: area, view, filter values and focus ids or an attention key. Ids and filter values only, never record text. `origin` is set once from the first dashboard message, without its focus |
+| `copilot.Message.reply_to` | internal | — | ids only: which user turn an assistant reply answers, set on every new reply; legacy rows fall back to the immediately preceding user turn |
 | `copilot.CopilotSession`, `SessionInvite`, `SessionParticipant`, `SessionEvent` | confidential | user references, `SessionEvent.payload` | multiplayer session activity |
 | `copilot.ModelCall`, `copilot.ModelBudget` | internal | user | token counts, latency, outcome; no prompt or completion text is stored |
 | `notifications.Notification` | internal | recipient, actor | message text may name a customer |

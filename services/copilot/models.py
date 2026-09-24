@@ -28,6 +28,14 @@ class Conversation(models.Model):
         settings.AUTH_USER_MODEL, related_name="copilot_conversations", on_delete=models.CASCADE
     )
     title = models.CharField(max_length=255, default="New Chat")
+    origin = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Where the conversation started on the Dashboard: the first dashboard "
+        "message's context without its focus ({surface, area, view, filters}). Set once, "
+        "never overwritten. Null for a conversation that never had a dashboard message. "
+        "Ids and filter values only.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -81,6 +89,28 @@ class Message(models.Model):
         "customer_id, customer_name} — so the screen can offer 'ask Mei' in one "
         "click when the answer runs out (services.knowledge). A snapshot of who "
         "was responsible when the answer was given.",
+    )
+    context = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="User turns asked on the Dashboard: the validated screen context "
+        "({surface, area, view, filters, focus}) after the focus was intersected with the "
+        "asker's filtered book (services/copilot/dashboard_context.py). Ids and filter "
+        "values only, never record text. Null on every other turn.",
+    )
+    reply_to = models.ForeignKey(
+        "self",
+        related_name="replies",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Assistant turns only: the user turn this reply answers, set by "
+        "SendMessageView at creation time. Ordering (created_at, id) alone can't be "
+        "trusted to pair a reply with its question — two participants sending "
+        "concurrently can interleave a second user turn between a reply and the one "
+        "it actually answers (services.copilot.views._reply_readable_by's own "
+        "docstring) — so redaction and history use this FK when it is set, falling "
+        "back to the immediately preceding user turn only for legacy rows with none.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
