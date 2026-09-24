@@ -147,8 +147,10 @@ def visible_messages(conversation, user):
 
     mine = _me_and_my_reports(user)
     kept, previous_kept = [], False
+    last_user_turn = None
     for turn in turns:
         if turn.role == Message.Role.USER:
+            last_user_turn = turn
             targets = addressed.get(turn.id, set())
             if turn.author_id == user.id or targets & mine:
                 previous_kept = True
@@ -159,22 +161,41 @@ def visible_messages(conversation, user):
             if previous_kept:
                 kept.append(turn)
         elif previous_kept:
-            kept.append(turn if _reply_readable_by(turn, user) else _redacted(turn))
+            kept.append(turn if _reply_readable_by(turn, user, last_user_turn) else _redacted(turn))
     return kept
 
 
 REDACTED_REPLY = "This reply isn't shared with you: it draws on records outside what you may see."
 
 
-def _reply_readable_by(turn, user):
+def _reply_readable_by(turn, user, user_turn):
     """A Copilot reply was written from the asker's scope, not the viewer's.
     It is shown to a viewer who sees only a slice when every record it
     cites is one they could read themselves — a contribution within their
     scope, a customer's record on a customer they may open — and withheld
-    otherwise, so a reply cannot quote what its reader may not read."""
+    otherwise, so a reply cannot quote what its reader may not read.
+
+    A dashboard reply (`user_turn.context` set) also carries aggregates and
+    company names drawn from the *asker's* filtered book — totals, top
+    lists, facts on companies never individually cited — not just the
+    records `turn.sources` names. A partial-visibility viewer therefore
+    needs the asker's whole filtered book to be inside their own visible
+    customers, not merely the cited records; the asker always reads their
+    own reply regardless. `user_turn` is the user turn this reply answers
+    (the turn immediately before it in the conversation), or None."""
     from services.customers.scoping import visible_customers
     from services.knowledge.models import Contribution
     from services.knowledge.views import visible_contributions
+
+    if user_turn is not None and user_turn.author_id == user.id:
+        return True
+    if user_turn is not None and user_turn.context and user_turn.author_id is not None:
+        from services.customers import forecast
+
+        filters = user_turn.context.get("filters") or {}
+        filtered = forecast.filtered_customers(user_turn.author, filters)
+        if filtered.exclude(pk__in=visible_customers(user)).exists():
+            return False
 
     for source in turn.sources or []:
         if source.get("type") == "contribution":
@@ -444,10 +465,17 @@ class SendMessageView(APIView):
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
         )
         # Set once, from the first dashboard message, and never overwritten:
-        # the history's tag says where a conversation started.
-        if dashboard is not None and conversation.origin is None:
-            conversation.origin = origin_of(dashboard)
-            conversation.save(update_fields=["origin", "updated_at"])
+        # the history's tag says where a conversation started. A conditional
+        # update, not an in-memory `origin is None` check — two concurrent
+        # first sends into the same conversation can't both win the race.
+        if dashboard is not None:
+            changed = Conversation.objects.filter(pk=conversation.pk, origin__isnull=True).update(
+                origin=origin_of(dashboard), updated_at=timezone.now()
+            )
+            if changed:
+                conversation.refresh_from_db(fields=["origin", "updated_at"])
+            else:
+                conversation.save(update_fields=["updated_at"])
         else:
             conversation.save(update_fields=["updated_at"])
 

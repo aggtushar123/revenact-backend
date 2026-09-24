@@ -427,6 +427,109 @@ class ReplyRedactionTests(ChartFixture):
         )
 
 
+class DashboardReplyRedactionTests(ChartFixture):
+    """A dashboard-sourced reply carries aggregates and company names from
+    the asker's whole filtered book, not just the records it cites — Fix
+    round 1 on the dashboard Ask Revenact backend (task-8-report.md):
+    `_reply_readable_by` now also requires the asker's whole filtered book
+    to be inside the viewer's own visible customers."""
+
+    def setUp(self):
+        super().setUp()
+        # Owned by Carl, same as Pizza Hut, but Priya has no reason (no
+        # question, no contribution, no FunctionOwner) to see this one.
+        self.secret = Customer.objects.create(
+            organisation=self.org, name="Secret Corp", owner=self.carl
+        )
+        self.conversation = Conversation.objects.create(
+            organisation=self.org, user=self.carl, title="Ask Revenact"
+        )
+        dashboard_context = {
+            "surface": "dashboard",
+            "area": "overview",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": ""},
+            "focus": None,
+        }
+        self.asked = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="@Priya Nair why is at-risk ARR up?",
+            author=self.carl,
+            context=dashboard_context,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.carl,
+            assignee=self.priya,
+            text=self.asked.content,
+            message=self.asked,
+        )
+        self.reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="At-risk ARR is up because of renewals across the book.",
+            sources=[],
+        )
+
+    def test_a_partial_visibility_viewer_cannot_see_the_askers_whole_book(self):
+        from services.copilot.views import REDACTED_REPLY, visible_messages
+
+        # Priya is mentioned (so she reads the question) and is even an
+        # assignee on Pizza Hut (so she could see that one customer), but
+        # Secret Corp — also in Carl's whole-book digest — is not hers.
+        kept = visible_messages(self.conversation, self.priya)
+        self.assertEqual([m.content for m in kept], [self.asked.content, REDACTED_REPLY])
+        self.assertEqual(Message.objects.get(role="assistant").content, self.reply.content)
+
+    def test_a_full_visibility_session_participant_sees_it(self):
+        from services.copilot.models import CopilotSession, SessionInvite, SessionParticipant
+        from services.copilot.views import visible_messages
+
+        session = CopilotSession.objects.create(
+            conversation=self.conversation, status=CopilotSession.Status.LIVE
+        )
+        SessionInvite.objects.create(
+            session=session,
+            invited_user=self.dana,
+            invited_by=self.carl,
+            status=SessionInvite.Status.ACCEPTED,
+        )
+        SessionParticipant.objects.create(session=session, user=self.dana)
+
+        kept = [m.content for m in visible_messages(self.conversation, self.dana)]
+        self.assertEqual(kept, [self.asked.content, self.reply.content])
+
+    def test_the_asker_always_sees_their_own_reply(self):
+        from services.copilot.views import visible_messages
+
+        # Carl owns the conversation, so this also exercises the plain
+        # owner path — sees_whole_conversation is True either way.
+        kept = [m.content for m in visible_messages(self.conversation, self.carl)]
+        self.assertEqual(kept, [self.asked.content, self.reply.content])
+
+    def test_a_communications_reply_with_no_context_is_unaffected(self):
+        from services.copilot.views import visible_messages
+
+        # A plain follow-up from Priya, within her own mentioned slice:
+        # no `context`, so no book to check — exactly today's behaviour.
+        Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="Thanks, got it.",
+            author=self.priya,
+        )
+        plain_reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="You're welcome.",
+            sources=[],
+        )
+        kept = [m.content for m in visible_messages(self.conversation, self.priya)]
+        self.assertIn(plain_reply.content, kept)
+
+
 class ManagerSeesTeamTests(ChartFixture):
     """Carl manages Dana. The CEO asks Dana something in a chat; Carl sees
     the ask and the reply. Raj, on another branch, sees nothing."""
