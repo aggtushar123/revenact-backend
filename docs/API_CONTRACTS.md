@@ -5688,6 +5688,11 @@ internal and can change; clients should not read it. Per kind:
 It holds facts, never a count of days, so time passing on its own never
 changes it.
 
+**Size.** The list is built over the viewer's whole (filtered) live book on
+every call, and is not capped before scoring — a cap would silently drop
+items. For a `view_all_accounts` viewer that is the whole organisation;
+the query count is constant, but the work grows with the book.
+
 `companies` is only ever populated for `kind: "anomaly"` (an anomaly can span
 several companies in the viewer's book); every other kind carries `[]`. ARR
 that can't be converted to the org's currency counts as 0 at stake — the item
@@ -5713,7 +5718,10 @@ already resolved, is refused rather than silently stored:
 {"key": ["Not an item on your list."]}
 ```
 
-(400). On success, upserts an `AttentionSnooze` for `(user, key)` with the
+(400) — also for a malformed key (anything but `<kind>:<id>`). Only the
+key's own kind is built to check it, and for a company's kind only that one
+company, still read through the viewer's visible book; an `anomaly:<id>` key
+builds the anomaly kind only. On success, upserts an `AttentionSnooze` for `(user, key)` with the
 item's current fingerprint and `until = now + days` (or `null` for Done).
 Returns **201** `{"key": "renewal:42", "until": "2026-10-01T12:00:00Z"}`
 (`until: null` for Done). Snoozing is strictly per-user: another member of

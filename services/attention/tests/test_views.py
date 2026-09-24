@@ -8,6 +8,7 @@ every kind's own shape.
 
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.utils import timezone
 from rest_framework import status
@@ -15,6 +16,7 @@ from rest_framework.test import APITestCase
 
 from core.models import AuditEvent
 from services.accounts.models import Organisation, User
+from services.attention import rules
 from services.attention.models import AttentionSnooze
 from services.customers.models import Customer
 
@@ -173,6 +175,42 @@ class AttentionViewTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(AttentionSnooze.objects.filter(user=self.csm, key=key).exists())
         self.assertIn(key, {item["key"] for item in self.client.get(self.url).data["items"]})
+
+    def test_malformed_keys_are_refused_like_any_other_unknown_key(self):
+        customer = self._renewal_customer("Acme")
+        for key in (
+            "renewal",
+            "renewal:",
+            "renewal:abc",
+            f"renewal:{customer.pk}:x",
+            f"renewal:0{customer.pk}",
+            f"bogus:{customer.pk}",
+        ):
+            with self.subTest(key=key):
+                response = self._snooze(key, days=7)
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(response.data, {"key": ["Not an item on your list."]})
+        self.assertFalse(AttentionSnooze.objects.exists())
+
+    def test_snoozing_another_csms_customer_is_refused(self):
+        # Scoping the check to one company still goes through the viewer's
+        # own visible book.
+        customer = self._renewal_customer("Theirs", owner=self.other)
+
+        response = self._snooze(self._key(customer), days=7)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_post_builds_only_the_keys_kind_for_its_one_company(self):
+        customer = self._renewal_customer("Acme")
+        self._renewal_customer("Other")
+        with mock.patch("services.attention.views.build_items", wraps=rules.build_items) as build:
+            response = self._snooze(self._key(customer), days=7)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        args, kwargs = build.call_args
+        self.assertEqual(args[1], {"customer": str(customer.pk)})
+        self.assertEqual(kwargs["kinds"], ("renewal",))
 
     def test_delete_without_a_snooze_is_404(self):
         response = self._delete("renewal:99999")

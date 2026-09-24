@@ -88,7 +88,7 @@ def urgency_anomaly_age(days):
     return _linear(days, 7, 90, CEILING, FLOOR)
 
 
-def filtered_customers(user, params):
+def filtered_customers(user, params, *, history=True):
     """The viewer's live book narrowed by the bar's filters (`forecast`'s own
     parsing, which already annotates the health inputs), with the health
     history the Triage score reads.
@@ -96,12 +96,20 @@ def filtered_customers(user, params):
     The history window is the Health view's default, not a shorter one: the
     score only reads the last three snapshots, but a customer whose snapshots
     stopped months ago would otherwise get a shorter trail here than on the
-    Health page, and the two scores would differ."""
+    Health page, and the two scores would differ.
+
+    Snapshots load lean — only the fields the score reads — and not at all
+    when `history` is False (no risk items being built)."""
+    customers = forecast.filtered_customers(user, params)
+    if not history:
+        return customers
     earliest = timezone.localdate() - timedelta(days=31 * CustomerHealthView.DEFAULT_HISTORY_MONTHS)
-    snapshots = HealthSnapshot.objects.filter(captured_on__gte=earliest).order_by("captured_on")
-    return forecast.filtered_customers(user, params).prefetch_related(
-        Prefetch("health_snapshots", queryset=snapshots)
+    snapshots = (
+        HealthSnapshot.objects.filter(captured_on__gte=earliest)
+        .only("id", "customer_id", "captured_on", "health_score")
+        .order_by("captured_on")
     )
+    return customers.prefetch_related(Prefetch("health_snapshots", queryset=snapshots))
 
 
 def _plural(count, word, plural=None):
@@ -329,20 +337,28 @@ def _anomaly_items(user, customers, money, today, organisation):
     return items
 
 
-def build_items(user, params, *, today):
+#: Every kind, in the order the list builds them.
+KINDS = ("renewal", "risk", "going_quiet", "support", "anomaly")
+
+
+def build_items(user, params, *, today, kinds=KINDS):
     """Every candidate item for this viewer and these filters, unsorted and
-    not yet snooze-filtered."""
+    not yet snooze-filtered. `kinds` restricts the build to those kinds
+    only — the snooze endpoint checks one key without building the rest;
+    narrowing to one company goes through the filters' own `customer`
+    param, so it stays inside the viewer's visible book."""
     organisation = user.organisation
     rates = rates_for(organisation)
-    customers = list(filtered_customers(user, params))
+    customers = list(filtered_customers(user, params, history="risk" in kinds))
     money = {customer.pk: _money(customer, organisation, rates) for customer in customers}
-    return [
-        *_renewal_items(customers, money, today),
-        *_risk_items(customers, money, today),
-        *_going_quiet_items(customers, money, today, organisation, rates),
-        *_support_items(user, customers, money, today),
-        *_anomaly_items(user, customers, money, today, organisation),
-    ]
+    builders = {
+        "renewal": lambda: _renewal_items(customers, money, today),
+        "risk": lambda: _risk_items(customers, money, today),
+        "going_quiet": lambda: _going_quiet_items(customers, money, today, organisation, rates),
+        "support": lambda: _support_items(user, customers, money, today),
+        "anomaly": lambda: _anomaly_items(user, customers, money, today, organisation),
+    }
+    return [item for kind in KINDS if kind in kinds for item in builders[kind]()]
 
 
 def worse(kind, stored, current):
