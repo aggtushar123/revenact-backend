@@ -129,12 +129,13 @@ class AttentionViewTests(APITestCase):
         self.assertNotIn(key, keys)
 
     def test_a_snoozed_item_that_got_worse_shows_again(self):
-        customer = self._renewal_customer("Acme", days=5)
+        # Renews in 5 days: not yet overdue.
+        customer = self._renewal_customer("Acme", days=-5)
         key = self._key(customer)
         self._snooze(key, days=7)
         self.assertNotIn(key, {item["key"] for item in self.client.get(self.url).data["items"]})
 
-        # Further overdue than when it was snoozed.
+        # Now overdue, which it wasn't when it was snoozed.
         customer.renewal_date = self.today - timedelta(days=20)
         customer.save(update_fields=["renewal_date"])
 
@@ -149,7 +150,7 @@ class AttentionViewTests(APITestCase):
             user=self.csm,
             key=key,
             until=timezone.now() - timedelta(days=1),
-            fingerprint={"days": -5, "health": "poor", "arr": 100_000.0},
+            fingerprint={"overdue": True, "health": "poor", "arr": 100_000.0},
         )
 
         keys = {item["key"] for item in self.client.get(self.url).data["items"]}
@@ -223,7 +224,7 @@ class AttentionViewTests(APITestCase):
         self.assertFalse(AttentionSnooze.objects.filter(key=key).exists())
 
     def test_snoozing_the_same_key_again_updates_the_one_row(self):
-        customer = self._renewal_customer("Acme", days=5)
+        customer = self._renewal_customer("Acme", days=-5)
         key = self._key(customer)
 
         first = self._snooze(key, days=7)
@@ -237,8 +238,7 @@ class AttentionViewTests(APITestCase):
         self.assertEqual(AttentionSnooze.objects.filter(user=self.csm, key=key).count(), 1)
         row = AttentionSnooze.objects.get(user=self.csm, key=key)
         self.assertGreater(row.until, first.data["until"])
-        self.assertEqual(row.fingerprint["days"], -20)
-        self.assertNotEqual(row.fingerprint["days"], -5)
+        self.assertIs(row.fingerprint["overdue"], True)
 
     # ── one verb per URL ─────────────────────────────────────────────
 

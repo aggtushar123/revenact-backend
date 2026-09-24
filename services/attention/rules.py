@@ -179,7 +179,7 @@ def _renewal_items(customers, money, today):
                 f"{when} · health {health.capitalize()}",
                 money[customer.pk],
                 urgency_for_days_to(days),
-                {"days": days, "health": health},
+                {"overdue": days < 0, "health": health},
             )
         )
     return items
@@ -226,7 +226,7 @@ def _going_quiet_items(customers, money, today, organisation, rates):
                 "never contacted" if days is None else f"no contact in {_plural(days, 'day')}",
                 money[row["id"]],
                 urgency_quiet(days),
-                {"days": -1 if days is None else days},
+                {"last_contact": row["last_contact"]},
             )
         )
     return items
@@ -267,7 +267,7 @@ def _support_items(user, customers, money, today):
                 f"{_plural(count, 'open High/Critical ticket')} · oldest {_plural(oldest, 'day')}",
                 money[customer_id],
                 urgency_ticket_age(oldest),
-                {"count": count, "oldest": oldest},
+                {"count": count},
             )
         )
     return items
@@ -347,24 +347,37 @@ def build_items(user, params, *, today):
 
 def worse(kind, stored, current):
     """Has an item got worse since it was snoozed? `stored` and `current`
-    are its fingerprints then and now. Any one measure worsening is enough."""
-    if kind not in WORSE:
+    are its fingerprints then and now. Any one measure worsening is enough.
+
+    Fingerprints hold facts, never a count of days: a day passing is not the
+    item getting worse, so a snooze (or Done) survives the calendar. A key
+    missing from either side — a fingerprint stored under an older shape —
+    counts as not worse, and nothing here raises."""
+    if kind not in WORSE or not isinstance(stored, dict) or not isinstance(current, dict):
         return False
-    return current["arr"] > stored["arr"] or WORSE[kind](stored, current)
+    return _rose(stored, current, "arr") or WORSE[kind](stored, current)
 
 
-def _silence(days):
-    # -1 is "never contacted", the longest silence there is.
-    return float("inf") if days == -1 else days
+def _rose(old, new, field, measure=lambda value: value):
+    """Did `field` go up from `old` to `new`? False when either side lacks
+    it or can't be compared."""
+    try:
+        return measure(new[field]) > measure(old[field])
+    except (KeyError, TypeError):
+        return False
+
+
+def _severity(health):
+    return SEVERITY.get(health, 0)
 
 
 #: Per kind, whether the non-money part of the fingerprint got worse.
+#: `going_quiet` has none: the silence growing is why the item exists, not a
+#: way for it to escalate, so only more ARR at stake brings it back.
 WORSE = {
-    "renewal": lambda old, new: (
-        new["days"] < old["days"] or SEVERITY.get(new["health"], 0) > SEVERITY.get(old["health"], 0)
-    ),
-    "risk": lambda old, new: new["score"] > old["score"],
-    "going_quiet": lambda old, new: _silence(new["days"]) > _silence(old["days"]),
-    "support": lambda old, new: new["count"] > old["count"] or new["oldest"] > old["oldest"],
-    "anomaly": lambda old, new: new["companies"] > old["companies"],
+    "renewal": lambda old, new: _rose(old, new, "overdue") or _rose(old, new, "health", _severity),
+    "risk": lambda old, new: _rose(old, new, "score"),
+    "going_quiet": lambda old, new: False,
+    "support": lambda old, new: _rose(old, new, "count"),
+    "anomaly": lambda old, new: _rose(old, new, "companies"),
 }

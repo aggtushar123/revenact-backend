@@ -52,15 +52,17 @@ class UrgencyTests(SimpleTestCase):
 
 class WorseTests(SimpleTestCase):
     def test_renewal(self):
-        stored = {"days": 30, "health": "average", "arr": 100.0}
+        stored = {"overdue": False, "health": "average", "arr": 100.0}
         self.assertFalse(rules.worse("renewal", stored, dict(stored)))
-        self.assertFalse(rules.worse("renewal", stored, {**stored, "days": 40}))
         self.assertFalse(rules.worse("renewal", stored, {**stored, "health": "good"}))
         self.assertFalse(rules.worse("renewal", stored, {**stored, "arr": 50.0}))
-        self.assertTrue(rules.worse("renewal", stored, {**stored, "days": 29}))
-        self.assertTrue(rules.worse("renewal", stored, {**stored, "days": -3}))
+        self.assertTrue(rules.worse("renewal", stored, {**stored, "overdue": True}))
         self.assertTrue(rules.worse("renewal", stored, {**stored, "health": "poor"}))
         self.assertTrue(rules.worse("renewal", stored, {**stored, "arr": 101.0}))
+        late = {**stored, "overdue": True}
+        # Staying overdue, or no longer being overdue, is not worse.
+        self.assertFalse(rules.worse("renewal", late, dict(late)))
+        self.assertFalse(rules.worse("renewal", late, {**late, "overdue": False}))
 
     def test_risk(self):
         stored = {"score": 50, "arr": 100.0}
@@ -69,24 +71,24 @@ class WorseTests(SimpleTestCase):
         self.assertTrue(rules.worse("risk", stored, {**stored, "score": 51}))
         self.assertTrue(rules.worse("risk", stored, {**stored, "arr": 100.5}))
 
-    def test_going_quiet(self):
-        stored = {"days": 70, "arr": 100.0}
+    def test_going_quiet_is_worse_only_on_more_arr(self):
+        stored = {"last_contact": "2026-07-01", "arr": 100.0}
         self.assertFalse(rules.worse("going_quiet", stored, dict(stored)))
-        self.assertFalse(rules.worse("going_quiet", stored, {**stored, "days": 65}))
-        self.assertTrue(rules.worse("going_quiet", stored, {**stored, "days": 71}))
+        # A later contact date (the item would have left the list) or the
+        # same silence, longer, is not worse.
+        self.assertFalse(rules.worse("going_quiet", stored, {**stored, "last_contact": None}))
+        self.assertFalse(
+            rules.worse("going_quiet", stored, {**stored, "last_contact": "2026-08-01"})
+        )
         self.assertTrue(rules.worse("going_quiet", stored, {**stored, "arr": 200.0}))
-        # -1 means never contacted, which is the worst silence of all.
-        self.assertTrue(rules.worse("going_quiet", stored, {**stored, "days": -1}))
-        never = {"days": -1, "arr": 100.0}
+        never = {"last_contact": None, "arr": 100.0}
         self.assertFalse(rules.worse("going_quiet", never, dict(never)))
-        self.assertFalse(rules.worse("going_quiet", never, {**never, "days": 500}))
 
     def test_support(self):
-        stored = {"count": 2, "oldest": 5, "arr": 100.0}
+        stored = {"count": 2, "arr": 100.0}
         self.assertFalse(rules.worse("support", stored, dict(stored)))
-        self.assertFalse(rules.worse("support", stored, {"count": 1, "oldest": 3, "arr": 100.0}))
+        self.assertFalse(rules.worse("support", stored, {"count": 1, "arr": 100.0}))
         self.assertTrue(rules.worse("support", stored, {**stored, "count": 3}))
-        self.assertTrue(rules.worse("support", stored, {**stored, "oldest": 6}))
         self.assertTrue(rules.worse("support", stored, {**stored, "arr": 150.0}))
 
     def test_anomaly(self):
@@ -98,6 +100,34 @@ class WorseTests(SimpleTestCase):
 
     def test_unknown_kind_is_never_worse(self):
         self.assertFalse(rules.worse("nope", {"arr": 1}, {"arr": 2}))
+
+    def test_legacy_or_missing_keys_are_not_worse_and_never_raise(self):
+        # Fingerprints stored before they held facts rather than day counts.
+        legacy = {
+            "renewal": {"days": 30, "health": "average", "arr": 100.0},
+            "going_quiet": {"days": 70, "arr": 100.0},
+            "support": {"oldest": 5, "arr": 100.0},
+            "risk": {"arr": 100.0},
+            "anomaly": {"arr": 100.0},
+        }
+        current = {
+            "renewal": {"overdue": True, "health": "average", "arr": 100.0},
+            "going_quiet": {"last_contact": None, "arr": 100.0},
+            "support": {"count": 9, "arr": 100.0},
+            "risk": {"score": 99, "arr": 100.0},
+            "anomaly": {"companies": 9, "arr": 100.0},
+        }
+        for kind in legacy:
+            with self.subTest(kind=kind):
+                self.assertFalse(rules.worse(kind, legacy[kind], current[kind]))
+                self.assertFalse(rules.worse(kind, {}, current[kind]))
+                self.assertFalse(rules.worse(kind, current[kind], {}))
+                self.assertFalse(rules.worse(kind, None, current[kind]))
+                self.assertFalse(rules.worse(kind, {"arr": None}, current[kind]))
+        # Health still counts on its own when "overdue" is the missing key.
+        self.assertTrue(
+            rules.worse("renewal", legacy["renewal"], {**current["renewal"], "health": "poor"})
+        )
 
 
 GOOD, AVERAGE, POOR = Decimal("8.0"), Decimal("5.0"), Decimal("2.0")
@@ -216,14 +246,16 @@ class RenewalRuleTests(Fixture):
                 "score": 62500.0,
                 "customer_id": soon.pk,
                 "companies": [],
-                "fingerprint": {"days": 52, "health": "poor", "arr": 100000.0},
+                "fingerprint": {"overdue": False, "health": "poor", "arr": 100000.0},
             },
         )
         late = self.item(f"renewal:{overdue.pk}")
         self.assertEqual(late["reason"], "renewal 5 days overdue · health Average")
         self.assertEqual(late["urgency"], 1.0)
         self.assertEqual(late["score"], 40000.0)
-        self.assertEqual(late["fingerprint"], {"days": -5, "health": "average", "arr": 40000.0})
+        self.assertEqual(
+            late["fingerprint"], {"overdue": True, "health": "average", "arr": 40000.0}
+        )
 
 
 class RiskRuleTests(Fixture):
@@ -292,12 +324,15 @@ class GoingQuietRuleTests(Fixture):
         self.assertEqual(item["reason"], "no contact in 60 days")
         self.assertEqual(item["urgency"], 0.25)
         self.assertEqual(item["score"], 25000.0)
-        self.assertEqual(item["fingerprint"], {"days": 60, "arr": 100000.0})
+        self.assertEqual(
+            item["fingerprint"],
+            {"last_contact": str(self.today - timedelta(days=60)), "arr": 100000.0},
+        )
 
         silent = self.item(f"going_quiet:{never.pk}")
         self.assertEqual(silent["reason"], "never contacted")
         self.assertEqual(silent["urgency"], 1.0)
-        self.assertEqual(silent["fingerprint"], {"days": -1, "arr": 100000.0})
+        self.assertEqual(silent["fingerprint"], {"last_contact": None, "arr": 100000.0})
 
 
 class SupportRuleTests(Fixture):
@@ -320,7 +355,7 @@ class SupportRuleTests(Fixture):
         self.assertEqual(item["reason"], "2 open High/Critical tickets · oldest 7 days")
         self.assertEqual(item["urgency"], 0.625)
         self.assertEqual(item["score"], 62500.0)
-        self.assertEqual(item["fingerprint"], {"count": 2, "oldest": 7, "arr": 100000.0})
+        self.assertEqual(item["fingerprint"], {"count": 2, "arr": 100000.0})
         self.assertNotIn("Secret", item["reason"] + item["title"])
 
     def test_an_account_ticket_counts_for_each_of_its_customers_in_the_set(self):

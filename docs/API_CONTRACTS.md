@@ -5665,13 +5665,28 @@ title, capped at 25:
       "key": "renewal:42", "kind": "renewal", "title": "Acme",
       "reason": "renewal 5 days overdue · health Poor",
       "at_stake": 100000.0, "urgency": 1.0, "score": 100000.0,
-      "customer_id": 42, "companies": [], "fingerprint": {"days": -5, "health": "poor", "arr": 100000.0}
+      "customer_id": 42, "companies": [], "fingerprint": {"overdue": true, "health": "poor", "arr": 100000.0}
     }
   ],
   "currency": "USD",
   "filters": {"owners": [...], "lifecycles": [...], "customers": [...]}
 }
 ```
+
+`fingerprint` is the item's facts at the time it was built — the snooze
+endpoint stores it, and `worse` below compares against it. Its shape is
+internal and can change; clients should not read it. Per kind:
+
+| `kind` | `fingerprint` (every one also carries `arr`, the ARR at stake) |
+|---|---|
+| `renewal` | `overdue` (bool), `health` (category) |
+| `risk` | `score` (the Triage score) |
+| `going_quiet` | `last_contact` (ISO date, or `null` for never contacted) |
+| `support` | `count` (open High/Critical tickets) |
+| `anomaly` | `companies` (how many of the viewer's companies it spans) |
+
+It holds facts, never a count of days, so time passing on its own never
+changes it.
 
 `companies` is only ever populated for `kind: "anomaly"` (an anomaly can span
 several companies in the viewer's book); every other kind carries `[]`. ARR
@@ -5704,10 +5719,16 @@ Returns **201** `{"key": "renewal:42", "until": "2026-10-01T12:00:00Z"}`
 (`until: null` for Done). Snoozing is strictly per-user: another member of
 the same organisation, or the same account's other owner, still sees the item
 until they snooze it themselves. If the item gets worse before the snooze
-would have expired — the renewal further overdue, its risk score climbing,
-support tickets piling up, and so on, per kind
-(`services.attention.rules.worse`) — it reappears immediately, snoozed or
-not. Audited as `attention.snoozed` (`key`, and `days` or `done`).
+would have expired, it reappears immediately — a 7-day snooze or Done
+alike. "Worse" (`services.attention.rules.worse`) compares the stored
+fingerprint with the current one, and any one of these is enough: more ARR
+at stake (every kind); a renewal that has become overdue, or whose health
+band dropped; a higher risk score; more open High/Critical tickets; an
+anomaly spanning more of the viewer's companies. A going-quiet item is worse
+only on more ARR — the silence growing is why it is on the list, not a
+change. A day passing is never "worse" on its own, so a Done item stays
+hidden until its facts change. A stored fingerprint missing a key (an older
+shape) counts as not worse on that key. Audited as `attention.snoozed` (`key`, and `days` or `done`).
 
 ### `DELETE /api/v1/dashboard/attention/snooze/<key>/`
 

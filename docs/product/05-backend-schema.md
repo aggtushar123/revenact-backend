@@ -334,7 +334,7 @@ contributions_30d.
 
 | Model | Purpose |
 |---|---|
-| `AttentionSnooze` | One viewer's snooze on one Dashboard Overview "Needs attention" item: `user` + `key` (unique together), `until` (nullable; null means Done), `fingerprint` (the item's own fields at snooze time, so a later read can tell whether it got worse) |
+| `AttentionSnooze` | One viewer's snooze on one Dashboard Overview "Needs attention" item: `user` + `key` (unique together), `until` (nullable; null means Done), `fingerprint` (the item's facts at snooze time — never a count of days — so a later read can tell whether it got worse) |
 
 No model backs the items themselves — `services.attention.rules.build_items`
 computes them fresh from `Customer`, `Ticket` and `Anomaly`/`AnomalyEvidence`
