@@ -5450,6 +5450,42 @@ class TicketStatsTests(APITestCase):
         self.assertEqual(response.data["kpis"]["total"], 0)
         self.assertEqual(response.data["kpis"]["resolution_rate"], 0)
 
+    def test_open_count_and_oldest_open_days_with_mixed_tickets(self):
+        """open_count counts tickets not in RESOLVED_STATUSES;
+        oldest_open_days is days from the oldest open ticket."""
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        three_days_ago = today - timedelta(days=3)
+        five_days_ago = today - timedelta(days=5)
+
+        self._ticket(1, status=Ticket.Status.OPEN, opened_at=five_days_ago)
+        self._ticket(2, status=Ticket.Status.IN_PROGRESS, opened_at=three_days_ago)
+        self._ticket(3, status=Ticket.Status.RESOLVED, opened_at=today)
+        self._ticket(4, status=Ticket.Status.CLOSED, opened_at=today)
+
+        kpis = self.client.get(self.url).data["kpis"]
+
+        self.assertEqual(kpis["open_count"], 2)
+        self.assertEqual(kpis["oldest_open_days"], 5)
+
+    def test_oldest_open_days_is_none_when_no_open_tickets(self):
+        """When all tickets are resolved/closed, oldest_open_days is None."""
+        self._ticket(1, status=Ticket.Status.RESOLVED)
+        self._ticket(2, status=Ticket.Status.CLOSED)
+
+        kpis = self.client.get(self.url).data["kpis"]
+
+        self.assertEqual(kpis["open_count"], 0)
+        self.assertIsNone(kpis["oldest_open_days"])
+
+    def test_open_count_and_oldest_open_days_in_empty_set(self):
+        """With no tickets at all, both are 0 and None."""
+        kpis = self.client.get(self.url).data["kpis"]
+
+        self.assertEqual(kpis["open_count"], 0)
+        self.assertIsNone(kpis["oldest_open_days"])
+
     # ── filters ──────────────────────────────────────────────────────
 
     def test_date_range_filters_on_opened_at(self):

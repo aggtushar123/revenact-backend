@@ -2142,6 +2142,53 @@ Powers ActivityFeed's "Tickets" filter on the standalone Account page.
 
 **Response `200`** — same shape as the Customer-scoped list above.
 
+### `GET /api/v1/tickets/stats/`
+
+Auth: `IsAuthenticated`. Every rollup the Ticket Overview
+dashboard's Controls tab needs, in one response. Unfiltered by default
+to avoid the trap of a rolling window on seeded demo data with fixed
+dates: calling today after the seeds' 2026 dates renders everything
+empty, which looks like a broken integration. Callers that want a window
+ask for one.
+
+Query params all ignore a value they don't understand rather than
+returning `400`, same convention as `?renewal_within=` and the
+interactions stats endpoint:
+
+| Param | Meaning |
+|---|---|
+| `from`, `to` | `YYYY-MM-DD`, inclusive, against `opened_at`. |
+| `priority` | `critical`/`high`/`medium`/`low`. |
+| `owner` | User id. |
+| `customer` | Customer id. Includes that customer's accounts' tickets. |
+| `account` | Account id. |
+| `connector` | Connector id. |
+| `drill` | Opens one chart segment into the companies behind it — see **Dashboard drill (`?drill=`)** above. |
+
+**Response `200`** (no `drill`, or an unrecognised one) — `kpis`,
+`priority`, `status`, `origin`, `assignees`, `sentiment_timeline`,
+`filters`:
+
+- `kpis`: `total` (all tickets), `on_hold` (on-hold status),
+  `avg_lifetime_days` (average days from open to resolved/closed, or `null`
+  if none resolved yet), `resolution_rate` (percent resolved/closed),
+  `positive_sentiment` (positive-sentiment tickets), `negative_sentiment`
+  (negative-sentiment tickets), `open_count` (tickets not in
+  resolved/closed statuses), `oldest_open_days` (days since the oldest
+  open ticket was opened, or `null` if no open tickets).
+- `priority`: `[{name, value}, ...]` — all four priority levels, even
+  empty ones, ordered as they appear on the form.
+- `status`: `[{name, value}, ...]` — all five statuses, even empty ones.
+- `origin`: `[{name, value, provider, connector_id}, ...]` —
+  connector name or "Revenact" if unattached, ordered by count descending.
+- `assignees`: `[{name, total, [Status.label]: count, ...}, ...]` —
+  per-assignee breakdown by status, ordered by total ascending (quietest
+  first) for a horizontal chart.
+- `sentiment_timeline`: `[{date, positive, negative}, ...]` — bucketed
+  by month of `opened_at`.
+- `filters`: read-only; ships with the response so the filter bar needs
+  no second round trip.
+
 ### Models — the AI taxonomy (`Email`, `Call`, `Ticket`)
 
 Mirrors: `src/pages/dashboard/tabs/ai-trending/ControlsView.tsx` — the
