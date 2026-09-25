@@ -5,9 +5,18 @@ from .models import Anomaly, AnomalyEvidence
 
 @admin.register(Anomaly)
 class AnomalyAdmin(admin.ModelAdmin):
-    list_display = ("title", "organisation", "status", "first_seen_at", "last_seen_at")
+    """`title`/`summary` are model-written from customer reports, not
+    platform metadata — this is a metadata-only surface, so neither is
+    listed, searched, or editable here (`Anomaly.__str__` makes the same
+    call for what an audit row records as its target)."""
+
+    list_display = ("id", "organisation", "status", "created_at", "evidence_count")
     list_filter = ("status",)
-    search_fields = ("title", "summary")
+    exclude = ("title", "summary")
+
+    @admin.display(description="evidence")
+    def evidence_count(self, obj):
+        return obj.evidence.count()
 
 
 @admin.register(AnomalyEvidence)
