@@ -367,7 +367,7 @@ def detect(organisation, *, actor=None, request=None, now=None) -> dict:
             actor=actor,
             organisation=organisation,
             target=anomaly,
-            metadata={"title": title, "companies": len(companies), "reports": len(indices)},
+            metadata={"companies": len(companies), "reports": len(indices)},
         )
     return result
 

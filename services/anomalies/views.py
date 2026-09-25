@@ -213,7 +213,7 @@ class AnomalyDetailView(APIView):
             "anomaly.update",
             request=request,
             target=anomaly,
-            metadata={"title": anomaly.title, "status": wanted},
+            metadata={"status": wanted},
         )
         return self.get(request, pk)
 

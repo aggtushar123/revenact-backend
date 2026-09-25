@@ -434,6 +434,23 @@ class TitlesReachOnlyThoseWhoSeeEverything(Fixture):
         event = AuditEvent.objects.get(action="anomaly.found")
         self.assertNotIn("SSO login failures", event.target_repr)
 
+    def test_audit_metadata_carries_ids_and_counts_not_the_title(self):
+        # The portal and the log pipeline are metadata-only; the title is
+        # model-written from customer reports.
+        found = AuditEvent.objects.get(action="anomaly.found")
+        self.assertNotIn("title", found.metadata)
+        self.assertEqual(found.target_id, str(self.anomaly.id))
+        self.assertEqual(found.metadata, {"companies": 3, "reports": 3})
+        with self.assertLogs("core.audit", level="INFO") as logs:
+            self.client.patch(f"{URL}{self.anomaly.id}/", {"status": "acknowledged"}, format="json")
+        updated = AuditEvent.objects.get(action="anomaly.update")
+        self.assertNotIn("title", updated.metadata)
+        self.assertEqual(updated.metadata, {"status": "acknowledged"})
+        self.assertEqual(updated.target_id, str(self.anomaly.id))
+        for record in logs.records:
+            self.assertNotIn("title", record.audit["metadata"])
+            self.assertNotIn("SSO login failures", str(record.audit))
+
 
 class NamingNeverNamesACustomer(Fixture):
     """The prompt tells the model never to name a company; this is what
