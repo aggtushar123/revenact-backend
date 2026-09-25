@@ -11,6 +11,7 @@ from django.test import TestCase
 from services.accounts.models import Organisation, User
 from services.copilot.context import build_grounding, build_org_context_summary
 from services.customers.models import Account, Customer, Note, Opportunity, Risk, Ticket
+from services.knowledge.models import FunctionOwner
 
 
 class BuildOrgContextSummaryTests(TestCase):
@@ -68,6 +69,70 @@ class BuildOrgContextSummaryTests(TestCase):
         self.assertNotIn("Ghost Co", summary)
         self.assertNotIn(archived.name, summary)
         self.assertNotIn("Not Carl's", summary)
+
+    def test_a_churned_but_unarchived_owned_customer_is_excluded_from_the_digest(self):
+        # Churn and archive are separate actions (see
+        # services.customers.scoping.live_customers's own docstring): a
+        # churned customer can still be unarchived and still owned, but it
+        # is no longer "my book" and must not inflate ARR/health/at-risk.
+        Customer.objects.create(
+            organisation=self.org,
+            name="Globex",
+            owner=self.user,
+            health_score="9.0",
+        )
+        churned = Customer.objects.create(
+            organisation=self.org,
+            name="Churned Co",
+            owner=self.user,
+            health_score="1.0",
+            churn_date="2026-01-01",
+        )
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Your customers: 1 total", summary)
+        self.assertNotIn(churned.name, summary)
+
+    def test_a_customer_the_user_can_no_longer_see_is_excluded_from_company_matching(self):
+        # Not owned, not function-owned, not in the asker's reporting
+        # subtree, no question/contribution link — visible_customers(user)
+        # excludes it entirely, so it must not be matched by name and its
+        # content must never be retrieved, even though it's live and in
+        # the same organisation.
+        Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
+        Customer.objects.create(organisation=self.org, name="Invisible Co", owner=self.other_user)
+
+        with patch("services.copilot.context.find_relevant_company_semantic", return_value=None):
+            summary = build_org_context_summary(
+                self.org, self.user, query="How is Invisible Co doing?"
+            )
+
+        self.assertNotIn("Invisible Co", summary)
+
+    def test_an_owned_live_customer_still_counts(self):
+        Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.user, health_score="8.0"
+        )
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Your customers: 1 total", summary)
+        self.assertIn("Globex", summary)
+
+    def test_a_function_owned_customer_still_counts(self):
+        # Owned by someone else, but Carl is the function owner for CS on
+        # it — "your customers" means owned *or* responsible in your
+        # function (docs/API_CONTRACTS.md), not only Customer.owner.
+        customer = Customer.objects.create(
+            organisation=self.org, name="Initech", owner=self.other_user, health_score="7.0"
+        )
+        FunctionOwner.objects.create(customer=customer, function=User.Function.CS, user=self.user)
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Your customers: 1 total", summary)
+        self.assertIn("Initech", summary)
 
     def test_includes_owned_accounts_even_with_no_owned_customers(self):
         someone_elses_customer = Customer.objects.create(

@@ -16,6 +16,18 @@ panels (CockpitSummaryView/TaskListView's own `?mine=true`), not a
 tenant-wide report a CSM would have no reason to ask their own Copilot
 about.
 
+The owned/responsible customer set is additionally intersected with
+`services.customers.scoping.live_customers` — visible, not archived,
+and **not churned**. Owning a customer doesn't stop being true the day
+they churn, but a churned account is not "my book" for the purposes this
+digest exists for: it shouldn't inflate the ARR total, drag the average
+health score, or crowd a real at-risk customer out of the top-5. Company
+*matching* (which company is this question about — see `retrieval.py`)
+stays company-wide rather than book-scoped, as documented below, but is
+still bounded by `visible_customers`/`visible_accounts` — the same
+record-level visibility everywhere else — never a customer or account
+the asker isn't allowed to open.
+
 Aggregates in Python over the caller's own rows, same reasoning as
 CustomerStatsView's own docstring: health_category is a derived Python
 property, not a real column to GROUP BY, and this is fine at the scale of
@@ -44,6 +56,7 @@ from dataclasses import dataclass, field
 from django.db.models import Q
 
 from services.customers.models import Account, Customer, Opportunity, Risk, Ticket
+from services.customers.scoping import live_customers, visible_accounts, visible_customers
 from services.fx_rates.conversion import convert_to_org_currency
 
 from .retrieval import (
@@ -99,21 +112,28 @@ def _responsible_line(company) -> str:
 def build_grounding(organisation, user, query: str = "") -> Grounding:
     # "Your customers": the ones you own or answer for in your function
     # (services.knowledge.FunctionOwner) — the account team, not only the
-    # account owner.
-    customers = Customer.objects.filter(
-        Q(owner=user) | Q(function_owners__user=user),
-        organisation=organisation,
-        is_archived=False,
-    ).distinct()
+    # account owner — intersected with the live book
+    # (services.customers.scoping.live_customers: visible, not archived,
+    # not churned). `live_customers` already implies `organisation=`, since
+    # it's scoped to `user.organisation`; a churned-but-unarchived customer
+    # you still own no longer counts toward these figures.
+    customers = (
+        live_customers(user).filter(Q(owner=user) | Q(function_owners__user=user)).distinct()
+    )
     # `.distinct()` — same fan-out reasoning as AccountListView's own.
     accounts = Account.objects.filter(customers__organisation=organisation, owner=user).distinct()
     # Knowledge is company-wide (see services.knowledge): the company a
-    # question is about is looked up across the whole organisation, so an
-    # engineer, a sales rep or the CEO — none of whom own a book — can ask
-    # about any customer. The digest's own figures stay about the asker's
-    # book, which is what "your customers" has always meant.
-    company_customers = Customer.objects.filter(organisation=organisation, is_archived=False)
-    company_accounts = Account.objects.filter(customers__organisation=organisation).distinct()
+    # question is about is looked up across every customer/account the
+    # asker may open — services.customers.scoping.visible_customers/
+    # visible_accounts, the same record-level visibility boundary as
+    # everywhere else, not narrowed to the asker's own book (an engineer, a
+    # sales rep or the CEO — none of whom own a book — can still ask about
+    # any customer they're allowed to see; a customer they can't see is not
+    # matched, and its content is never retrieved). The digest's own
+    # figures stay about the asker's book, which is what "your customers"
+    # has always meant.
+    company_customers = visible_customers(user).filter(is_archived=False)
+    company_accounts = visible_accounts(user)
 
     customer_total = customers.count()
     account_total = accounts.count()

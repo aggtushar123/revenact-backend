@@ -81,7 +81,7 @@ expects.
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart, plus `open_count`/`oldest_open_days` for the Overview's own KPIs. See below. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
 | Dashboard Overview — "Needs attention" | `attention` | 🟢 `GET /api/v1/dashboard/attention/` — five kinds of item (renewal, risk, going_quiet, support, anomaly), scored `at_stake × urgency`, twice-filtered like every other dashboard. Per-user snoozing (`POST`/`DELETE …/snooze/`) — see below. |
-| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
+| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business — owned or function-owned, intersected with `live_customers` (visible, not archived, not churned; `services/customers/scoping.py`), so a churned-but-unarchived customer no longer inflates the figures — (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
 | Communications (`/communications`) | `customers` | 🟢 Built — the queue of what is waiting on the caller, merged across Email, Question, Ticket and Call. Two endpoints, no new model. See below. |
@@ -798,7 +798,15 @@ invisible to the people meant to work it.
 `owner=user` *strictly*, and deliberately still do. Those answer "what
 am I responsible for", not "what am I allowed to open", and the answers
 differ: a customer you can see through an account you own should not
-count toward your own ARR.
+count toward your own ARR. Copilot's own owned/function-owned customer
+set is further intersected with `live_customers` (visible, not archived,
+**not churned**) — a churned account is still "yours" in the ownership
+sense but is no longer "my book" for a live digest's figures. Copilot's
+company *matching* (which company a question is about) stays
+company-wide rather than book-scoped — see the `copilot` app's own
+section below — but is bounded by `visible_customers`/`visible_accounts`
+like every other read, so a customer the asker isn't allowed to open is
+never matched or retrieved.
 
 #### Known consequences (accepted, not oversights)
 
@@ -3600,18 +3608,23 @@ synchronously, in-request, one blocking API call per message — same
 limit `scenarios/engine.py`'s own docstring states outright. Each
 request is grounded in a compact, real-data digest of the caller's own
 *owned* book of business (`services/copilot/context.py` — the
-Customers/Accounts they own, not the whole tenant's, same "My" framing
-as Cockpit's own `CockpitSummaryView`/`TaskListView`'s `?mine=true`:
-health/NPS/lifecycle breakdown, top at-risk customers, open
+Customers/Accounts they own or answer for in their function, intersected
+with `live_customers` — visible, not archived, and **not churned**
+(`services/customers/scoping.py`) — not the whole tenant's, same "My"
+framing as Cockpit's own `CockpitSummaryView`/`TaskListView`'s
+`?mine=true`: health/NPS/lifecycle breakdown, top at-risk customers, open
 opportunity/risk/ticket counts scoped to those same owned companies),
 injected into the system prompt; this is grounding, not tool-calling —
 the model can read this digest and converse, but can't run its own
 queries or take real actions.
 
 Past the aggregate numbers, `services/copilot/retrieval.py` pulls real
-retrieved content. Two passes identify "which company is this about":
-`find_mentioned_company` is a plain, free, case-insensitive substring
-match of the question against the caller's own company names, tried
+retrieved content. Two passes identify "which company is this about",
+over every customer/account the caller may *open* (`visible_customers`/
+`visible_accounts`, not narrowed to their own book — company matching
+stays company-wide, but never reaches past what the asker is allowed to
+see): `find_mentioned_company` is a plain, free, case-insensitive
+substring match of the question against those company names, tried
 first; if that fails, `find_relevant_company_semantic` (see
 `services/copilot/embeddings.py`) embeds the question against each
 company's own profile text (`retrieval.py`'s own `_company_profile_text`
