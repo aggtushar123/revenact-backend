@@ -3,9 +3,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core import audit
+
 from .book import filter_options, load_portfolio
+from .export import CSVRenderer, table
 from .params import parse_params
-from .shape import build_listing
+from .rows import row_payload
+from .shape import build_listing, select
 
 
 class PortfolioView(APIView):
@@ -22,3 +26,29 @@ class PortfolioView(APIView):
         params = parse_params(request.query_params)
         portfolio = load_portfolio(request.user, params, today=timezone.localdate())
         return Response(build_listing(portfolio, params, filters=filter_options(request.user)))
+
+
+class PortfolioExportView(APIView):
+    """GET /api/v1/organizations/portfolio/export.csv — the same query as the
+    list, every row (no pagination), in list order, with all 34 fields.
+    Audited: this is confidential data leaving the app."""
+
+    permission_classes = [IsAuthenticated]
+    renderer_classes = [CSVRenderer]
+
+    def get(self, request):
+        params = parse_params(request.query_params)
+        today = timezone.localdate()
+        portfolio = load_portfolio(request.user, params, today=today)
+        entries, _groups = select(portfolio, params)
+        audit.record(  # SOC2:LOG-01
+            "organizations.exported",
+            request=request,
+            # Parameter names only: a search term is the user's own words.
+            metadata={"count": len(entries), "params": sorted(request.query_params.keys())},
+        )
+        response = Response(table([row_payload(entry) for entry in entries]))
+        response["Content-Disposition"] = (
+            f'attachment; filename="organizations-{today.isoformat()}.csv"'
+        )
+        return response
