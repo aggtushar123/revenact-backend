@@ -90,6 +90,7 @@ INSTALLED_APPS = [
     "services.anomalies",
     "services.translation",
     "services.mcp",
+    "services.organizations",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app
