@@ -111,9 +111,9 @@ def _header(user, context):
     ]
 
 
-def _overview_lines(user, filters, *, today, now):
+def _overview_lines(user, filters, customers, *, today, now):
     currency = user.organisation.currency
-    f = dashboard_figures.overview_figures(user, filters, today=today, now=now)
+    f = dashboard_figures.overview_figures(user, filters, today=today, now=now, customers=customers)
     oldest = f["oldest_open_days"]
     lines = [
         "Headline figures:",
@@ -134,9 +134,9 @@ def _overview_lines(user, filters, *, today, now):
     return lines
 
 
-def _revenue_lines(user, filters, *, today, now):
+def _revenue_lines(user, filters, customers, *, today, now):
     currency = user.organisation.currency
-    f = dashboard_figures.revenue_figures(user, filters)
+    f = dashboard_figures.revenue_figures(user, filters, customers=customers)
     bridge = f["bridge"]
     nrr = "n/a" if bridge["nrr"] is None else f"{bridge['nrr']}%"
     lines = [
@@ -166,8 +166,8 @@ def _revenue_lines(user, filters, *, today, now):
     return lines
 
 
-def _health_lines(user, filters, *, today, now):
-    f = dashboard_figures.health_figures(user, filters, today=today)
+def _health_lines(user, filters, customers, *, today, now):
+    f = dashboard_figures.health_figures(user, filters, today=today, customers=customers)
     d = f["by_direction"]
     lines = [
         f"Health triage over {f['total']} accounts:",
@@ -188,8 +188,8 @@ def _health_lines(user, filters, *, today, now):
     return lines
 
 
-def _support_lines(user, filters, *, today, now):
-    f = dashboard_figures.support_figures(user, filters, today=today)
+def _support_lines(user, filters, customers, *, today, now):
+    f = dashboard_figures.support_figures(user, filters, today=today, customers=customers)
     oldest = f["oldest_open_days"]
     priorities, statuses = dict(Ticket.Priority.choices), dict(Ticket.Status.choices)
     lines = [
@@ -206,6 +206,10 @@ def _support_lines(user, filters, *, today, now):
         lines.extend(f"  - {row['name']}: {row['open_urgent']}" for row in f["most_urgent"])
     return lines
 
+
+#: Areas whose figures read the Triage score, so the book loads with its
+#: snapshot history.
+HISTORY_AREAS = ("overview", "health")
 
 AREA_DIGESTS = {
     "overview": _overview_lines,
@@ -352,11 +356,15 @@ def build_dashboard_grounding(user, context, question, *, today=None, now=None):
     organisation = user.organisation
     filters = context["filters"]
 
-    lines = _header(user, context)
-    lines.extend(AREA_DIGESTS[context["area"]](user, filters, today=today, now=now))
+    area = context["area"]
 
-    # SOC2:AUTH-02 records are read only for companies in the asker's filtered, visible book
-    book = {customer.pk: customer for customer in forecast.filtered_customers(user, filters)}
+    # SOC2:AUTH-02 records are read only for companies in the asker's filtered, visible book.
+    # Loaded once per question: the area's figures and the focus all read this one list.
+    customers = dashboard_figures.load_book(user, filters, history=area in HISTORY_AREAS)
+    book = {customer.pk: customer for customer in customers}
+
+    lines = _header(user, context)
+    lines.extend(AREA_DIGESTS[area](user, filters, customers, today=today, now=now))
     focus_lines, targets, sources = _focus(user, context.get("focus"), question, book)
     lines.extend(focus_lines)
 

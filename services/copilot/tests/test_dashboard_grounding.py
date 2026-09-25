@@ -5,6 +5,8 @@ outside the asker's filtered, visible book."""
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from services.accounts.models import User
@@ -13,9 +15,9 @@ from services.copilot.dashboard_grounding import (
     build_dashboard_grounding,
     dashboard_system_prompt,
 )
-from services.customers.models import Contact, Note
+from services.customers.models import Contact, HealthSnapshot, Note
 
-from .dashboard_fixture import POOR, DashboardFixture
+from .dashboard_fixture import GOOD, POOR, DashboardFixture
 
 
 def _in_order(query, candidates):
@@ -282,3 +284,67 @@ class PromptTests(DashboardFixture):
         self.assertEqual(digest.count("<dashboard_data>"), 0)
         self.assertEqual(digest.count("</dashboard_data>"), 1)
         self.assertTrue(digest.endswith("\n</dashboard_data>"))
+
+
+class QueryCountTests(DashboardFixture):
+    """One question loads the viewer's book once, with one snapshot history
+    load, however many figures the area's digest reads from it. The counts
+    are pinned: a new query here is a regression to explain, not to absorb."""
+
+    #: Queries for one question with no focus, per area and lifecycle filter.
+    #: Before the book was shared: overview 52/51, revenue 22, health 20,
+    #: support 23. Support under a lifecycle filter still loads its own,
+    #: wider book (the Support screen has no lifecycle filter).
+    EXPECTED = {
+        ("overview", False): 39,
+        ("revenue", False): 19,
+        ("health", False): 17,
+        ("support", False): 20,
+        ("overview", True): 41,
+        ("revenue", True): 19,
+        ("health", True): 17,
+        ("support", True): 23,
+    }
+
+    def setUp(self):
+        super().setUp()
+        for n in range(3):
+            customer = self.customer(
+                f"Company {n}",
+                health_score=POOR,
+                renewal_date=self.today + timedelta(days=20 + n),
+                lifecycle_stage="live",
+            )
+            self.ticket(n, customer)
+            HealthSnapshot.objects.create(
+                customer=customer,
+                captured_on=self.today - timedelta(days=40),
+                health_score=GOOD,
+            )
+
+    def test_each_area_loads_the_book_once(self):
+        areas = {
+            "overview": None,
+            "revenue": "forecast",
+            "health": "triage",
+            "support": "tickets",
+        }
+        for filters in ({}, {"lifecycle": "live"}):
+            for area, view in areas.items():
+                with self.subTest(area=area, filters=filters):
+                    context = self.context(area, view, **filters)
+                    with CaptureQueriesContext(connection) as queries:
+                        build_dashboard_grounding(self.csm, context, "", today=self.today)
+                    self.assertEqual(len(queries), self.EXPECTED[(area, bool(filters))])
+                    # The book is the one query carrying the health-input annotations.
+                    books = [q for q in queries if '"_open_ticket_count"' in q["sql"]]
+                    snapshots = [
+                        q
+                        for q in queries
+                        if q["sql"].startswith('SELECT "customers_healthsnapshot"')
+                    ]
+                    self.assertEqual(len(snapshots), 1 if area in ("overview", "health") else 0)
+                    # Support figures (on Support and the Overview) under a
+                    # lifecycle filter need the wider, lifecycle-free book.
+                    wider_support_book = area in ("overview", "support") and bool(filters)
+                    self.assertEqual(len(books), 2 if wider_support_book else 1)

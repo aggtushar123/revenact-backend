@@ -344,15 +344,20 @@ def _anomaly_items(user, customers, money, today, organisation):
 KINDS = ("renewal", "risk", "going_quiet", "support", "anomaly")
 
 
-def build_items(user, params, *, today, kinds=KINDS):
+def build_items(user, params, *, today, kinds=KINDS, customers=None):
     """Every candidate item for this viewer and these filters, unsorted and
     not yet snooze-filtered. `kinds` restricts the build to those kinds
     only — the snooze endpoint checks one key without building the rest;
     narrowing to one company goes through the filters' own `customer`
-    param, so it stays inside the viewer's visible book."""
+    param, so it stays inside the viewer's visible book.
+
+    `customers`, when given, is `filtered_customers(user, params)` already
+    loaded — with its history when "risk" is among `kinds` — so a caller that
+    has the book does not load it again."""
     organisation = user.organisation
     rates = rates_for(organisation)
-    customers = list(filtered_customers(user, params, history="risk" in kinds))
+    if customers is None:
+        customers = list(filtered_customers(user, params, history="risk" in kinds))
     money = {customer.pk: _money(customer, organisation, rates) for customer in customers}
     builders = {
         "renewal": lambda: _renewal_items(customers, money, today),
