@@ -5820,7 +5820,11 @@ straight line between the two points given):
 
 - `AttentionSnooze` — `organisation`, `user`, `key` (unique together),
   `until` (nullable; null means Done), `fingerprint` (JSON, the item's
-  fingerprint at snooze time), `created_at`.
+  fingerprint at snooze time), `created_at`. Rows whose `until` passed more
+  than 30 days ago are deleted by the nightly `run_health_maintenance` pass
+  (`services.attention.snooze.prune_expired`) — table hygiene, not a
+  visibility rule: a snooze that merely expired more recently already shows
+  its item again on its own. `until=null` (Done) is never pruned.
 
 ### `GET /api/v1/dashboard/attention/?owner=&lifecycle=&customer=`
 

@@ -213,6 +213,19 @@ class Command(BaseCommand):
             )
         )
 
+        # Snoozes nobody will look at again — expired over a month ago.
+        # `until=null` (Done) is permanent and untouched; a snooze expired
+        # more recently already shows its item again on its own, so this is
+        # table hygiene, not a visibility rule (services.attention.snooze).
+        from services.attention.snooze import prune_expired
+
+        pruned = prune_expired(now=timezone.now(), dry_run=options["dry_run"])
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{'would clear' if options['dry_run'] else 'cleared'} {pruned} expired snooze(s)."
+            )
+        )
+
     def _capture(self, queryset, captured_on, dry_run):
         """Record one snapshot per customer for `captured_on`, skipping any that
         already have one.
