@@ -53,11 +53,23 @@ class MessageSerializer(serializers.ModelSerializer):
 class ConversationListSerializer(serializers.ModelSerializer):
     """No nested `messages` — powers the sidebar's own chat-history list,
     which only ever shows a title and a relative time, never a preview
-    of the content itself."""
+    of the content itself. The title is the first turn's opening words,
+    so it goes through views.title_for for the requesting viewer (a
+    neutral "Shared conversation" when that turn isn't theirs to read)."""
+
+    title = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
         fields = ["id", "title", "origin", "created_at", "updated_at"]
+
+    def get_title(self, obj):
+        from .views import title_for
+
+        request = self.context.get("request")
+        if request is None:
+            return obj.title
+        return title_for(obj, request.user)
 
 
 class ConversationDetailSerializer(serializers.ModelSerializer):
@@ -65,14 +77,20 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
     by the view (`_visible_messages`, see copilot.views.visible_messages);
     every turn when read outside a view. `visibility` says whether that is
     the whole conversation ("full") or the slice a mentioned person gets
-    ("partial"), so the screen can say so."""
+    ("partial"), so the screen can say so. `title` is `_title` when the
+    view set it (views.title_for — neutral unless the first turn is the
+    viewer's to read)."""
 
+    title = serializers.SerializerMethodField()
     messages = serializers.SerializerMethodField()
     visibility = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
         fields = ["id", "title", "origin", "messages", "visibility", "created_at", "updated_at"]
+
+    def get_title(self, obj):
+        return getattr(obj, "_title", obj.title)
 
     def get_messages(self, obj):
         turns = getattr(obj, "_visible_messages", None)
@@ -247,9 +265,8 @@ class SessionInviteSerializer(serializers.ModelSerializer):
         ]
 
     def get_account_label(self, obj):
-        session = obj.session
-        if session.customer_id:
-            return session.customer.name
-        if session.account_id:
-            return session.account.name
-        return None
+        # Read by the invitee, so named only when they may open that
+        # customer/account — see views._session_subject_label.
+        from .views import _session_subject_label
+
+        return _session_subject_label(obj.session, obj.invited_user)

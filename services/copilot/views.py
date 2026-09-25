@@ -4,6 +4,7 @@ from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -117,6 +118,35 @@ def sees_whole_conversation(conversation, user):
         session.participants.filter(user=user, left_at__isnull=True).exists()
         and session.invites.filter(invited_user=user, status=SessionInvite.Status.ACCEPTED).exists()
     )
+
+
+def _can_change_session(conversation, user):
+    """Changing a session — hand-off, invite, redirect, close, decisions —
+    is for whoever sees the whole conversation (owner, accepted present
+    participant). A person who is only mentioned reads a slice; letting
+    them hand off (to themselves) and accept their own invite turned
+    that slice into the whole conversation."""
+    return sees_whole_conversation(conversation, user)
+
+
+NEUTRAL_TITLE = "Shared conversation"
+
+
+def title_for(conversation, user, turns=None):
+    """The title is the first turn's opening words (SendMessageView), so
+    it is shown only to a viewer who may read that turn: the whole-
+    conversation viewers, or a sliced viewer whose visible_messages hold
+    it. Anyone else gets NEUTRAL_TITLE."""
+    if sees_whole_conversation(conversation, user):
+        return conversation.title
+    first_id = (
+        conversation.messages.order_by("created_at", "id").values_list("id", flat=True).first()
+    )
+    if turns is None:
+        turns = visible_messages(conversation, user)
+    if first_id is not None and any(t.id == first_id for t in turns):
+        return conversation.title
+    return NEUTRAL_TITLE
 
 
 def visible_messages(conversation, user):
@@ -324,6 +354,7 @@ class ConversationDetailView(generics.RetrieveDestroyAPIView):
         conversation._visibility = (
             "full" if sees_whole_conversation(conversation, request.user) else "partial"
         )
+        conversation._title = title_for(conversation, request.user, conversation._visible_messages)
         return Response(ConversationDetailSerializer(conversation).data)
 
     def get_queryset(self):
@@ -409,6 +440,15 @@ class SendMessageView(APIView):
             if session is not None and session.status == CopilotSession.Status.CLOSED:
                 return Response(
                     {"detail": "This session has been closed."}, status=status.HTTP_403_FORBIDDEN
+                )
+            # A send into a session is a redirect of it — a session change,
+            # so it needs the whole conversation. A mentioned person's
+            # follow-up into a session-less conversation stays allowed
+            # (grounded in their slice only).
+            if session is not None and not _can_change_session(conversation, request.user):
+                return Response(
+                    {"detail": "Only the owner and participants can post into a live session."},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
 
         # A send from the Dashboard says where it was asked; the server
@@ -560,19 +600,27 @@ class SendMessageView(APIView):
         conversation._visibility = (
             "full" if sees_whole_conversation(conversation, request.user) else "partial"
         )
+        conversation._title = title_for(conversation, request.user, conversation._visible_messages)
         return Response(ConversationDetailSerializer(conversation).data)
 
 
-def _session_subject_label(session):
+def _session_subject_label(session, viewer):
     """A real, human "about X" fragment for a session's own real
-    customer/account context — used only for real notification text
-    (see the two call sites below); None when the session has no
-    company context at all (a plain New Chat session)."""
+    customer/account context — used for notification text and the
+    invite card; None when the session has no company context at all
+    (a plain New Chat session), and None when `viewer` (the recipient)
+    may not open that customer/account (visible_customers /
+    visible_accounts)."""
+    from services.customers.scoping import visible_accounts, visible_customers
 
     if session.customer_id:
-        return session.customer.name
+        if visible_customers(viewer).filter(pk=session.customer_id).exists():
+            return session.customer.name
+        return None
     if session.account_id:
-        return session.account.name
+        if visible_accounts(viewer).filter(pk=session.account_id).exists():
+            return session.account.name
+        return None
     return None
 
 
@@ -594,9 +642,10 @@ def _get_or_create_session(conversation, request_data):
     SessionHandoffView.post (hand-off is its own independent way to
     start one, not gated behind clicking Make Live first — see that
     view's own docstring). Both can only ever be reached for a
-    session-less conversation by its own owner (conversations_visible_to
-    only lets the owner see a conversation with no session), so no
-    extra ownership check is needed here.
+    session-less conversation by its own owner (SessionView.post is
+    owner-only; SessionHandoffView requires sees_whole_conversation, which
+    without a session is the owner alone), so no extra ownership check
+    is needed here.
 
     Optional `customer_id`/`account_id` from the request body, sourced
     from whatever the frontend's own entry point already knew (see
@@ -724,6 +773,10 @@ class SessionInviteCreateView(APIView):
                 {"detail": "Pick a real member of your own organisation."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if target.id == request.user.id:
+            return Response(
+                {"detail": "You can't invite yourself."}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         invite, _ = SessionInvite.objects.update_or_create(
             session=session,
@@ -734,7 +787,7 @@ class SessionInviteCreateView(APIView):
                 "responded_at": None,
             },
         )
-        subject = _session_subject_label(session)
+        subject = _session_subject_label(session, target)
         message = f"{request.user.name} invited you to a live Copilot session" + (
             f" about {subject}" if subject else ""
         )
@@ -750,8 +803,8 @@ class SessionInviteCreateView(APIView):
 
 class SessionHandoffView(APIView):
     """POST /api/v1/copilot/conversations/<id>/session/handoff/ —
-    anyone the session is already visible to (owner or an active
-    participant — see conversations_visible_to), not owner-only: real
+    the owner or an accepted, present participant (sees_whole_conversation;
+    a person who is only mentioned gets 403), not owner-only: real
     hand-off is meant to happen mid-session, from whoever's currently
     driving it. Body: `{"to_user_id": <id>, "note": "...", "customer_id"?,
     "account_id"?}`. Hand-off is its own independent way for a session to
@@ -767,10 +820,26 @@ class SessionHandoffView(APIView):
 
     def post(self, request, pk):
         conversation = get_object_or_404(conversations_visible_to(request.user), pk=pk)
+        if not _can_change_session(conversation, request.user):
+            return Response(
+                {"detail": "Only the owner and participants can hand this session off."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         existing = getattr(conversation, "session", None)
         if existing is not None and existing.status == CopilotSession.Status.CLOSED:
             return Response(
                 {"detail": "This session has been closed."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        target = _same_org_member(conversation.organisation, request.data.get("to_user_id"))
+        if target is None:
+            return Response(
+                {"detail": "Pick a real member of your own organisation."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if target.id == request.user.id:
+            return Response(
+                {"detail": "You can't hand a session off to yourself."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         session = _get_or_create_session(conversation, request.data)
         # Whoever's handing off is, by definition, an active participant
@@ -781,12 +850,6 @@ class SessionHandoffView(APIView):
             session=session, user=request.user, defaults={"left_at": None}
         )
 
-        target = _same_org_member(conversation.organisation, request.data.get("to_user_id"))
-        if target is None:
-            return Response(
-                {"detail": "Pick a real member of your own organisation."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         note = (request.data.get("note") or "").strip()
 
         SessionInvite.objects.update_or_create(
@@ -807,11 +870,15 @@ class SessionHandoffView(APIView):
             payload={"to_user_id": target.id, "to_user_name": target.name, "note": note},
         )
         broadcast_session_update(session)
-        subject = _session_subject_label(session)
+        subject = _session_subject_label(session, target)
         message = f"{request.user.name} handed off a Copilot session to you" + (
             f" — {subject}" if subject else ""
         )
-        if note:
+        # The note is the owner's free text: it rides the notice only when
+        # the target already sees the whole conversation (the hand-off just
+        # reset their invite to pending, so usually not) — otherwise they
+        # read it on the session once they accept.
+        if note and sees_whole_conversation(conversation, target):
             message += f': "{note}"'
         send_notification(
             recipient=target,
@@ -890,7 +957,10 @@ class SessionDecisionsView(APIView):
     participants, hand-offs) beside the Ops agent's figures and writes what
     the people decided into the review queue as proposals tagged with this
     session; GET lists the ones already written. Anyone who can read the
-    conversation may ask — the decisions were theirs — but approving still
+    conversation *whole* may ask (owner, accepted present participant —
+    a person who is only mentioned gets 403 on both GET and POST, since
+    the proposals are written from the whole transcript) — the decisions
+    were theirs — but approving still
     happens in the review queue, under its own permission. A real, paid
     call; error mapping as the Ops agent's, plus `422` for a session where
     nobody has said anything."""
@@ -899,6 +969,8 @@ class SessionDecisionsView(APIView):
 
     def _session(self, request, pk):
         conversation = get_object_or_404(conversations_visible_to(request.user), pk=pk)
+        if not _can_change_session(conversation, request.user):
+            raise PermissionDenied("Only the owner and participants can use the facilitator.")
         session = getattr(conversation, "session", None)
         if session is None:
             raise Http404("This conversation has no live session.")
@@ -953,6 +1025,17 @@ class MyInvitesView(generics.ListAPIView):
         )
 
 
+def _invite_is_grantable(invite):
+    """Accepting grants the whole conversation, so the invite must come
+    from someone else who sees it whole — never from the invitee themself
+    (the escalation a self-hand-off used to allow; creation refuses that
+    now, this refuses any such row written before)."""
+    inviter = invite.invited_by
+    if inviter is None or inviter.id == invite.invited_user_id:
+        return False
+    return sees_whole_conversation(invite.session.conversation, inviter)
+
+
 class RespondToInviteView(APIView):
     """POST /api/v1/copilot/sessions/invites/<id>/respond/ — the
     invitee themselves only. Body: `{"status": "accepted"|"declined"}`.
@@ -970,6 +1053,10 @@ class RespondToInviteView(APIView):
             return Response(
                 {"detail": "status must be 'accepted' or 'declined'."},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        if new_status == SessionInvite.Status.ACCEPTED and not _invite_is_grantable(invite):
+            return Response(
+                {"detail": "This invite can't be accepted."}, status=status.HTTP_400_BAD_REQUEST
             )
 
         invite.status = new_status

@@ -5321,6 +5321,32 @@ WebSocket push is one payload for the whole group, so it always carries
 `note: null`, `customer_name: null` and `account_name: null`; a client
 reads them from its own `GET .../session/`.
 
+**Only whole-conversation viewers change a session.** Every session-
+changing request requires `sees_whole_conversation` (the owner, or an
+accepted present participant); a person who is only mentioned reads a
+slice and gets `403`:
+
+| Route | Who |
+|---|---|
+| `POST .../session/` (make live) | owner (404 otherwise) |
+| `POST .../session/invite/` | owner (404 otherwise); `user_id` = caller → `400` |
+| `POST .../session/handoff/` | owner or participant (`403` otherwise); `to_user_id` = caller → `400` |
+| `POST .../session/close/` | owner (404 otherwise) |
+| `GET/POST .../session/decisions/` | owner or participant (`403` otherwise) — proposals come from the whole transcript |
+| `POST /copilot/messages/` into a conversation **with a session** (a redirect) | owner or participant (`403` otherwise); a mentioned person's follow-up into a session-less conversation is still allowed |
+| `POST /copilot/sessions/invites/<id>/respond/` | the invite's own target only (404 otherwise); accepting is `400` unless the inviter is someone else who still sees the whole conversation |
+
+**Titles and notices follow visibility too.** A conversation's `title`
+is its first turn's opening words, so the list and detail endpoints
+return `"Shared conversation"` unless the viewer sees the whole
+conversation or that first turn is in their `visible_messages`
+(`copilot.views.title_for`). The invite and hand-off notifications and
+the invite card's `account_label` name the customer/account only when
+the recipient may open it (`null` / omitted otherwise), and the hand-off
+notification carries the note only when the target already sees the
+whole conversation — a pending target reads it on the session after
+accepting.
+
 ### `POST /api/v1/copilot/conversations/<id>/session/close/` with `capture_decisions`
 
 Body `{"capture_decisions": true}` runs the facilitator in the same
