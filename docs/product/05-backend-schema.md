@@ -341,6 +341,13 @@ computes them fresh from `Customer`, `Ticket` and `Anomaly`/`AnomalyEvidence`
 each request, the same reuse-the-existing-rule shape as the forecast and
 health rollups above.
 
+### `organizations`
+
+No model. `services.organizations.book.load_portfolio` reads `Customer` (with `with_health_inputs`),
+`HealthSnapshot`, `FxRate` and `Ticket` for the viewer's visible, filtered book on every request, and
+`shape.py` orders, groups and totals it in Python — the same reuse-the-existing-rule shape as the
+dashboard rollups. Bulk edits write `Customer` through `CustomerSerializer`.
+
 ---
 
 ### `metrics` (brief delivery)

@@ -69,6 +69,7 @@ customer records.
 | Password-reset email (`ForgotPasswordView`) | user email, single-use token link | confidential | Django token generator; reset audited (LOG-01) |
 | Container stdout → log store (`config/settings.py: LOGGING`) | request ids, actions, outcomes | internal | `core.logging.RedactFilter` (LOG-03); no bodies or headers logged |
 | Nightly `pg_dump` → Azure Blob (`revenact-infra/deploy/backup.sh`) | everything above | confidential | private account, identity auth, versioning, 35-day expiry (DATA-07) |
+| Organizations CSV export (`services/organizations`, `GET /organizations/portfolio/export.csv`) → the requester's device | the 34 organisation fields (commercial terms, owners, churn reasons) for the requester's own visible, filtered book | confidential | visibility-scoped exactly like the list (AUTH-02); audited `organizations.exported` (LOG-01); formula cells neutralised against CSV injection |
 
 ## Retention
 
