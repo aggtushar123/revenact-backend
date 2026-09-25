@@ -5334,7 +5334,12 @@ slice and gets `403`:
 | `POST .../session/close/` | owner (404 otherwise) |
 | `GET/POST .../session/decisions/` | owner or participant (`403` otherwise) — proposals come from the whole transcript |
 | `POST /copilot/messages/` into a conversation **with a session** (a redirect) | owner or participant (`403` otherwise); a mentioned person's follow-up into a session-less conversation is still allowed |
-| `POST /copilot/sessions/invites/<id>/respond/` | the invite's own target only (404 otherwise); accepting is `400` unless the inviter is someone else who still sees the whole conversation |
+| `POST /copilot/sessions/invites/<id>/respond/` | the invite's own target only (404 otherwise), and only while it is `pending` (an accepted or declined invite is `400`); accepting is `400` unless the inviter is someone else who still sees the whole conversation |
+
+A self-issued invite (`invited_by` = `invited_user`) never grants access,
+even one already accepted: `sees_whole_conversation` and
+`conversations_visible_to` count only invites someone else issued, so a
+participant row that came from one grants nothing on its own.
 
 **Titles and notices follow visibility too.** A conversation's `title`
 is its first turn's opening words, so the list and detail endpoints

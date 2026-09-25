@@ -961,3 +961,79 @@ class OnlyWholeConversationViewersChangeASessionTests(APITestCase):
 
         self.assertIsNone(data["customer_name"])
         self.assertIsNone(data["account_name"])
+
+
+class SelfIssuedInvitesGrantNothingTests(APITestCase):
+    """Hardening for rows the old hole may already have written in
+    production: an accepted self-invite plus its participant row grants
+    nothing, only pending invites can be answered, and an invite from
+    someone who sees only a slice can't be accepted into the whole.
+    Same fixture as OnlyWholeConversationViewersChangeASessionTests."""
+
+    SECRET = OnlyWholeConversationViewersChangeASessionTests.SECRET
+    setUp = OnlyWholeConversationViewersChangeASessionTests.setUp
+    _detail = OnlyWholeConversationViewersChangeASessionTests._detail
+
+    def _respond(self, invite, answer="accepted"):
+        self.client.force_authenticate(invite.invited_user)
+        return self.client.post(
+            f"/api/v1/copilot/sessions/invites/{invite.id}/respond/",
+            {"status": answer},
+            format="json",
+        )
+
+    def test_an_already_accepted_self_invite_grants_nothing(self):
+        from services.copilot.views import conversations_visible_to, sees_whole_conversation
+
+        SessionInvite.objects.create(
+            session=self.session,
+            invited_user=self.manager,
+            invited_by=self.manager,
+            status=SessionInvite.Status.ACCEPTED,
+        )
+        SessionParticipant.objects.create(session=self.session, user=self.manager)
+
+        self.assertFalse(sees_whole_conversation(self.conversation, self.manager))
+        detail = self._detail(self.manager)
+        self.assertEqual(detail.data["visibility"], "partial")
+        self.assertNotIn(self.SECRET, str(detail.data))
+
+        # Without the mention she would not see the conversation at all.
+        from services.knowledge.models import Question
+
+        Question.objects.filter(assignee=self.manager).delete()
+        self.assertFalse(conversations_visible_to(self.manager).exists())
+
+    def test_only_a_pending_invite_can_be_answered(self):
+        for answered in (
+            SessionInvite.Status.ACCEPTED,
+            SessionInvite.Status.DECLINED,
+        ):
+            with self.subTest(status=answered):
+                SessionInvite.objects.filter(session=self.session).delete()
+                invite = SessionInvite.objects.create(
+                    session=self.session,
+                    invited_user=self.teammate,
+                    invited_by=self.owner,
+                    status=answered,
+                )
+                for answer in ("accepted", "declined"):
+                    self.assertEqual(
+                        self._respond(invite, answer).status_code,
+                        status.HTTP_400_BAD_REQUEST,
+                    )
+                invite.refresh_from_db()
+                self.assertEqual(invite.status, answered)
+
+    def test_an_invite_from_a_sliced_viewer_cannot_be_accepted_into_the_whole(self):
+        planted = SessionInvite.objects.create(
+            session=self.session, invited_user=self.teammate, invited_by=self.manager
+        )
+
+        self.assertEqual(self._respond(planted).status_code, status.HTTP_400_BAD_REQUEST)
+        from services.copilot.views import sees_whole_conversation
+
+        self.assertFalse(sees_whole_conversation(self.conversation, self.teammate))
+        self.assertFalse(
+            SessionParticipant.objects.filter(session=self.session, user=self.teammate).exists()
+        )

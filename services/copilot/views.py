@@ -82,15 +82,15 @@ def conversations_visible_to(user):
     relations (`session__participants`, `session__invites`) joined in
     one filter — each independently matches at most one row per user
     per session (see those models' own unique constraints), so this is
-    a real AND, not an accidental OR."""
+    a real AND, not an accidental OR. A self-issued invite never counts
+    (_accepted_invites), so a participant row it produced grants nothing."""
 
     return Conversation.objects.filter(
         Q(user=user)
         | Q(
             session__participants__user=user,
             session__participants__left_at__isnull=True,
-            session__invites__invited_user=user,
-            session__invites__status=SessionInvite.Status.ACCEPTED,
+            session__invites__in=_accepted_invites(user),
         )
         # Mentioned in it: a question routed to them from one of its turns
         # (services.knowledge) — or to someone who reports to them, directly
@@ -107,8 +107,21 @@ def _me_and_my_reports(user):
     return {user.id, *subtree_ids(user)}
 
 
+def _accepted_invites(user):
+    """`user`'s accepted invites that can grant access — never one they
+    issued to themselves. The self-hand-off hole let a mentioned viewer
+    write and accept such a row; excluding it here means any already in
+    the database grant nothing, with no data migration. (An inviter
+    since deleted — invited_by null — still counts.)"""
+    return SessionInvite.objects.filter(
+        invited_user=user, status=SessionInvite.Status.ACCEPTED
+    ).exclude(invited_by_id=user.id)
+
+
 def sees_whole_conversation(conversation, user):
-    """The owner and accepted, present participants see every turn."""
+    """The owner and accepted, present participants see every turn — a
+    participant only through an invite someone else issued (see
+    _accepted_invites); the participant row alone grants nothing."""
     if conversation.user_id == user.id:
         return True
     session = getattr(conversation, "session", None)
@@ -116,7 +129,7 @@ def sees_whole_conversation(conversation, user):
         return False
     return (
         session.participants.filter(user=user, left_at__isnull=True).exists()
-        and session.invites.filter(invited_user=user, status=SessionInvite.Status.ACCEPTED).exists()
+        and _accepted_invites(user).filter(session=session).exists()
     )
 
 
@@ -1038,7 +1051,9 @@ def _invite_is_grantable(invite):
 
 class RespondToInviteView(APIView):
     """POST /api/v1/copilot/sessions/invites/<id>/respond/ — the
-    invitee themselves only. Body: `{"status": "accepted"|"declined"}`.
+    invitee themselves only, and only while the invite is pending (an
+    answered one is 400 — re-inviting resets it to pending). Body:
+    `{"status": "accepted"|"declined"}`.
     Accepting is what actually grants access (see
     conversations_visible_to) — it creates or reactivates the real
     SessionParticipant row and logs a `joined` event; declining just
@@ -1052,6 +1067,11 @@ class RespondToInviteView(APIView):
         if new_status not in (SessionInvite.Status.ACCEPTED, SessionInvite.Status.DECLINED):
             return Response(
                 {"detail": "status must be 'accepted' or 'declined'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if invite.status != SessionInvite.Status.PENDING:
+            return Response(
+                {"detail": "This invite has already been answered."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if new_status == SessionInvite.Status.ACCEPTED and not _invite_is_grantable(invite):
