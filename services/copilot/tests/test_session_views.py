@@ -551,3 +551,105 @@ class MyInvitesAndRespondViewTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class SessionEventsCarryNoMessageTextTests(APITestCase):
+    """Session events name the turn they are about, never its text: a
+    viewer who is only mentioned reads turns through visible_messages
+    (the conversation endpoint), so the session poll and the WebSocket
+    push must not hand them every turn's raw content."""
+
+    SECRET = "Procurement quietly approved a 40% discount"
+
+    def setUp(self):
+        from services.knowledge.models import Question
+
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.owner = User.objects.create_user(
+            email="alice@acme.io", password="supersecret1", name="Alice", organisation=self.org
+        )
+        self.teammate = User.objects.create_user(
+            email="bob@acme.io", password="supersecret1", name="Bob", organisation=self.org
+        )
+        self.manager = User.objects.create_user(
+            email="meg@acme.io", password="supersecret1", name="Meg", organisation=self.org
+        )
+        self.conversation = Conversation.objects.create(
+            organisation=self.org, user=self.owner, title="Renewal risk"
+        )
+        self.session = CopilotSession.objects.create(
+            conversation=self.conversation, status=CopilotSession.Status.LIVE
+        )
+        SessionInvite.objects.create(
+            session=self.session,
+            invited_user=self.teammate,
+            invited_by=self.owner,
+            status=SessionInvite.Status.ACCEPTED,
+        )
+        SessionParticipant.objects.create(session=self.session, user=self.teammate)
+
+        mention = Message.objects.create(
+            conversation=self.conversation,
+            role=Message.Role.USER,
+            author=self.owner,
+            content="@Meg can you check the renewal date?",
+        )
+        Question.objects.create(
+            organisation=self.org,
+            asked_by=self.owner,
+            assignee=self.manager,
+            message=mention,
+            text="can you check the renewal date?",
+        )
+        self.secret_turn = Message.objects.create(
+            conversation=self.conversation,
+            role=Message.Role.USER,
+            author=self.teammate,
+            content=self.SECRET,
+        )
+        for turn in (mention, self.secret_turn):
+            SessionEvent.objects.create(
+                session=self.session,
+                kind=SessionEvent.Kind.REDIRECTED,
+                actor=turn.author,
+                message=turn,
+            )
+
+    def _poll(self, user):
+        self.client.force_authenticate(user)
+        return self.client.get(f"/api/v1/copilot/conversations/{self.conversation.id}/session/")
+
+    def _assert_events_are_references(self, events):
+        messages = [e["message"] for e in events if e["message"] is not None]
+        self.assertEqual(len(messages), 2)
+        for message in messages:
+            self.assertEqual(set(message), {"id", "role", "created_at"})
+        self.assertNotIn(self.SECRET, str(events))
+
+    def test_a_mentioned_only_viewer_polling_the_session_never_sees_turn_text(self):
+        response = self._poll(self.manager)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self._assert_events_are_references(response.data["events"])
+
+    def test_the_websocket_push_never_carries_turn_text(self):
+        from services.copilot.realtime import broadcast_session_update
+
+        sent = []
+
+        class _Layer:
+            async def group_send(self, group, message):
+                sent.append(message)
+
+        with patch("services.copilot.realtime.get_channel_layer", return_value=_Layer()):
+            broadcast_session_update(self.session)
+
+        self.assertEqual(len(sent), 1)
+        self._assert_events_are_references(sent[0]["payload"]["events"])
+
+    def test_owner_and_participant_still_get_event_message_ids_to_refetch(self):
+        for user in (self.owner, self.teammate):
+            response = self._poll(user)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            ids = [e["message"]["id"] for e in response.data["events"] if e["message"]]
+            self.assertIn(self.secret_turn.id, ids)

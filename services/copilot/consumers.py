@@ -7,8 +7,11 @@ a pure notification channel: connect, get pushed the current
 CopilotSessionSerializer snapshot whenever a real backend action
 (make-live, invite-accept, redirect, hand-off, close) creates a new
 SessionEvent (see realtime.broadcast_session_update, called from those
-same views), disconnect. The frontend still fetches full message
-content over the existing REST endpoints once notified — nothing about
+same views), disconnect. Events carry message references only
+({id, role, created_at}), never text — a viewer who is only mentioned
+may read just a slice of the turns, and that slice is applied only by
+the REST conversation endpoint (views.visible_messages). The frontend
+fetches message content there once notified — nothing about
 *sending* a message or acting in a session moves onto the socket, only
 this "something changed, here's the new state" push does."""
 

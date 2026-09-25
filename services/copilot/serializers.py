@@ -102,9 +102,22 @@ class SessionParticipantSerializer(serializers.ModelSerializer):
         fields = ["user", "joined_at", "left_at"]
 
 
+class _MessageRefSerializer(serializers.ModelSerializer):
+    """Which turn an event is about — never what it says. Session state
+    reaches everyone conversations_visible_to admits, including people who
+    are only mentioned and may read just a slice of the turns; the text
+    travels only through ConversationDetailSerializer.messages, which
+    applies visible_messages. A client that wants the turn refetches the
+    conversation."""
+
+    class Meta:
+        model = Message
+        fields = ["id", "role", "created_at"]
+
+
 class SessionEventSerializer(serializers.ModelSerializer):
     actor = _ActorSerializer(allow_null=True)
-    message = MessageSerializer(allow_null=True)
+    message = _MessageRefSerializer(allow_null=True)
 
     class Meta:
         model = SessionEvent
@@ -115,7 +128,10 @@ class CopilotSessionSerializer(serializers.ModelSerializer):
     """The real session snapshot GET .../session/ returns — participants
     (currently present, per SessionParticipant.left_at) and events since
     whatever `?since_id=` the poller asked for (annotated onto the
-    instance by the view, not derived here — see SessionDetailView)."""
+    instance by the view, not derived here — see SessionView). The same
+    snapshot is pushed over the WebSocket (realtime.py), so it carries no
+    turn text: each event's `message` is a reference ({id, role,
+    created_at}) — see _MessageRefSerializer."""
 
     owner = _ActorSerializer(source="conversation.user")
     participants = serializers.SerializerMethodField()

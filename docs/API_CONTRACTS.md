@@ -5288,6 +5288,28 @@ is a `409`.
   "status": "proposed", "decided_by": null, "result": {}, "generated_by": "Alice"}]}
 ```
 
+### `GET /api/v1/copilot/conversations/<id>/session/` and the WebSocket push — events carry no turn text
+
+The session snapshot (`GET .../session/?since_id=`, and the same
+`CopilotSessionSerializer` payload pushed over `ws/copilot/sessions/<id>/`
+by `copilot.realtime.broadcast_session_update`) reaches everyone
+`conversations_visible_to` admits — including a person who is only
+mentioned and may read just a slice of the turns. So each event's
+`message` is a **reference only**, never the turn's `content`, `sources`,
+`context`, `author`, `questions` or `ask_suggestions`:
+
+```json
+{"id": 41, "kind": "redirected", "actor": {"id": 3, "name": "Bob"},
+ "message": {"id": 118, "role": "user", "created_at": "2026-09-25T10:02:11Z"},
+ "payload": {}, "created_at": "2026-09-25T10:02:11Z"}
+```
+
+To show the turn, refetch `GET /api/v1/copilot/conversations/<id>/`,
+whose `messages` apply `visible_messages` — the only path turn text
+travels. `message` is `null` on events that are not about a turn
+(`made_live`, `joined`, `left`, `handed_off`, `closed`); a `handed_off` event's
+`payload` carries `to_user_id`, `to_user_name` and the owner's `note`.
+
 ### `POST /api/v1/copilot/conversations/<id>/session/close/` with `capture_decisions`
 
 Body `{"capture_decisions": true}` runs the facilitator in the same

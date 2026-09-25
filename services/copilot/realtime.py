@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 
 def broadcast_session_update(session):
+    """Push the session snapshot to everyone connected to it — which can
+    include a person who is only mentioned, so events carry message ids,
+    never turn text (see serializers._MessageRefSerializer)."""
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return
