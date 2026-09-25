@@ -103,6 +103,31 @@ class SummaryEqualsTodaysPanelTests(PortfolioFixture):
         self.assertEqual(with_churned["accounts"], 5)
         self.assertEqual(with_churned["renewing"]["30"], 2)
 
+    def test_clicking_the_renewing_tile_lists_the_same_n(self):
+        """The tile and `renews_within` read one churned rule — a churn date or
+        the Churn stage — even when churned rows are shown: a Live account
+        with a churn date has left, and so has the Churn-stage one."""
+        self.customer(
+            "Left but live",
+            lifecycle_stage="live",
+            churn_date=self.today - timedelta(days=2),
+            renewal_date=self.today + timedelta(days=7),
+        )
+        self.customer(
+            "Churn stage, no date",
+            lifecycle_stage="churn",
+            renewal_date=self.today + timedelta(days=7),
+        )
+        for query in ({}, {"include_churned": "1"}, {"include_churned": "1", "health": "good"}):
+            for days in (30, 90):
+                with self.subTest(query=query, days=days):
+                    tile = self.summary(**query)["renewing"][str(days)]
+                    listed = self.api.get(
+                        "/api/v1/organizations/portfolio/", {**query, "renews_within": days}
+                    ).data["count"]
+                    self.assertEqual(tile, listed)
+        self.assertEqual(self.summary(include_churned="1")["renewing"], {"30": 2, "90": 3})
+
     def test_empty_book_is_all_zeros(self):
         summary = self.summary(search="nothing matches this")
         self.assertEqual(summary["accounts"], 0)

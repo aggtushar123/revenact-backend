@@ -16,7 +16,8 @@ from functools import total_ordering
 from services.customers.models import Customer
 from services.fx_rates.conversion import convert_to_org_currency
 
-from .params import NUMERIC_SORT_KEYS
+from .book import NPS_Q, RENEWING_WINDOWS
+from .params import NUMERIC_SORT_KEYS, RENEWS_WITHIN_DAYS
 from .rows import row_payload
 
 #: Money fields sort in the organisation's currency — a list mixing EUR and
@@ -32,14 +33,19 @@ MONEY_FIELDS = frozenset(
 
 HEALTH_GROUP_ORDER = ("poor", "average", "good")
 
-RENEWAL_WINDOWS = (
-    ("overdue", "Overdue"),
-    ("30", "Within 30 days"),
-    ("90", "31–90 days"),
-    ("180", "91–180 days"),
-    ("later", "Later"),
-    ("none", "No renewal date"),
-)
+
+def _window_labels():
+    """The renewal sections, cut at the `renews_within` filter's own days, so
+    a section and the filter of the same number can never disagree."""
+    labels, previous = [("overdue", "Overdue")], None
+    for days in RENEWS_WITHIN_DAYS:
+        label = f"Within {days} days" if previous is None else f"{previous + 1}–{days} days"
+        labels.append((str(days), label))
+        previous = days
+    return (*labels, ("later", "Later"), ("none", "No renewal date"))
+
+
+RENEWAL_WINDOWS = _window_labels()
 
 #: The bucket for "nobody" / "nothing", which always closes the list.
 EMPTY_KEYS = frozenset({"unassigned", "none"})
@@ -129,13 +135,7 @@ def renewal_window(days):
         return "none"
     if days < 0:
         return "overdue"
-    if days <= 30:
-        return "30"
-    if days <= 90:
-        return "90"
-    if days <= 180:
-        return "180"
-    return "later"
+    return next((str(limit) for limit in RENEWS_WITHIN_DAYS if days <= limit), "later")
 
 
 def group_key(entry, group):
@@ -351,22 +351,19 @@ def paginate(entries, *, params, portfolio):
     return page, next_cursor
 
 
-#: The Renewing tile's two windows — `/customers/?renewal_within=` counts.
-RENEWING_WINDOWS = (30, 90)
-
-
 def build_summary(entries):
     """The five tiles, over every filtered row. Health, NPS and lifecycle are
     `CustomerStatsView`'s arithmetic (ARR converted, MRR = ARR / 12 per
     customer, unconvertible money counted but not summed, NPS by sign);
-    renewals are the list's `renewal_within` rule (overdue in, Churn stage
-    out)."""
+    renewals are `book.renewing_q`, the `renews_within` filter's own rule
+    (overdue in, churned out — a churn date or the Churn stage), so a clicked
+    tile lists exactly its N."""
     categories = Customer.HealthCategory.values
     health = {category: 0 for category in categories}
     health_arr = {category: 0.0 for category in categories}
     health_mrr = {category: 0.0 for category in categories}
     stages = {stage: {"count": 0, "arr": 0.0} for stage in Customer.LifecycleStage.values}
-    promoters = passives = detractors = 0
+    bands = dict.fromkeys(NPS_Q, 0)
     renewing = {str(days): 0 for days in RENEWING_WINDOWS}
     total = 0.0
     unconverted = 0
@@ -383,22 +380,13 @@ def build_summary(entries):
             health_mrr[category] += entry.arr / 12
             stages[customer.lifecycle_stage]["arr"] += entry.arr
             total += entry.arr
-        if customer.nps_score is not None:
-            if customer.nps_score > 0:
-                promoters += 1
-            elif customer.nps_score == 0:
-                passives += 1
-            else:
-                detractors += 1
-        if (
-            customer.lifecycle_stage != Customer.LifecycleStage.CHURN
-            and entry.renewal_days is not None
-        ):
-            for days in RENEWING_WINDOWS:
-                if entry.renewal_days <= days:
-                    renewing[str(days)] += 1
+        if customer.nps_band is not None:
+            bands[customer.nps_band] += 1
+        for days in entry.renewing:
+            renewing[str(days)] += 1
 
-    scored = promoters + passives + detractors
+    promoters, detractors = bands["promoter"], bands["detractor"]
+    scored = sum(bands.values())
     return {
         "health": {
             **health,
@@ -407,7 +395,7 @@ def build_summary(entries):
         },
         "nps": {
             "promoters": promoters,
-            "passives": passives,
+            "passives": bands["passive"],
             "detractors": detractors,
             "score": round((promoters - detractors) / scored * 100) if scored else 0,
         },

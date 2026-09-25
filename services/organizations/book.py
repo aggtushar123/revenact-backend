@@ -13,9 +13,18 @@ the book you hold.
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import timedelta
 
-from django.db.models import CharField, Prefetch, Q
+from django.db.models import (
+    BooleanField,
+    Case,
+    CharField,
+    ExpressionWrapper,
+    Prefetch,
+    Q,
+    Value,
+    When,
+)
 from django.db.models.functions import Cast
 
 from services.attention.rules import SUPPORT_PRIORITIES
@@ -26,19 +35,37 @@ from services.customers.triage import ACTION_THRESHOLD, Triage, triage
 from services.customers.views import CustomerHealthView
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
 
-from .params import PortfolioParams
+from .params import RENEWS_WITHIN_DAYS, PortfolioParams
+
+#: The Renewing tile's switch: the first two of the filter's windows.
+RENEWING_WINDOWS = RENEWS_WITHIN_DAYS[:2]
 
 #: Either marker means the customer has left. The churn modal sets both; a
-#: seeded or imported row may carry only one, and either should hide it.
+#: seeded or imported row may carry only one, and either should hide it. The
+#: one definition: the scope excludes it, `renewing_q` excludes it, and each
+#: row reads it back as the `is_churned` annotation.
 CHURNED = Q(churn_date__isnull=False) | Q(lifecycle_stage=Customer.LifecycleStage.CHURN)
 
 #: `CustomerStatsView`'s buckets: NPS is stored per customer as −100…100, so
-#: the band is its sign.
+#: the band is its sign. The one definition: the filter reads it, and each row
+#: reads its band back as the `nps_band` annotation the NPS tile counts.
 NPS_Q = {
     "promoter": Q(nps_score__gt=0),
     "passive": Q(nps_score=0),
     "detractor": Q(nps_score__lt=0),
 }
+
+
+def renewing_q(days, *, today):
+    """Renews within `days` — overdue included — and has not churned. The
+    `renews_within` filter and the Renewing tile both read this, so clicking
+    the tile lists exactly the N it showed, with or without churned rows."""
+    deadline = today + timedelta(days=days)
+    return Q(renewal_date__isnull=False, renewal_date__lte=deadline) & ~CHURNED
+
+
+def _flag(q):
+    return ExpressionWrapper(q, output_field=BooleanField())
 
 
 def health_q(category):
@@ -92,8 +119,7 @@ def filtered_queryset(user, params: PortfolioParams, *, today):
         customers = customers.filter(primary_product_id__in=params.products)
 
     if params.renews_within is not None:
-        deadline = today + timedelta(days=params.renews_within)
-        customers = customers.filter(renewal_date__isnull=False, renewal_date__lte=deadline)
+        customers = customers.filter(renewing_q(params.renews_within, today=today))
 
     if params.nps:
         customers = customers.filter(NPS_Q[params.nps])
@@ -117,6 +143,8 @@ class Entry:
     urgent_tickets: int
     churned: bool
     signal: dict | None
+    #: The Renewing tile's windows (`RENEWING_WINDOWS`) this row falls in.
+    renewing: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -124,7 +152,6 @@ class Portfolio:
     entries: list[Entry]
     organisation: object
     rates: dict
-    today: date
 
 
 def signal_for(*, churned, renewal_days, risk, urgent_tickets):
@@ -188,9 +215,7 @@ def _entry(customer, *, today, organisation, rates, urgent):
     trend = recent[-(TREND_MONTHS - 1) :] + [float(customer.health_score)]
     last_touch = customer._last_touch_on
     renewal_days = None if customer.renewal_date is None else (customer.renewal_date - today).days
-    churned = (
-        customer.churn_date is not None or customer.lifecycle_stage == Customer.LifecycleStage.CHURN
-    )
+    churned = customer.is_churned
     return Entry(
         customer=customer,
         arr=None if converted is None else float(converted),
@@ -202,6 +227,9 @@ def _entry(customer, *, today, organisation, rates, urgent):
         churned=churned,
         signal=signal_for(
             churned=churned, renewal_days=renewal_days, risk=result.score, urgent_tickets=urgent
+        ),
+        renewing=frozenset(
+            days for days in RENEWING_WINDOWS if getattr(customer, f"renews_within_{days}")
         ),
     )
 
@@ -223,6 +251,18 @@ def load_portfolio(user, params: PortfolioParams, *, today):
         .prefetch_related(None)
         .select_related("owner", "primary_product", "created_by", "modified_by")
         .prefetch_related(Prefetch("health_snapshots", queryset=snapshots))
+        .annotate(
+            is_churned=_flag(CHURNED),
+            nps_band=Case(
+                *(When(q, then=Value(band)) for band, q in NPS_Q.items()),
+                default=None,
+                output_field=CharField(),
+            ),
+            **{
+                f"renews_within_{days}": _flag(renewing_q(days, today=today))
+                for days in RENEWING_WINDOWS
+            },
+        )
     )
     customers = list(queryset)
     rates = rates_for(organisation)
@@ -237,7 +277,7 @@ def load_portfolio(user, params: PortfolioParams, *, today):
         )
         for customer in customers
     ]
-    return Portfolio(entries=entries, organisation=organisation, rates=rates, today=today)
+    return Portfolio(entries=entries, organisation=organisation, rates=rates)
 
 
 def filter_options(user):
