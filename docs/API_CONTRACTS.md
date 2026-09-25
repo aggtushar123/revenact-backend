@@ -5310,6 +5310,17 @@ travels. `message` is `null` on events that are not about a turn
 (`made_live`, `joined`, `left`, `handed_off`, `closed`); a `handed_off` event's
 `payload` carries `to_user_id`, `to_user_name` and the owner's `note`.
 
+**The hand-off note and the company names are per viewer.** On the REST
+poll, `payload.note` is the owner's text only for a viewer who sees the
+whole conversation (the owner, an accepted present participant —
+`copilot.views.sees_whole_conversation`) and `null` for anyone else;
+`customer_name` / `account_name` are set only when the viewer may open
+that customer / account (`visible_customers` / `visible_accounts`), and
+`null` otherwise — `customer_id` / `account_id` are always present. The
+WebSocket push is one payload for the whole group, so it always carries
+`note: null`, `customer_name: null` and `account_name: null`; a client
+reads them from its own `GET .../session/`.
+
 ### `POST /api/v1/copilot/conversations/<id>/session/close/` with `capture_decisions`
 
 Body `{"capture_decisions": true}` runs the facilitator in the same

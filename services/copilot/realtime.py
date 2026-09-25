@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 def broadcast_session_update(session):
     """Push the session snapshot to everyone connected to it — which can
     include a person who is only mentioned, so events carry message ids,
-    never turn text (see serializers._MessageRefSerializer)."""
+    never turn text (see serializers._MessageRefSerializer). Serialized
+    with no viewer on purpose: one group gets one payload, so hand-off
+    notes and customer/account names are always null here — each client
+    reads them from its own per-viewer REST poll."""
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return

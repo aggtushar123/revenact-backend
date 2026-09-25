@@ -653,3 +653,114 @@ class SessionEventsCarryNoMessageTextTests(APITestCase):
             self.assertEqual(response.status_code, status.HTTP_200_OK)
             ids = [e["message"]["id"] for e in response.data["events"] if e["message"]]
             self.assertIn(self.secret_turn.id, ids)
+
+
+class SessionNoteAndCompanyNamesFollowVisibilityTests(APITestCase):
+    """A hand-off note is the owner's free text and a company name is a
+    record a viewer may not be allowed to open: both reach the owner and
+    participants on the per-viewer poll, a mentioned-only viewer only
+    when they could see them anyway, and the one-group WebSocket push
+    never."""
+
+    NOTE = "They are about to churn, do not mention the discount"
+
+    def setUp(self):
+        from services.customers.models import Account
+        from services.knowledge.models import Question
+
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.owner = User.objects.create_user(
+            email="alice@acme.io", password="supersecret1", name="Alice", organisation=self.org
+        )
+        self.teammate = User.objects.create_user(
+            email="bob@acme.io", password="supersecret1", name="Bob", organisation=self.org
+        )
+        self.manager = User.objects.create_user(
+            email="meg@acme.io", password="supersecret1", name="Meg", organisation=self.org
+        )
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Pizza Hut", owner=self.owner
+        )
+        self.account = Account.objects.create(name="Pizza Hut EMEA", owner=self.owner)
+        self.account.customers.add(self.customer)
+        self.conversation = Conversation.objects.create(
+            organisation=self.org, user=self.owner, title="Renewal risk"
+        )
+        self.session = CopilotSession.objects.create(
+            conversation=self.conversation,
+            status=CopilotSession.Status.AWAITING_HANDOFF,
+            customer=self.customer,
+            account=self.account,
+        )
+        SessionInvite.objects.create(
+            session=self.session,
+            invited_user=self.teammate,
+            invited_by=self.owner,
+            status=SessionInvite.Status.ACCEPTED,
+        )
+        SessionParticipant.objects.create(session=self.session, user=self.teammate)
+        mention = Message.objects.create(
+            conversation=self.conversation,
+            role=Message.Role.USER,
+            author=self.owner,
+            content="@Meg can you check the renewal date?",
+        )
+        Question.objects.create(
+            organisation=self.org,
+            asked_by=self.owner,
+            assignee=self.manager,
+            message=mention,
+            text="can you check the renewal date?",
+        )
+        SessionEvent.objects.create(
+            session=self.session,
+            kind=SessionEvent.Kind.HANDED_OFF,
+            actor=self.owner,
+            payload={"to_user_id": self.teammate.id, "to_user_name": "Bob", "note": self.NOTE},
+        )
+
+    def _poll(self, user):
+        self.client.force_authenticate(user)
+        response = self.client.get(f"/api/v1/copilot/conversations/{self.conversation.id}/session/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.data
+
+    def _handoff(self, data):
+        return next(e for e in data["events"] if e["kind"] == "handed_off")
+
+    def test_a_mentioned_only_viewer_gets_no_note_and_no_names_they_cannot_see(self):
+        data = self._poll(self.manager)
+
+        handoff = self._handoff(data)
+        self.assertIsNone(handoff["payload"]["note"])
+        self.assertEqual(handoff["payload"]["to_user_name"], "Bob")
+        self.assertIsNone(data["customer_name"])
+        self.assertIsNone(data["account_name"])
+        self.assertNotIn(self.NOTE, str(data))
+        self.assertNotIn("Pizza Hut", str(data))
+
+    def test_the_owner_and_a_participant_get_the_note_and_the_names(self):
+        for user in (self.owner, self.teammate):
+            data = self._poll(user)
+            self.assertEqual(self._handoff(data)["payload"]["note"], self.NOTE)
+        owner_view = self._poll(self.owner)
+        self.assertEqual(owner_view["customer_name"], "Pizza Hut")
+        self.assertEqual(owner_view["account_name"], "Pizza Hut EMEA")
+
+    def test_the_websocket_push_carries_neither_the_note_nor_the_names(self):
+        from services.copilot.realtime import broadcast_session_update
+
+        sent = []
+
+        class _Layer:
+            async def group_send(self, group, message):
+                sent.append(message)
+
+        with patch("services.copilot.realtime.get_channel_layer", return_value=_Layer()):
+            broadcast_session_update(self.session)
+
+        payload = sent[0]["payload"]
+        self.assertIsNone(self._handoff(payload)["payload"]["note"])
+        self.assertIsNone(payload["customer_name"])
+        self.assertIsNone(payload["account_name"])
+        self.assertEqual(payload["customer_id"], self.customer.id)

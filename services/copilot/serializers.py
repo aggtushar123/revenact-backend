@@ -116,12 +116,24 @@ class _MessageRefSerializer(serializers.ModelSerializer):
 
 
 class SessionEventSerializer(serializers.ModelSerializer):
+    """`payload.note` (a hand-off's free text from the owner) is shown
+    only when the context says `sees_note` — the owner and participants
+    on the per-viewer poll — and is null otherwise, the WebSocket push
+    included (see CopilotSessionSerializer)."""
+
     actor = _ActorSerializer(allow_null=True)
     message = _MessageRefSerializer(allow_null=True)
+    payload = serializers.SerializerMethodField()
 
     class Meta:
         model = SessionEvent
         fields = ["id", "kind", "actor", "message", "payload", "created_at"]
+
+    def get_payload(self, obj):
+        payload = dict(obj.payload or {})
+        if "note" in payload and not self.context.get("sees_note", False):
+            payload["note"] = None
+        return payload
 
 
 class CopilotSessionSerializer(serializers.ModelSerializer):
@@ -131,7 +143,15 @@ class CopilotSessionSerializer(serializers.ModelSerializer):
     instance by the view, not derived here — see SessionView). The same
     snapshot is pushed over the WebSocket (realtime.py), so it carries no
     turn text: each event's `message` is a reference ({id, role,
-    created_at}) — see _MessageRefSerializer."""
+    created_at}) — see _MessageRefSerializer.
+
+    Per viewer: pass `context={"viewer": user}`. A hand-off note is shown
+    only to a viewer who sees the whole conversation (owner, accepted
+    present participant); `customer_name`/`account_name` only to a viewer
+    who may open that customer/account (visible_customers /
+    visible_accounts), null otherwise. Without a viewer — the one-group
+    WebSocket broadcast — the note and both names are always null; the
+    ids stay, and clients read the rest from the per-viewer REST poll."""
 
     owner = _ActorSerializer(source="conversation.user")
     participants = serializers.SerializerMethodField()
@@ -172,13 +192,35 @@ class CopilotSessionSerializer(serializers.ModelSerializer):
         events = getattr(obj, "_events_page", None)
         if events is None:
             events = obj.events.all()
-        return SessionEventSerializer(events, many=True).data
+        return SessionEventSerializer(
+            events, many=True, context={"sees_note": self._sees_note(obj)}
+        ).data
+
+    def _sees_note(self, obj):
+        from .views import sees_whole_conversation
+
+        viewer = self.context.get("viewer")
+        return viewer is not None and sees_whole_conversation(obj.conversation, viewer)
 
     def get_customer_name(self, obj):
-        return obj.customer.name if obj.customer_id else None
+        from services.customers.scoping import visible_customers
+
+        viewer = self.context.get("viewer")
+        if not obj.customer_id or viewer is None:
+            return None
+        if not visible_customers(viewer).filter(pk=obj.customer_id).exists():
+            return None
+        return obj.customer.name
 
     def get_account_name(self, obj):
-        return obj.account.name if obj.account_id else None
+        from services.customers.scoping import visible_accounts
+
+        viewer = self.context.get("viewer")
+        if not obj.account_id or viewer is None:
+            return None
+        if not visible_accounts(viewer).filter(pk=obj.account_id).exists():
+            return None
+        return obj.account.name
 
 
 class SessionInviteSerializer(serializers.ModelSerializer):

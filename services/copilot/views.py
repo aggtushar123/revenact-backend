@@ -672,7 +672,7 @@ class SessionView(APIView):
                 )
         session._events_page = events
 
-        return Response(CopilotSessionSerializer(session).data)
+        return Response(CopilotSessionSerializer(session, context={"viewer": request.user}).data)
 
     def post(self, request, pk):
         conversation = get_object_or_404(Conversation, pk=pk, user=request.user)
@@ -696,7 +696,7 @@ class SessionView(APIView):
         broadcast_session_update(session)
 
         session._events_page = session.events.all()
-        return Response(CopilotSessionSerializer(session).data)
+        return Response(CopilotSessionSerializer(session, context={"viewer": request.user}).data)
 
 
 class SessionInviteCreateView(APIView):
@@ -822,7 +822,7 @@ class SessionHandoffView(APIView):
         )
 
         session._events_page = session.events.all()
-        return Response(CopilotSessionSerializer(session).data)
+        return Response(CopilotSessionSerializer(session, context={"viewer": request.user}).data)
 
 
 class SessionCloseView(APIView):
@@ -859,7 +859,7 @@ class SessionCloseView(APIView):
         broadcast_session_update(session)
 
         session._events_page = session.events.all()
-        payload = CopilotSessionSerializer(session).data
+        payload = CopilotSessionSerializer(session, context={"viewer": request.user}).data
         if request.data.get("capture_decisions"):
             payload.update(self._capture(session, request.user))
         return Response(payload)
