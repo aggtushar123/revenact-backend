@@ -313,3 +313,79 @@ def paginate(
             last_bucket, raw_value, last_name, last_id, current_sort, group, group_value
         )
     return page, next_cursor
+
+
+#: The Renewing tile's two windows — `/customers/?renewal_within=` counts.
+RENEWING_WINDOWS = (30, 90)
+
+
+def build_summary(entries):
+    """The five tiles, over every filtered row. Health, NPS and lifecycle are
+    `CustomerStatsView`'s arithmetic (ARR converted, MRR = ARR / 12 per
+    customer, unconvertible money counted but not summed, NPS by sign);
+    renewals are the list's `renewal_within` rule (overdue in, Churn stage
+    out)."""
+    categories = Customer.HealthCategory.values
+    health = {category: 0 for category in categories}
+    health_arr = {category: 0.0 for category in categories}
+    health_mrr = {category: 0.0 for category in categories}
+    stages = {stage: {"count": 0, "arr": 0.0} for stage in Customer.LifecycleStage.values}
+    promoters = passives = detractors = 0
+    renewing = {str(days): 0 for days in RENEWING_WINDOWS}
+    total = 0.0
+    unconverted = 0
+
+    for entry in entries:
+        customer = entry.customer
+        category = customer.health_category
+        health[category] += 1
+        stages[customer.lifecycle_stage]["count"] += 1
+        if entry.arr is None:
+            unconverted += 1
+        else:
+            health_arr[category] += entry.arr
+            health_mrr[category] += entry.arr / 12
+            stages[customer.lifecycle_stage]["arr"] += entry.arr
+            total += entry.arr
+        if customer.nps_score is not None:
+            if customer.nps_score > 0:
+                promoters += 1
+            elif customer.nps_score == 0:
+                passives += 1
+            else:
+                detractors += 1
+        if (
+            customer.lifecycle_stage != Customer.LifecycleStage.CHURN
+            and entry.renewal_days is not None
+        ):
+            for days in RENEWING_WINDOWS:
+                if entry.renewal_days <= days:
+                    renewing[str(days)] += 1
+
+    scored = promoters + passives + detractors
+    return {
+        "health": {
+            **health,
+            "arr": {category: round(value, 2) for category, value in health_arr.items()},
+            "mrr": {category: round(value, 2) for category, value in health_mrr.items()},
+        },
+        "nps": {
+            "promoters": promoters,
+            "passives": passives,
+            "detractors": detractors,
+            "score": round((promoters - detractors) / scored * 100) if scored else 0,
+        },
+        "lifecycle": [
+            {
+                "value": value,
+                "label": label,
+                "count": stages[value]["count"],
+                "arr": round(stages[value]["arr"], 2),
+            }
+            for value, label in Customer.LifecycleStage.choices
+        ],
+        "accounts": len(entries),
+        "arr": round(total, 2),
+        "unconverted_count": unconverted,
+        "renewing": renewing,
+    }

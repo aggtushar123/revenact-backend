@@ -19,7 +19,7 @@ from django.db.models import CharField, Prefetch, Q
 from django.db.models.functions import Cast
 
 from services.attention.rules import SUPPORT_PRIORITIES
-from services.customers.models import Customer, HealthSnapshot, Ticket, with_health_inputs
+from services.customers.models import Customer, HealthSnapshot, Product, Ticket, with_health_inputs
 from services.customers.personal import visible_tickets
 from services.customers.scoping import visible_children_q, visible_customers
 from services.customers.triage import ACTION_THRESHOLD, Triage, triage
@@ -238,3 +238,38 @@ def load_portfolio(user, params: PortfolioParams, *, today):
         for customer in customers
     ]
     return Portfolio(entries=entries, organisation=organisation, rates=rates, today=today)
+
+
+def filter_options(user):
+    """The filter sheet's choices, scoped exactly as the rows are: the viewer's
+    visible, non-archived customers — churned included, so "includes churned"
+    has something to narrow. Three queries, whatever the book's size."""
+    # SOC2:AUTH-02 options are scoped to the viewer's own visible customers
+    customers = visible_customers(user).filter(is_archived=False).order_by()
+    owners = list(customers.values_list("owner_id", "owner__name").distinct())
+    named = sorted(
+        ((pk, name) for pk, name in owners if pk is not None),
+        key=lambda row: (row[1] or "").casefold(),
+    )
+    stages = set(customers.values_list("lifecycle_stage", flat=True).distinct())
+    products = (
+        Product.objects.filter(
+            organisation=user.organisation, pk__in=customers.values("primary_product_id")
+        )
+        .order_by("name")
+        .values_list("id", "name")
+    )
+    return {
+        "owners": [{"value": str(pk), "name": name} for pk, name in named]
+        + (
+            [{"value": "unassigned", "name": "Unassigned"}]
+            if any(pk is None for pk, _name in owners)
+            else []
+        ),
+        "lifecycles": [
+            {"value": value, "name": label}
+            for value, label in Customer.LifecycleStage.choices
+            if value in stages
+        ],
+        "products": [{"value": str(pk), "name": name} for pk, name in products],
+    }
