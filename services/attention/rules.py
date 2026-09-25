@@ -33,7 +33,7 @@ from django.db.models import Prefetch, Q
 from django.utils import timezone
 
 from services.anomalies.models import Anomaly
-from services.anomalies.views import visible_evidence
+from services.anomalies.views import title_for, visible_evidence
 from services.customers import forecast
 from services.customers.activity_tracking import dark_accounts
 from services.customers.contact import last_contact_by_customer
@@ -324,10 +324,7 @@ def _anomaly_items(user, customers, money, today, organisation):
         item = _item(
             "anomaly",
             anomaly.pk,
-            anomaly.title
-            if sees_all
-            # "1 of your companies" is already singular-correct.
-            else f"Similar reports across {len(companies)} of your companies",
+            title_for(anomaly.title, len(companies), sees_all=sees_all),
             f"{_plural(len(companies), 'company', 'companies')} · first seen "
             f"{_plural(age, 'day')} ago",
             round(sum(known), 2),

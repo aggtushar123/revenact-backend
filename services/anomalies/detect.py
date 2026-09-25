@@ -8,6 +8,8 @@ model call, to name it; a later report joins an existing one by distance.
 """
 
 import json
+import logging
+import re
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
@@ -22,9 +24,11 @@ from services.copilot.anthropic_client import (
 )
 from services.copilot.embeddings import embed
 from services.customers.classification import _text_for
-from services.customers.models import Call, Email, Ticket
+from services.customers.models import Account, Call, Customer, Email, Ticket
 
 from .models import Anomaly, AnomalyEvidence
+
+logger = logging.getLogger(__name__)
 
 #: The window an anomaly lives in, and the window it is compared against.
 WINDOW_DAYS = 14
@@ -40,6 +44,10 @@ SPIKE = 2.0
 CAP = 400
 NAME_SAMPLE = 15
 SNIPPET = 300
+#: A company name shorter than this is too likely an ordinary word ("IT",
+#: "HR") to reject a name over.
+MIN_NAME = 3
+_UNREAD = object()
 
 MODELS = {
     AnomalyEvidence.Kind.EMAIL: (Email, "sent_at"),
@@ -175,13 +183,52 @@ def is_shared(record) -> bool:
 
 
 def _plain_title(companies: int, reports: int) -> tuple[str, str]:
-    """A name for a cluster with nothing shared to read: what can be said
-    from the shape of it alone, and no model call at all."""
+    """A name for a cluster with nothing shared to read, or whose model-written
+    name was rejected: what can be said from the shape of it alone, and no
+    model call at all. It names nobody; its count is organisation-wide, which
+    is fine because only a viewer who sees every account reads it as stored
+    (views.title_for)."""
     return (
         f"Unnamed cluster across {companies} companies",
         f"{reports} reports that look like the same thing, all of them personal to "
         "the people who received them.",
     )
+
+
+def company_names(organisation):
+    """One pattern matching any of this organisation's customer or account
+    names as a whole word, case-insensitive; None when there are none.
+
+    Not `copilot.retrieval.find_mentioned_company`: that is a substring
+    match, which would reject "login" for a customer called "Log"."""
+    names = set(Customer.objects.filter(organisation=organisation).values_list("name", flat=True))
+    names |= set(
+        Account.objects.filter(customers__organisation=organisation).values_list("name", flat=True)
+    )
+    names = sorted({n.strip() for n in names if len(n.strip()) >= MIN_NAME}, key=len, reverse=True)
+    if not names:
+        return None
+    alternatives = "|".join(re.escape(name) for name in names)
+    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE)
+
+
+def _checked(organisation, title, summary, reports, companies_pattern):
+    """The model was told never to name a company; this holds it to that.
+    A title that names one falls back to the plain one, a summary that
+    names one is dropped. The log line carries neither."""
+    if companies_pattern is None:
+        return title, summary
+    if companies_pattern.search(title):
+        logger.warning(
+            "anomaly title rejected: it named a company (organisation %s)", organisation.pk
+        )
+        title = _plain_title(*reports)[0]
+    if summary and companies_pattern.search(summary):
+        logger.warning(
+            "anomaly summary rejected: it named a company (organisation %s)", organisation.pk
+        )
+        summary = ""
+    return title, summary
 
 
 def _name(organisation, texts, *, actor=None) -> tuple[str, str]:
@@ -258,6 +305,8 @@ def detect(organisation, *, actor=None, request=None, now=None) -> dict:
 
     unmatched = []
     touched = {}
+    # Read once, and only if a cluster is actually named by the model.
+    names = _UNREAD
     for index, (kind, record, when) in enumerate(recent):
         match = nearest(recent_vectors[index], centroids)
         if match is None:
@@ -287,6 +336,12 @@ def detect(organisation, *, actor=None, request=None, now=None) -> dict:
                 raise DetectionStopped(result, exc) from exc
             except ValueError:
                 title, summary = _plain_title(len(companies), len(indices))
+            else:
+                if names is _UNREAD:
+                    names = company_names(organisation)
+                title, summary = _checked(
+                    organisation, title, summary, (len(companies), len(indices)), names
+                )
         else:
             # Every report in it is somebody's own. The cluster is still
             # real and still worth seeing; only its name has to come from

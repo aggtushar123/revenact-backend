@@ -156,7 +156,8 @@ def list_feature_requests(user, status="open", **_):
 
 def list_anomalies(user, status="live", **_):
     from services.anomalies.models import Anomaly
-    from services.anomalies.views import Companies, visible_evidence
+    from services.anomalies.views import Companies, title_for, visible_evidence
+    from services.customers.scoping import sees_everything
 
     organisation = user.organisation
     evidence = list(visible_evidence(organisation, user))
@@ -167,6 +168,7 @@ def list_anomalies(user, status="live", **_):
     rows = Anomaly.objects.filter(organisation=organisation)
     if status in Anomaly.Status.values:
         rows = rows.filter(status=status)
+    sees_all = sees_everything(user)
     out = []
     for anomaly in rows:
         mine = by_anomaly.get(anomaly.id)
@@ -176,7 +178,7 @@ def list_anomalies(user, status="live", **_):
         out.append(
             {
                 "id": anomaly.id,
-                "title": anomaly.title,
+                "title": title_for(anomaly.title, len(behind), sees_all=sees_all),
                 "status": anomaly.status,
                 "companies": len(behind),
                 "reports": len(mine),

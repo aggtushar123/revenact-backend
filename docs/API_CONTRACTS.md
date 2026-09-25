@@ -4688,7 +4688,8 @@ errors, which is what the protocol asks for.
 **Tools:** `search_companies`, `get_company`, `recent_interactions`,
 `list_feature_requests`, `list_anomalies`, `ask_copilot` (one model call,
 purpose `mcp`). A company the caller may not open answers the same way as
-one that does not exist.
+one that does not exist. `list_anomalies` follows the anomaly title rule (see
+`anomalies`): the stored title only for a caller who sees every account.
 
 ### `GET/POST /api/v1/mcp/tokens/` and `DELETE /api/v1/mcp/tokens/<id>/`
 
@@ -4796,7 +4797,12 @@ one department's queue. A cluster with nothing shared in it is named from
 its own shape ("Unnamed cluster across 4 companies") and costs no model
 call at all. When a name is written, it is one call (purpose `anomaly`),
 from a sample of at most 15 reports, told to describe the problem in its
-own words and never to quote a report, a person or a company.
+own words and never to quote a report, a person or a company. That last
+rule is enforced, not trusted: a returned title that names any of the
+organisation's customer or account names (case-insensitive, whole word,
+names shorter than 3 characters ignored) falls back to the plain title
+above, and a summary that does is stored empty. The rejection is logged
+without the rejected text.
 
 ### Conventions specific to this app
 
@@ -4807,6 +4813,16 @@ feature requests). A cluster a reader can see nothing of is left out
 rather than shown as a zero, and its detail is a 404 for them: its title
 was written from reports they may not read. Detecting and setting a
 status need `view_all_accounts`.
+
+**Title rule.** The stored `title` and `summary` are model-written from
+reports across the whole organisation, so they are returned as written
+only to a viewer who passes `sees_everything` (`view_all_accounts`).
+Everyone else gets `title: "Similar reports across <n> of your companies"`
+(`<n>` = the distinct companies behind their own visible evidence, the
+same number as `companies`) and `summary: null`. One helper
+(`services.anomalies.views.title_for`/`summary_for`) serves this API, the
+dashboard attention list, Copilot's dashboard grounding and the MCP
+`list_anomalies` tool, so they cannot drift apart.
 
 ### `GET /api/v1/anomalies/?status=<status>`
 
@@ -5847,7 +5863,8 @@ organisation, so it is only shown as written to a viewer who passes
 `sees_everything` (`view_all_accounts` — `services.customers.scoping`).
 Everyone else gets a title built from fields instead: `"Similar reports
 across <n> of your companies"`, where `<n>` is the count of companies behind
-that anomaly that are actually in their own (filtered) book.
+that anomaly that are actually in their own (filtered) book. Same helper
+as `GET /api/v1/anomalies/` (`services.anomalies.views.title_for`).
 
 ### `POST /api/v1/dashboard/attention/snooze/`
 

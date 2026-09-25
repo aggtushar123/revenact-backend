@@ -16,7 +16,7 @@ import re
 from django.utils import timezone
 
 from services.anomalies.models import Anomaly
-from services.anomalies.views import visible_evidence
+from services.anomalies.views import summary_for, title_for, visible_evidence
 from services.attention.rules import current_item
 from services.customers import forecast
 from services.customers.models import Contact, Customer, Ticket
@@ -265,8 +265,9 @@ def _anomaly_lines(user, anomaly_id, book):
     if anomaly is None:
         return [], []
     lines, sources = [], []
-    if sees_everything(user) and anomaly.summary:
-        lines.append(f"  What the reports have in common: {anomaly.summary}")
+    summary = summary_for(anomaly.summary, sees_all=sees_everything(user))
+    if summary:
+        lines.append(f"  What the reports have in common: {summary}")
     rows = (
         visible_evidence(user.organisation, user, anomaly=anomaly)
         .prefetch_related("account__customers")
@@ -307,11 +308,9 @@ def _attention_focus(user, key, book):
         inside = [c for c in item["companies"] if c["id"] in book]
         if not inside:
             return [OUTSIDE], [], []
-        title = (
-            item["title"]
-            if sees_everything(user)
-            else f"Similar reports across {len(inside)} of your companies"
-        )
+        # The item's title is already the viewer's own; `inside` narrows the
+        # count further to the companies under the current filters.
+        title = title_for(item["title"], len(inside), sees_all=sees_everything(user))
         lines = [
             f"The asker wants to know why this is on their attention list: {title} "
             f"({', '.join(c['name'] for c in inside)})."

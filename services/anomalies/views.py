@@ -13,7 +13,7 @@ from services.accounts.permissions import CanViewAllAccounts
 from services.copilot.anthropic_client import BudgetExceeded, CopilotNotConfigured
 from services.customers.models import Account
 from services.customers.personal import readable_evidence_q
-from services.customers.scoping import visible_customers
+from services.customers.scoping import sees_everything, visible_customers
 
 from .detect import DetectionStopped, detect
 from .models import Anomaly, AnomalyEvidence
@@ -47,6 +47,27 @@ def visible_evidence(organisation, viewer, *, anomaly=None):
     )
 
 
+def title_for(stored: str, companies: int, *, sees_all: bool) -> str:
+    """The title one viewer may read.
+
+    The stored title was written by a model from reports across the whole
+    organisation, so it can describe companies outside this viewer's book
+    (or count them). Only someone who sees every account gets it as
+    written; everyone else gets one built from fields, counting only the
+    companies they themselves can see behind it. The dashboard's attention
+    list, Copilot's grounding, the MCP server and this API all read it
+    through here, so they cannot drift apart."""
+    if sees_all:
+        return stored
+    # "1 of your companies" is already singular-correct.
+    return f"Similar reports across {companies} of your companies"
+
+
+def summary_for(stored: str, *, sees_all: bool):
+    """The summary one viewer may read: as written, or nothing."""
+    return stored if sees_all else None
+
+
 class Companies:
     """The companies behind a page of evidence, resolved once."""
 
@@ -78,12 +99,12 @@ class Companies:
         return Decimal(getattr(customer, self.field, 0) or 0)
 
 
-def _row(anomaly, rows, companies) -> dict:
+def _row(anomaly, rows, companies, *, sees_all) -> dict:
     behind = companies.behind(rows)
     return {
         "id": anomaly.id,
-        "title": anomaly.title,
-        "summary": anomaly.summary,
+        "title": title_for(anomaly.title, len(behind), sees_all=sees_all),
+        "summary": summary_for(anomaly.summary, sees_all=sees_all),
         "status": anomaly.status,
         "arr": str(sum((companies.arr_of(c) for c in behind.values()), Decimal(0))),
         "companies": len(behind),
@@ -140,12 +161,13 @@ class AnomalyListView(APIView):
         by_anomaly = defaultdict(list)
         for row in evidence:
             by_anomaly[row.anomaly_id].append(row)
+        sees_all = sees_everything(request.user)
         out = []
         for anomaly in rows:
             mine = by_anomaly.get(anomaly.id)
             if not mine:
                 continue
-            row = _row(anomaly, mine, companies)
+            row = _row(anomaly, mine, companies, sees_all=sees_all)
             row.pop("_behind")
             out.append(row)
         out.sort(key=lambda r: (-float(r["arr"]), -r["interactions"], r["title"]))
@@ -166,7 +188,7 @@ class AnomalyDetailView(APIView):
         if not rows:
             return Response({"detail": "No reports you can read."}, status=404)
         companies = Companies(rows, organisation, request.user)
-        row = _row(anomaly, rows, companies)
+        row = _row(anomaly, rows, companies, sees_all=sees_everything(request.user))
         behind = row.pop("_behind")
         hit = sorted(
             (
