@@ -9,6 +9,8 @@ import base64
 import binascii
 import json
 import math
+from datetime import date
+from functools import total_ordering
 
 from services.customers.models import Customer
 from services.fx_rates.conversion import convert_to_org_currency
@@ -74,15 +76,45 @@ def _tiebreak(entry):
     return (entry.customer.name.casefold(), entry.customer.pk)
 
 
+@total_ordering
+class _Desc:
+    """Wraps an orderable value so ascending comparison sees it in reverse —
+    lets one tuple comparison serve both sort directions, for any orderable
+    type (numbers, dates, names), without negating anything."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
+
+    def __eq__(self, other):
+        return self.value == other.value
+
+    def __lt__(self, other):
+        return other.value < self.value
+
+
+def _wrap(value, descending):
+    return _Desc(value) if descending else value
+
+
+def _rank(entry, sort_key, descending, portfolio):
+    """The exact tuple both `order_entries` and the cursor sort by: missing
+    values last regardless of direction, then the sort value (reversed for
+    descending), then the name/id tiebreak — always ascending, so ties keep
+    one order in either direction. One function for both means the two can
+    never drift apart."""
+    value = SORT_GETTERS[sort_key](entry, portfolio)
+    if value is None:
+        return (1, None, _tiebreak(entry))
+    return (0, _wrap(value, descending), _tiebreak(entry))
+
+
 def order_entries(portfolio, sort_key, descending):
-    """Missing values last in either direction; ties by name, then id. Python's
-    sort is stable with `reverse=True` too, so the tiebreak survives it."""
-    getter = SORT_GETTERS[sort_key]
-    ranked = sorted(portfolio.entries, key=_tiebreak)
-    present = [entry for entry in ranked if getter(entry, portfolio) is not None]
-    missing = [entry for entry in ranked if getter(entry, portfolio) is None]
-    present.sort(key=lambda entry: getter(entry, portfolio), reverse=descending)
-    return present + missing
+    """Missing values last in either direction; ties by name, then id."""
+    return sorted(
+        portfolio.entries, key=lambda entry: _rank(entry, sort_key, descending, portfolio)
+    )
 
 
 def renewal_window(days):
@@ -158,8 +190,41 @@ def select(portfolio, params):
     return entries, groups
 
 
-def encode_cursor(entry_id, offset):
-    raw = json.dumps({"id": entry_id, "offset": offset}, separators=(",", ":")).encode()
+def _dump_value(value):
+    """A rank value, JSON-safe: dates as ISO strings, everything else as the
+    JSON types it already is (a float, including `inf` for "never touched",
+    or a casefolded name string)."""
+    if value is None:
+        return None, "none"
+    if isinstance(value, date):
+        return value.isoformat(), "date"
+    if isinstance(value, str):
+        return value, "str"
+    return float(value), "num"
+
+
+def _load_value(raw, kind):
+    if kind == "none":
+        return None
+    if kind == "date":
+        return date.fromisoformat(raw)
+    if kind == "str":
+        return raw
+    if kind == "num":
+        return float(raw)
+    raise ValueError(kind)
+
+
+def encode_cursor(bucket, value, name, entry_id):
+    """The last served row's rank, unwrapped: bucket (0 present, 1 missing),
+    its raw sort value, then the name/id tiebreak — exactly what `_rank`
+    computes, minus the direction wrapping, which the next request's own
+    `descending` re-applies."""
+    dumped, kind = _dump_value(value)
+    raw = json.dumps(
+        {"b": bucket, "v": dumped, "t": kind, "n": name, "id": entry_id},
+        separators=(",", ":"),
+    ).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
@@ -169,29 +234,55 @@ def decode_cursor(cursor):
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         data = json.loads(base64.urlsafe_b64decode(padded.encode()))
-    except (binascii.Error, ValueError, UnicodeError):
+        if not isinstance(data, dict):
+            return None
+        bucket, kind = data["b"], data["t"]
+        if bucket not in (0, 1):
+            return None
+        value = _load_value(data["v"], kind)
+        name, entry_id = data["n"], data["id"]
+        if not isinstance(name, str) or not isinstance(entry_id, int):
+            return None
+    except (binascii.Error, ValueError, UnicodeError, KeyError, TypeError):
         return None
-    if not isinstance(data, dict):
-        return None
-    entry_id, offset = data.get("id"), data.get("offset")
-    if not isinstance(entry_id, int) or not isinstance(offset, int) or offset < 0:
-        return None
-    return entry_id, offset
+    return bucket, value, name, entry_id
 
 
-def paginate(entries, *, cursor, limit):
-    """The cursor names the last row served and how many rows that was. The
-    next page starts after that row; if the row has since left the set (just
-    archived, say), the rows after it moved up by one, so start one earlier."""
+def paginate(entries, *, cursor, limit, sort_key, descending, portfolio):
+    """Keyset pagination. The cursor names the last served row's full rank —
+    bucket, sort value, name, id, exactly what `_rank` sorts by — and the next
+    page is every row that ranks strictly after it in the current ordering,
+    found with a scan over the already-ordered `entries`. Rows added or
+    removed anywhere else in the set, in any number, never cause a skip or a
+    repeat: the cut is by value, not by a row count. A malformed, tampered or
+    stale-typed cursor falls back to the first page."""
     start = 0
     decoded = decode_cursor(cursor)
     if decoded is not None:
-        entry_id, offset = decoded
-        position = next(
-            (i for i, entry in enumerate(entries) if entry.customer.pk == entry_id), None
-        )
-        start = position + 1 if position is not None else min(max(offset - 1, 0), len(entries))
+        bucket, value, name, entry_id = decoded
+        # Missing values are never wrapped in `_rank` either — only a present
+        # value's direction is reversed.
+        wrapped = value if bucket == 1 else _wrap(value, descending)
+        cursor_rank = (bucket, wrapped, (name, entry_id))
+        try:
+            start = next(
+                (
+                    index
+                    for index, entry in enumerate(entries)
+                    if _rank(entry, sort_key, descending, portfolio) > cursor_rank
+                ),
+                len(entries),
+            )
+        except TypeError:
+            # A cursor built for a different sort's value type compares
+            # against nothing usefully — the safest read is the first page.
+            start = 0
     page = entries[start : start + limit]
-    end = start + len(page)
-    next_cursor = encode_cursor(page[-1].customer.pk, end) if page and end < len(entries) else None
+    next_cursor = None
+    if page and start + len(page) < len(entries):
+        last_bucket, last_value, (last_name, last_id) = _rank(
+            page[-1], sort_key, descending, portfolio
+        )
+        raw_value = last_value.value if isinstance(last_value, _Desc) else last_value
+        next_cursor = encode_cursor(last_bucket, raw_value, last_name, last_id)
     return page, next_cursor

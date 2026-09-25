@@ -168,8 +168,17 @@ class GroupTests(ShapeFixture):
 
 class CursorTests(ShapeFixture):
     def page(self, cursor="", **query):
-        entries, _groups = shape.select(self.portfolio(**query), parse_params(query))
-        return shape.paginate(entries, cursor=cursor, limit=2)
+        portfolio = self.portfolio(**query)
+        params = parse_params(query)
+        entries, _groups = shape.select(portfolio, params)
+        return shape.paginate(
+            entries,
+            cursor=cursor,
+            limit=2,
+            sort_key=params.sort_key,
+            descending=params.descending,
+            portfolio=portfolio,
+        )
 
     def test_pages_follow_on_without_overlap(self):
         first, cursor = self.page(sort="name")
@@ -180,7 +189,8 @@ class CursorTests(ShapeFixture):
         self.assertIsNone(last)
 
     def test_a_bad_cursor_is_the_first_page(self):
-        for cursor in ("%%%", "bm90IGpzb24", shape.encode_cursor(0, -4)[:-2]):
+        truncated = shape.encode_cursor(0, "alpha", "alpha", self.alpha.pk)[:-2]
+        for cursor in ("%%%", "bm90IGpzb24", truncated):
             page, _next = self.page(cursor, sort="name")
             self.assertEqual(self.names(page), ["Alpha", "Bravo"])
 
@@ -190,6 +200,39 @@ class CursorTests(ShapeFixture):
         second, _last = self.page(cursor, sort="name")
         self.assertEqual(self.names(second), ["Charlie", "Delta"])
 
+    def test_two_removed_rows_do_not_skip_the_next_one(self):
+        """The reviewer's case: A..E served A, B; both A and B leave. The
+        offset-based cursor skipped C — the keyset cursor cannot, since it
+        resumes by C's own rank, not by a row count."""
+        first, cursor = self.page(sort="name")
+        self.assertEqual(self.names(first), ["Alpha", "Bravo"])
+        Customer.objects.filter(pk__in=[self.alpha.pk, self.bravo.pk]).update(is_archived=True)
+        second, _last = self.page(cursor, sort="name")
+        self.assertEqual(self.names(second), ["Charlie", "Delta"])
+
+    def test_a_row_inserted_ahead_of_the_window_is_not_repeated(self):
+        first, cursor = self.page(sort="name")
+        self.assertEqual(self.names(first), ["Alpha", "Bravo"])
+        self.customer("Aaron")  # sorts before everything already served
+        second, _last = self.page(cursor, sort="name")
+        self.assertEqual(self.names(second), ["Charlie", "Delta"])
+
+    def test_descending_sort_with_nulls_pages_across_the_boundary(self):
+        first, cursor = self.page(sort="-renewal")
+        self.assertEqual(self.names(first), ["Alpha", "Bravo"])
+        second, last = self.page(cursor, sort="-renewal")
+        self.assertEqual(self.names(second), ["Delta", "Charlie"])
+        self.assertIsNone(last)
+
+    def test_ties_on_sort_value_page_without_skip_or_repeat(self):
+        first, cursor = self.page(sort="-health")
+        self.assertEqual(self.names(first), ["Alpha", "Delta"])
+        second, last = self.page(cursor, sort="-health")
+        self.assertEqual(self.names(second), ["Bravo", "Charlie"])
+        self.assertIsNone(last)
+
     def test_cursor_round_trip(self):
-        self.assertEqual(shape.decode_cursor(shape.encode_cursor(7, 50)), (7, 50))
+        self.assertEqual(
+            shape.decode_cursor(shape.encode_cursor(0, 12.5, "alpha", 7)), (0, 12.5, "alpha", 7)
+        )
         self.assertIsNone(shape.decode_cursor(""))
