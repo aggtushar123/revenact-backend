@@ -10,7 +10,7 @@ from django.test import TestCase
 
 from services.accounts.models import Organisation, User
 from services.copilot.context import build_grounding, build_org_context_summary
-from services.customers.models import Account, Customer, Note, Opportunity, Risk, Ticket
+from services.customers.models import Account, Activity, Customer, Note, Opportunity, Risk, Ticket
 from services.knowledge.models import FunctionOwner
 
 
@@ -369,6 +369,40 @@ class GroundingSourcesTests(TestCase):
         emea = next(s for s in sources if s["company"] == "Northwind Division")
         self.assertEqual(emea["company_type"], "account")
         self.assertEqual(emea["company_id"], account.id)
+
+    def test_an_activity_reaches_the_digest_only_for_a_company_the_asker_may_open(self):
+        # Company *matching* is organisation-wide by design (see
+        # context.py's own docstring) — Dana can still ask about Globex
+        # by name even though she doesn't own it — but its Activities
+        # carry no author/department of their own, so they must not
+        # reach her the way a leadership-authored note reaches an
+        # out-of-chain engineer (services.knowledge's own
+        # test_the_copilot_grounds_only_in_what_the_asker_may_see).
+        outsider = User.objects.create_user(
+            email="dana@acme.io", password="supersecret1", name="Dana", organisation=self.org
+        )
+        Activity.objects.create(
+            customer=self.customer,
+            type=Activity.ActivityType.ESCALATION_TRIGGERED,
+            occurred_at="2026-09-02",
+        )
+
+        grounding = build_grounding(self.org, outsider, query="How is Globex doing?")
+
+        self.assertEqual(grounding.sources, [])
+        self.assertNotIn("Escalation Triggered", grounding.summary)
+
+    def test_an_activity_reaches_the_digest_when_the_asker_may_open_the_company(self):
+        Activity.objects.create(
+            customer=self.customer,
+            type=Activity.ActivityType.ESCALATION_TRIGGERED,
+            occurred_at="2026-09-02",
+        )
+
+        grounding = build_grounding(self.org, self.user, query="How is Globex doing?")
+
+        self.assertEqual(len(grounding.sources), 1)
+        self.assertIn("Escalation Triggered", grounding.summary)
 
     def test_the_old_summary_only_helper_still_returns_a_string(self):
         """~20 existing tests call it — it's a one-line wrapper now, not

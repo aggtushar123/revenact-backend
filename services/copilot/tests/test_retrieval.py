@@ -9,13 +9,14 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from services.accounts.models import Organisation
+from services.accounts.models import Organisation, User
 from services.copilot.retrieval import (
     _company_profile_text,
     _effective_industry,
     find_mentioned_company,
     find_relevant_company_semantic,
     retrieve_recent_communications,
+    retrieve_with_sources,
 )
 from services.customers.models import Account, Activity, Customer, Email, Note, Ticket
 
@@ -207,6 +208,81 @@ class RetrieveRecentCommunicationsTests(TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("A note", lines[0])
         mock_rank.assert_not_called()
+
+
+class ActivityVisibilityTests(TestCase):
+    """An Activity carries no author or department of its own — unlike
+    Email/Note/Ticket, its only object-level rule is the visibility of the
+    company it belongs to. Company *matching* stays organisation-wide by
+    design (see context.py's own docstring and
+    services.knowledge.tests.test_hierarchy's own
+    test_the_copilot_grounds_only_in_what_the_asker_may_see for the
+    matching-stays-open half of this story) — this is the check that
+    stands between an asker who can't open the company and its
+    activities reaching the model anyway."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.owner = User.objects.create_user(
+            email="carl@acme.io", password="x", name="Carl", organisation=self.org
+        )
+        self.outsider = User.objects.create_user(
+            email="dana@acme.io", password="x", name="Dana", organisation=self.org
+        )
+
+    def test_an_asker_who_cannot_open_the_customer_gets_no_activities(self):
+        customer = Customer.objects.create(organisation=self.org, name="Globex", owner=self.owner)
+        Activity.objects.create(
+            customer=customer,
+            type=Activity.ActivityType.ESCALATION_TRIGGERED,
+            occurred_at="2026-09-02",
+        )
+
+        items = retrieve_with_sources(customer, limit=5, viewer=self.outsider)
+
+        self.assertEqual(items, [])
+
+    def test_an_asker_who_can_open_the_customer_still_gets_its_activities(self):
+        customer = Customer.objects.create(organisation=self.org, name="Globex", owner=self.owner)
+        Activity.objects.create(
+            customer=customer,
+            type=Activity.ActivityType.ESCALATION_TRIGGERED,
+            occurred_at="2026-09-02",
+        )
+
+        items = retrieve_with_sources(customer, limit=5, viewer=self.owner)
+
+        self.assertEqual(len(items), 1)
+        self.assertIn("Escalation Triggered", items[0].line)
+
+    def test_an_asker_who_cannot_open_the_account_gets_no_activities(self):
+        parent = Customer.objects.create(organisation=self.org, name="Globex", owner=self.owner)
+        account = Account.objects.create(name="Globex EMEA", owner=self.owner)
+        account.customers.add(parent)
+        Activity.objects.create(
+            account=account,
+            type=Activity.ActivityType.ESCALATION_TRIGGERED,
+            occurred_at="2026-09-02",
+        )
+
+        items = retrieve_with_sources(account, limit=5, viewer=self.outsider)
+
+        self.assertEqual(items, [])
+
+    def test_an_asker_who_can_open_the_account_still_gets_its_activities(self):
+        parent = Customer.objects.create(organisation=self.org, name="Globex", owner=self.owner)
+        account = Account.objects.create(name="Globex EMEA", owner=self.owner)
+        account.customers.add(parent)
+        Activity.objects.create(
+            account=account,
+            type=Activity.ActivityType.ESCALATION_TRIGGERED,
+            occurred_at="2026-09-02",
+        )
+
+        items = retrieve_with_sources(account, limit=5, viewer=self.owner)
+
+        self.assertEqual(len(items), 1)
+        self.assertIn("Escalation Triggered", items[0].line)
 
 
 class CompanyProfileTextTests(TestCase):

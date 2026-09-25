@@ -164,8 +164,12 @@ def _source_ref(*, kind: str, record_id: int, label: str, date, company) -> dict
 
 def _gather_candidates(company, viewer=None) -> list[RetrievedItem]:
     """Every real candidate item for `company` — see RetrievedItem.
-    `viewer` scopes the company's contributions to what that person may
-    see (services.accounts.hierarchy); None means all of them."""
+    `viewer` scopes each source to what that person may see: mail/notes by
+    their own chain-visibility rule, tickets by department, activities by
+    whether they may open `company` itself (it carries no finer rule of
+    its own), and contributions by the knowledge layer's own rule
+    (services.accounts.hierarchy). `None` means every real caller's own
+    default — always pass the asker."""
 
     scope = _scope_kwargs(company)
     is_account = company.__class__.__name__ == "Account"
@@ -240,10 +244,21 @@ def _gather_candidates(company, viewer=None) -> list[RetrievedItem]:
             )
         )
 
-    activities = Activity.objects.filter(**scope).order_by("-occurred_at")[
-        :CANDIDATE_POOL_PER_SOURCE
-    ]
-    for activity in activities:
+    activities = Activity.objects.filter(**scope).order_by("-occurred_at")
+    if viewer is not None:
+        from services.customers.scoping import visible_accounts, visible_customers
+
+        # SOC2:AUTH-02 an Activity carries no author or department of its
+        # own — unlike Note/Ticket/Contribution above, it has no finer
+        # object-level rule than the company it belongs to. Company
+        # *matching* is deliberately organisation-wide (see context.py's
+        # own docstring), so a company the viewer can't open can still be
+        # the `company` passed in here; this is the one check standing
+        # between that and its activities reaching the model.
+        visible = visible_accounts(viewer) if is_account else visible_customers(viewer)
+        if not visible.filter(pk=company.pk).exists():
+            activities = Activity.objects.none()
+    for activity in activities[:CANDIDATE_POOL_PER_SOURCE]:
         activity_type = activity.get_type_display()
         candidates.append(
             RetrievedItem(
