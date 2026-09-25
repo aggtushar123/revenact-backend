@@ -802,11 +802,14 @@ count toward your own ARR. Copilot's own owned/function-owned customer
 set is further intersected with `live_customers` (visible, not archived,
 **not churned**) — a churned account is still "yours" in the ownership
 sense but is no longer "my book" for a live digest's figures. Copilot's
-company *matching* (which company a question is about) stays
-company-wide rather than book-scoped — see the `copilot` app's own
-section below — but is bounded by `visible_customers`/`visible_accounts`
-like every other read, so a customer the asker isn't allowed to open is
-never matched or retrieved.
+company *matching* (which company a question is about) stays genuinely
+organisation-wide, deliberately **not** narrowed to
+`visible_customers`/`visible_accounts` — see the `copilot` app's own
+section below and `services/copilot/context.py`'s own docstring for why:
+an engineer, a sales rep or the CEO, none of whom own a book and none of
+whom may necessarily open the customer's own record, can still ask their
+Copilot about any customer in the org. The privacy boundary is enforced
+one level down instead, per record, inside `retrieve_with_sources`.
 
 #### Known consequences (accepted, not oversights)
 
@@ -3620,12 +3623,15 @@ queries or take real actions.
 
 Past the aggregate numbers, `services/copilot/retrieval.py` pulls real
 retrieved content. Two passes identify "which company is this about",
-over every customer/account the caller may *open* (`visible_customers`/
-`visible_accounts`, not narrowed to their own book — company matching
-stays company-wide, but never reaches past what the asker is allowed to
-see): `find_mentioned_company` is a plain, free, case-insensitive
-substring match of the question against those company names, tried
-first; if that fails, `find_relevant_company_semantic` (see
+genuinely organisation-wide — not narrowed to the caller's own book, nor
+to `visible_customers`/`visible_accounts` (any customer or account in the
+org can be named and asked about; see `services/copilot/context.py`'s own
+docstring and `test_the_copilot_grounds_only_in_what_the_asker_may_see`
+in `services/knowledge/tests/test_hierarchy.py`, which pins this): the
+privacy boundary is enforced one level down, per record, inside
+`retrieve_with_sources`. `find_mentioned_company` is a plain, free,
+case-insensitive substring match of the question against those company
+names, tried first; if that fails, `find_relevant_company_semantic` (see
 `services/copilot/embeddings.py`) embeds the question against each
 company's own profile text (`retrieval.py`'s own `_company_profile_text`
 — the name alone, plus a real hand-entered `industry`

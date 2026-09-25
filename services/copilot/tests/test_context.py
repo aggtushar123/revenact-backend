@@ -94,21 +94,24 @@ class BuildOrgContextSummaryTests(TestCase):
         self.assertIn("Your customers: 1 total", summary)
         self.assertNotIn(churned.name, summary)
 
-    def test_a_customer_the_user_can_no_longer_see_is_excluded_from_company_matching(self):
-        # Not owned, not function-owned, not in the asker's reporting
-        # subtree, no question/contribution link — visible_customers(user)
-        # excludes it entirely, so it must not be matched by name and its
-        # content must never be retrieved, even though it's live and in
-        # the same organisation.
-        Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
-        Customer.objects.create(organisation=self.org, name="Invisible Co", owner=self.other_user)
+    def test_a_customer_no_longer_owned_or_function_owned_drops_out_of_the_book(self):
+        # Reassigning the customer away removes it from Carl's own book on
+        # this same request, not just from some cached snapshot — distinct
+        # from company *matching*, which stays organisation-wide by design
+        # (see context.py's own docstring and
+        # test_the_copilot_grounds_only_in_what_the_asker_may_see in
+        # services.knowledge — the company can still be named and asked
+        # about; it just no longer counts as "my book").
+        reassigned = Customer.objects.create(
+            organisation=self.org, name="Reassigned Co", owner=self.user, health_score="4.0"
+        )
+        reassigned.owner = self.other_user
+        reassigned.save()
 
-        with patch("services.copilot.context.find_relevant_company_semantic", return_value=None):
-            summary = build_org_context_summary(
-                self.org, self.user, query="How is Invisible Co doing?"
-            )
+        summary = build_org_context_summary(self.org, self.user)
 
-        self.assertNotIn("Invisible Co", summary)
+        self.assertIn("You own no customers or accounts yourself", summary)
+        self.assertNotIn(reassigned.name, summary)
 
     def test_an_owned_live_customer_still_counts(self):
         Customer.objects.create(

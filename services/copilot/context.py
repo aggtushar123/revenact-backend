@@ -21,12 +21,21 @@ The owned/responsible customer set is additionally intersected with
 and **not churned**. Owning a customer doesn't stop being true the day
 they churn, but a churned account is not "my book" for the purposes this
 digest exists for: it shouldn't inflate the ARR total, drag the average
-health score, or crowd a real at-risk customer out of the top-5. Company
-*matching* (which company is this question about — see `retrieval.py`)
-stays company-wide rather than book-scoped, as documented below, but is
-still bounded by `visible_customers`/`visible_accounts` — the same
-record-level visibility everywhere else — never a customer or account
-the asker isn't allowed to open.
+health score, or crowd a real at-risk customer out of the top-5.
+
+Company *matching* (which company is this question about — see
+`retrieval.py`) stays genuinely organisation-wide, and deliberately does
+**not** narrow to `visible_customers`/`visible_accounts`: an engineer, a
+sales rep or the CEO — none of whom own a book, and none of whom may
+necessarily *open* the customer's own record — can still ask their
+Copilot about any customer in the org and be told who's responsible for
+it, same as the knowledge layer's own "asked about" reach
+(`services.knowledge`; `test_the_copilot_grounds_only_in_what_the_asker_may_see`
+pins this). The privacy boundary lives one level down instead, in
+`retrieve_with_sources`/`_gather_candidates`' own per-record `viewer`
+checks (`visible_notes`/`visible_emails`/`visible_tickets`/
+`visible_contributions`) — the company can be *named*, but only the
+content the asker may actually see is ever quoted back to them.
 
 Aggregates in Python over the caller's own rows, same reasoning as
 CustomerStatsView's own docstring: health_category is a derived Python
@@ -56,7 +65,7 @@ from dataclasses import dataclass, field
 from django.db.models import Q
 
 from services.customers.models import Account, Customer, Opportunity, Risk, Ticket
-from services.customers.scoping import live_customers, visible_accounts, visible_customers
+from services.customers.scoping import live_customers
 from services.fx_rates.conversion import convert_to_org_currency
 
 from .retrieval import (
@@ -123,17 +132,15 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
     # `.distinct()` — same fan-out reasoning as AccountListView's own.
     accounts = Account.objects.filter(customers__organisation=organisation, owner=user).distinct()
     # Knowledge is company-wide (see services.knowledge): the company a
-    # question is about is looked up across every customer/account the
-    # asker may open — services.customers.scoping.visible_customers/
-    # visible_accounts, the same record-level visibility boundary as
-    # everywhere else, not narrowed to the asker's own book (an engineer, a
-    # sales rep or the CEO — none of whom own a book — can still ask about
-    # any customer they're allowed to see; a customer they can't see is not
-    # matched, and its content is never retrieved). The digest's own
-    # figures stay about the asker's book, which is what "your customers"
-    # has always meant.
-    company_customers = visible_customers(user).filter(is_archived=False)
-    company_accounts = visible_accounts(user)
+    # question is about is looked up across the whole organisation, so an
+    # engineer, a sales rep or the CEO — none of whom own a book — can ask
+    # about any customer. This is deliberately *not* narrowed to
+    # visible_customers/visible_accounts (see this module's own docstring)
+    # — the privacy boundary is enforced downstream, per record, inside
+    # retrieve_with_sources. The digest's own figures stay about the
+    # asker's book, which is what "your customers" has always meant.
+    company_customers = Customer.objects.filter(organisation=organisation, is_archived=False)
+    company_accounts = Account.objects.filter(customers__organisation=organisation).distinct()
 
     customer_total = customers.count()
     account_total = accounts.count()
