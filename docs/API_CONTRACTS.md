@@ -2393,14 +2393,14 @@ are included; ids outside visibility are silently absent. Unknown parameter valu
 | `lifecycle` | comma list of `Customer.LifecycleStage` values |
 | `health` | comma list of `good,average,poor` (score bands ≥ 7, 4–6.9, < 4) |
 | `product` | comma list of `Product` ids (the customer's `primary_product`) |
-| `renews_within` | `30`, `90` or `180`: renewal on or before today + N, overdue included |
+| `renews_within` | `30`, `90` or `180`: renewal on or before today + N, overdue included, churned excluded (a `churn_date` or the Churn stage, even with `include_churned=1`) — the Renewing tile's own rule |
 | `nps` | `promoter` (> 0), `passive` (= 0) or `detractor` (< 0) — `/customers/stats/`'s rule |
 | `ids` | comma list, first 500 read; present with no usable id → no rows |
 | `include_churned` | `1` |
 | `sort` | `arr`, `health`, `renewal`, `touch`, `risk`, `name`, or a numeric field (`arr_billed_at_hq`, `implementation_fee`, `total_contract_value`, `total_forecasted_renewal_revenue`, `total_contracted_seats`, `total_active_seats`, `seat_utilization_percentage`, `total_hires`, `nps_score`, `csat_score`, `ces_percentage`, `ai_pulse_value`, `csm_pulse_score`); `-` prefix descending; default `-arr`. Missing values sort last either way; ties by name. `touch` treats never-contacted as the longest silence. Money sorts converted |
 | `group` | `health` (Poor, Average, Good), `owner` (by name, Unassigned last), `lifecycle` (stage order), `product` (by name, No product last), `renewal` (`overdue`, `30`, `90`, `180`, `later`, `none`), or empty |
 | `group_value` | with `group` only: restrict `results` and `count` to that group key (a board column). `groups` and `summary` stay whole |
-| `cursor` | opaque, from `next_cursor` |
+| `cursor` | opaque, from `next_cursor`; valid only for the same filters, search, `ids`, sort, `group` and `group_value` |
 | `limit` | default 50, max 100 |
 
 ```json
@@ -2467,11 +2467,17 @@ are included; ids outside visibility are silently absent. Unknown parameter valu
   `renewal_overdue`, `risk` (score ≥ 40, "Risk NN"), `tickets` ("N open tickets"), in that priority; always
   `null` for a churned row. `pulse.disagree` is `|csm − ai| ≥ 2`.
 - **Totals.** `groups` and `summary` cover every filtered row, not the page. The summary reproduces
-  `/customers/stats/` (health counts and ARR/MRR, NPS by sign, lifecycle) and the list's `?renewal_within=`
-  counts on the same set.
-- **Pages.** `next_cursor` is `null` on the last page. It names the last row served; if that row leaves the set
-  before the next request, the next page starts where it was. A malformed cursor returns the first page.
+  `/customers/stats/` (health counts and ARR/MRR, NPS by sign, lifecycle). `summary.renewing` uses the
+  `renews_within` filter's rule (churned excluded, whether or not `include_churned=1`), so clicking the tile
+  lists exactly its N; with churned rows hidden it also equals `/customers/?renewal_within=`.
+- **Pages.** `next_cursor` is `null` on the last page. Following it serves the rows in list order — sections
+  first when grouped, the sort within each — every row once. It names the last row served (its section too); if
+  that row leaves the set before the next request, the next page starts where it was. The cursor carries a short
+  hash of the list it was cut from (search, `owner`, `lifecycle`, `health`, `product`, `renews_within`, `nps`,
+  `ids`, `include_churned`, `sort`, `group`, `group_value`); a cursor from a list with any of those changed, or a
+  malformed one, returns the first page, so a client may keep it across a filter change without skipping rows.
 - **Filters** are the viewer's visible, non-archived customers' owners, stages and products (churned included).
+  Owners are only people in the viewer's organisation.
 - 12 constant queries per request, whatever the book size (pinned by `PortfolioQueryCountTests`).
 
 ### `GET /api/v1/organizations/portfolio/export.csv`
