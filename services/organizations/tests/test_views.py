@@ -151,7 +151,7 @@ class PortfolioQueryCountTests(PortfolioFixture):
       3. `user.role` (`services.identity.context.capabilities_for`)
       4. the customers — touch and open-ticket subqueries, owner / product /
          created_by / modified_by joined
-      5. their health snapshots (one prefetch)
+      5. their health snapshots (one `values_list` query, `book.snapshot_history`)
       6. the FX rate table
       7. the open High/Critical tickets
       8. those tickets' accounts (prefetch)

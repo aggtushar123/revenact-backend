@@ -11,7 +11,7 @@ Churn stage — are hidden unless the viewer asks (`include_churned=1`, or
 the book you hold.
 """
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -20,7 +20,6 @@ from django.db.models import (
     Case,
     CharField,
     ExpressionWrapper,
-    Prefetch,
     Q,
     Value,
     When,
@@ -28,7 +27,14 @@ from django.db.models import (
 from django.db.models.functions import Cast
 
 from services.attention.rules import SUPPORT_PRIORITIES
-from services.customers.models import Customer, HealthSnapshot, Product, Ticket, with_health_inputs
+from services.customers.models import (
+    Customer,
+    HealthSnapshot,
+    Product,
+    Ticket,
+    health_category_for,
+    with_health_inputs,
+)
 from services.customers.personal import visible_tickets
 from services.customers.scoping import visible_children_q, visible_customers
 from services.customers.triage import ACTION_THRESHOLD, Triage, triage
@@ -196,22 +202,39 @@ def urgent_ticket_counts(user, ids):
     return counts
 
 
-def _entry(customer, *, today, organisation, rates, urgent):
+def snapshot_history(ids, *, since):
+    """Each customer's health snapshots since `since`, oldest first, as
+    `(captured_on, health_score)` pairs — plain tuples in one query, not model
+    instances: at a few thousand customers with a year of month-ends each,
+    building the instances was most of a request's Python time."""
+    history = defaultdict(list)
+    if not ids:
+        return history
+    rows = (
+        HealthSnapshot.objects.filter(customer_id__in=ids, captured_on__gte=since)
+        .order_by("captured_on")
+        .values_list("customer_id", "captured_on", "health_score")
+    )
+    for customer_id, captured_on, score in rows:
+        history[customer_id].append((captured_on, score))
+    return history
+
+
+def _entry(customer, *, today, organisation, rates, urgent, snapshots):
     converted = convert_to_org_currency(
         customer.arr_billed_at_account, customer.currency, organisation, rates=rates
     )
-    snapshots = list(customer.health_snapshots.all())
     # CustomerHealthRowSerializer._triage's own call, over the same window.
     result = triage(
         health_category=customer.health_category,
         csm_pulse=customer.csm_pulse_score,
         ai_pulse=customer.ai_pulse_value,
         renewal_date=customer.renewal_date,
-        history=[snapshot.health_category for snapshot in snapshots],
+        history=[health_category_for(score) for _captured_on, score in snapshots],
         today=today,
     )
     since = today - timedelta(days=31 * TREND_MONTHS)
-    recent = [float(s.health_score) for s in snapshots if s.captured_on >= since]
+    recent = [float(score) for captured_on, score in snapshots if captured_on >= since]
     trend = recent[-(TREND_MONTHS - 1) :] + [float(customer.health_score)]
     last_touch = customer._last_touch_on
     renewal_days = None if customer.renewal_date is None else (customer.renewal_date - today).days
@@ -241,16 +264,10 @@ def load_portfolio(user, params: PortfolioParams, *, today):
     tickets. `with_health_inputs`' CSAT prefetch is dropped: no row reads it."""
     organisation = user.organisation
     earliest = today - timedelta(days=31 * CustomerHealthView.DEFAULT_HISTORY_MONTHS)
-    snapshots = (
-        HealthSnapshot.objects.filter(captured_on__gte=earliest)
-        .only("id", "customer_id", "captured_on", "health_score")
-        .order_by("captured_on")
-    )
     queryset = (
         with_health_inputs(filtered_queryset(user, params, today=today))
         .prefetch_related(None)
         .select_related("owner", "primary_product", "created_by", "modified_by")
-        .prefetch_related(Prefetch("health_snapshots", queryset=snapshots))
         .annotate(
             is_churned=_flag(CHURNED),
             nps_band=Case(
@@ -265,8 +282,10 @@ def load_portfolio(user, params: PortfolioParams, *, today):
         )
     )
     customers = list(queryset)
+    ids = [customer.pk for customer in customers]
+    snapshots = snapshot_history(ids, since=earliest)
     rates = rates_for(organisation)
-    urgent = urgent_ticket_counts(user, [customer.pk for customer in customers])
+    urgent = urgent_ticket_counts(user, ids)
     entries = [
         _entry(
             customer,
@@ -274,6 +293,7 @@ def load_portfolio(user, params: PortfolioParams, *, today):
             organisation=organisation,
             rates=rates,
             urgent=urgent.get(customer.pk, 0),
+            snapshots=snapshots.get(customer.pk, []),
         )
         for customer in customers
     ]
