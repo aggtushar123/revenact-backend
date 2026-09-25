@@ -1022,6 +1022,15 @@ fields, still visible in lists unless separately archived). The detail
 endpoint itself always works regardless of `is_archived` — only the
 list/renewal-window/stats endpoints filter it out.
 
+Changing `is_archived`, in either direction, is gated like a reassign
+(`services.knowledge.ownership.may_change_owner`, the check `owner_id`
+uses): the current owner, their management chain or an
+organisation-settings manager — or anyone, when the customer has no
+owner. Otherwise `400 {"is_archived": ["You can't archive this
+organization."]}` (`"…restore…"` when unarchiving). Re-sending the
+unchanged value is not judged. `POST /organizations/bulk/` `archive`
+runs through the same check.
+
 Not built yet, and deliberately out of scope: Board view, nested
 Contacts, deleting a customer (only field edits exist so far). Accounts
 (one Customer has many) are now built — see below. The rest of this app
@@ -2501,7 +2510,8 @@ Each id is locked and re-read (`select_for_update`) before it changes, then runs
 (`CustomerSerializer`, partial) in its own transaction: the record must be visible to the caller, an owner must
 be an active member of the caller's organisation (an inactive owner is rejected, exactly as on
 `PATCH /customers/<id>/`), and only the current owner, their management chain or an organisation-settings
-manager may reassign; an owner change is handed over (a contribution) and the new owner notified — the "assigned
+manager may reassign — or archive: the same check gates `archive`, and a refused id is in `failed` with
+`"You can't archive this organization."` while the rest still succeed; an owner change is handed over (a contribution) and the new owner notified — the "assigned
 you" push fires on commit, since a bulk edit saves each organization in its own transaction. `200`:
 
 ```json

@@ -260,3 +260,66 @@ class BulkTests(PortfolioFixture):
         self.assertEqual(response.data["updated"], [a.pk])
         self.assertIn("can reassign this account", response.data["failed"][0]["reason"])
         self.assertEqual(Customer.objects.get(pk=b.pk).owner, self.other)
+
+
+class ArchiveGateTests(PortfolioFixture):
+    """Archiving, either way, is allowed only to whoever may reassign the
+    customer: its owner, their management chain or a settings manager — or
+    anyone, when nobody owns it. The single PATCH and bulk share the rule."""
+
+    def setUp(self):
+        super().setUp()
+        # Visible to Carl through an account he owns, but Dana's to reassign.
+        self.shared = self.customer("Shared", owner=self.other)
+        division = Account.objects.create(name="Shared EMEA", owner=self.csm)
+        division.customers.add(self.shared)
+        self.mine = self.customer("Mine")
+        self.pool = self.customer("Pool", owner=None)
+
+    post = BulkTests.post
+
+    def patch(self, customer, value, user=None):
+        api = APIClient()
+        api.force_authenticate(user or self.csm)
+        return api.patch(f"/api/v1/customers/{customer.pk}/", {"is_archived": value}, format="json")
+
+    def test_a_csm_may_not_archive_what_they_may_not_reassign(self):
+        response = self.patch(self.shared, True)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["is_archived"], ["You can't archive this organization."])
+        self.assertFalse(Customer.objects.get(pk=self.shared.pk).is_archived)
+
+    def test_nor_restore_it(self):
+        Customer.objects.filter(pk=self.shared.pk).update(is_archived=True)
+        response = self.patch(self.shared, False)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["is_archived"], ["You can't restore this organization."])
+        self.assertTrue(Customer.objects.get(pk=self.shared.pk).is_archived)
+
+    def test_their_own_and_the_pool_may_be_archived_and_restored(self):
+        for customer in (self.mine, self.pool):
+            with self.subTest(customer=customer.name):
+                self.assertEqual(self.patch(customer, True).status_code, 200)
+                self.assertTrue(Customer.objects.get(pk=customer.pk).is_archived)
+                self.assertEqual(self.patch(customer, False).status_code, 200)
+                self.assertFalse(Customer.objects.get(pk=customer.pk).is_archived)
+
+    def test_the_owners_chain_and_a_settings_manager_may(self):
+        self.assertEqual(self.patch(self.shared, True, user=self.admin).status_code, 200)
+
+    def test_an_unchanged_flag_is_not_judged(self):
+        """A form that re-sends the whole record must not fail on a field the
+        caller did not change."""
+        self.assertEqual(self.patch(self.shared, False).status_code, 200)
+
+    def test_bulk_archive_with_a_mixed_selection(self):
+        response = self.post(
+            {"ids": [self.mine.pk, self.shared.pk, self.pool.pk], "action": "archive"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["updated"], [self.mine.pk, self.pool.pk])
+        self.assertEqual(
+            response.data["failed"],
+            [{"id": self.shared.pk, "reason": "You can't archive this organization."}],
+        )
+        self.assertFalse(Customer.objects.get(pk=self.shared.pk).is_archived)

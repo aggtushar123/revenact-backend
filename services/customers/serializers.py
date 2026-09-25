@@ -359,6 +359,21 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
                 )
         return owner
 
+    def validate_is_archived(self, archived):
+        """Archiving hides the record from everyone's working list, so it is
+        gated like a reassign, in either direction: the current owner, their
+        management chain, an org-settings manager — or anyone when nobody owns
+        it. The single PATCH and the Organizations bulk bar both pass here.
+        A re-sent, unchanged flag is not judged."""
+        if self.instance is None or archived == self.instance.is_archived:
+            return archived
+        from services.knowledge.ownership import may_change_owner
+
+        if not may_change_owner(self.context["request"].user, self.instance):
+            verb = "archive" if archived else "restore"
+            raise serializers.ValidationError(f"You can't {verb} this organization.")
+        return archived
+
     def create(self, validated_data):
         request = self.context["request"]
         validated_data.pop("handover_note", "")
