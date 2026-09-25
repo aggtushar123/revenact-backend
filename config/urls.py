@@ -168,6 +168,9 @@ urlpatterns = [
     path("api/v1/anomalies/", include("services.anomalies.urls")),
     path("api/v1/translations/", include("services.translation.urls")),
     path("api/v1/mcp/", include("services.mcp.urls")),
+    # The Organizations page's own endpoint (list, export, bulk). /customers/
+    # stays as it is for its other consumers — see services/organizations.
+    path("api/v1/organizations/", include("services.organizations.urls")),
     # FX rates — its own app, same "tenant-wide, admin-only-both-ways"
     # reasoning as Webhooks above (an exchange rate is financial config,
     # not everyday customer data).

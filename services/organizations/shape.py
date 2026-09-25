@@ -16,6 +16,7 @@ from services.customers.models import Customer
 from services.fx_rates.conversion import convert_to_org_currency
 
 from .params import NUMERIC_SORT_KEYS
+from .rows import row_payload
 
 #: Money fields sort in the organisation's currency — a list mixing EUR and
 #: USD contracts cannot be ranked on their raw numbers.
@@ -388,4 +389,30 @@ def build_summary(entries):
         "arr": round(total, 2),
         "unconverted_count": unconverted,
         "renewing": renewing,
+    }
+
+
+def build_listing(portfolio, params, *, filters):
+    """The endpoint's body. `count` is the rows this query pages through
+    (after `group_value`); `groups` and `summary` are over the whole filtered
+    set, so a board column's header and the tiles never shrink to a page."""
+    entries, groups = select(portfolio, params)
+    page, next_cursor = paginate(
+        entries,
+        cursor=params.cursor,
+        limit=params.limit,
+        sort_key=params.sort_key,
+        descending=params.descending,
+        portfolio=portfolio,
+        group=params.group,
+        group_value=params.group_value,
+    )
+    return {
+        "results": [row_payload(entry) for entry in page],
+        "next_cursor": next_cursor,
+        "count": len(entries),
+        "groups": groups,
+        "summary": build_summary(portfolio.entries),
+        "filters": filters,
+        "currency": portfolio.organisation.currency,
     }
