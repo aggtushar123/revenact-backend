@@ -2437,7 +2437,7 @@ are included; ids outside visibility are silently absent. Unknown parameter valu
                   "churn_date": null, "churn_reason": "", "churn_reason_label": "", "churn_comment": ""}
     }
   }],
-  "next_cursor": "eyJpZCI6Nywib2Zmc2V0Ijo1MH0",
+  "next_cursor": "<opaque string; pass back as ?cursor=>",
   "count": 12,
   "groups": [{"key": "average", "label": "Average", "count": 4, "arr": 244000.0}],
   "summary": {
