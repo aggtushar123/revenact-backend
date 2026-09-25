@@ -5352,8 +5352,9 @@ reads them from its own `GET .../session/`.
 
 **Only whole-conversation viewers change a session.** Every session-
 changing request requires `sees_whole_conversation` (the owner, or an
-accepted present participant); a person who is only mentioned reads a
-slice and gets `403`:
+accepted present participant who holds a grant); a person who is only
+mentioned reads a slice and gets `403`. Posting a message is not a
+session change:
 
 | Route | Who |
 |---|---|
@@ -5362,13 +5363,23 @@ slice and gets `403`:
 | `POST .../session/handoff/` | owner or participant (`403` otherwise); `to_user_id` = caller → `400` |
 | `POST .../session/close/` | owner (404 otherwise) |
 | `GET/POST .../session/decisions/` | owner or participant (`403` otherwise) — proposals come from the whole transcript |
-| `POST /copilot/messages/` into a conversation **with a session** (a redirect) | owner or participant (`403` otherwise); a mentioned person's follow-up into a session-less conversation is still allowed |
+| `POST /copilot/messages/` into a conversation with a session (a redirect) | anyone the conversation is visible to, a mentioned person included — not a session change: their history is their own slice (`visible_messages`), grounding their own scope, and the `redirected` event carries the turn's id only |
 | `POST /copilot/sessions/invites/<id>/respond/` | the invite's own target only (404 otherwise), and only while it is `pending` (an accepted or declined invite is `400`); accepting is `400` unless the inviter is someone else who still sees the whole conversation |
 
-A self-issued invite (`invited_by` = `invited_user`) never grants access,
-even one already accepted: `sees_whole_conversation` and
-`conversations_visible_to` count only invites someone else issued, so a
-participant row that came from one grants nothing on its own.
+**Access is valid only along a chain from the owner.** The grant
+holders of a conversation are a fixed point: start with the owner; add
+the invitee of any accepted invite whose inviter is already a holder
+(and is not the invitee); repeat until nothing is added
+(`copilot.views.grant_holders`). `sees_whole_conversation` and
+`conversations_visible_to` grant a participant the whole conversation
+only when they are a holder **and** present; a participant row alone,
+a self-issued invite, an invite from a mentioned-only viewer (and
+anything its invitee issued after), or one from a since-deleted inviter
+grants nothing — rows written before this rule neutralised with no data
+migration (the owner re-invites if a legitimate chain broke). Accepting
+needs an inviter who is a present holder. `GET /copilot/sessions/invites/`
+lists only invites that can be accepted; an invite that can't serializes
+with `conversation_title: "Shared conversation"` and `account_label: null`.
 
 **Titles and notices follow visibility too.** A conversation's `title`
 is its first turn's opening words, so the list and detail endpoints

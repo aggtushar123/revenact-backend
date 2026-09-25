@@ -249,7 +249,7 @@ class SessionInviteSerializer(serializers.ModelSerializer):
 
     invited_by = _ActorSerializer(allow_null=True)
     conversation_id = serializers.IntegerField(source="session.conversation_id", read_only=True)
-    conversation_title = serializers.CharField(source="session.conversation.title", read_only=True)
+    conversation_title = serializers.SerializerMethodField()
     account_label = serializers.SerializerMethodField()
 
     class Meta:
@@ -264,9 +264,22 @@ class SessionInviteSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+    def get_conversation_title(self, obj):
+        # An invite that can't be accepted (views._invite_is_grantable —
+        # e.g. a pre-fix row from outside the owner's chain) says nothing
+        # about the conversation: the title is its first turn's words.
+        from .views import NEUTRAL_TITLE, _invite_is_grantable
+
+        if not _invite_is_grantable(obj):
+            return NEUTRAL_TITLE
+        return obj.session.conversation.title
+
     def get_account_label(self, obj):
         # Read by the invitee, so named only when they may open that
-        # customer/account — see views._session_subject_label.
-        from .views import _session_subject_label
+        # customer/account — see views._session_subject_label — and never
+        # for an invite that can't be accepted.
+        from .views import _invite_is_grantable, _session_subject_label
 
+        if not _invite_is_grantable(obj):
+            return None
         return _session_subject_label(obj.session, obj.invited_user)

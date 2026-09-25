@@ -82,16 +82,18 @@ def conversations_visible_to(user):
     relations (`session__participants`, `session__invites`) joined in
     one filter — each independently matches at most one row per user
     per session (see those models' own unique constraints), so this is
-    a real AND, not an accidental OR. A self-issued invite never counts
-    (_accepted_invites), so a participant row it produced grants nothing."""
+    a real AND, not an accidental OR. An accepted invite counts only
+    when its invitee is a grant holder (see grant_holders — a chain of
+    accepted invites back to the owner), so rows the old hand-off hole
+    wrote grant nothing, and neither does a participant row on its own.
+
+    Cost: one query for the candidate sessions (present participant +
+    accepted invite), one for all their accepted invites (the chains are
+    resolved in Python), then the returned queryset itself — no N+1."""
 
     return Conversation.objects.filter(
         Q(user=user)
-        | Q(
-            session__participants__user=user,
-            session__participants__left_at__isnull=True,
-            session__invites__in=_accepted_invites(user),
-        )
+        | Q(pk__in=_conversations_granted_to(user))
         # Mentioned in it: a question routed to them from one of its turns
         # (services.knowledge) — or to someone who reports to them, directly
         # or through the chain: a manager sees what was asked of their team
@@ -107,35 +109,83 @@ def _me_and_my_reports(user):
     return {user.id, *subtree_ids(user)}
 
 
-def _accepted_invites(user):
-    """`user`'s accepted invites that can grant access — never one they
-    issued to themselves. The self-hand-off hole let a mentioned viewer
-    write and accept such a row; excluding it here means any already in
-    the database grant nothing, with no data migration. (An inviter
-    since deleted — invited_by null — still counts.)"""
-    return SessionInvite.objects.filter(
-        invited_user=user, status=SessionInvite.Status.ACCEPTED
-    ).exclude(invited_by_id=user.id)
+def _holders_from(owner_id, edges):
+    """The fixed point: start from the owner; add the invitee of any
+    accepted invite whose inviter is already a holder (and isn't the
+    invitee) until nothing changes. `edges` are (invited_by_id,
+    invited_user_id) of the session's accepted invites."""
+    holders = {owner_id}
+    grew = True
+    while grew:
+        grew = False
+        for inviter, invitee in edges:
+            if inviter in holders and inviter != invitee and invitee not in holders:
+                holders.add(invitee)
+                grew = True
+    return holders
+
+
+def grant_holders(session):
+    """Who holds whole-conversation access to `session`'s conversation:
+    the owner, plus everyone reached from them along accepted invites.
+    Grants are valid only along a chain from the owner — so a self-invite,
+    a hand-off from a mentioned-only viewer (the old hole), anything that
+    viewer's invitee then issued, and an invite from a since-deleted
+    inviter all grant nothing, with no data migration. One query."""
+    edges = session.invites.filter(status=SessionInvite.Status.ACCEPTED).values_list(
+        "invited_by_id", "invited_user_id"
+    )
+    return _holders_from(session.conversation.user_id, list(edges))
+
+
+def _conversations_granted_to(user):
+    """Ids of conversations `user` sees whole as a participant (not the
+    owner): a present participant row AND a holder of the chain. Two
+    queries whatever the number of sessions."""
+    candidates = dict(
+        CopilotSession.objects.filter(
+            participants__user=user,
+            participants__left_at__isnull=True,
+            invites__invited_user=user,
+            invites__status=SessionInvite.Status.ACCEPTED,
+        )
+        .values_list("id", "conversation__user_id")
+        .distinct()
+    )
+    if not candidates:
+        return []
+    edges = {}
+    for session_id, inviter, invitee in SessionInvite.objects.filter(
+        session_id__in=candidates, status=SessionInvite.Status.ACCEPTED
+    ).values_list("session_id", "invited_by_id", "invited_user_id"):
+        edges.setdefault(session_id, []).append((inviter, invitee))
+    granted = [
+        session_id
+        for session_id, owner_id in candidates.items()
+        if user.id in _holders_from(owner_id, edges.get(session_id, []))
+    ]
+    return list(
+        CopilotSession.objects.filter(id__in=granted).values_list("conversation_id", flat=True)
+    )
 
 
 def sees_whole_conversation(conversation, user):
-    """The owner and accepted, present participants see every turn — a
-    participant only through an invite someone else issued (see
-    _accepted_invites); the participant row alone grants nothing."""
+    """The owner, and present participants who hold a grant along a chain
+    from the owner (grant_holders); a participant row alone, or an invite
+    that doesn't chain back to the owner, grants nothing."""
     if conversation.user_id == user.id:
         return True
     session = getattr(conversation, "session", None)
     if session is None:
         return False
-    return (
-        session.participants.filter(user=user, left_at__isnull=True).exists()
-        and _accepted_invites(user).filter(session=session).exists()
-    )
+    return session.participants.filter(
+        user=user, left_at__isnull=True
+    ).exists() and user.id in grant_holders(session)
 
 
 def _can_change_session(conversation, user):
-    """Changing a session — hand-off, invite, redirect, close, decisions —
-    is for whoever sees the whole conversation (owner, accepted present
+    """Changing a session — hand-off, invite, close, decisions — is for
+    whoever sees the whole conversation (owner, accepted present
     participant). A person who is only mentioned reads a slice; letting
     them hand off (to themselves) and accept their own invite turned
     that slice into the whole conversation."""
@@ -454,15 +504,12 @@ class SendMessageView(APIView):
                 return Response(
                     {"detail": "This session has been closed."}, status=status.HTTP_403_FORBIDDEN
                 )
-            # A send into a session is a redirect of it — a session change,
-            # so it needs the whole conversation. A mentioned person's
-            # follow-up into a session-less conversation stays allowed
-            # (grounded in their slice only).
-            if session is not None and not _can_change_session(conversation, request.user):
-                return Response(
-                    {"detail": "Only the owner and participants can post into a live session."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+            # A mentioned person may post here, live session or not: their
+            # history is their own slice (visible_messages, below), the
+            # grounding their own scope, and the `redirected` event names
+            # the turn by id only. Posting changes nothing about the
+            # session — hand-off, invite, close and decisions stay gated
+            # by _can_change_session.
 
         # A send from the Dashboard says where it was asked; the server
         # recomputes what is there (services/copilot/dashboard_grounding.py).
@@ -1033,16 +1080,23 @@ class MyInvitesView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return SessionInvite.objects.filter(
+        # Only invites that can actually be accepted (_invite_is_grantable):
+        # a pre-fix row from someone outside the owner's chain would
+        # otherwise show its conversation's title (the first turn's words)
+        # to someone who may never read it. Few rows per person, so the
+        # per-invite check is cheap.
+        pending = SessionInvite.objects.filter(
             invited_user=self.request.user, status=SessionInvite.Status.PENDING
-        )
+        ).select_related("session__conversation", "invited_by")
+        return [invite for invite in pending if _invite_is_grantable(invite)]
 
 
 def _invite_is_grantable(invite):
     """Accepting grants the whole conversation, so the invite must come
-    from someone else who sees it whole — never from the invitee themself
-    (the escalation a self-hand-off used to allow; creation refuses that
-    now, this refuses any such row written before)."""
+    from someone else who sees it whole — a grant holder (grant_holders)
+    who is still present — never from the invitee themself (the
+    escalation a self-hand-off used to allow; creation refuses that now,
+    this refuses any such row written before)."""
     inviter = invite.invited_by
     if inviter is None or inviter.id == invite.invited_user_id:
         return False

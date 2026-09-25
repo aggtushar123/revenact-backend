@@ -854,11 +854,6 @@ class OnlyWholeConversationViewersChangeASessionTests(APITestCase):
             ),
             "close": self.client.post(self._base("close/"), {}, format="json"),
             "decisions": self.client.post(self._base("decisions/"), {}, format="json"),
-            "redirect": self.client.post(
-                "/api/v1/copilot/messages/",
-                {"conversation_id": self.conversation.id, "content": "hello"},
-                format="json",
-            ),
         }
         for route, response in attempts.items():
             with self.subTest(route=route):
@@ -871,6 +866,36 @@ class OnlyWholeConversationViewersChangeASessionTests(APITestCase):
             SessionParticipant.objects.filter(session=self.session, user=self.manager).exists()
         )
         self.assertEqual(self.session.events.count(), 0)
+
+    @patch("services.copilot.views.get_completion")
+    def test_a_mentioned_only_viewer_may_post_but_it_widens_nothing(self, completion):
+        completion.return_value = "A reply"
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            "/api/v1/copilot/messages/",
+            {"conversation_id": self.conversation.id, "content": "The renewal is on the 30th"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["visibility"], "partial")
+        self.assertNotIn(self.SECRET, str(response.data))
+        # Their history is their own slice: the secret turn never reaches the model.
+        self.assertNotIn(self.SECRET, str(completion.call_args))
+        # The redirect event names the turn, not its text, and nothing
+        # about the session changed hands.
+        event = self.session.events.get()
+        self.assertEqual(event.kind, SessionEvent.Kind.REDIRECTED)
+        self.assertFalse(SessionInvite.objects.filter(session=self.session).exists())
+        self.assertFalse(
+            SessionParticipant.objects.filter(session=self.session, user=self.manager).exists()
+        )
+        detail = self._detail(self.manager)
+        self.assertEqual(detail.data["visibility"], "partial")
+        self.assertNotIn(self.SECRET, str(detail.data))
+        self.client.force_authenticate(self.manager)
+        poll = self.client.get(self._base())
+        self.assertEqual(set(poll.data["events"][0]["message"]), {"id", "role", "created_at"})
 
     def test_nobody_can_hand_off_or_invite_to_themselves(self):
         self.client.force_authenticate(self.owner)
@@ -1037,3 +1062,101 @@ class SelfIssuedInvitesGrantNothingTests(APITestCase):
         self.assertFalse(
             SessionParticipant.objects.filter(session=self.session, user=self.teammate).exists()
         )
+
+
+class GrantsChainBackToTheOwnerTests(APITestCase):
+    """Whole-conversation access is valid only along a chain of accepted
+    invites that starts at the owner. Rows the old hand-off hole wrote —
+    a mentioned-only viewer handing off to a colleague, who then invites
+    them back — form a chain that starts elsewhere, so they grant nothing."""
+
+    SECRET = OnlyWholeConversationViewersChangeASessionTests.SECRET
+    setUp_base = OnlyWholeConversationViewersChangeASessionTests.setUp
+    _detail = OnlyWholeConversationViewersChangeASessionTests._detail
+
+    def setUp(self):
+        self.setUp_base()
+        self.colleague = User.objects.create_user(
+            email="cy@acme.io", password="supersecret1", name="Cy", organisation=self.org
+        )
+        self.third = User.objects.create_user(
+            email="di@acme.io", password="supersecret1", name="Di", organisation=self.org
+        )
+
+    def _accepted(self, invited_user, invited_by, present=True):
+        SessionInvite.objects.create(
+            session=self.session,
+            invited_user=invited_user,
+            invited_by=invited_by,
+            status=SessionInvite.Status.ACCEPTED,
+        )
+        if present:
+            SessionParticipant.objects.create(session=self.session, user=invited_user)
+
+    def _sees_whole(self, user):
+        from services.copilot.views import conversations_visible_to, sees_whole_conversation
+
+        whole = sees_whole_conversation(self.conversation, user)
+        listed = conversations_visible_to(user).filter(pk=self.conversation.pk).exists()
+        return whole, listed
+
+    def test_the_pre_fix_chain_from_a_mentioned_viewer_grants_nobody(self):
+        self._accepted(self.colleague, invited_by=self.manager)
+        self._accepted(self.manager, invited_by=self.colleague)
+
+        self.assertEqual(self._sees_whole(self.colleague), (False, False))
+        self.assertFalse(self._sees_whole(self.manager)[0])
+        self.assertEqual(self._detail(self.manager).data["visibility"], "partial")
+
+    def test_a_chain_from_the_owner_still_grants_every_link(self):
+        self._accepted(self.teammate, invited_by=self.owner)
+        self._accepted(self.third, invited_by=self.teammate)
+
+        self.assertEqual(self._sees_whole(self.teammate), (True, True))
+        self.assertEqual(self._sees_whole(self.third), (True, True))
+        self.assertEqual(self._detail(self.third).data["visibility"], "full")
+
+    def test_a_participant_row_without_a_grant_grants_nothing(self):
+        SessionParticipant.objects.create(session=self.session, user=self.colleague)
+
+        self.assertEqual(self._sees_whole(self.colleague), (False, False))
+
+    def test_an_invite_from_a_non_holder_cannot_be_accepted(self):
+        self._accepted(self.colleague, invited_by=self.manager)
+        invite = SessionInvite.objects.create(
+            session=self.session, invited_user=self.third, invited_by=self.colleague
+        )
+        self.client.force_authenticate(self.third)
+        response = self.client.post(
+            f"/api/v1/copilot/sessions/invites/{invite.id}/respond/",
+            {"status": "accepted"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_my_invites_leaves_out_invites_that_cannot_be_accepted(self):
+        SessionInvite.objects.create(
+            session=self.session, invited_user=self.manager, invited_by=self.manager
+        )
+        SessionInvite.objects.create(
+            session=self.session, invited_user=self.third, invited_by=self.owner
+        )
+        self.client.force_authenticate(self.manager)
+        self.assertEqual(self.client.get("/api/v1/copilot/sessions/invites/").data, [])
+
+        self.client.force_authenticate(self.third)
+        titles = [
+            i["conversation_title"]
+            for i in self.client.get("/api/v1/copilot/sessions/invites/").data
+        ]
+        self.assertEqual(titles, [self.SECRET[:50]])
+
+    def test_a_non_grantable_invite_serializes_with_a_neutral_title_and_no_label(self):
+        from services.copilot.serializers import SessionInviteSerializer
+
+        planted = SessionInvite.objects.create(
+            session=self.session, invited_user=self.manager, invited_by=self.manager
+        )
+        data = SessionInviteSerializer(planted).data
+        self.assertEqual(data["conversation_title"], "Shared conversation")
+        self.assertIsNone(data["account_label"])
