@@ -110,6 +110,26 @@ class PortfolioEndpointTests(PortfolioFixture):
                 break
         self.assertEqual(seen, ["Co 4", "Co 3", "Co 2", "Co 1", "Co 0"])
 
+    def follow(self, **query):
+        seen, cursor = [], None
+        for _ in range(20):
+            body = self.get(**query, **({"cursor": cursor} if cursor else {}))
+            seen += [row["name"] for row in body["results"]]
+            cursor = body["next_cursor"]
+            if cursor is None:
+                return seen
+        self.fail(f"the cursor never ended: {seen}")
+
+    def test_following_the_cursor_over_a_grouped_list_ends(self):
+        """The final review's probe: a page that ends in a later section must
+        not restart the scan inside an earlier one."""
+        for i, arr in enumerate((3000, 2000, 1000)):
+            self.customer(f"C{i}", health_score=Decimal("2.0"), arr_billed_at_account=arr)
+        for i, arr in enumerate((10000, 500), start=3):
+            self.customer(f"C{i}", arr_billed_at_account=arr)
+        seen = self.follow(group="health", sort="-arr", limit="2")
+        self.assertEqual(seen, ["C0", "C1", "C2", "C3", "C4"])
+
 
 class PortfolioQueryCountTests(PortfolioFixture):
     """Every figure is computed over the whole filtered set in a fixed number

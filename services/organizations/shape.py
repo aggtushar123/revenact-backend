@@ -99,22 +99,27 @@ def _wrap(value, descending):
     return _Desc(value) if descending else value
 
 
-def _rank(entry, sort_key, descending, portfolio):
-    """The exact tuple both `order_entries` and the cursor sort by: missing
-    values last regardless of direction, then the sort value (reversed for
-    descending), then the name/id tiebreak — always ascending, so ties keep
-    one order in either direction. One function for both means the two can
-    never drift apart."""
+def _rank(entry, sort_key, descending, portfolio, group=""):
+    """The exact tuple `select`, `order_entries` and the cursor all sort by:
+    the section's position first when the list is grouped (`()` when it is
+    not), then missing values last regardless of direction, then the sort
+    value (reversed for descending), then the name/id tiebreak — always
+    ascending, so ties keep one order in either direction. One function for
+    all three means the list order and the paging order can never drift
+    apart."""
+    section = _group_rank(*group_key(entry, group), group) if group else ()
     value = SORT_GETTERS[sort_key](entry, portfolio)
     if value is None:
-        return (1, None, _tiebreak(entry))
-    return (0, _wrap(value, descending), _tiebreak(entry))
+        return (section, 1, None, _tiebreak(entry))
+    return (section, 0, _wrap(value, descending), _tiebreak(entry))
 
 
-def order_entries(portfolio, sort_key, descending):
-    """Missing values last in either direction; ties by name, then id."""
+def order_entries(portfolio, sort_key, descending, group=""):
+    """Sections in their fixed order, then missing values last in either
+    direction; ties by name, then id."""
     return sorted(
-        portfolio.entries, key=lambda entry: _rank(entry, sort_key, descending, portfolio)
+        portfolio.entries,
+        key=lambda entry: _rank(entry, sort_key, descending, portfolio, group),
     )
 
 
@@ -179,12 +184,9 @@ def build_groups(entries, group):
 def select(portfolio, params):
     """The rows in list order — sections first, the chosen sort inside each —
     and the section totals over every row, before `group_value` narrows."""
-    entries = order_entries(portfolio, params.sort_key, params.descending)
+    entries = order_entries(portfolio, params.sort_key, params.descending, params.group)
     if not params.group:
         return entries, []
-    entries = sorted(
-        entries, key=lambda entry: _group_rank(*group_key(entry, params.group), params.group)
-    )
     groups = build_groups(entries, params.group)
     if params.group_value is not None:
         entries = [e for e in entries if group_key(e, params.group)[0] == params.group_value]
@@ -220,17 +222,19 @@ def _sort_token(sort_key, descending):
     return f"-{sort_key}" if descending else sort_key
 
 
-def encode_cursor(bucket, value, name, entry_id, sort, group, group_value):
-    """The last served row's rank, unwrapped: bucket (0 present, 1 missing),
-    its raw sort value, then the name/id tiebreak — exactly what `_rank`
-    computes, minus the direction wrapping, which the next request's own
-    `descending` re-applies. `sort` (e.g. "-arr"), `group` and `group_value`
-    scope the cursor to the list it was cut from: a different sort or a
-    different board column must not resume from it, even when the value types
-    happen to compare (two numeric sorts, say)."""
+def encode_cursor(section, bucket, value, name, entry_id, sort, group, group_value):
+    """The last served row's rank, unwrapped: its section's position (`[]`
+    when the list is not grouped), bucket (0 present, 1 missing), its raw sort
+    value, then the name/id tiebreak — exactly what `_rank` computes, minus
+    the direction wrapping, which the next request's own `descending`
+    re-applies. `sort` (e.g. "-arr"), `group` and `group_value` scope the
+    cursor to the list it was cut from: a different sort or a different board
+    column must not resume from it, even when the value types happen to
+    compare (two numeric sorts, say)."""
     dumped, kind = _dump_value(value)
     raw = json.dumps(
         {
+            "sec": list(section),
             "b": bucket,
             "v": dumped,
             "t": kind,
@@ -245,6 +249,21 @@ def encode_cursor(bucket, value, name, entry_id, sort, group, group_value):
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
+def _load_section(raw):
+    """`_group_rank`'s (position, name, key) triple, or `()` ungrouped."""
+    if raw == []:
+        return ()
+    if (
+        isinstance(raw, list)
+        and len(raw) == 3
+        and isinstance(raw[0], int)
+        and isinstance(raw[1], str)
+        and isinstance(raw[2], str)
+    ):
+        return tuple(raw)
+    raise ValueError(raw)
+
+
 def decode_cursor(cursor):
     if not cursor:
         return None
@@ -253,6 +272,7 @@ def decode_cursor(cursor):
         data = json.loads(base64.urlsafe_b64decode(padded.encode()))
         if not isinstance(data, dict):
             return None
+        section = _load_section(data["sec"])
         bucket, kind = data["b"], data["t"]
         if bucket not in (0, 1):
             return None
@@ -265,37 +285,39 @@ def decode_cursor(cursor):
             return None
         if group_value is not None and not isinstance(group_value, str):
             return None
+        if bool(section) != bool(group):
+            return None
     except (binascii.Error, ValueError, UnicodeError, KeyError, TypeError):
         return None
-    return bucket, value, name, entry_id, sort, group, group_value
+    return section, bucket, value, name, entry_id, sort, group, group_value
 
 
 def paginate(
     entries, *, cursor, limit, sort_key, descending, portfolio, group="", group_value=None
 ):
-    """Keyset pagination. The cursor names the last served row's full rank —
-    bucket, sort value, name, id, exactly what `_rank` sorts by — plus the
-    sort and board column it was cut from. The next page is every row that
-    ranks strictly after it in the current ordering, found with a scan over
-    the already-ordered `entries`. Rows added or removed anywhere else in the
-    set, in any number, never cause a skip or a repeat: the cut is by value,
-    not by a row count. A malformed, tampered, stale-typed, or
+    """Keyset pagination over `select`'s order. The cursor names the last
+    served row's full rank — section, bucket, sort value, name, id, exactly
+    what `_rank` sorts by — plus the sort and board column it was cut from.
+    The next page is every row that ranks strictly after it, found with a
+    scan over the already-ordered `entries`. Rows added or removed anywhere
+    else in the set, in any number, never cause a skip or a repeat: the cut is
+    by value, not by a row count. A malformed, tampered, stale-typed, or
     wrong-sort/wrong-column cursor is treated as absent — the first page."""
     start = 0
     decoded = decode_cursor(cursor)
     current_sort = _sort_token(sort_key, descending)
-    if decoded is not None and decoded[4] == current_sort and decoded[5:] == (group, group_value):
-        bucket, value, name, entry_id, *_scope = decoded
+    if decoded is not None and decoded[5] == current_sort and decoded[6:] == (group, group_value):
+        section, bucket, value, name, entry_id, *_scope = decoded
         # Missing values are never wrapped in `_rank` either — only a present
         # value's direction is reversed.
         wrapped = value if bucket == 1 else _wrap(value, descending)
-        cursor_rank = (bucket, wrapped, (name, entry_id))
+        cursor_rank = (section, bucket, wrapped, (name, entry_id))
         try:
             start = next(
                 (
                     index
                     for index, entry in enumerate(entries)
-                    if _rank(entry, sort_key, descending, portfolio) > cursor_rank
+                    if _rank(entry, sort_key, descending, portfolio, group) > cursor_rank
                 ),
                 len(entries),
             )
@@ -306,12 +328,12 @@ def paginate(
     page = entries[start : start + limit]
     next_cursor = None
     if page and start + len(page) < len(entries):
-        last_bucket, last_value, (last_name, last_id) = _rank(
-            page[-1], sort_key, descending, portfolio
+        section, last_bucket, last_value, (last_name, last_id) = _rank(
+            page[-1], sort_key, descending, portfolio, group
         )
         raw_value = last_value.value if isinstance(last_value, _Desc) else last_value
         next_cursor = encode_cursor(
-            last_bucket, raw_value, last_name, last_id, current_sort, group, group_value
+            section, last_bucket, raw_value, last_name, last_id, current_sort, group, group_value
         )
     return page, next_cursor
 

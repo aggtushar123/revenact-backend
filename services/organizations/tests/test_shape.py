@@ -191,7 +191,9 @@ class CursorTests(ShapeFixture):
         self.assertIsNone(last)
 
     def test_a_bad_cursor_is_the_first_page(self):
-        truncated = shape.encode_cursor(0, "alpha", "alpha", self.alpha.pk, "name", "", None)[:-2]
+        truncated = shape.encode_cursor((), 0, "alpha", "alpha", self.alpha.pk, "name", "", None)[
+            :-2
+        ]
         for cursor in ("%%%", "bm90IGpzb24", truncated):
             page, _next = self.page(cursor, sort="name")
             self.assertEqual(self.names(page), ["Alpha", "Bravo"])
@@ -265,7 +267,69 @@ class CursorTests(ShapeFixture):
 
     def test_cursor_round_trip(self):
         self.assertEqual(
-            shape.decode_cursor(shape.encode_cursor(0, 12.5, "alpha", 7, "-arr", "health", "good")),
-            (0, 12.5, "alpha", 7, "-arr", "health", "good"),
+            shape.decode_cursor(
+                shape.encode_cursor((2, "", ""), 0, 12.5, "alpha", 7, "-arr", "health", "good")
+            ),
+            ((2, "", ""), 0, 12.5, "alpha", 7, "-arr", "health", "good"),
         )
         self.assertIsNone(shape.decode_cursor(""))
+
+
+class GroupedPagingTests(ShapeFixture):
+    """Following `next_cursor` to the end serves `select`'s exact order —
+    sections first, the sort inside each — every row once, for every group,
+    in both directions, across ties and missing values."""
+
+    def setUp(self):
+        super().setUp()
+        # Ties: Echo and Foxtrot share Alpha's ARR, health and renewal; Golf has
+        # no owner, no product and no renewal, and GBP (no rate) for ARR.
+        self.customer(
+            "Echo",
+            arr_billed_at_account=Decimal("30000"),
+            renewal_date=self.today + timedelta(days=100),
+            lifecycle_stage="live",
+        )
+        self.customer(
+            "Foxtrot",
+            owner=self.other,
+            arr_billed_at_account=Decimal("30000"),
+            health_score=Decimal("3.0"),
+            renewal_date=self.today + timedelta(days=100),
+            lifecycle_stage="renewal",
+        )
+        self.customer("Golf", owner=None, currency="GBP", lifecycle_stage="onboarding")
+
+    def follow(self, limit, **query):
+        portfolio = self.portfolio(**query)
+        params = parse_params(query)
+        entries, _groups = shape.select(portfolio, params)
+        served, cursor = [], ""
+        for _ in range(len(entries) + 2):
+            page, cursor = self.page(portfolio, params, entries, cursor, limit)
+            served += [entry.customer.pk for entry in page]
+            if cursor is None:
+                break
+        return served, [entry.customer.pk for entry in entries]
+
+    def page(self, portfolio, params, entries, cursor, limit):
+        return shape.paginate(
+            entries,
+            cursor=cursor,
+            limit=limit,
+            sort_key=params.sort_key,
+            descending=params.descending,
+            portfolio=portfolio,
+            group=params.group,
+            group_value=params.group_value,
+        )
+
+    def test_every_group_and_direction_pages_in_select_order(self):
+        for group in ("health", "owner", "lifecycle", "product", "renewal"):
+            for sort in ("arr", "-arr", "renewal", "-renewal", "name", "-name", "-touch"):
+                for limit in (1, 2, 3):
+                    with self.subTest(group=group, sort=sort, limit=limit):
+                        served, expected = self.follow(limit, group=group, sort=sort)
+                        self.assertEqual(len(served), len(set(served)))
+                        self.assertEqual(served, expected)
+                        self.assertEqual(len(served), 7)
