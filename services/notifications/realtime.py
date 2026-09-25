@@ -7,6 +7,7 @@ import logging
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.db import transaction
 
 from .models import Notification
 from .serializers import NotificationSerializer
@@ -14,15 +15,23 @@ from .serializers import NotificationSerializer
 logger = logging.getLogger(__name__)
 
 
-def notify(*, recipient, actor, kind, message, link=""):
+def notify(*, recipient, actor, kind, message, link="", push_on_commit=False):
     """The one real entry point every trigger site calls — see
     Notification's own docstring for why `message` is rendered here,
-    once, rather than derived again later."""
+    once, rather than derived again later.
+
+    `push_on_commit` holds the live push until the surrounding transaction
+    commits, so a recipient is never told about a change that then rolls
+    back. The row itself is written in the transaction and rolls back with
+    it. Outside a transaction the push is immediate either way."""
 
     notification = Notification.objects.create(
         recipient=recipient, actor=actor, kind=kind, message=message, link=link
     )
-    _broadcast(notification)
+    if push_on_commit:
+        transaction.on_commit(lambda: _broadcast(notification))
+    else:
+        _broadcast(notification)
     return notification
 
 

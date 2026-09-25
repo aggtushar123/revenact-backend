@@ -77,7 +77,7 @@ from .serializers import (
 from .ticket_filters import filtered_tickets
 
 
-def _notify_owner_assigned(*, instance, actor, kind, noun, link):
+def _notify_owner_assigned(*, instance, actor, kind, noun, link, push_on_commit=False):
     """Real ownership-assignment notification — the caller is
     responsible for only calling this when `instance.owner` really is a
     *new* assignment (on create: any real owner; on update: only when
@@ -96,6 +96,29 @@ def _notify_owner_assigned(*, instance, actor, kind, noun, link):
         kind=kind,
         message=f'{actor.name} assigned you {noun} "{instance.name}"',
         link=link,
+        push_on_commit=push_on_commit,
+    )
+
+
+def after_customer_update(customer, *, actor, previous_owner, handover_note=""):
+    """What a saved Customer edit sets off when its owner changed: the
+    handover written down as a contribution, and the new owner told. Shared
+    by the detail view's PATCH and the Organizations bulk edit, so a reassign
+    means the same thing from either."""
+    if customer.owner_id == (previous_owner.id if previous_owner else None):
+        return
+    from services.knowledge.ownership import record_handover
+
+    record_handover(customer, actor, previous_owner, handover_note)
+    _notify_owner_assigned(
+        instance=customer,
+        actor=actor,
+        kind=Notification.Kind.CUSTOMER_ASSIGNED,
+        noun="the organization",
+        link=f"/organizations/{customer.id}",
+        # The live push waits for the commit (a bulk edit saves each
+        # organization in its own transaction).
+        push_on_commit=True,
     )
 
 
@@ -760,22 +783,12 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
     def perform_update(self, serializer):
         previous_owner = serializer.instance.owner
         customer = serializer.save()
-        if customer.owner_id != (previous_owner.id if previous_owner else None):
-            from services.knowledge.ownership import record_handover
-
-            record_handover(
-                customer,
-                self.request.user,
-                previous_owner,
-                serializer.context.get("handover_note", ""),
-            )
-            _notify_owner_assigned(
-                instance=customer,
-                actor=self.request.user,
-                kind=Notification.Kind.CUSTOMER_ASSIGNED,
-                noun="the organization",
-                link=f"/organizations/{customer.id}",
-            )
+        after_customer_update(
+            customer,
+            actor=self.request.user,
+            previous_owner=previous_owner,
+            handover_note=serializer.context.get("handover_note", ""),
+        )
 
 
 class AccountListCreateView(generics.ListCreateAPIView):

@@ -55,7 +55,9 @@ jobs:
         run: python manage.py migrate --noinput
 
       - name: Run tests
-        run: python manage.py test
+        # One process per runner core. Run serially, the suite grew past the
+        # 30-minute timeout (26-29 min on main by 2026-09-25).
+        run: python manage.py test --parallel auto --noinput
 
   # Continuous deployment (SOC2:CHG-07): after this repo's tests and the
   # soc2-gates run for the same commit both pass, log into Azure with OpenID

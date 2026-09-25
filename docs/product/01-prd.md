@@ -144,6 +144,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Capability | Status | Notes |
 |---|---|---|
 | Organisations (customers): list, board, detail, create, edit, churn, archive | Built | 34 selectable table columns, health and CSAT popovers show real breakdowns |
+| Organizations portfolio (list redesign) | Built (backend) | One endpoint for the page: rows with health trend, renewal runway, pulse, last touch and one signal computed by the dashboard's own code; the six detail panels; group, sort, filters and cursor pages; summary tiles over the filtered set; CSV export of all 34 fields; bulk owner, stage and archive under the single-edit rules |
 | Accounts: list, board, detail, create, edit | Built | Many-to-many with customers. No churn or archive by design |
 | Contacts: list, detail, CRUD, computed sentiment | Built | Sentiment read from that contact's own calls, tickets and emails |
 | Activity feed: activities, emails, tasks, notes, tickets, calendar events, surveys, sessions, headlines, files, CallSense | Built | Tasks and notes can be created in place; emails can be composed |
@@ -307,3 +308,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-16 | Personal mailboxes, ticket connectors, files and CallSense, contact sentiment, pipeline departments, account pulse, continuous deployment |
 | 2026-09-18 | Agent skill sets vendored in both repos; Playwright agent CLI in the frontend |
 | 2026-09-24 | Dashboard attention list; Ask Revenact on the Dashboard (backend) |
+| 2026-09-25 | Organizations portfolio (backend): portfolio endpoint, export, bulk edit |

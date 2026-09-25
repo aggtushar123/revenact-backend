@@ -341,6 +341,12 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
         request = self.context["request"]
         if owner is not None and owner.organisation_id != request.user.organisation_id:
             raise serializers.ValidationError("Owner must be a member of your own organisation.")
+        # A deactivated user can't sign in to act on the account, so it would
+        # sit with nobody while looking owned.
+        if owner is not None and not owner.is_active:
+            raise serializers.ValidationError(
+                "Owner must be an active member of your organisation."
+            )
         # Changing who is accountable is gated: the current owner, someone
         # above them, or an org-settings manager (services.knowledge.ownership).
         if self.instance is not None and owner != self.instance.owner:
@@ -352,6 +358,21 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
                     "organisation-settings manager can reassign this account."
                 )
         return owner
+
+    def validate_is_archived(self, archived):
+        """Archiving hides the record from everyone's working list, so it is
+        gated like a reassign, in either direction: the current owner, their
+        management chain, an org-settings manager — or anyone when nobody owns
+        it. The single PATCH and the Organizations bulk bar both pass here.
+        A re-sent, unchanged flag is not judged."""
+        if self.instance is None or archived == self.instance.is_archived:
+            return archived
+        from services.knowledge.ownership import may_change_owner
+
+        if not may_change_owner(self.context["request"].user, self.instance):
+            verb = "archive" if archived else "restore"
+            raise serializers.ValidationError(f"You can't {verb} this organization.")
+        return archived
 
     def create(self, validated_data):
         request = self.context["request"]
