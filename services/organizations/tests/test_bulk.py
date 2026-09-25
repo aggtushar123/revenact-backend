@@ -1,10 +1,15 @@
+from unittest.mock import patch
+
+from django.db import DatabaseError, connection
 from django.test import SimpleTestCase
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
 
 from core.models import AuditEvent
 from services.accounts.models import User
 from services.customers.models import Account, Customer
 from services.knowledge.models import Contribution
+from services.organizations import bulk as bulk_module
 from services.organizations.serializers import BulkRequestSerializer
 from services.organizations.tests.fixtures import PortfolioFixture
 
@@ -177,3 +182,81 @@ class BulkTests(PortfolioFixture):
         self.post({"ids": [danas.pk], "action": "archive"})
         event = AuditEvent.objects.get(action="organizations.bulk_updated")
         self.assertEqual(event.outcome, AuditEvent.Outcome.FAILURE)
+
+    def test_a_database_error_fails_only_that_id(self):
+        a, b, c = self.customer("A"), self.customer("B"), self.customer("C")
+        real_save = Customer.save
+
+        def save(instance, *args, **kwargs):
+            if instance.pk == b.pk:
+                raise DatabaseError("disk on fire")
+            return real_save(instance, *args, **kwargs)
+
+        with (
+            patch.object(Customer, "save", save),
+            self.assertLogs("services.organizations.bulk", level="WARNING") as logs,
+        ):
+            response = self.post({"ids": [a.pk, b.pk, c.pk], "action": "archive"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["updated"], [a.pk, c.pk])
+        self.assertEqual(response.data["failed"], [{"id": b.pk, "reason": "Could not be updated."}])
+        self.assertFalse(Customer.objects.get(pk=b.pk).is_archived)
+        self.assertNotIn("disk on fire", "\n".join(logs.output))
+        event = AuditEvent.objects.get(action="organizations.bulk_updated")
+        self.assertEqual(event.metadata["ids"], [a.pk, c.pk])
+        self.assertEqual(event.metadata["failed_ids"], [b.pk])
+
+    def test_an_unexpected_error_still_audits_what_was_done(self):
+        a, b = self.customer("A"), self.customer("B")
+        api = APIClient(raise_request_exception=False)
+        api.force_authenticate(self.csm)
+        with patch(
+            "services.organizations.bulk.after_customer_update",
+            side_effect=[None, RuntimeError("boom")],
+        ):
+            response = api.post(URL, {"ids": [a.pk, b.pk], "action": "archive"}, format="json")
+        self.assertEqual(response.status_code, 500)
+        self.assertTrue(Customer.objects.get(pk=a.pk).is_archived)
+        self.assertFalse(Customer.objects.get(pk=b.pk).is_archived)
+        event = AuditEvent.objects.get(action="organizations.bulk_updated")
+        self.assertEqual(event.outcome, AuditEvent.Outcome.FAILURE)
+        self.assertEqual(event.metadata["ids"], [a.pk])
+
+    def test_an_inactive_owner_is_refused(self):
+        a = self.customer("A")
+        self.other.is_active = False
+        self.other.save(update_fields=["is_active"])
+        response = self.post({"ids": [a.pk], "action": "set_owner", "value": self.other.pk})
+        self.assertEqual(
+            response.data["failed"],
+            [{"id": a.pk, "reason": "Owner must be an active member of your organisation."}],
+        )
+        self.assertEqual(Customer.objects.get(pk=a.pk).owner, self.csm)
+
+    def test_each_row_is_locked_and_read_fresh(self):
+        a = self.customer("A")
+        with CaptureQueriesContext(connection) as queries:
+            self.post({"ids": [a.pk], "action": "archive"})
+        locked = [q["sql"] for q in queries if "FOR UPDATE" in q["sql"]]
+        self.assertEqual(len(locked), 1)
+        self.assertIn('"customers_customer"', locked[0])
+
+    def test_authorisation_sees_the_current_owner(self):
+        # B is visible to Carl through an account he owns. While the batch is
+        # on A, Dana takes B over; by B's turn only Dana's chain or a settings
+        # manager may reassign it, so a snapshot from the start must not do.
+        a, b = self.customer("A"), self.customer("B")
+        division = Account.objects.create(name="B EMEA", owner=self.csm)
+        division.customers.add(b)
+        real_after = bulk_module.after_customer_update
+
+        def after(customer, **kwargs):
+            if customer.pk == a.pk:
+                Customer.objects.filter(pk=b.pk).update(owner=self.other)
+            return real_after(customer, **kwargs)
+
+        with patch("services.organizations.bulk.after_customer_update", after):
+            response = self.post({"ids": [a.pk, b.pk], "action": "set_owner", "value": None})
+        self.assertEqual(response.data["updated"], [a.pk])
+        self.assertIn("can reassign this account", response.data["failed"][0]["reason"])
+        self.assertEqual(Customer.objects.get(pk=b.pk).owner, self.other)

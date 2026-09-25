@@ -77,7 +77,7 @@ from .serializers import (
 from .ticket_filters import filtered_tickets
 
 
-def _notify_owner_assigned(*, instance, actor, kind, noun, link):
+def _notify_owner_assigned(*, instance, actor, kind, noun, link, push_on_commit=False):
     """Real ownership-assignment notification — the caller is
     responsible for only calling this when `instance.owner` really is a
     *new* assignment (on create: any real owner; on update: only when
@@ -96,6 +96,7 @@ def _notify_owner_assigned(*, instance, actor, kind, noun, link):
         kind=kind,
         message=f'{actor.name} assigned you {noun} "{instance.name}"',
         link=link,
+        push_on_commit=push_on_commit,
     )
 
 
@@ -115,6 +116,9 @@ def after_customer_update(customer, *, actor, previous_owner, handover_note=""):
         kind=Notification.Kind.CUSTOMER_ASSIGNED,
         noun="the organization",
         link=f"/organizations/{customer.id}",
+        # The live push waits for the commit (a bulk edit saves each
+        # organization in its own transaction).
+        push_on_commit=True,
     )
 
 

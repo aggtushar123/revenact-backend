@@ -69,18 +69,33 @@ class BulkUpdateView(APIView):
         serializer = BulkRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        result = bulk.apply(request, ids=data["ids"], action=data["action"], value=data["value"])
-        audit.record(  # SOC2:LOG-01
-            "organizations.bulk_updated",
-            request=request,
-            outcome=(
-                AuditEvent.Outcome.SUCCESS if result["updated"] else AuditEvent.Outcome.FAILURE
-            ),
-            metadata={
-                "action": data["action"],
-                "value": data["value"],
-                "ids": result["updated"],
-                "failed_ids": [row["id"] for row in result["failed"]],
-            },
-        )
+        result = {"updated": [], "failed": []}
+        finished = False
+        try:
+            bulk.apply(
+                request,
+                ids=data["ids"],
+                action=data["action"],
+                value=data["value"],
+                result=result,
+            )
+            finished = True
+        finally:
+            # Recorded even if something escaped mid-batch: the ids already
+            # saved stay saved (each is its own transaction).
+            audit.record(  # SOC2:LOG-01
+                "organizations.bulk_updated",
+                request=request,
+                outcome=(
+                    AuditEvent.Outcome.SUCCESS
+                    if finished and result["updated"]
+                    else AuditEvent.Outcome.FAILURE
+                ),
+                metadata={
+                    "action": data["action"],
+                    "value": data["value"],
+                    "ids": result["updated"],
+                    "failed_ids": [row["id"] for row in result["failed"]],
+                },
+            )
         return Response(result)
