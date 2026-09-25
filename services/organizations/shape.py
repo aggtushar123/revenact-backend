@@ -215,14 +215,30 @@ def _load_value(raw, kind):
     raise ValueError(kind)
 
 
-def encode_cursor(bucket, value, name, entry_id):
+def _sort_token(sort_key, descending):
+    return f"-{sort_key}" if descending else sort_key
+
+
+def encode_cursor(bucket, value, name, entry_id, sort, group, group_value):
     """The last served row's rank, unwrapped: bucket (0 present, 1 missing),
     its raw sort value, then the name/id tiebreak — exactly what `_rank`
     computes, minus the direction wrapping, which the next request's own
-    `descending` re-applies."""
+    `descending` re-applies. `sort` (e.g. "-arr"), `group` and `group_value`
+    scope the cursor to the list it was cut from: a different sort or a
+    different board column must not resume from it, even when the value types
+    happen to compare (two numeric sorts, say)."""
     dumped, kind = _dump_value(value)
     raw = json.dumps(
-        {"b": bucket, "v": dumped, "t": kind, "n": name, "id": entry_id},
+        {
+            "b": bucket,
+            "v": dumped,
+            "t": kind,
+            "n": name,
+            "id": entry_id,
+            "s": sort,
+            "g": group,
+            "gv": group_value,
+        },
         separators=(",", ":"),
     ).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -241,25 +257,34 @@ def decode_cursor(cursor):
             return None
         value = _load_value(data["v"], kind)
         name, entry_id = data["n"], data["id"]
+        sort, group, group_value = data["s"], data["g"], data["gv"]
         if not isinstance(name, str) or not isinstance(entry_id, int):
+            return None
+        if not isinstance(sort, str) or not isinstance(group, str):
+            return None
+        if group_value is not None and not isinstance(group_value, str):
             return None
     except (binascii.Error, ValueError, UnicodeError, KeyError, TypeError):
         return None
-    return bucket, value, name, entry_id
+    return bucket, value, name, entry_id, sort, group, group_value
 
 
-def paginate(entries, *, cursor, limit, sort_key, descending, portfolio):
+def paginate(
+    entries, *, cursor, limit, sort_key, descending, portfolio, group="", group_value=None
+):
     """Keyset pagination. The cursor names the last served row's full rank —
-    bucket, sort value, name, id, exactly what `_rank` sorts by — and the next
-    page is every row that ranks strictly after it in the current ordering,
-    found with a scan over the already-ordered `entries`. Rows added or
-    removed anywhere else in the set, in any number, never cause a skip or a
-    repeat: the cut is by value, not by a row count. A malformed, tampered or
-    stale-typed cursor falls back to the first page."""
+    bucket, sort value, name, id, exactly what `_rank` sorts by — plus the
+    sort and board column it was cut from. The next page is every row that
+    ranks strictly after it in the current ordering, found with a scan over
+    the already-ordered `entries`. Rows added or removed anywhere else in the
+    set, in any number, never cause a skip or a repeat: the cut is by value,
+    not by a row count. A malformed, tampered, stale-typed, or
+    wrong-sort/wrong-column cursor is treated as absent — the first page."""
     start = 0
     decoded = decode_cursor(cursor)
-    if decoded is not None:
-        bucket, value, name, entry_id = decoded
+    current_sort = _sort_token(sort_key, descending)
+    if decoded is not None and decoded[4] == current_sort and decoded[5:] == (group, group_value):
+        bucket, value, name, entry_id, *_scope = decoded
         # Missing values are never wrapped in `_rank` either — only a present
         # value's direction is reversed.
         wrapped = value if bucket == 1 else _wrap(value, descending)
@@ -284,5 +309,7 @@ def paginate(entries, *, cursor, limit, sort_key, descending, portfolio):
             page[-1], sort_key, descending, portfolio
         )
         raw_value = last_value.value if isinstance(last_value, _Desc) else last_value
-        next_cursor = encode_cursor(last_bucket, raw_value, last_name, last_id)
+        next_cursor = encode_cursor(
+            last_bucket, raw_value, last_name, last_id, current_sort, group, group_value
+        )
     return page, next_cursor

@@ -167,17 +167,19 @@ class GroupTests(ShapeFixture):
 
 
 class CursorTests(ShapeFixture):
-    def page(self, cursor="", **query):
+    def page(self, cursor="", *, limit=2, **query):
         portfolio = self.portfolio(**query)
         params = parse_params(query)
         entries, _groups = shape.select(portfolio, params)
         return shape.paginate(
             entries,
             cursor=cursor,
-            limit=2,
+            limit=limit,
             sort_key=params.sort_key,
             descending=params.descending,
             portfolio=portfolio,
+            group=params.group,
+            group_value=params.group_value,
         )
 
     def test_pages_follow_on_without_overlap(self):
@@ -189,7 +191,7 @@ class CursorTests(ShapeFixture):
         self.assertIsNone(last)
 
     def test_a_bad_cursor_is_the_first_page(self):
-        truncated = shape.encode_cursor(0, "alpha", "alpha", self.alpha.pk)[:-2]
+        truncated = shape.encode_cursor(0, "alpha", "alpha", self.alpha.pk, "name", "", None)[:-2]
         for cursor in ("%%%", "bm90IGpzb24", truncated):
             page, _next = self.page(cursor, sort="name")
             self.assertEqual(self.names(page), ["Alpha", "Bravo"])
@@ -231,8 +233,39 @@ class CursorTests(ShapeFixture):
         self.assertEqual(self.names(second), ["Bravo", "Charlie"])
         self.assertIsNone(last)
 
+    def test_a_cursor_from_a_different_sort_starts_the_first_page(self):
+        """`-arr` and `-total_active_seats` are both numeric — the value types
+        compare fine, so only the recorded sort itself can catch the mismatch.
+        Without it, Bravo's arr (20000) lands between these seat counts and
+        the resume point silently skips Charlie and Alpha."""
+        Customer.objects.filter(pk=self.alpha.pk).update(total_active_seats=25000)
+        Customer.objects.filter(pk=self.bravo.pk).update(total_active_seats=15000)
+        Customer.objects.filter(pk=self.charlie.pk).update(total_active_seats=35000)
+        Customer.objects.filter(pk=self.delta.pk).update(total_active_seats=5000)
+        _first, cursor = self.page(sort="-arr")
+        mismatched, _next = self.page(cursor, sort="-total_active_seats")
+        expected, _next = self.page(sort="-total_active_seats")
+        self.assertEqual(self.names(expected), ["Charlie", "Alpha"])
+        self.assertEqual(self.names(mismatched), self.names(expected))
+
+    def test_a_cursor_from_another_group_value_starts_the_first_page(self):
+        """A board column's cursor must not resume a different column, even
+        when the stale value would otherwise look like a plausible cut point:
+        Echo (50,000 ARR) outranks the "carl" column's cursor (30,000) and
+        would be wrongly skipped if the column weren't checked."""
+        self.customer("Echo", owner=self.other, arr_billed_at_account=Decimal("50000"))
+        first, cursor = self.page(group="owner", group_value=str(self.csm.pk), limit=1)
+        self.assertEqual(self.names(first), ["Alpha"])
+        mismatched, _next = self.page(
+            cursor, group="owner", group_value=str(self.other.pk), limit=1
+        )
+        expected, _next = self.page(group="owner", group_value=str(self.other.pk), limit=1)
+        self.assertEqual(self.names(expected), ["Echo"])
+        self.assertEqual(self.names(mismatched), self.names(expected))
+
     def test_cursor_round_trip(self):
         self.assertEqual(
-            shape.decode_cursor(shape.encode_cursor(0, 12.5, "alpha", 7)), (0, 12.5, "alpha", 7)
+            shape.decode_cursor(shape.encode_cursor(0, 12.5, "alpha", 7, "-arr", "health", "good")),
+            (0, 12.5, "alpha", 7, "-arr", "health", "good"),
         )
         self.assertIsNone(shape.decode_cursor(""))
