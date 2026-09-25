@@ -10,7 +10,8 @@ from django.test import TestCase
 
 from services.accounts.models import Organisation, User
 from services.copilot.context import build_grounding, build_org_context_summary
-from services.customers.models import Account, Customer, Note, Opportunity, Risk, Ticket
+from services.customers.models import Account, Activity, Customer, Note, Opportunity, Risk, Ticket
+from services.knowledge.models import FunctionOwner
 
 
 class BuildOrgContextSummaryTests(TestCase):
@@ -68,6 +69,73 @@ class BuildOrgContextSummaryTests(TestCase):
         self.assertNotIn("Ghost Co", summary)
         self.assertNotIn(archived.name, summary)
         self.assertNotIn("Not Carl's", summary)
+
+    def test_a_churned_but_unarchived_owned_customer_is_excluded_from_the_digest(self):
+        # Churn and archive are separate actions (see
+        # services.customers.scoping.live_customers's own docstring): a
+        # churned customer can still be unarchived and still owned, but it
+        # is no longer "my book" and must not inflate ARR/health/at-risk.
+        Customer.objects.create(
+            organisation=self.org,
+            name="Globex",
+            owner=self.user,
+            health_score="9.0",
+        )
+        churned = Customer.objects.create(
+            organisation=self.org,
+            name="Churned Co",
+            owner=self.user,
+            health_score="1.0",
+            churn_date="2026-01-01",
+        )
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Your customers: 1 total", summary)
+        self.assertNotIn(churned.name, summary)
+
+    def test_a_customer_no_longer_owned_or_function_owned_drops_out_of_the_book(self):
+        # Reassigning the customer away removes it from Carl's own book on
+        # this same request, not just from some cached snapshot — distinct
+        # from company *matching*, which stays organisation-wide by design
+        # (see context.py's own docstring and
+        # test_the_copilot_grounds_only_in_what_the_asker_may_see in
+        # services.knowledge — the company can still be named and asked
+        # about; it just no longer counts as "my book").
+        reassigned = Customer.objects.create(
+            organisation=self.org, name="Reassigned Co", owner=self.user, health_score="4.0"
+        )
+        reassigned.owner = self.other_user
+        reassigned.save()
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("You own no customers or accounts yourself", summary)
+        self.assertNotIn(reassigned.name, summary)
+
+    def test_an_owned_live_customer_still_counts(self):
+        Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.user, health_score="8.0"
+        )
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Your customers: 1 total", summary)
+        self.assertIn("Globex", summary)
+
+    def test_a_function_owned_customer_still_counts(self):
+        # Owned by someone else, but Carl is the function owner for CS on
+        # it — "your customers" means owned *or* responsible in your
+        # function (docs/API_CONTRACTS.md), not only Customer.owner.
+        customer = Customer.objects.create(
+            organisation=self.org, name="Initech", owner=self.other_user, health_score="7.0"
+        )
+        FunctionOwner.objects.create(customer=customer, function=User.Function.CS, user=self.user)
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Your customers: 1 total", summary)
+        self.assertIn("Initech", summary)
 
     def test_includes_owned_accounts_even_with_no_owned_customers(self):
         someone_elses_customer = Customer.objects.create(
@@ -301,6 +369,40 @@ class GroundingSourcesTests(TestCase):
         emea = next(s for s in sources if s["company"] == "Northwind Division")
         self.assertEqual(emea["company_type"], "account")
         self.assertEqual(emea["company_id"], account.id)
+
+    def test_an_activity_reaches_the_digest_only_for_a_company_the_asker_may_open(self):
+        # Company *matching* is organisation-wide by design (see
+        # context.py's own docstring) — Dana can still ask about Globex
+        # by name even though she doesn't own it — but its Activities
+        # carry no author/department of their own, so they must not
+        # reach her the way a leadership-authored note reaches an
+        # out-of-chain engineer (services.knowledge's own
+        # test_the_copilot_grounds_only_in_what_the_asker_may_see).
+        outsider = User.objects.create_user(
+            email="dana@acme.io", password="supersecret1", name="Dana", organisation=self.org
+        )
+        Activity.objects.create(
+            customer=self.customer,
+            type=Activity.ActivityType.ESCALATION_TRIGGERED,
+            occurred_at="2026-09-02",
+        )
+
+        grounding = build_grounding(self.org, outsider, query="How is Globex doing?")
+
+        self.assertEqual(grounding.sources, [])
+        self.assertNotIn("Escalation Triggered", grounding.summary)
+
+    def test_an_activity_reaches_the_digest_when_the_asker_may_open_the_company(self):
+        Activity.objects.create(
+            customer=self.customer,
+            type=Activity.ActivityType.ESCALATION_TRIGGERED,
+            occurred_at="2026-09-02",
+        )
+
+        grounding = build_grounding(self.org, self.user, query="How is Globex doing?")
+
+        self.assertEqual(len(grounding.sources), 1)
+        self.assertIn("Escalation Triggered", grounding.summary)
 
     def test_the_old_summary_only_helper_still_returns_a_string(self):
         """~20 existing tests call it — it's a one-line wrapper now, not

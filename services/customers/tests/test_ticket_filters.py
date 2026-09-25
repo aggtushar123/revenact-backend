@@ -5,7 +5,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Customer, Ticket
+from services.customers.models import Account, Customer, Ticket
 from services.customers.ticket_filters import filtered_tickets
 
 
@@ -62,3 +62,36 @@ class FilteredTicketsTests(TestCase):
 
     def test_a_bad_value_is_ignored(self):
         self.assertEqual(self.numbers({"owner": "abc", "priority": "urgent"}), {"TKT-1", "TKT-2"})
+
+    def test_owner_unassigned_narrows_to_unowned_customers_and_accounts(self):
+        # Unowned records stay visible to everyone (services.customers.scoping),
+        # so both an unowned customer's ticket and an unowned account's ticket
+        # belong in the "Unassigned" bucket.
+        nobody_customer = Customer.objects.create(organisation=self.org, name="Nobody's")
+        Ticket.objects.create(
+            customer=nobody_customer,
+            ticket_number="TKT-5",
+            title="t",
+            priority=Ticket.Priority.HIGH,
+            opened_at=timezone.localdate(),
+        )
+        nobody_account = Account.objects.create(name="No Owner Division")
+        nobody_account.customers.add(nobody_customer)
+        Ticket.objects.create(
+            account=nobody_account,
+            ticket_number="TKT-6",
+            title="t",
+            priority=Ticket.Priority.HIGH,
+            opened_at=timezone.localdate(),
+        )
+        owned_account = Account.objects.create(name="Owned Division", owner=self.carl)
+        owned_account.customers.add(nobody_customer)
+        Ticket.objects.create(
+            account=owned_account,
+            ticket_number="TKT-7",
+            title="t",
+            priority=Ticket.Priority.HIGH,
+            opened_at=timezone.localdate(),
+        )
+
+        self.assertEqual(self.numbers({"owner": "unassigned"}), {"TKT-5", "TKT-6"})

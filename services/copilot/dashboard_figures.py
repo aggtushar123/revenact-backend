@@ -15,6 +15,10 @@ shows:
 
 Every set starts from `forecast.filtered_customers(user, filters)` or the
 endpoint's own visibility-first filter. Nothing outside it is read.
+
+Each function takes an optional `customers`: the book for these same `user`
+and `filters`, already loaded, so one question loads it once (`load_book`).
+Without it, each loads its own, exactly as its endpoint does.
 """
 
 from collections import Counter
@@ -24,7 +28,7 @@ from django.db.models import Count, Min, Q
 from services.attention import rules as attention_rules
 from services.attention.snooze import visible_items
 from services.customers import forecast
-from services.customers.models import Ticket
+from services.customers.models import Customer, Ticket
 from services.customers.ticket_filters import filtered_tickets
 from services.customers.triage import ACTION_THRESHOLD, RENEWAL_URGENT_DAYS, triage
 
@@ -41,9 +45,19 @@ DIRECTIONS = ("declining", "improving", "flat", "unknown")
 SUPPORT_FILTER_KEYS = ("owner", "customer")
 
 
-def revenue_figures(user, filters):
+def load_book(user, filters, *, history):
+    """The viewer's filtered book as a list, loaded once for a question — the
+    `customers` every function here accepts. `history` loads the Health
+    view's snapshot window with it (`attention.rules.filtered_customers`),
+    which the Health figures and the attention list read; without it, it is
+    `forecast.filtered_customers` and nothing more."""
+    return list(attention_rules.filtered_customers(user, filters, history=history))
+
+
+def revenue_figures(user, filters, *, customers=None):
     organisation = user.organisation
-    customers = list(forecast.filtered_customers(user, filters))
+    if customers is None:
+        customers = list(forecast.filtered_customers(user, filters))
     rows = forecast.build_rows(customers, organisation, horizon=forecast.DEFAULT_HORIZON_DAYS)
     bridge = forecast.build_bridge(rows)
     return {
@@ -64,10 +78,12 @@ def revenue_figures(user, filters):
     }
 
 
-def _scored(user, filters, today):
+def _scored(user, filters, today, customers=None):
     """Every customer in the filtered book with its Triage result — the Health
-    serializer's own call (`CustomerHealthRowSerializer._triage`)."""
-    customers = attention_rules.filtered_customers(user, filters)
+    serializer's own call (`CustomerHealthRowSerializer._triage`). A passed
+    `customers` must carry the snapshot history (`load_book(history=True)`)."""
+    if customers is None:
+        customers = attention_rules.filtered_customers(user, filters)
     return [
         (
             customer,
@@ -84,8 +100,8 @@ def _scored(user, filters, today):
     ]
 
 
-def health_figures(user, filters, *, today):
-    scored = _scored(user, filters, today)
+def health_figures(user, filters, *, today, customers=None):
+    scored = _scored(user, filters, today, customers)
     acting = sorted(
         ((c, r) for c, r in scored if r.score >= ACTION_THRESHOLD),
         key=lambda pair: (-pair[1].score, pair[0].name),
@@ -126,11 +142,14 @@ def support_filters(filters):
     return {key: filters.get(key, "") for key in SUPPORT_FILTER_KEYS}
 
 
-def _most_urgent(user, open_tickets, params):
+def _most_urgent(user, open_tickets, params, customers=None):
     """The companies with the most open High/Critical tickets, inside the
     filtered book. A ticket on an account counts for each of that account's
-    companies in the book — the attention list's own rule."""
-    book = {customer.pk: customer for customer in forecast.filtered_customers(user, params)}
+    companies in the book — the attention list's own rule. `customers` is
+    the book under the Support screen's own filters (`params`)."""
+    if customers is None:
+        customers = forecast.filtered_customers(user, params)
+    book = {customer.pk: customer for customer in customers}
     if not book:
         return []
     ids = list(book)
@@ -151,7 +170,16 @@ def _most_urgent(user, open_tickets, params):
     return [{"id": pk, "name": book[pk].name, "open_urgent": n} for pk, n in ranked[:LIST_LIMIT]]
 
 
-def support_figures(user, filters, *, today):
+def _support_book(filters, customers):
+    """The shared book is the Support book only when no lifecycle filter
+    narrowed it: the Support screen has none, and a narrower book must never
+    stand in for a wider one. Otherwise None, and Support loads its own."""
+    if customers is None or filters.get("lifecycle") in Customer.LifecycleStage.values:
+        return None
+    return customers
+
+
+def support_figures(user, filters, *, today, customers=None):
     params = support_filters(filters)
     tickets = filtered_tickets(user, params)
     open_tickets = tickets.exclude(status__in=Ticket.RESOLVED_STATUSES)
@@ -176,24 +204,28 @@ def support_figures(user, filters, *, today):
         "open_count": open_count,
         "oldest_open_days": oldest,
         "priority_by_status": split,
-        "most_urgent": _most_urgent(user, open_tickets, params),
+        "most_urgent": _most_urgent(user, open_tickets, params, _support_book(filters, customers)),
     }
 
 
-def attention_top(user, filters, *, today, now, limit=LIST_LIMIT):
+def attention_top(user, filters, *, today, now, limit=LIST_LIMIT, customers=None):
     """The top of the viewer's own "Needs attention" list — `AttentionListView`
-    exactly: every candidate, snoozes dropped, score then title."""
-    items = attention_rules.build_items(user, filters, today=today)
+    exactly: every candidate, snoozes dropped, score then title. A passed
+    `customers` must carry the snapshot history (`load_book(history=True)`)."""
+    items = attention_rules.build_items(user, filters, today=today, customers=customers)
     items = visible_items(user, items, now=now)
     items.sort(key=lambda item: (-item["score"], item["title"]))
     return items[:limit]
 
 
-def overview_figures(user, filters, *, today, now):
-    """The Overview's three headline cards and its attention list."""
-    revenue = revenue_figures(user, filters)
-    health = health_figures(user, filters, today=today)
-    support = support_figures(user, filters, today=today)
+def overview_figures(user, filters, *, today, now, customers=None):
+    """The Overview's three headline cards and its attention list, all read
+    from one load of the book (with its snapshot history)."""
+    if customers is None:
+        customers = load_book(user, filters, history=True)
+    revenue = revenue_figures(user, filters, customers=customers)
+    health = health_figures(user, filters, today=today, customers=customers)
+    support = support_figures(user, filters, today=today, customers=customers)
     return {
         "currency": revenue["currency"],
         "arr_today": revenue["bridge"]["opening_arr"],
@@ -203,5 +235,5 @@ def overview_figures(user, filters, *, today, now):
         "needs_action": health["needs_action"],
         "open_tickets": support["open_count"],
         "oldest_open_days": support["oldest_open_days"],
-        "attention": attention_top(user, filters, today=today, now=now),
+        "attention": attention_top(user, filters, today=today, now=now, customers=customers),
     }

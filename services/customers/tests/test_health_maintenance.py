@@ -1,11 +1,12 @@
 """The scheduled job: recalculate scores, record the monthly snapshot."""
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from io import StringIO
 
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from services.accounts.models import Organisation, User
 from services.customers.management.commands.run_health_maintenance import (
@@ -132,3 +133,44 @@ class RunHealthMaintenanceTests(TestCase):
         Customer.objects.all().delete()
         output = self.run_command()
         self.assertIn("recorded 0 snapshot(s)", output)
+
+    def test_clears_snoozes_expired_over_a_month_ago(self):
+        from services.attention.models import AttentionSnooze
+
+        alice = User.objects.get(email="alice@acme.io")
+        now = timezone.now()
+        expired = AttentionSnooze.objects.create(
+            organisation=self.org, user=alice, key="renewal:1", until=now - timedelta(days=45)
+        )
+        recent = AttentionSnooze.objects.create(
+            organisation=self.org, user=alice, key="renewal:2", until=now - timedelta(days=5)
+        )
+        done = AttentionSnooze.objects.create(
+            organisation=self.org, user=alice, key="renewal:3", until=None
+        )
+        active = AttentionSnooze.objects.create(
+            organisation=self.org, user=alice, key="renewal:4", until=now + timedelta(days=5)
+        )
+
+        output = self.run_command()
+
+        self.assertIn("cleared 1 expired snooze(s)", output)
+        self.assertFalse(AttentionSnooze.objects.filter(pk=expired.pk).exists())
+        for snooze in (recent, done, active):
+            self.assertTrue(AttentionSnooze.objects.filter(pk=snooze.pk).exists())
+
+    def test_dry_run_does_not_clear_snoozes(self):
+        from services.attention.models import AttentionSnooze
+
+        alice = User.objects.get(email="alice@acme.io")
+        expired = AttentionSnooze.objects.create(
+            organisation=self.org,
+            user=alice,
+            key="renewal:1",
+            until=timezone.now() - timedelta(days=45),
+        )
+
+        output = self.run_command("--dry-run")
+
+        self.assertIn("would clear 1 expired snooze(s)", output)
+        self.assertTrue(AttentionSnooze.objects.filter(pk=expired.pk).exists())

@@ -81,7 +81,7 @@ expects.
 | Dashboards — Ticket Overview | `customers` | 🟢 Controls tab runs on `GET /api/v1/tickets/stats/` (`TicketStatsView`), with `Connector` behind its origin chart, plus `open_count`/`oldest_open_days` for the Overview's own KPIs. See below. |
 | Dashboards — AI Trending Topics | `customers` | 🟢 Controls tab runs on `GET /api/v1/interactions/stats/` — see below. Its other six sub-tabs are the filter bar, not separate screens. |
 | Dashboard Overview — "Needs attention" | `attention` | 🟢 `GET /api/v1/dashboard/attention/` — five kinds of item (renewal, risk, going_quiet, support, anomaly), scored `at_stake × urgency`, twice-filtered like every other dashboard. Per-user snoozing (`POST`/`DELETE …/snooze/`) — see below. |
-| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
+| Copilot (`/copilot`) | `copilot`, `customers` | 🟡 Real Anthropic Claude chat, grounded in real data — see the `copilot` app's own section below. `POST .../messages/` makes a real, synchronous call to Claude (no task queue, no streaming), with each request's system prompt grounded in a real-data digest of the *caller's own owned* book of business — owned or function-owned, intersected with `live_customers` (visible, not archived, not churned; `services/customers/scoping.py`), so a churned-but-unarchived customer no longer inflates the figures — (health/NPS/lifecycle, top at-risk customers, open opportunity/risk/ticket counts), **plus real retrieved content** — a company identified from the question (an exact name match first, then a real local-embeddings semantic fallback for a company described but not named — embedding its name plus a real hand-entered `industry` when one's been set, e.g. "that video conferencing account" finding Zoom, see `services/copilot/embeddings.py`; no pgvector, plain Python cosine similarity, a documented real limitation once `industry` is blank and the name is also a common word) gets its own recent real Emails/Notes/open Tickets/Activities, relevance-ranked against the question (`services/copilot/retrieval.py`); otherwise falls back to "one of your own top at-risk companies" — not the whole tenant's, same "My" framing as Cockpit's own. Conversations are private per-user. Requires the selected provider's own real credentials (`COPILOT_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `=bedrock` + real AWS credentials/`BEDROCK_MODEL_ID` — see the `copilot` app's own section below); returns a clear `503` without them rather than a fake answer. First real consumer of `Organisation.ai_agent_enabled`/`ai_agent_tone`. No per-skill tool-calling/function execution — the "Built-in Skills" cards just prefill the compose input. The page's own Cockpit tab is real too now — `GET /api/v1/cockpit/summary/` and `GET /api/v1/tasks/?mine=true` (see the `customers` app's own section) back "My Portfolio Summary"/"Renewals"/"My Tasks", scoped to the caller's own owned book of business; replaces what used to be fixed literal numbers and an entirely separate local mock Redux task list. |
 | Scenarios (builder, `/scenarios`) | `scenarios` | 🟡 Full CRUD + a real (deliberately limited) execution engine — see below. `nodes`/`edges` round-trip verbatim; "Run Now" and the On Event → "Creation of new entity" trigger actually execute Send Email/Create Task/Set Attribute/Churn Entity/Condition/Filter against a real Customer. Every other node type (Assign Playbook, Slack Message, Create Pipeline, MS Teams, Send Survey, Schedule) stays a frontend-only mockup; hitting one during a run just logs "skipped". Only `apply_to === "organizations"` scenarios are runnable in v1. |
 | Campaigns (`/campaigns`) | `campaigns` | 🟡 Full CRUD + a real (deliberately limited) send — see below. `POST .../send/` really emails every recipient via the same `send_mail` plumbing as Scenarios' own "Send Email," synchronously (no task queue), and creates one real `customers.Email` row per successful send so it shows up in that recipient's own parent's Activity Feed. A recipient with no email on file is logged as skipped, never fatal. No scheduled sends, no templates beyond plain text, no open/click tracking (plain SMTP, no ESP webhooks). |
 | Communications (`/communications`) | `customers` | 🟢 Built — the queue of what is waiting on the caller, merged across Email, Question, Ticket and Call. Two endpoints, no new model. See below. |
@@ -798,7 +798,18 @@ invisible to the people meant to work it.
 `owner=user` *strictly*, and deliberately still do. Those answer "what
 am I responsible for", not "what am I allowed to open", and the answers
 differ: a customer you can see through an account you own should not
-count toward your own ARR.
+count toward your own ARR. Copilot's own owned/function-owned customer
+set is further intersected with `live_customers` (visible, not archived,
+**not churned**) — a churned account is still "yours" in the ownership
+sense but is no longer "my book" for a live digest's figures. Copilot's
+company *matching* (which company a question is about) stays genuinely
+organisation-wide, deliberately **not** narrowed to
+`visible_customers`/`visible_accounts` — see the `copilot` app's own
+section below and `services/copilot/context.py`'s own docstring for why:
+an engineer, a sales rep or the CEO, none of whom own a book and none of
+whom may necessarily open the customer's own record, can still ask their
+Copilot about any customer in the org. The privacy boundary is enforced
+one level down instead, per record, inside `retrieve_with_sources`.
 
 #### Known consequences (accepted, not oversights)
 
@@ -3600,19 +3611,27 @@ synchronously, in-request, one blocking API call per message — same
 limit `scenarios/engine.py`'s own docstring states outright. Each
 request is grounded in a compact, real-data digest of the caller's own
 *owned* book of business (`services/copilot/context.py` — the
-Customers/Accounts they own, not the whole tenant's, same "My" framing
-as Cockpit's own `CockpitSummaryView`/`TaskListView`'s `?mine=true`:
-health/NPS/lifecycle breakdown, top at-risk customers, open
+Customers/Accounts they own or answer for in their function, intersected
+with `live_customers` — visible, not archived, and **not churned**
+(`services/customers/scoping.py`) — not the whole tenant's, same "My"
+framing as Cockpit's own `CockpitSummaryView`/`TaskListView`'s
+`?mine=true`: health/NPS/lifecycle breakdown, top at-risk customers, open
 opportunity/risk/ticket counts scoped to those same owned companies),
 injected into the system prompt; this is grounding, not tool-calling —
 the model can read this digest and converse, but can't run its own
 queries or take real actions.
 
 Past the aggregate numbers, `services/copilot/retrieval.py` pulls real
-retrieved content. Two passes identify "which company is this about":
-`find_mentioned_company` is a plain, free, case-insensitive substring
-match of the question against the caller's own company names, tried
-first; if that fails, `find_relevant_company_semantic` (see
+retrieved content. Two passes identify "which company is this about",
+genuinely organisation-wide — not narrowed to the caller's own book, nor
+to `visible_customers`/`visible_accounts` (any customer or account in the
+org can be named and asked about; see `services/copilot/context.py`'s own
+docstring and `test_the_copilot_grounds_only_in_what_the_asker_may_see`
+in `services/knowledge/tests/test_hierarchy.py`, which pins this): the
+privacy boundary is enforced one level down, per record, inside
+`retrieve_with_sources`. `find_mentioned_company` is a plain, free,
+case-insensitive substring match of the question against those company
+names, tried first; if that fails, `find_relevant_company_semantic` (see
 `services/copilot/embeddings.py`) embeds the question against each
 company's own profile text (`retrieval.py`'s own `_company_profile_text`
 — the name alone, plus a real hand-entered `industry`
@@ -4688,7 +4707,8 @@ errors, which is what the protocol asks for.
 **Tools:** `search_companies`, `get_company`, `recent_interactions`,
 `list_feature_requests`, `list_anomalies`, `ask_copilot` (one model call,
 purpose `mcp`). A company the caller may not open answers the same way as
-one that does not exist.
+one that does not exist. `list_anomalies` follows the anomaly title rule (see
+`anomalies`): the stored title only for a caller who sees every account.
 
 ### `GET/POST /api/v1/mcp/tokens/` and `DELETE /api/v1/mcp/tokens/<id>/`
 
@@ -4796,7 +4816,12 @@ one department's queue. A cluster with nothing shared in it is named from
 its own shape ("Unnamed cluster across 4 companies") and costs no model
 call at all. When a name is written, it is one call (purpose `anomaly`),
 from a sample of at most 15 reports, told to describe the problem in its
-own words and never to quote a report, a person or a company.
+own words and never to quote a report, a person or a company. That last
+rule is enforced, not trusted: a returned title that names any of the
+organisation's customer or account names (case-insensitive, whole word,
+names shorter than 3 characters ignored) falls back to the plain title
+above, and a summary that does is stored empty. The rejection is logged
+without the rejected text.
 
 ### Conventions specific to this app
 
@@ -4807,6 +4832,16 @@ feature requests). A cluster a reader can see nothing of is left out
 rather than shown as a zero, and its detail is a 404 for them: its title
 was written from reports they may not read. Detecting and setting a
 status need `view_all_accounts`.
+
+**Title rule.** The stored `title` and `summary` are model-written from
+reports across the whole organisation, so they are returned as written
+only to a viewer who passes `sees_everything` (`view_all_accounts`).
+Everyone else gets `title: "Similar reports across <n> of your companies"`
+(`<n>` = the distinct companies behind their own visible evidence, the
+same number as `companies`) and `summary: null`. One helper
+(`services.anomalies.views.title_for`/`summary_for`) serves this API, the
+dashboard attention list, Copilot's dashboard grounding and the MCP
+`list_anomalies` tool, so they cannot drift apart.
 
 ### `GET /api/v1/anomalies/?status=<status>`
 
@@ -5288,6 +5323,81 @@ is a `409`.
   "status": "proposed", "decided_by": null, "result": {}, "generated_by": "Alice"}]}
 ```
 
+### `GET /api/v1/copilot/conversations/<id>/session/` and the WebSocket push — events carry no turn text
+
+The session snapshot (`GET .../session/?since_id=`, and the same
+`CopilotSessionSerializer` payload pushed over `ws/copilot/sessions/<id>/`
+by `copilot.realtime.broadcast_session_update`) reaches everyone
+`conversations_visible_to` admits — including a person who is only
+mentioned and may read just a slice of the turns. So each event's
+`message` is a **reference only**, never the turn's `content`, `sources`,
+`context`, `author`, `questions` or `ask_suggestions`:
+
+```json
+{"id": 41, "kind": "redirected", "actor": {"id": 3, "name": "Bob"},
+ "message": {"id": 118, "role": "user", "created_at": "2026-09-25T10:02:11Z"},
+ "payload": {}, "created_at": "2026-09-25T10:02:11Z"}
+```
+
+To show the turn, refetch `GET /api/v1/copilot/conversations/<id>/`,
+whose `messages` apply `visible_messages` — the only path turn text
+travels. `message` is `null` on events that are not about a turn
+(`made_live`, `joined`, `left`, `handed_off`, `closed`); a `handed_off` event's
+`payload` carries `to_user_id`, `to_user_name` and the owner's `note`.
+
+**The hand-off note and the company names are per viewer.** On the REST
+poll, `payload.note` is the owner's text only for a viewer who sees the
+whole conversation (the owner, an accepted present participant —
+`copilot.views.sees_whole_conversation`) and `null` for anyone else;
+`customer_name` / `account_name` are set only when the viewer may open
+that customer / account (`visible_customers` / `visible_accounts`), and
+`null` otherwise — `customer_id` / `account_id` are always present. The
+WebSocket push is one payload for the whole group, so it always carries
+`note: null`, `customer_name: null` and `account_name: null`; a client
+reads them from its own `GET .../session/`.
+
+**Only whole-conversation viewers change a session.** Every session-
+changing request requires `sees_whole_conversation` (the owner, or an
+accepted present participant who holds a grant); a person who is only
+mentioned reads a slice and gets `403`. Posting a message is not a
+session change:
+
+| Route | Who |
+|---|---|
+| `POST .../session/` (make live) | owner (404 otherwise) |
+| `POST .../session/invite/` | owner (404 otherwise); `user_id` = caller → `400` |
+| `POST .../session/handoff/` | owner or participant (`403` otherwise); `to_user_id` = caller → `400` |
+| `POST .../session/close/` | owner (404 otherwise) |
+| `GET/POST .../session/decisions/` | owner or participant (`403` otherwise) — proposals come from the whole transcript |
+| `POST /copilot/messages/` into a conversation with a session (a redirect) | anyone the conversation is visible to, a mentioned person included — not a session change: their history is their own slice (`visible_messages`), grounding their own scope, and the `redirected` event carries the turn's id only |
+| `POST /copilot/sessions/invites/<id>/respond/` | the invite's own target only (404 otherwise), and only while it is `pending` (an accepted or declined invite is `400`); accepting is `400` unless the inviter is someone else who still sees the whole conversation |
+
+**Access is valid only along a chain from the owner.** The grant
+holders of a conversation are a fixed point: start with the owner; add
+the invitee of any accepted invite whose inviter is already a holder
+(and is not the invitee); repeat until nothing is added
+(`copilot.views.grant_holders`). `sees_whole_conversation` and
+`conversations_visible_to` grant a participant the whole conversation
+only when they are a holder **and** present; a participant row alone,
+a self-issued invite, an invite from a mentioned-only viewer (and
+anything its invitee issued after), or one from a since-deleted inviter
+grants nothing — rows written before this rule neutralised with no data
+migration (the owner re-invites if a legitimate chain broke). Accepting
+needs an inviter who is a present holder. `GET /copilot/sessions/invites/`
+lists only invites that can be accepted; an invite that can't serializes
+with `conversation_title: "Shared conversation"` and `account_label: null`.
+
+**Titles and notices follow visibility too.** A conversation's `title`
+is its first turn's opening words, so the list and detail endpoints
+return `"Shared conversation"` unless the viewer sees the whole
+conversation or that first turn is in their `visible_messages`
+(`copilot.views.title_for`). The invite and hand-off notifications and
+the invite card's `account_label` name the customer/account only when
+the recipient may open it (`null` / omitted otherwise), and the hand-off
+notification carries the note only when the target already sees the
+whole conversation — a pending target reads it on the session after
+accepting.
+
 ### `POST /api/v1/copilot/conversations/<id>/session/close/` with `capture_decisions`
 
 Body `{"capture_decisions": true}` runs the facilitator in the same
@@ -5727,7 +5837,11 @@ straight line between the two points given):
 
 - `AttentionSnooze` — `organisation`, `user`, `key` (unique together),
   `until` (nullable; null means Done), `fingerprint` (JSON, the item's
-  fingerprint at snooze time), `created_at`.
+  fingerprint at snooze time), `created_at`. Rows whose `until` passed more
+  than 30 days ago are deleted by the nightly `run_health_maintenance` pass
+  (`services.attention.snooze.prune_expired`) — table hygiene, not a
+  visibility rule: a snooze that merely expired more recently already shows
+  its item again on its own. `until=null` (Done) is never pruned.
 
 ### `GET /api/v1/dashboard/attention/?owner=&lifecycle=&customer=`
 
@@ -5783,7 +5897,8 @@ organisation, so it is only shown as written to a viewer who passes
 `sees_everything` (`view_all_accounts` — `services.customers.scoping`).
 Everyone else gets a title built from fields instead: `"Similar reports
 across <n> of your companies"`, where `<n>` is the count of companies behind
-that anomaly that are actually in their own (filtered) book.
+that anomaly that are actually in their own (filtered) book. Same helper
+as `GET /api/v1/anomalies/` (`services.anomalies.views.title_for`).
 
 ### `POST /api/v1/dashboard/attention/snooze/`
 

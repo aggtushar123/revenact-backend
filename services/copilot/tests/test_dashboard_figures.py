@@ -300,3 +300,73 @@ class OverviewFiguresTests(DashboardFixture):
             (kpis["open_count"], kpis["oldest_open_days"]),
         )
         self.assertEqual(figures["currency"], "USD")
+
+
+class SharedBookTests(DashboardFixture):
+    """Figures read from one shared load of the book equal the figures each
+    function loads for itself — under every filter, including a lifecycle
+    filter the Support figures must not inherit."""
+
+    def setUp(self):
+        super().setUp()
+        self.live = self.customer(
+            "Live",
+            health_score=POOR,
+            lifecycle_stage="live",
+            renewal_date=self.today + timedelta(days=20),
+        )
+        self.renewing = self.customer(
+            "Renewing",
+            health_score=AVERAGE,
+            lifecycle_stage="renewal",
+            renewal_date=self.today + timedelta(days=40),
+        )
+        self.customer("Theirs", owner=self.other, health_score=POOR)
+        HealthSnapshot.objects.create(
+            customer=self.live, captured_on=self.today - timedelta(days=60), health_score=GOOD
+        )
+        self.ticket(1, self.live)
+        self.ticket(2, self.renewing, priority=Ticket.Priority.CRITICAL)
+
+    def test_shared_book_figures_equal_the_standalone_figures(self):
+        now = timezone.now()
+        for params in (
+            {},
+            {"lifecycle": "live"},
+            {"owner": str(self.csm.pk)},
+            {"customer": str(self.renewing.pk)},
+        ):
+            filters = clean_filters(params)
+            with self.subTest(params=params):
+                book = dashboard_figures.load_book(self.csm, filters, history=True)
+                standalone = {
+                    "revenue": dashboard_figures.revenue_figures(self.csm, filters),
+                    "health": dashboard_figures.health_figures(self.csm, filters, today=self.today),
+                    "support": dashboard_figures.support_figures(
+                        self.csm, filters, today=self.today
+                    ),
+                    "attention": dashboard_figures.attention_top(
+                        self.csm, filters, today=self.today, now=now
+                    ),
+                }
+                shared = {
+                    "revenue": dashboard_figures.revenue_figures(self.csm, filters, customers=book),
+                    "health": dashboard_figures.health_figures(
+                        self.csm, filters, today=self.today, customers=book
+                    ),
+                    "support": dashboard_figures.support_figures(
+                        self.csm, filters, today=self.today, customers=book
+                    ),
+                    "attention": dashboard_figures.attention_top(
+                        self.csm, filters, today=self.today, now=now, customers=book
+                    ),
+                }
+                self.assertEqual(shared, standalone)
+
+    def test_support_under_a_lifecycle_filter_still_counts_the_whole_book(self):
+        filters = clean_filters({"lifecycle": "live"})
+        book = dashboard_figures.load_book(self.csm, filters, history=False)
+        figures = dashboard_figures.support_figures(
+            self.csm, filters, today=self.today, customers=book
+        )
+        self.assertEqual({row["name"] for row in figures["most_urgent"]}, {"Live", "Renewing"})

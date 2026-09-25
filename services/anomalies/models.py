@@ -45,7 +45,10 @@ class Anomaly(models.Model):
         indexes = [models.Index(fields=["organisation", "status", "-last_seen_at"])]
 
     def __str__(self):
-        return f"{self.title} ({self.organisation_id})"
+        # Not the title: this is what an audit row records as its target,
+        # and platform staff read that. The title is model-written from
+        # customer reports.
+        return f"Anomaly {self.pk} ({self.organisation_id})"
 
 
 class AnomalyEvidence(models.Model):

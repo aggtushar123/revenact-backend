@@ -5660,6 +5660,20 @@ class TicketStatsTests(APITestCase):
                 self.assertIn("kpis", body)
                 self.assertNotIn("drill", body)
 
+    # ── owner=unassigned ────────────────────────────────────────────────
+
+    def test_owner_unassigned_narrows_the_stats_to_unowned_customers(self):
+        """Mirrors services.customers.forecast's `owner=unassigned`
+        (test_forecast.py) and ticket_filters.filtered_tickets's own unit
+        test: `/tickets/stats/` reads the same filter, so it must agree."""
+        nobody = Customer.objects.create(organisation=self.org, name="Nobody's")
+        self._ticket(1, customer=nobody)
+        self._ticket(2, customer=self.mine)
+
+        data = self.client.get(self.url, {"owner": "unassigned"}).data
+
+        self.assertEqual(data["kpis"]["total"], 1)
+
 
 class PulseFieldsAPITests(APITestCase):
     """The AI pulse moved from a stored category to a stored 1-5 value with the

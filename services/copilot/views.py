@@ -4,6 +4,7 @@ from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -81,16 +82,18 @@ def conversations_visible_to(user):
     relations (`session__participants`, `session__invites`) joined in
     one filter — each independently matches at most one row per user
     per session (see those models' own unique constraints), so this is
-    a real AND, not an accidental OR."""
+    a real AND, not an accidental OR. An accepted invite counts only
+    when its invitee is a grant holder (see grant_holders — a chain of
+    accepted invites back to the owner), so rows the old hand-off hole
+    wrote grant nothing, and neither does a participant row on its own.
+
+    Cost: one query for the candidate sessions (present participant +
+    accepted invite), one for all their accepted invites (the chains are
+    resolved in Python), then the returned queryset itself — no N+1."""
 
     return Conversation.objects.filter(
         Q(user=user)
-        | Q(
-            session__participants__user=user,
-            session__participants__left_at__isnull=True,
-            session__invites__invited_user=user,
-            session__invites__status=SessionInvite.Status.ACCEPTED,
-        )
+        | Q(pk__in=_conversations_granted_to(user))
         # Mentioned in it: a question routed to them from one of its turns
         # (services.knowledge) — or to someone who reports to them, directly
         # or through the chain: a manager sees what was asked of their team
@@ -106,17 +109,107 @@ def _me_and_my_reports(user):
     return {user.id, *subtree_ids(user)}
 
 
+def _holders_from(owner_id, edges):
+    """The fixed point: start from the owner; add the invitee of any
+    accepted invite whose inviter is already a holder (and isn't the
+    invitee) until nothing changes. `edges` are (invited_by_id,
+    invited_user_id) of the session's accepted invites."""
+    holders = {owner_id}
+    grew = True
+    while grew:
+        grew = False
+        for inviter, invitee in edges:
+            if inviter in holders and inviter != invitee and invitee not in holders:
+                holders.add(invitee)
+                grew = True
+    return holders
+
+
+def grant_holders(session):
+    """Who holds whole-conversation access to `session`'s conversation:
+    the owner, plus everyone reached from them along accepted invites.
+    Grants are valid only along a chain from the owner — so a self-invite,
+    a hand-off from a mentioned-only viewer (the old hole), anything that
+    viewer's invitee then issued, and an invite from a since-deleted
+    inviter all grant nothing, with no data migration. One query."""
+    edges = session.invites.filter(status=SessionInvite.Status.ACCEPTED).values_list(
+        "invited_by_id", "invited_user_id"
+    )
+    return _holders_from(session.conversation.user_id, list(edges))
+
+
+def _conversations_granted_to(user):
+    """Ids of conversations `user` sees whole as a participant (not the
+    owner): a present participant row AND a holder of the chain. Two
+    queries whatever the number of sessions."""
+    candidates = dict(
+        CopilotSession.objects.filter(
+            participants__user=user,
+            participants__left_at__isnull=True,
+            invites__invited_user=user,
+            invites__status=SessionInvite.Status.ACCEPTED,
+        )
+        .values_list("id", "conversation__user_id")
+        .distinct()
+    )
+    if not candidates:
+        return []
+    edges = {}
+    for session_id, inviter, invitee in SessionInvite.objects.filter(
+        session_id__in=candidates, status=SessionInvite.Status.ACCEPTED
+    ).values_list("session_id", "invited_by_id", "invited_user_id"):
+        edges.setdefault(session_id, []).append((inviter, invitee))
+    granted = [
+        session_id
+        for session_id, owner_id in candidates.items()
+        if user.id in _holders_from(owner_id, edges.get(session_id, []))
+    ]
+    return list(
+        CopilotSession.objects.filter(id__in=granted).values_list("conversation_id", flat=True)
+    )
+
+
 def sees_whole_conversation(conversation, user):
-    """The owner and accepted, present participants see every turn."""
+    """The owner, and present participants who hold a grant along a chain
+    from the owner (grant_holders); a participant row alone, or an invite
+    that doesn't chain back to the owner, grants nothing."""
     if conversation.user_id == user.id:
         return True
     session = getattr(conversation, "session", None)
     if session is None:
         return False
-    return (
-        session.participants.filter(user=user, left_at__isnull=True).exists()
-        and session.invites.filter(invited_user=user, status=SessionInvite.Status.ACCEPTED).exists()
+    return session.participants.filter(
+        user=user, left_at__isnull=True
+    ).exists() and user.id in grant_holders(session)
+
+
+def _can_change_session(conversation, user):
+    """Changing a session — hand-off, invite, close, decisions — is for
+    whoever sees the whole conversation (owner, accepted present
+    participant). A person who is only mentioned reads a slice; letting
+    them hand off (to themselves) and accept their own invite turned
+    that slice into the whole conversation."""
+    return sees_whole_conversation(conversation, user)
+
+
+NEUTRAL_TITLE = "Shared conversation"
+
+
+def title_for(conversation, user, turns=None):
+    """The title is the first turn's opening words (SendMessageView), so
+    it is shown only to a viewer who may read that turn: the whole-
+    conversation viewers, or a sliced viewer whose visible_messages hold
+    it. Anyone else gets NEUTRAL_TITLE."""
+    if sees_whole_conversation(conversation, user):
+        return conversation.title
+    first_id = (
+        conversation.messages.order_by("created_at", "id").values_list("id", flat=True).first()
     )
+    if turns is None:
+        turns = visible_messages(conversation, user)
+    if first_id is not None and any(t.id == first_id for t in turns):
+        return conversation.title
+    return NEUTRAL_TITLE
 
 
 def visible_messages(conversation, user):
@@ -324,6 +417,7 @@ class ConversationDetailView(generics.RetrieveDestroyAPIView):
         conversation._visibility = (
             "full" if sees_whole_conversation(conversation, request.user) else "partial"
         )
+        conversation._title = title_for(conversation, request.user, conversation._visible_messages)
         return Response(ConversationDetailSerializer(conversation).data)
 
     def get_queryset(self):
@@ -410,6 +504,12 @@ class SendMessageView(APIView):
                 return Response(
                     {"detail": "This session has been closed."}, status=status.HTTP_403_FORBIDDEN
                 )
+            # A mentioned person may post here, live session or not: their
+            # history is their own slice (visible_messages, below), the
+            # grounding their own scope, and the `redirected` event names
+            # the turn by id only. Posting changes nothing about the
+            # session — hand-off, invite, close and decisions stay gated
+            # by _can_change_session.
 
         # A send from the Dashboard says where it was asked; the server
         # recomputes what is there (services/copilot/dashboard_grounding.py).
@@ -560,19 +660,27 @@ class SendMessageView(APIView):
         conversation._visibility = (
             "full" if sees_whole_conversation(conversation, request.user) else "partial"
         )
+        conversation._title = title_for(conversation, request.user, conversation._visible_messages)
         return Response(ConversationDetailSerializer(conversation).data)
 
 
-def _session_subject_label(session):
+def _session_subject_label(session, viewer):
     """A real, human "about X" fragment for a session's own real
-    customer/account context — used only for real notification text
-    (see the two call sites below); None when the session has no
-    company context at all (a plain New Chat session)."""
+    customer/account context — used for notification text and the
+    invite card; None when the session has no company context at all
+    (a plain New Chat session), and None when `viewer` (the recipient)
+    may not open that customer/account (visible_customers /
+    visible_accounts)."""
+    from services.customers.scoping import visible_accounts, visible_customers
 
     if session.customer_id:
-        return session.customer.name
+        if visible_customers(viewer).filter(pk=session.customer_id).exists():
+            return session.customer.name
+        return None
     if session.account_id:
-        return session.account.name
+        if visible_accounts(viewer).filter(pk=session.account_id).exists():
+            return session.account.name
+        return None
     return None
 
 
@@ -594,9 +702,10 @@ def _get_or_create_session(conversation, request_data):
     SessionHandoffView.post (hand-off is its own independent way to
     start one, not gated behind clicking Make Live first — see that
     view's own docstring). Both can only ever be reached for a
-    session-less conversation by its own owner (conversations_visible_to
-    only lets the owner see a conversation with no session), so no
-    extra ownership check is needed here.
+    session-less conversation by its own owner (SessionView.post is
+    owner-only; SessionHandoffView requires sees_whole_conversation, which
+    without a session is the owner alone), so no extra ownership check
+    is needed here.
 
     Optional `customer_id`/`account_id` from the request body, sourced
     from whatever the frontend's own entry point already knew (see
@@ -672,7 +781,7 @@ class SessionView(APIView):
                 )
         session._events_page = events
 
-        return Response(CopilotSessionSerializer(session).data)
+        return Response(CopilotSessionSerializer(session, context={"viewer": request.user}).data)
 
     def post(self, request, pk):
         conversation = get_object_or_404(Conversation, pk=pk, user=request.user)
@@ -696,7 +805,7 @@ class SessionView(APIView):
         broadcast_session_update(session)
 
         session._events_page = session.events.all()
-        return Response(CopilotSessionSerializer(session).data)
+        return Response(CopilotSessionSerializer(session, context={"viewer": request.user}).data)
 
 
 class SessionInviteCreateView(APIView):
@@ -724,6 +833,10 @@ class SessionInviteCreateView(APIView):
                 {"detail": "Pick a real member of your own organisation."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if target.id == request.user.id:
+            return Response(
+                {"detail": "You can't invite yourself."}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         invite, _ = SessionInvite.objects.update_or_create(
             session=session,
@@ -734,7 +847,7 @@ class SessionInviteCreateView(APIView):
                 "responded_at": None,
             },
         )
-        subject = _session_subject_label(session)
+        subject = _session_subject_label(session, target)
         message = f"{request.user.name} invited you to a live Copilot session" + (
             f" about {subject}" if subject else ""
         )
@@ -750,8 +863,8 @@ class SessionInviteCreateView(APIView):
 
 class SessionHandoffView(APIView):
     """POST /api/v1/copilot/conversations/<id>/session/handoff/ —
-    anyone the session is already visible to (owner or an active
-    participant — see conversations_visible_to), not owner-only: real
+    the owner or an accepted, present participant (sees_whole_conversation;
+    a person who is only mentioned gets 403), not owner-only: real
     hand-off is meant to happen mid-session, from whoever's currently
     driving it. Body: `{"to_user_id": <id>, "note": "...", "customer_id"?,
     "account_id"?}`. Hand-off is its own independent way for a session to
@@ -767,10 +880,26 @@ class SessionHandoffView(APIView):
 
     def post(self, request, pk):
         conversation = get_object_or_404(conversations_visible_to(request.user), pk=pk)
+        if not _can_change_session(conversation, request.user):
+            return Response(
+                {"detail": "Only the owner and participants can hand this session off."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         existing = getattr(conversation, "session", None)
         if existing is not None and existing.status == CopilotSession.Status.CLOSED:
             return Response(
                 {"detail": "This session has been closed."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        target = _same_org_member(conversation.organisation, request.data.get("to_user_id"))
+        if target is None:
+            return Response(
+                {"detail": "Pick a real member of your own organisation."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if target.id == request.user.id:
+            return Response(
+                {"detail": "You can't hand a session off to yourself."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         session = _get_or_create_session(conversation, request.data)
         # Whoever's handing off is, by definition, an active participant
@@ -781,12 +910,6 @@ class SessionHandoffView(APIView):
             session=session, user=request.user, defaults={"left_at": None}
         )
 
-        target = _same_org_member(conversation.organisation, request.data.get("to_user_id"))
-        if target is None:
-            return Response(
-                {"detail": "Pick a real member of your own organisation."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         note = (request.data.get("note") or "").strip()
 
         SessionInvite.objects.update_or_create(
@@ -807,11 +930,15 @@ class SessionHandoffView(APIView):
             payload={"to_user_id": target.id, "to_user_name": target.name, "note": note},
         )
         broadcast_session_update(session)
-        subject = _session_subject_label(session)
+        subject = _session_subject_label(session, target)
         message = f"{request.user.name} handed off a Copilot session to you" + (
             f" — {subject}" if subject else ""
         )
-        if note:
+        # The note is the owner's free text: it rides the notice only when
+        # the target already sees the whole conversation (the hand-off just
+        # reset their invite to pending, so usually not) — otherwise they
+        # read it on the session once they accept.
+        if note and sees_whole_conversation(conversation, target):
             message += f': "{note}"'
         send_notification(
             recipient=target,
@@ -822,7 +949,7 @@ class SessionHandoffView(APIView):
         )
 
         session._events_page = session.events.all()
-        return Response(CopilotSessionSerializer(session).data)
+        return Response(CopilotSessionSerializer(session, context={"viewer": request.user}).data)
 
 
 class SessionCloseView(APIView):
@@ -859,7 +986,7 @@ class SessionCloseView(APIView):
         broadcast_session_update(session)
 
         session._events_page = session.events.all()
-        payload = CopilotSessionSerializer(session).data
+        payload = CopilotSessionSerializer(session, context={"viewer": request.user}).data
         if request.data.get("capture_decisions"):
             payload.update(self._capture(session, request.user))
         return Response(payload)
@@ -890,7 +1017,10 @@ class SessionDecisionsView(APIView):
     participants, hand-offs) beside the Ops agent's figures and writes what
     the people decided into the review queue as proposals tagged with this
     session; GET lists the ones already written. Anyone who can read the
-    conversation may ask — the decisions were theirs — but approving still
+    conversation *whole* may ask (owner, accepted present participant —
+    a person who is only mentioned gets 403 on both GET and POST, since
+    the proposals are written from the whole transcript) — the decisions
+    were theirs — but approving still
     happens in the review queue, under its own permission. A real, paid
     call; error mapping as the Ops agent's, plus `422` for a session where
     nobody has said anything."""
@@ -899,6 +1029,8 @@ class SessionDecisionsView(APIView):
 
     def _session(self, request, pk):
         conversation = get_object_or_404(conversations_visible_to(request.user), pk=pk)
+        if not _can_change_session(conversation, request.user):
+            raise PermissionDenied("Only the owner and participants can use the facilitator.")
         session = getattr(conversation, "session", None)
         if session is None:
             raise Http404("This conversation has no live session.")
@@ -948,14 +1080,34 @@ class MyInvitesView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return SessionInvite.objects.filter(
+        # Only invites that can actually be accepted (_invite_is_grantable):
+        # a pre-fix row from someone outside the owner's chain would
+        # otherwise show its conversation's title (the first turn's words)
+        # to someone who may never read it. Few rows per person, so the
+        # per-invite check is cheap.
+        pending = SessionInvite.objects.filter(
             invited_user=self.request.user, status=SessionInvite.Status.PENDING
-        )
+        ).select_related("session__conversation", "invited_by")
+        return [invite for invite in pending if _invite_is_grantable(invite)]
+
+
+def _invite_is_grantable(invite):
+    """Accepting grants the whole conversation, so the invite must come
+    from someone else who sees it whole — a grant holder (grant_holders)
+    who is still present — never from the invitee themself (the
+    escalation a self-hand-off used to allow; creation refuses that now,
+    this refuses any such row written before)."""
+    inviter = invite.invited_by
+    if inviter is None or inviter.id == invite.invited_user_id:
+        return False
+    return sees_whole_conversation(invite.session.conversation, inviter)
 
 
 class RespondToInviteView(APIView):
     """POST /api/v1/copilot/sessions/invites/<id>/respond/ — the
-    invitee themselves only. Body: `{"status": "accepted"|"declined"}`.
+    invitee themselves only, and only while the invite is pending (an
+    answered one is 400 — re-inviting resets it to pending). Body:
+    `{"status": "accepted"|"declined"}`.
     Accepting is what actually grants access (see
     conversations_visible_to) — it creates or reactivates the real
     SessionParticipant row and logs a `joined` event; declining just
@@ -970,6 +1122,15 @@ class RespondToInviteView(APIView):
             return Response(
                 {"detail": "status must be 'accepted' or 'declined'."},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        if invite.status != SessionInvite.Status.PENDING:
+            return Response(
+                {"detail": "This invite has already been answered."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if new_status == SessionInvite.Status.ACCEPTED and not _invite_is_grantable(invite):
+            return Response(
+                {"detail": "This invite can't be accepted."}, status=status.HTTP_400_BAD_REQUEST
             )
 
         invite.status = new_status

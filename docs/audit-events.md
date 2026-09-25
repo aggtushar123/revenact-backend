@@ -65,8 +65,8 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `knowledge.gap_filled` | `services.knowledge.gaps.fill_from_contribution` | the person who wrote it down | KnowledgeGap | subject, customer |
 | `knowledge.gap_dismissed` | `services.knowledge.views.KnowledgeGapDismissView` | user | KnowledgeGap | subject, customer |
 | `knowledge.brief` | `services.knowledge.brief.generate` | user | AccountBrief | customer, how many records it read |
-| `anomaly.found` | `services.anomalies.detect.detect` | user, or nobody (nightly) | Anomaly | title, how many companies, how many reports |
-| `anomaly.update` | `services.anomalies.views.AnomalyDetailView` | leadership | Anomaly | title, new status |
+| `anomaly.found` | `services.anomalies.detect.detect` | user, or nobody (nightly) | Anomaly (id only) | how many companies, how many reports; never the model-written title |
+| `anomaly.update` | `services.anomalies.views.AnomalyDetailView` | leadership | Anomaly (id only) | new status; never the model-written title |
 | `translation.made` | `services.translation.translate.of_record` | user | Translation | kind, record id, the language asked for and the one detected |
 | `brief.schedule` | `services.metrics.views.BriefScheduleView` | admin | BriefSchedule | cadence, the hint of the hook it posts to |
 | `brief.sent` | `services.metrics.delivery.send` | user, or nobody (nightly) | BriefSchedule | the brief's date and the hook hint; the company's own figures left the building |

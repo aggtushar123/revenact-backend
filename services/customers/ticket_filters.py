@@ -33,9 +33,20 @@ def filtered_tickets(user, params):
     if priority in Ticket.Priority.values:
         tickets = tickets.filter(priority=priority)
 
-    owner_id = _parse_int(params.get("owner"))
-    if owner_id is not None:
-        tickets = tickets.filter(Q(customer__owner_id=owner_id) | Q(account__owner_id=owner_id))
+    owner = params.get("owner")
+    if owner == "unassigned":
+        # A ticket belongs to exactly one of customer/account (see
+        # Ticket's own docstring), so each branch also checks that its
+        # parent is the one actually set — otherwise the *other* branch's
+        # always-null join would read as "no owner" and match every ticket.
+        tickets = tickets.filter(
+            Q(customer__isnull=False, customer__owner_id__isnull=True)
+            | Q(account__isnull=False, account__owner_id__isnull=True)
+        )
+    else:
+        owner_id = _parse_int(owner)
+        if owner_id is not None:
+            tickets = tickets.filter(Q(customer__owner_id=owner_id) | Q(account__owner_id=owner_id))
 
     customer_id = _parse_int(params.get("customer"))
     if customer_id is not None:

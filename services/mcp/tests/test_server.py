@@ -312,4 +312,26 @@ class MoreTools(Fixture):
         asks = json.loads(self.tool("list_feature_requests")["result"]["content"][0]["text"])
         self.assertEqual([row["title"] for row in asks], ["Slack alerts"])
         clusters = json.loads(self.tool("list_anomalies")["result"]["content"][0]["text"])
+        # The stored title was written from reports across the whole
+        # organisation; Dana does not see every account, so hers is built
+        # from fields and counts only her own companies.
+        self.assertEqual(
+            [row["title"] for row in clusters], ["Similar reports across 1 of your companies"]
+        )
+
+        from services.accounts.capabilities import Capability
+        from services.accounts.models import Role
+
+        lead = Role.objects.create(
+            organisation=self.org,
+            name="Lead",
+            slug="lead",
+            permissions=[Capability.VIEW_ALL_ACCOUNTS],
+        )
+        self.alice.role = lead
+        self.alice.save(update_fields=["role"])
+        leader = McpToken.issue(self.alice, label="Alice's agent")[1]
+        clusters = json.loads(
+            self.tool("list_anomalies", token=leader)["result"]["content"][0]["text"]
+        )
         self.assertEqual([row["title"] for row in clusters], ["SSO login failures"])

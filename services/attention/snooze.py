@@ -9,7 +9,30 @@ never deleted here: it's simply not "active" any more, so the item shows up
 again on its own, no cleanup job required.
 """
 
+from datetime import timedelta
+
+from django.utils import timezone
+
+from .models import AttentionSnooze
 from .rules import worse
+
+PRUNE_AFTER = timedelta(days=30)
+
+
+def prune_expired(*, now=None, dry_run=False):
+    """Delete snoozes whose `until` passed more than 30 days ago.
+
+    Called nightly from `run_health_maintenance` — table hygiene, not a
+    visibility rule: an expired-but-recent snooze already shows its item
+    again on its own (`visible_items` above), this only clears rows old
+    enough that nobody will look at their history. `until=None` (Done) is
+    permanent by definition and is never touched here."""
+    now = now or timezone.now()
+    queryset = AttentionSnooze.objects.filter(until__isnull=False, until__lt=now - PRUNE_AFTER)
+    count = queryset.count()
+    if not dry_run:
+        queryset.delete()
+    return count
 
 
 def visible_items(user, items, *, now):

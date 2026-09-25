@@ -4,6 +4,7 @@ Embeddings are patched where detection imports them, so which records are
 "the same thing" is decided by the test rather than by the model."""
 
 import json
+import logging
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -379,3 +380,136 @@ class MixedKinds(Fixture):
             set(AnomalyEvidence.objects.values_list("kind", flat=True)),
             {"ticket", "email", "call"},
         )
+
+
+class TitlesReachOnlyThoseWhoSeeEverything(Fixture):
+    """The stored title and summary were written by a model from reports
+    across the whole organisation, so they go as written only to someone
+    who sees every account. Everyone else gets a title built from fields."""
+
+    def setUp(self):
+        super().setUp()
+        for company in self.companies[:3]:
+            self.ticket(company, f"SSO login fails {company.name}", days_ago=2)
+        with (
+            patch(EMBED, side_effect=vectors(self.table)),
+            patch(
+                COMPLETION,
+                side_effect=[titled("SSO login failures", "Check the identity provider.")],
+            ),
+        ):
+            self.client.post(f"{URL}detect/", {}, format="json")
+        self.anomaly = Anomaly.objects.get()
+
+    def test_someone_who_sees_everything_gets_the_stored_text(self):
+        row = self.client.get(URL).data[0]
+        self.assertEqual(row["title"], "SSO login failures")
+        self.assertEqual(row["summary"], "Check the identity provider.")
+        detail = self.client.get(f"{URL}{self.anomaly.id}/").data
+        self.assertEqual(detail["title"], "SSO login failures")
+        self.assertEqual(detail["summary"], "Check the identity provider.")
+
+    def test_a_partial_viewer_gets_a_neutral_title_and_no_summary(self):
+        self.client.force_authenticate(self.dana)
+        row = self.client.get(URL).data[0]
+        self.assertEqual(row["title"], "Similar reports across 3 of your companies")
+        self.assertIsNone(row["summary"])
+        detail = self.client.get(f"{URL}{self.anomaly.id}/").data
+        self.assertEqual(detail["title"], "Similar reports across 3 of your companies")
+        self.assertIsNone(detail["summary"])
+
+    def test_the_count_is_only_the_viewers_own_companies(self):
+        # Company 2 is somebody else's now: Dana reads two of the three.
+        Customer.objects.filter(pk=self.companies[2].pk).update(owner=self.mei)
+        self.client.force_authenticate(self.dana)
+        row = self.client.get(URL).data[0]
+        self.assertEqual(row["title"], "Similar reports across 2 of your companies")
+        self.assertEqual(row["companies"], 2)
+        Customer.objects.filter(pk=self.companies[1].pk).update(owner=self.mei)
+        detail = self.client.get(f"{URL}{self.anomaly.id}/").data
+        self.assertEqual(detail["title"], "Similar reports across 1 of your companies")
+
+    def test_the_audit_trail_does_not_carry_the_title(self):
+        # `target_repr` is shown to platform staff, who read metadata only.
+        event = AuditEvent.objects.get(action="anomaly.found")
+        self.assertNotIn("SSO login failures", event.target_repr)
+
+    def test_audit_metadata_carries_ids_and_counts_not_the_title(self):
+        # The portal and the log pipeline are metadata-only; the title is
+        # model-written from customer reports.
+        found = AuditEvent.objects.get(action="anomaly.found")
+        self.assertNotIn("title", found.metadata)
+        self.assertEqual(found.target_id, str(self.anomaly.id))
+        self.assertEqual(found.metadata, {"companies": 3, "reports": 3})
+        with self.assertLogs("core.audit", level="INFO") as logs:
+            self.client.patch(f"{URL}{self.anomaly.id}/", {"status": "acknowledged"}, format="json")
+        updated = AuditEvent.objects.get(action="anomaly.update")
+        self.assertNotIn("title", updated.metadata)
+        self.assertEqual(updated.metadata, {"status": "acknowledged"})
+        self.assertEqual(updated.target_id, str(self.anomaly.id))
+        for record in logs.records:
+            self.assertNotIn("title", record.audit["metadata"])
+            self.assertNotIn("SSO login failures", str(record.audit))
+
+
+class NamingNeverNamesACustomer(Fixture):
+    """The prompt tells the model never to name a company; this is what
+    holds it to that."""
+
+    def setUp(self):
+        super().setUp()
+        for company in self.companies[:3]:
+            self.ticket(company, f"SSO login fails {company.name}", days_ago=2)
+
+    def run_with(self, title, summary="Several accounts hit the same thing."):
+        with (
+            patch(EMBED, side_effect=vectors(self.table)),
+            patch(COMPLETION, side_effect=[titled(title, summary)]),
+            self.assertLogs("services.anomalies.detect", level="WARNING") as logs,
+        ):
+            # assertLogs needs at least one line; a clean run writes none.
+            logging.getLogger("services.anomalies.detect").warning("marker")
+            response = self.client.post(f"{URL}detect/", {}, format="json")
+        self.assertEqual(response.data["found"], 1, response.data)
+        return Anomaly.objects.get(), logs.output
+
+    def test_a_title_naming_a_customer_falls_back_to_the_plain_one(self):
+        anomaly, logs = self.run_with("company 1 cannot sign in via SSO")
+        self.assertEqual(anomaly.title, "Unnamed cluster across 3 companies")
+        self.assertEqual(anomaly.summary, "Several accounts hit the same thing.")
+        rejected = [line for line in logs if "rejected" in line]
+        self.assertEqual(len(rejected), 1)
+        self.assertNotIn("cannot sign in", rejected[0])
+        self.assertNotIn("company 1", rejected[0].lower())
+
+    def test_a_summary_naming_a_customer_becomes_empty(self):
+        anomaly, logs = self.run_with("SSO login failures", "Company 2 and others are locked out.")
+        self.assertEqual(anomaly.title, "SSO login failures")
+        self.assertEqual(anomaly.summary, "")
+        self.assertNotIn("locked out", "".join(logs))
+
+    def test_a_clean_name_is_kept(self):
+        anomaly, logs = self.run_with("SSO login failures")
+        self.assertEqual(anomaly.title, "SSO login failures")
+        self.assertFalse([line for line in logs if "rejected" in line])
+
+    def test_an_account_name_counts_too(self):
+        from services.customers.models import Account
+
+        account = Account.objects.create(name="Northwind Retail", owner=self.dana)
+        account.customers.add(self.companies[0])
+        anomaly, _ = self.run_with("Northwind retail checkout errors")
+        self.assertEqual(anomaly.title, "Unnamed cluster across 3 companies")
+
+    def test_only_whole_words_and_names_of_three_letters_or_more_count(self):
+        Customer.objects.create(organisation=self.org, name="Log", domain="log.com")
+        Customer.objects.create(organisation=self.org, name="IT", domain="it.com")
+        # "Log" inside "login" is not the company; "IT" is too short to judge.
+        anomaly, _ = self.run_with("SSO login fails, it says expired")
+        self.assertEqual(anomaly.title, "SSO login fails, it says expired")
+
+    def test_another_tenants_customer_is_not_a_reason(self):
+        other = Organisation.objects.create(name="Other")
+        Customer.objects.create(organisation=other, name="Okta", domain="okta.com")
+        anomaly, _ = self.run_with("Okta SSO login failures")
+        self.assertEqual(anomaly.title, "Okta SSO login failures")
