@@ -129,11 +129,13 @@ def live_customers(user):
     design (you can wind an account down while keeping it visible), so
     excluding one is not excluding the other.
 
-    Deliberately **not** used by the Organizations list, which is a list of
-    records rather than a rollup — hiding a churned row there would make it
-    unreachable — nor by the Customer Overview, whose whole subject is logo
-    retention and churn reasons, and which would compute 100% retention over
-    survivors only.
+    Not used by the Organizations list, which applies a broader rule of its
+    own: it hides churned rows by default — a `churn_date` *or* the Churn
+    stage (`organizations.book.CHURNED`) — and shows them on
+    `include_churned=1`, a `churn` lifecycle filter, or by `ids`, so a churned
+    record stays reachable. Nor by the Customer Overview, whose whole subject
+    is logo retention and churn reasons, and which would compute 100%
+    retention over survivors only.
     """
     return visible_customers(user).filter(is_archived=False, churn_date__isnull=True)
 
