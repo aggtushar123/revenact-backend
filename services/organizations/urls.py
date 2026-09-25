@@ -9,4 +9,5 @@ urlpatterns = [
         name="organizations-portfolio-export",
     ),
     path("portfolio/", views.PortfolioView.as_view(), name="organizations-portfolio"),
+    path("bulk/", views.BulkUpdateView.as_view(), name="organizations-bulk"),
 ]

@@ -4,11 +4,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core import audit
+from core.models import AuditEvent
 
+from . import bulk
 from .book import filter_options, load_portfolio
 from .export import CSVRenderer, table
 from .params import parse_params
 from .rows import row_payload
+from .serializers import BulkRequestSerializer
 from .shape import build_listing, select
 
 
@@ -52,3 +55,32 @@ class PortfolioExportView(APIView):
             f'attachment; filename="organizations-{today.isoformat()}.csv"'
         )
         return response
+
+
+class BulkUpdateView(APIView):
+    """POST /api/v1/organizations/bulk/ — `{ids, action, value}` from the
+    selection bar. Applied per id under the single-edit rules; returns
+    `{updated, failed: [{id, reason}]}` with a 200 even when some failed.
+    Churn is not an action here: it keeps its own modal and endpoint."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = BulkRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        result = bulk.apply(request, ids=data["ids"], action=data["action"], value=data["value"])
+        audit.record(  # SOC2:LOG-01
+            "organizations.bulk_updated",
+            request=request,
+            outcome=(
+                AuditEvent.Outcome.SUCCESS if result["updated"] else AuditEvent.Outcome.FAILURE
+            ),
+            metadata={
+                "action": data["action"],
+                "value": data["value"],
+                "ids": result["updated"],
+                "failed_ids": [row["id"] for row in result["failed"]],
+            },
+        )
+        return Response(result)

@@ -99,6 +99,25 @@ def _notify_owner_assigned(*, instance, actor, kind, noun, link):
     )
 
 
+def after_customer_update(customer, *, actor, previous_owner, handover_note=""):
+    """What a saved Customer edit sets off when its owner changed: the
+    handover written down as a contribution, and the new owner told. Shared
+    by the detail view's PATCH and the Organizations bulk edit, so a reassign
+    means the same thing from either."""
+    if customer.owner_id == (previous_owner.id if previous_owner else None):
+        return
+    from services.knowledge.ownership import record_handover
+
+    record_handover(customer, actor, previous_owner, handover_note)
+    _notify_owner_assigned(
+        instance=customer,
+        actor=actor,
+        kind=Notification.Kind.CUSTOMER_ASSIGNED,
+        noun="the organization",
+        link=f"/organizations/{customer.id}",
+    )
+
+
 class CustomerListCreateView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/ — scoped to the caller's own
     organisation (tenant). Any authenticated user (admin or CSM) can list
@@ -760,22 +779,12 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
     def perform_update(self, serializer):
         previous_owner = serializer.instance.owner
         customer = serializer.save()
-        if customer.owner_id != (previous_owner.id if previous_owner else None):
-            from services.knowledge.ownership import record_handover
-
-            record_handover(
-                customer,
-                self.request.user,
-                previous_owner,
-                serializer.context.get("handover_note", ""),
-            )
-            _notify_owner_assigned(
-                instance=customer,
-                actor=self.request.user,
-                kind=Notification.Kind.CUSTOMER_ASSIGNED,
-                noun="the organization",
-                link=f"/organizations/{customer.id}",
-            )
+        after_customer_update(
+            customer,
+            actor=self.request.user,
+            previous_owner=previous_owner,
+            handover_note=serializer.context.get("handover_note", ""),
+        )
 
 
 class AccountListCreateView(generics.ListCreateAPIView):
