@@ -306,7 +306,14 @@ def filter_options(user):
     has something to narrow. Three queries, whatever the book's size."""
     # SOC2:AUTH-02 options are scoped to the viewer's own visible customers
     customers = visible_customers(user).filter(is_archived=False).order_by()
-    owners = list(customers.values_list("owner_id", "owner__name").distinct())
+    # SOC2:AUTH-02 owners only from the viewer's own organisation: the
+    # serializer enforces it on write, but a bad import or seed row must not
+    # put another tenant's name in this menu.
+    owners = list(
+        customers.filter(Q(owner__isnull=True) | Q(owner__organisation=user.organisation))
+        .values_list("owner_id", "owner__name")
+        .distinct()
+    )
     named = sorted(
         ((pk, name) for pk, name in owners if pk is not None),
         key=lambda row: (row[1] or "").casefold(),

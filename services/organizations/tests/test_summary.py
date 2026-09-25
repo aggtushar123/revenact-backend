@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from rest_framework.test import APIClient
 
+from services.accounts.models import User
 from services.customers.models import Customer, Product
 from services.fx_rates.models import FxRate
 from services.organizations import book, shape
@@ -160,3 +161,19 @@ class FilterOptionsTests(PortfolioFixture):
 
         admin_owners = [row["name"] for row in book.filter_options(self.admin)["owners"]]
         self.assertEqual(admin_owners, ["Carl CSM", "Dana CSM", "Unassigned"])
+
+    def test_owners_come_only_from_the_viewers_organisation(self):
+        """A bad import or seed row can point an Acme customer at another
+        tenant's user; that person's name must never reach an Acme menu."""
+        outsider = User.objects.create_user(
+            email="gil@globex.io",
+            password="supersecret1",
+            name="Gil Globex",
+            organisation=self.other_org,
+            role=User.Role.CSM,
+            function=User.Function.CS,
+        )
+        self.customer("Mine")
+        self.customer("Misfiled", owner=outsider)
+        owners = [row["name"] for row in book.filter_options(self.admin)["owners"]]
+        self.assertEqual(owners, ["Carl CSM"])
