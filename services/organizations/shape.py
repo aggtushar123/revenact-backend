@@ -7,6 +7,7 @@ that counted only the page would count nothing useful.
 
 import base64
 import binascii
+import hashlib
 import json
 import math
 from datetime import date
@@ -218,19 +219,38 @@ def _load_value(raw, kind):
     raise ValueError(kind)
 
 
-def _sort_token(sort_key, descending):
-    return f"-{sort_key}" if descending else sort_key
+def filter_fingerprint(params):
+    """A short hash of everything that decides which rows a list holds and in
+    what order — the filters, search, `ids`, sort, group and board column —
+    but not `cursor` or `limit`. A cursor carries the fingerprint of the list
+    it was cut from, so changing any filter while keeping the cursor reads
+    the new list from its first page instead of from the old list's cut.
+    Multi-value filters are compared as sets: `health=poor,good` is the same
+    list as `health=good,poor`."""
+    state = [
+        params.search,
+        params.owner,
+        sorted(set(params.lifecycles)),
+        sorted(set(params.health)),
+        sorted(set(params.products)),
+        params.renews_within,
+        params.nps,
+        None if params.ids is None else sorted(set(params.ids)),
+        params.include_churned,
+        params.sort,
+        params.group,
+        params.group_value,
+    ]
+    digest = hashlib.sha256(json.dumps(state, separators=(",", ":")).encode())
+    return digest.hexdigest()[:16]
 
 
-def encode_cursor(section, bucket, value, name, entry_id, sort, group, group_value):
+def encode_cursor(section, bucket, value, name, entry_id, fingerprint):
     """The last served row's rank, unwrapped: its section's position (`[]`
     when the list is not grouped), bucket (0 present, 1 missing), its raw sort
     value, then the name/id tiebreak — exactly what `_rank` computes, minus
     the direction wrapping, which the next request's own `descending`
-    re-applies. `sort` (e.g. "-arr"), `group` and `group_value` scope the
-    cursor to the list it was cut from: a different sort or a different board
-    column must not resume from it, even when the value types happen to
-    compare (two numeric sorts, say)."""
+    re-applies — plus the `filter_fingerprint` of the list it was cut from."""
     dumped, kind = _dump_value(value)
     raw = json.dumps(
         {
@@ -240,9 +260,7 @@ def encode_cursor(section, bucket, value, name, entry_id, sort, group, group_val
             "t": kind,
             "n": name,
             "id": entry_id,
-            "s": sort,
-            "g": group,
-            "gv": group_value,
+            "f": fingerprint,
         },
         separators=(",", ":"),
     ).encode()
@@ -277,37 +295,32 @@ def decode_cursor(cursor):
         if bucket not in (0, 1):
             return None
         value = _load_value(data["v"], kind)
-        name, entry_id = data["n"], data["id"]
-        sort, group, group_value = data["s"], data["g"], data["gv"]
+        name, entry_id, fingerprint = data["n"], data["id"], data["f"]
         if not isinstance(name, str) or not isinstance(entry_id, int):
             return None
-        if not isinstance(sort, str) or not isinstance(group, str):
-            return None
-        if group_value is not None and not isinstance(group_value, str):
-            return None
-        if bool(section) != bool(group):
+        if not isinstance(fingerprint, str):
             return None
     except (binascii.Error, ValueError, UnicodeError, KeyError, TypeError):
         return None
-    return section, bucket, value, name, entry_id, sort, group, group_value
+    return section, bucket, value, name, entry_id, fingerprint
 
 
-def paginate(
-    entries, *, cursor, limit, sort_key, descending, portfolio, group="", group_value=None
-):
+def paginate(entries, *, params, portfolio):
     """Keyset pagination over `select`'s order. The cursor names the last
     served row's full rank — section, bucket, sort value, name, id, exactly
-    what `_rank` sorts by — plus the sort and board column it was cut from.
+    what `_rank` sorts by — plus the fingerprint of the list it was cut from.
     The next page is every row that ranks strictly after it, found with a
     scan over the already-ordered `entries`. Rows added or removed anywhere
     else in the set, in any number, never cause a skip or a repeat: the cut is
-    by value, not by a row count. A malformed, tampered, stale-typed, or
-    wrong-sort/wrong-column cursor is treated as absent — the first page."""
+    by value, not by a row count. A malformed or tampered cursor, or one cut
+    from a list with other filters, sort, group or board column, is treated
+    as absent — the first page."""
+    sort_key, descending, group = params.sort_key, params.descending, params.group
+    fingerprint = filter_fingerprint(params)
     start = 0
-    decoded = decode_cursor(cursor)
-    current_sort = _sort_token(sort_key, descending)
-    if decoded is not None and decoded[5] == current_sort and decoded[6:] == (group, group_value):
-        section, bucket, value, name, entry_id, *_scope = decoded
+    decoded = decode_cursor(params.cursor)
+    if decoded is not None and decoded[5] == fingerprint and bool(decoded[0]) == bool(group):
+        section, bucket, value, name, entry_id, _fingerprint = decoded
         # Missing values are never wrapped in `_rank` either — only a present
         # value's direction is reversed.
         wrapped = value if bucket == 1 else _wrap(value, descending)
@@ -322,10 +335,10 @@ def paginate(
                 len(entries),
             )
         except TypeError:
-            # A cursor built for a different sort's value type compares
-            # against nothing usefully — the safest read is the first page.
+            # A value of a type the sort cannot compare — the safest read is
+            # the first page.
             start = 0
-    page = entries[start : start + limit]
+    page = entries[start : start + params.limit]
     next_cursor = None
     if page and start + len(page) < len(entries):
         section, last_bucket, last_value, (last_name, last_id) = _rank(
@@ -333,7 +346,7 @@ def paginate(
         )
         raw_value = last_value.value if isinstance(last_value, _Desc) else last_value
         next_cursor = encode_cursor(
-            section, last_bucket, raw_value, last_name, last_id, current_sort, group, group_value
+            section, last_bucket, raw_value, last_name, last_id, fingerprint
         )
     return page, next_cursor
 
@@ -419,16 +432,7 @@ def build_listing(portfolio, params, *, filters):
     (after `group_value`); `groups` and `summary` are over the whole filtered
     set, so a board column's header and the tiles never shrink to a page."""
     entries, groups = select(portfolio, params)
-    page, next_cursor = paginate(
-        entries,
-        cursor=params.cursor,
-        limit=params.limit,
-        sort_key=params.sort_key,
-        descending=params.descending,
-        portfolio=portfolio,
-        group=params.group,
-        group_value=params.group_value,
-    )
+    page, next_cursor = paginate(entries, params=params, portfolio=portfolio)
     return {
         "results": [row_payload(entry) for entry in page],
         "next_cursor": next_cursor,

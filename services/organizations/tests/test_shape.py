@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -172,14 +173,7 @@ class CursorTests(ShapeFixture):
         params = parse_params(query)
         entries, _groups = shape.select(portfolio, params)
         return shape.paginate(
-            entries,
-            cursor=cursor,
-            limit=limit,
-            sort_key=params.sort_key,
-            descending=params.descending,
-            portfolio=portfolio,
-            group=params.group,
-            group_value=params.group_value,
+            entries, params=replace(params, cursor=cursor, limit=limit), portfolio=portfolio
         )
 
     def test_pages_follow_on_without_overlap(self):
@@ -191,9 +185,14 @@ class CursorTests(ShapeFixture):
         self.assertIsNone(last)
 
     def test_a_bad_cursor_is_the_first_page(self):
-        truncated = shape.encode_cursor((), 0, "alpha", "alpha", self.alpha.pk, "name", "", None)[
-            :-2
-        ]
+        truncated = shape.encode_cursor(
+            (),
+            0,
+            "alpha",
+            "alpha",
+            self.alpha.pk,
+            shape.filter_fingerprint(parse_params({"sort": "name"})),
+        )[:-2]
         for cursor in ("%%%", "bm90IGpzb24", truncated):
             page, _next = self.page(cursor, sort="name")
             self.assertEqual(self.names(page), ["Alpha", "Bravo"])
@@ -265,12 +264,48 @@ class CursorTests(ShapeFixture):
         self.assertEqual(self.names(expected), ["Echo"])
         self.assertEqual(self.names(mismatched), self.names(expected))
 
+    def test_a_cursor_from_other_filters_starts_the_first_page(self):
+        """Changing a filter while keeping the cursor would otherwise resume
+        the new list from the old one's cut: after Bravo, the Live list would
+        open on Delta and never show Alpha."""
+        _first, cursor = self.page(sort="name")
+        page, _next = self.page(cursor, sort="name", lifecycle="live")
+        self.assertEqual(self.names(page), ["Alpha", "Delta"])
+
+    def test_the_fingerprint_covers_every_filter_and_ignores_paging(self):
+        base = {"sort": "-arr"}
+        fingerprint = shape.filter_fingerprint(parse_params(base))
+        variations = {
+            "search": "acme",
+            "owner": "unassigned",
+            "lifecycle": "live",
+            "health": "poor",
+            "product": "7",
+            "renews_within": "30",
+            "nps": "promoter",
+            "ids": "1,2",
+            "include_churned": "1",
+            "sort": "name",
+            "group": "health",
+        }
+        for key, value in variations.items():
+            with self.subTest(key=key):
+                changed = shape.filter_fingerprint(parse_params({**base, key: value}))
+                self.assertNotEqual(changed, fingerprint)
+        grouped = shape.filter_fingerprint(parse_params({"group": "health"}))
+        column = parse_params({"group": "health", "group_value": "good"})
+        self.assertNotEqual(shape.filter_fingerprint(column), grouped)
+        paged = parse_params({**base, "cursor": "abc", "limit": "5"})
+        self.assertEqual(shape.filter_fingerprint(paged), fingerprint)
+        self.assertEqual(
+            shape.filter_fingerprint(parse_params({"health": "poor,good"})),
+            shape.filter_fingerprint(parse_params({"health": "good,poor"})),
+        )
+
     def test_cursor_round_trip(self):
         self.assertEqual(
-            shape.decode_cursor(
-                shape.encode_cursor((2, "", ""), 0, 12.5, "alpha", 7, "-arr", "health", "good")
-            ),
-            ((2, "", ""), 0, 12.5, "alpha", 7, "-arr", "health", "good"),
+            shape.decode_cursor(shape.encode_cursor((2, "", ""), 0, 12.5, "alpha", 7, "0123abcd")),
+            ((2, "", ""), 0, 12.5, "alpha", 7, "0123abcd"),
         )
         self.assertIsNone(shape.decode_cursor(""))
 
@@ -314,14 +349,7 @@ class GroupedPagingTests(ShapeFixture):
 
     def page(self, portfolio, params, entries, cursor, limit):
         return shape.paginate(
-            entries,
-            cursor=cursor,
-            limit=limit,
-            sort_key=params.sort_key,
-            descending=params.descending,
-            portfolio=portfolio,
-            group=params.group,
-            group_value=params.group_value,
+            entries, params=replace(params, cursor=cursor, limit=limit), portfolio=portfolio
         )
 
     def test_every_group_and_direction_pages_in_select_order(self):
