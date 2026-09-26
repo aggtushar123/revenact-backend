@@ -3852,8 +3852,8 @@ the prompt verbatim.
 **Ask Revenact on Organizations** (`services/copilot/organizations_context.py`,
 `organizations_grounding.py`) is the same send with `context.surface =
 "organizations"`. `services/copilot/ask.py` holds one row per surface — the
-serializer, the grounding, the fenced system prompt, the metering purpose and
-the book a shared reply is checked against — and `AskContextSerializer` hands
+serializer, the grounding, the fenced system prompt and the metering
+purpose — and `AskContextSerializer` hands
 a `context` to its surface's serializer. The filters go through the
 portfolio's own parser (`services/organizations/params.py`) and are stored in
 one canonical form; the labels that name them ("Owner: Carl CSM") are built on
@@ -3886,13 +3886,15 @@ stored anomaly title or summary.
   its digest could have drawn on, and whether it could carry a stored
   anomaly title; a mentioned-only reader needs every id and, for the
   anomaly flag, to see every account — null on a reply written before
-  they existed, which such a reader never reads), `created_at`.
+  they existed, which such a reader never reads; a reply with no context
+  of its own gets them too when it was fed an Ask reply as history, see
+  **Shared sessions** under the send), `created_at`.
 
 ### Conventions specific to this app
 
 `content` is capped at 8000 characters (`400` if blank or over).
-Replayed history to the model is capped to the conversation's own last
-20 messages (Anthropic's Messages API is stateless — the full history
+Replayed history to the model is capped to the conversation's newest
+20 messages the sender may read, oldest first (`HISTORY_WINDOW`) (Anthropic's Messages API is stateless — the full history
 must be resent every turn; unbounded replay would grow cost/latency
 without limit).
 
@@ -3992,13 +3994,25 @@ Organizations it is "Organizations" followed by the `labels`, joined with " · "
 parameters in canonical form. The server builds `labels` when the question is
 asked, and the client never sends them.
 
+`origin` follows the title. A viewer who does not see the whole conversation
+gets `origin: null` unless they may read both its first turn (the title's
+turn) and its first Ask turn (the one the origin was taken from): the filters
+carry the asker's free-text `search` and ids, and the labels name owners and
+products. It is `null`, not a surface-only stub. The detail endpoint and the
+send's response apply the same rule.
+
 ### `GET/DELETE /api/v1/copilot/conversations/<id>/`
 
-Auth: `IsAuthenticated`. Scoped to the caller's own conversations (404,
-not 403, otherwise). No `PATCH` — a conversation's title/messages are
-only ever set by `POST .../messages/`.
+Auth: `IsAuthenticated`. `GET` is scoped to every conversation the caller
+may read (`conversations_visible_to`: their own; a session they hold a grant
+to and are present in; or one with a turn that routed a question to them or
+to someone who reports to them, who read a slice — `visible_messages`).
+`DELETE` is the owner's only. 404, not 403, otherwise. No `PATCH` — a
+conversation's title/messages are only ever set by `POST .../messages/`.
 
-**Response `200`** (GET) — adds `origin`, and nested `messages` (each
+**Response `200`** (GET) — adds `origin` (`null` for a viewer who may not
+read the turns it came from, see the list above), `visibility` (`full` or
+`partial`), and nested `messages` (each
 `{id, role, content, author, sources, questions, ask_suggestions,
 context, created_at}`; `context` is the dashboard context a user turn
 was asked on, else `null`).
@@ -4087,6 +4101,17 @@ readers, including a legacy Dashboard reply from before this snapshot existed. T
 holders (`grant_holders`) always read their own or a shared session's replies whole, regardless of
 the snapshot.
 
+The history is folded for every send, not only an Ask one. A reply with no `context` (a plain
+follow-up such as "summarise the above") that was fed an earlier Ask reply — or a follow-up that
+was itself fed one — gets the union of those snapshots (`None` if any had none) and
+`carries_anomaly_text` set, and a mentioned-only reader is checked against them exactly as for an
+Ask reply, as well as against its own sources; its asker is not exempt from the source checks. A
+reply with no `context` fed no Ask reply keeps `null` in both and only the per-source checks. What
+is folded is exactly what the model was fed: the newest 20 turns the sender may read, oldest first
+(`HISTORY_WINDOW`), with a withheld turn adding nothing. A reader who sees every account skips the
+id check; for anyone else the ids of every reply in the conversation are checked in one query per
+read.
+
 `400` if `content` is blank or over 8000 characters, or `{"context": {<field>: [..]}}` for a
 wrong `surface`, `area`, `view` (Dashboard or Organizations), `focus.kind`, more than 200 `ids`, or
 an attention key not on the caller's list (`{"context": {"focus": {"key": ["Not an item on your
@@ -4098,8 +4123,8 @@ fails.
 
 **Response `200`** — the (possibly newly created) Conversation, same nested shape as the detail
 endpoint's GET, including this turn's user message (with `context` echoed, after the focus
-intersection) and the model's reply. `origin` is set from the first dashboard message and never
-overwritten.
+intersection) and the model's reply. `origin` is set from the first Ask message of either surface
+(Dashboard or Organizations) and never overwritten.
 
 ---
 
@@ -5626,7 +5651,9 @@ with `conversation_title: "Shared conversation"` and `account_label: null`.
 is its first turn's opening words, so the list and detail endpoints
 return `"Shared conversation"` unless the viewer sees the whole
 conversation or that first turn is in their `visible_messages`
-(`copilot.views.title_for`). The invite and hand-off notifications and
+(`copilot.views.reads_first_turn`); `origin` is `null` on the same
+terms, and also unless the viewer reads the first Ask turn
+(`copilot.views.header_for`). The invite and hand-off notifications and
 the invite card's `account_label` name the customer/account only when
 the recipient may open it (`null` / omitted otherwise), and the hand-off
 notification carries the note only when the target already sees the
