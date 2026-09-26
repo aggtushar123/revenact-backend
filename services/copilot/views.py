@@ -306,9 +306,16 @@ def _reply_readable_by(turn, user, user_turn=None):
     org-wide and can name a company outside this viewer's book even when
     the asker's *filtered* book above is a subset of what they see, so a
     reader who doesn't see everything never reads a reply that could carry
-    one from an asker who does. An Organizations turn has no area and only a
-    companies focus, so it never trips this gate: its digest carries no
-    stored anomaly text."""
+    one from an asker who does. Whether it could is fixed on the reply when
+    it was written (`Message.carries_anomaly_text`, `ask_snapshot`): the
+    asker's standing then, not now, and any earlier reply fed to it as
+    history; a missing value reads as True. An Organizations turn has no area
+    and only a companies focus, so on its own it never sets it: its digest
+    carries no stored anomaly text.
+
+    Both snapshots include the history the model was fed: an earlier Ask
+    reply's customers and anomaly flag fold into the new reply's, and an
+    earlier Ask reply with no snapshot leaves the new one with none."""
     from services.customers.scoping import sees_everything, visible_customers
     from services.knowledge.models import Contribution
     from services.knowledge.views import visible_contributions
@@ -333,17 +340,9 @@ def _reply_readable_by(turn, user, user_turn=None):
         if visible_customers(user).filter(pk__in=grounded).count() != len(grounded):
             return False
 
-        focus = context.get("focus") or {}
-        if not isinstance(focus, dict):
-            return False
-        names_a_stored_anomaly = context.get("area") == "overview" or (
-            focus.get("kind") == "attention" and str(focus.get("key") or "").startswith("anomaly:")
-        )
-        if (
-            names_a_stored_anomaly
-            and sees_everything(user_turn.author)
-            and not sees_everything(user)
-        ):
+        # Whether the asker saw everything is fixed on the reply when it was
+        # written, never re-read: a missing value reads as "could carry one".
+        if turn.carries_anomaly_text is not False and not sees_everything(user):
             return False
 
     for source in turn.sources or []:
@@ -385,6 +384,45 @@ def _reply_readable_by(turn, user, user_turn=None):
     return True
 
 
+def names_a_stored_anomaly(context):
+    """An Ask context whose digest can quote a stored anomaly title or
+    summary: the Overview, or an `anomaly:` attention focus."""
+    focus = context.get("focus") or {}
+    return context.get("area") == "overview" or (
+        isinstance(focus, dict)
+        and focus.get("kind") == "attention"
+        and str(focus.get("key") or "").startswith("anomaly:")
+    )
+
+
+def ask_snapshot(user, ask, grounding, fed):
+    """`(grounded_customer_ids, carries_anomaly_text)` for a new Ask reply,
+    fixed as it is written. `fed` is the turns given to the model as
+    history: an earlier Ask reply's customers and anomaly text can be
+    repeated, so they are folded in. An earlier Ask reply with no snapshot
+    leaves the new one with none (None), so it fails closed too; a withheld
+    turn carried only the redaction notice and adds nothing."""
+    from services.customers.scoping import sees_everything
+
+    grounded = set(grounding.customer_ids or [])
+    carries = names_a_stored_anomaly(ask) and sees_everything(user)
+    last_user_turn = None
+    for turn in fed:
+        if turn.role == Message.Role.USER:
+            last_user_turn = turn
+            continue
+        if getattr(turn, "withheld", False):
+            continue
+        answered = turn.reply_to if turn.reply_to_id else last_user_turn
+        if answered is None or not answered.context:
+            continue
+        earlier = _grounded_ids(turn)
+        grounded = None if grounded is None or earlier is None else grounded | earlier
+        if turn.carries_anomaly_text is not False:
+            carries = True
+    return (None if grounded is None else sorted(grounded)), carries
+
+
 def _grounded_ids(turn):
     """The reply's stored grounding snapshot as a set of customer ids, or None
     when it is missing or is anything but a list of whole numbers."""
@@ -407,7 +445,7 @@ def _well_formed_filters(context):
 
 def _redacted(turn):
     """The same turn, with its words withheld — unsaved, never written back."""
-    return Message(
+    message = Message(
         id=turn.id,
         conversation=turn.conversation,
         role=turn.role,
@@ -416,6 +454,8 @@ def _redacted(turn):
         ask_suggestions=[],
         created_at=turn.created_at,
     )
+    message.withheld = True
+    return message
 
 
 class ConversationListView(generics.ListAPIView):
@@ -599,14 +639,8 @@ class SendMessageView(APIView):
                 f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nReal-data summary:\n"
                 f"{grounding.summary}{routing_note}"
             )
-        prior_history = (
-            [
-                {"role": m.role, "content": m.content}
-                for m in visible_messages(conversation, request.user)[:HISTORY_WINDOW]
-            ]
-            if conversation
-            else []
-        )
+        fed = visible_messages(conversation, request.user)[:HISTORY_WINDOW] if conversation else []
+        prior_history = [{"role": m.role, "content": m.content} for m in fed]
         history = [*prior_history, {"role": Message.Role.USER, "content": content}]
 
         try:
@@ -624,6 +658,9 @@ class SendMessageView(APIView):
         except CopilotRequestFailed as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
+        snapshot = (
+            ask_snapshot(request.user, ask, grounding, fed) if ask is not None else (None, None)
+        )
         if conversation is None:
             conversation = Conversation.objects.create(
                 organisation=organisation, user=request.user, title=content[:50]
@@ -644,9 +681,11 @@ class SendMessageView(APIView):
             # and re-running retrieval later would cite whatever is
             # relevant now instead.
             sources=grounding.sources,
-            # SOC2:AUTH-02 an Ask reply keeps the ids of every customer it was
-            # grounded on, so a shared reader is checked against exactly those
-            grounded_customer_ids=grounding.customer_ids if ask is not None else None,
+            # SOC2:AUTH-02 an Ask reply keeps the ids of every customer it (or the
+            # history it was fed) was grounded on, and whether it could carry
+            # org-wide anomaly text, so a shared reader is checked against those
+            grounded_customer_ids=snapshot[0],
+            carries_anomaly_text=snapshot[1],
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
             # The real turn this reply answers, not just "whichever user turn
             # happens to sort immediately before it" — two participants

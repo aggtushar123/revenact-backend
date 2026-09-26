@@ -612,6 +612,7 @@ class DashboardReplyRedactionTests(ChartFixture):
             content="Pizza Hut is renewing on schedule.",
             sources=[],
             grounded_customer_ids=[self.pizza.pk],
+            carries_anomaly_text=False,
             reply_to=asked_narrow,
         )
 

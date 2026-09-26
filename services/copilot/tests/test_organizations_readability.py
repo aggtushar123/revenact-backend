@@ -20,8 +20,9 @@ from services.copilot.models import (
     SessionParticipant,
 )
 from services.copilot.organizations_grounding import build_organizations_grounding
-from services.copilot.views import REDACTED_REPLY, visible_messages
+from services.copilot.views import REDACTED_REPLY, ask_snapshot, visible_messages
 from services.customers.models import Customer
+from services.customers.scoping import sees_everything
 from services.knowledge.models import Question
 from services.knowledge.tests.test_hierarchy import ChartFixture
 
@@ -76,12 +77,14 @@ class OrganizationsReplyReadabilityTests(ChartFixture):
             message=asked,
         )
         grounding = build_organizations_grounding(author, context, content)
+        grounded, carries = ask_snapshot(author, context, grounding, [])
         return Message.objects.create(
             conversation=self.conversation,
             role="assistant",
             content=f"Answer for {filters}",
             sources=grounding.sources,
-            grounded_customer_ids=grounding.customer_ids,
+            grounded_customer_ids=grounded,
+            carries_anomaly_text=carries,
             reply_to=asked,
         )
 
@@ -324,3 +327,127 @@ class OrganizationsChurnedBookReadabilityTests(OrganizationsReplyReadabilityTest
         )
 
         self.assertIn(reply.content, self.read(self.priya))
+
+
+@patch("services.copilot.views.get_completion", return_value="Here is the answer.")
+class AskReplySnapshotDriftTests(ChartFixture):
+    """Sent through the endpoint: what a reply may carry is fixed when it is
+    written — the anomaly gate's asker-sees-everything and the customers of
+    every earlier reply fed to the model as history — never re-read later."""
+
+    URL = "/api/v1/copilot/messages/"
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch("services.copilot.retrieval.rank_by_similarity", side_effect=_in_order)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.secret = Customer.objects.create(
+            organisation=self.org, name="Secret Corp", owner=self.carl
+        )
+        # Priya may open Pizza Hut, and only that.
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.carl,
+            assignee=self.priya,
+            text="Pizza Hut?",
+        )
+
+    def send(self, user, context, content, conversation=None):
+        self.client.force_authenticate(user)
+        body = {"content": content, "context": context}
+        if conversation is not None:
+            body["conversation_id"] = conversation
+        response = self.client.post(self.URL, body, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["id"]
+
+    def replies_read_by(self, user):
+        conversation = Conversation.objects.get()
+        return [m.content for m in visible_messages(conversation, user) if m.role == "assistant"]
+
+    def organizations(self, **filters):
+        return {"surface": "organizations", "view": "list", "filters": filters, "focus": None}
+
+    def test_the_anomaly_gate_holds_after_the_asker_loses_view_all(self, completion):
+        overview = {
+            "surface": "dashboard",
+            "area": "overview",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": str(self.pizza.pk)},
+            "focus": None,
+        }
+        self.send(self.alice, overview, "@Priya Nair why is at-risk ARR up?")
+        reply = Message.objects.get(role="assistant")
+        self.assertEqual(reply.grounded_customer_ids, [self.pizza.pk])
+        csm = self.org.ensure_system_roles()[type(self.alice).Role.CSM]
+        type(self.alice).objects.filter(pk=self.alice.pk).update(role=csm)
+        self.alice.refresh_from_db()
+        self.assertFalse(sees_everything(self.alice))
+
+        self.assertEqual(self.replies_read_by(self.priya), [REDACTED_REPLY])
+
+    def test_an_earlier_replys_customers_are_carried_into_a_later_reply(self, completion):
+        first = self.send(self.carl, self.organizations(), "@Priya Nair which accounts need us?")
+        completion.return_value = "Pizza Hut, and Secret Corp from before."
+        self.send(
+            self.carl,
+            self.organizations(ids=str(self.pizza.pk)),
+            "@Priya Nair and Pizza Hut?",
+            conversation=first,
+        )
+
+        second = Message.objects.filter(role="assistant").order_by("id").last()
+        self.assertEqual(sorted(second.grounded_customer_ids), [self.pizza.pk, self.secret.pk])
+        self.assertEqual(self.replies_read_by(self.priya), [REDACTED_REPLY, REDACTED_REPLY])
+
+    def test_a_later_reply_fed_only_what_the_reader_sees_is_readable(self, completion):
+        first = self.send(
+            self.carl, self.organizations(ids=str(self.pizza.pk)), "@Priya Nair Pizza Hut?"
+        )
+        self.send(
+            self.carl,
+            self.organizations(ids=str(self.pizza.pk)),
+            "@Priya Nair and now?",
+            conversation=first,
+        )
+
+        self.assertEqual(self.replies_read_by(self.priya), ["Here is the answer."] * 2)
+
+    def test_a_legacy_reply_in_the_history_leaves_the_new_reply_unsnapshotted(self, completion):
+        first = self.send(
+            self.carl, self.organizations(ids=str(self.pizza.pk)), "@Priya Nair Pizza Hut?"
+        )
+        Message.objects.filter(role="assistant").update(grounded_customer_ids=None)
+        self.send(
+            self.carl,
+            self.organizations(ids=str(self.pizza.pk)),
+            "@Priya Nair and now?",
+            conversation=first,
+        )
+
+        second = Message.objects.filter(role="assistant").order_by("id").last()
+        self.assertIsNone(second.grounded_customer_ids)
+        self.assertEqual(self.replies_read_by(self.priya), [REDACTED_REPLY, REDACTED_REPLY])
+
+    def test_an_earlier_replys_anomaly_text_is_carried_into_a_later_reply(self, completion):
+        overview = {
+            "surface": "dashboard",
+            "area": "overview",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": str(self.pizza.pk)},
+            "focus": None,
+        }
+        first = self.send(self.alice, overview, "@Priya Nair why is at-risk ARR up?")
+        self.send(
+            self.alice,
+            self.organizations(ids=str(self.pizza.pk)),
+            "@Priya Nair and on Organizations?",
+            conversation=first,
+        )
+
+        second = Message.objects.filter(role="assistant").order_by("id").last()
+        self.assertEqual(second.grounded_customer_ids, [self.pizza.pk])
+        self.assertTrue(second.carries_anomaly_text)
+        self.assertEqual(self.replies_read_by(self.priya), [REDACTED_REPLY, REDACTED_REPLY])

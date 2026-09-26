@@ -106,8 +106,20 @@ class Message(models.Model):
         "the ids of every customer the grounding digest could have drawn on, fixed when the "
         "answer was written (Grounding.customer_ids). A mentioned-only reader reads the reply "
         "only if they may see every one of them (views._reply_readable_by). Ids only, never "
-        "names. Null on every other turn, and on Ask replies written before it existed, "
-        "which then fail closed for such readers.",
+        "names. Null on every other turn, on Ask replies written before it existed, and on "
+        "an Ask reply fed an earlier Ask reply with none as history; all of those fail "
+        "closed for such readers. Includes the ids of every earlier Ask reply fed to "
+        "the model as history.",
+    )
+    carries_anomaly_text = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text="Assistant turns answering an Ask rail only, fixed when the answer was "
+        "written: True when it could carry a stored, org-wide anomaly title or summary — "
+        "its own turn was anomaly-shaped (Overview, or an anomaly attention focus) and the "
+        "asker then saw every account, or an earlier reply fed to it as history could. A "
+        "reader who does not see every account never reads such a reply. Null (a reply "
+        "written before it existed) is read as True.",
     )
     reply_to = models.ForeignKey(
         "self",
