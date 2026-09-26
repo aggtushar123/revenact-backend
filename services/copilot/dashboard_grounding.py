@@ -422,12 +422,12 @@ def build_dashboard_grounding(user, context, question, *, today=None, now=None):
 def _grounded_ids(user, filters, area, customers, targets):
     """Every customer this digest could have drawn on: the shared book, the
     Support screen's own wider book when that area's figures loaded it (no
-    lifecycle filter there — `dashboard_figures._support_book`), and the
+    lifecycle filter there — `dashboard_figures.support_book`), and the
     targets."""
     grounded = {customer.pk for customer in customers}
     grounded |= {customer.pk for customer in targets}
     if area in ("overview", "support") and (
-        dashboard_figures._support_book(filters, customers) is None
+        dashboard_figures.support_book(filters, customers) is None
     ):
         support = forecast.filtered_customers(user, dashboard_figures.support_filters(filters))
         grounded |= set(support.values_list("pk", flat=True))
