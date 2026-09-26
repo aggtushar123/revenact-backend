@@ -51,6 +51,23 @@ class ScopeTests(StoryFixture):
         stranger = self.account("Not ours", customers=[self.customer("Taco Co")])
         self.assertEqual(ids(rows.filter(scope.parent_q(stranger.pk))), set())
 
+    def test_an_account_of_this_organisation_hidden_from_the_viewer_reads_nothing(self):
+        """Open Co belongs to this organisation and nobody owns it, so Carl
+        may open it — but Dana's div, one of Open Co's own accounts, is
+        Dana's alone (`visible_accounts`: her ownership, not an unowned
+        parent, decides it). Filtering by its id, or reading the unfiltered
+        "All" view, must both come back empty of its records."""
+        open_co = self.customer("Open Co", owner=None)
+        free = self.account("Free div", customers=[open_co])
+        danas = self.account("Dana's div", customers=[open_co], owner=self.other)
+        seen = self.note(free)
+        self.note(danas)
+        scope = self.scope(customer=open_co)
+        self.assertNotIn(danas.pk, scope.accounts)
+        rows = self.base("note", customer=open_co)
+        self.assertEqual(ids(rows), {seen.pk})
+        self.assertEqual(ids(rows.filter(scope.parent_q(danas.pk))), set())
+
 
 class SourceScopeTests(StoryFixture):
     def test_every_source_reads_only_this_organisation_and_its_accounts(self):

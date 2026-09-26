@@ -4,6 +4,10 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from services.anomalies.models import Anomaly, AnomalyEvidence
+from services.customers.models import Ticket
+from services.knowledge.models import Question
+
 from .story_fixtures import StoryFixture
 
 
@@ -68,6 +72,22 @@ class StoryOrderTests(StoryFixture):
         self.assertIsNotNone(first["next_cursor"])
         moved = self.story(limit="1", group="tasks", cursor=first["next_cursor"])
         self.assertEqual(self.keys(moved), self.keys(first))
+
+
+class StoryHorizonTests(StoryFixture):
+    def test_tomorrow_s_health_change_and_ticket_are_absent(self):
+        """The future never happened yet: a health change dated tomorrow and a
+        ticket opened tomorrow are absent from both `items` and
+        `counts.by_kind`, through the full `build_story` response."""
+        tomorrow = self.today + timedelta(days=1)
+        self.snapshot(self.pizza, self.days_ago(30), "8.0")
+        self.snapshot(self.pizza, tomorrow, "3.0")
+        self.ticket(self.pizza, day=tomorrow)
+
+        body = self.story()
+        self.assertEqual(body["items"], [])
+        self.assertEqual(body["counts"]["by_kind"]["health"], 0)
+        self.assertEqual(body["counts"]["by_kind"]["ticket"], 0)
 
 
 class StoryFilterTests(StoryFixture):
@@ -296,6 +316,34 @@ class StoryQueryCountTests(StoryFixture):
                 self.email(parent)
                 self.call(parent)
                 self.snapshot(parent, self.days_ago(40 + 30 * i), str(3 + 5 * (i % 2)))
+        # Content for every entry of `attention`, not just rows for the stream:
+        # an open High ticket, an open question and a live anomaly with call
+        # evidence the viewer may read. `urgent_tickets`/`overdue_tasks`/
+        # `open_questions`/`latest_anomaly` run the same fixed aggregate and
+        # exists queries whether or not a row matches, so this must not change
+        # the pinned count below — it only proves the count was never counting
+        # rows in the first place.
+        self.ticket(self.pizza, priority=Ticket.Priority.HIGH, day=self.days_ago(start))
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.csm,
+            assignee=self.engineer,
+            text=f"Why {start}?",
+        )
+        now = timezone.now()
+        anomaly = Anomaly.objects.create(
+            organisation=self.org, title=f"Fault {start}", first_seen_at=now, last_seen_at=now
+        )
+        AnomalyEvidence.objects.create(
+            anomaly=anomaly,
+            organisation=self.org,
+            kind=AnomalyEvidence.Kind.CALL,
+            record_id=start,
+            customer=self.pizza,
+            snippet="fault",
+            occurred_at=now,
+        )
 
     def queries(self, **query):
         with CaptureQueriesContext(connection) as ctx:
@@ -317,6 +365,10 @@ class StoryQueryCountTests(StoryFixture):
         # one page query and one count per record source (8 + 8), then the
         # attention block's own aggregates and rules (8): tickets, tasks,
         # the questions rule's org chart plus its count, and the anomaly
-        # rule's org chart plus its evidence query.
+        # rule's org chart plus its evidence query. Both book sizes carry a
+        # real open High ticket, open question and live anomaly (see `fill`),
+        # so this is the cost of an attention block with content, not an
+        # empty one; it stays 31 because those rules are aggregates/`.first()`
+        # calls, never one query per matching row.
         self.assertEqual(large, 31)
         self.assertLessEqual(searched, large)

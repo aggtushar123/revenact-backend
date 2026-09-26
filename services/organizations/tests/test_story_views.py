@@ -46,12 +46,23 @@ class StoryEndpointTests(StoryEndpointFixture):
     def test_requires_authentication(self):
         self.assertEqual(APIClient().get(story_url(self.pizza.pk)).status_code, 401)
 
+    def test_post_is_not_allowed(self):
+        api = self.client_for(self.csm)
+        self.assertEqual(api.post(story_url(self.pizza.pk), {}).status_code, 405)
+
     def test_an_organisation_the_viewer_cannot_open_is_a_404(self):
         danas = self.customer("Dana's", owner=self.other)
         globex = self.customer("Globex's", owner=None, organisation=self.other_org)
         api = self.client_for(self.csm)
         for customer_id in (danas.pk, globex.pk, 999_999):
             self.assertEqual(api.get(story_url(customer_id)).status_code, 404, customer_id)
+
+    def test_an_account_id_from_another_tenant_reads_nothing_not_an_error(self):
+        globex = self.customer("Globex's", owner=None, organisation=self.other_org)
+        stranger = self.account("Stranger div", customers=[globex])
+        body = self.get(account=str(stranger.pk))
+        self.assertEqual(body["items"], [])
+        self.assertEqual(body["counts"]["by_group"]["all"], 0)
 
     def test_an_archived_organisation_still_opens(self):
         gone = self.customer("Gone", is_archived=True)
@@ -279,10 +290,14 @@ class StoryQueryCountTests(StoryEndpointFixture):
         self.assertEqual(small, self.EXPECTED)
 
     def test_a_csm_s_count_does_not_grow_with_the_book_either(self):
+        # 34: the admin's 33, plus one extra query — a CSM is not `sees_everything`,
+        # so `visible_customers` adds its own org-chart lookup (`subtree_ids`) that
+        # the admin's shortcut skips.
         self.book(3)
         small = self.count(self.csm)
         self.book(12)
         self.assertEqual(self.count(self.csm), small)
+        self.assertEqual(small, 34)
 
     def test_the_next_page_costs_the_same(self):
         self.book(5)

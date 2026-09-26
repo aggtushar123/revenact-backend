@@ -104,6 +104,22 @@ class AttentionTests(StoryFixture):
             self.attention(account="none")["overdue_tasks"], {"count": 1, "oldest_days": 4}
         )
 
+    def test_attention_ignores_the_stream_s_own_filters(self):
+        """`attention` covers the renewal, tickets, tasks, questions and the
+        anomaly for the whole scoped organisation: a search, a group, a
+        source list or a thread must never narrow it, unlike `items`."""
+        self.ticket(self.pizza, priority=Ticket.Priority.HIGH, day=self.days_ago(9))
+        self.task(self.pizza, due=self.days_ago(4))
+        plain = self.attention()
+        for query in (
+            {"q": "zebra"},
+            {"group": "conversations"},
+            {"source": "note"},
+            {"thread": "t-1"},
+        ):
+            with self.subTest(**query):
+                self.assertEqual(self.attention(**query), plain)
+
     def test_unanswered_questions_the_viewer_may_read(self):
         Question.objects.create(
             organisation=self.org,
