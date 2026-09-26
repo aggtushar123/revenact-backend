@@ -109,7 +109,9 @@ class Message(models.Model):
         "names. Null on every other turn, on Ask replies written before it existed, and on "
         "an Ask reply fed an earlier Ask reply with none as history; all of those fail "
         "closed for such readers. Includes the ids of every earlier Ask reply fed to "
-        "the model as history.",
+        "the model as history. A reply with no context of its own that was fed an Ask "
+        "reply as history carries the union of those (or null if any had none), and is "
+        "checked the same way.",
     )
     carries_anomaly_text = models.BooleanField(
         null=True,
@@ -119,7 +121,10 @@ class Message(models.Model):
         "its own turn was anomaly-shaped (Overview, or an anomaly attention focus) and the "
         "asker then saw every account, or an earlier reply fed to it as history could. A "
         "reader who does not see every account never reads such a reply. Null (a reply "
-        "written before it existed) is read as True.",
+        "written before it existed) is read as True. On a reply with no context of its "
+        "own it is set only when that reply was fed an Ask reply as history, and marks "
+        "it as one to check against grounded_customer_ids; null there means a plain "
+        "reply, checked per source only.",
     )
     reply_to = models.ForeignKey(
         "self",
