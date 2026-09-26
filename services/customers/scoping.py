@@ -181,6 +181,20 @@ def visible_children_q(user) -> Q:
     return Q(customer__in=visible_customers(user)) | Q(account__in=visible_accounts(user))
 
 
+def customer_rollup_q(user, customer) -> Q:
+    """For the `/customers/<id>/…` roll-ups of the models that hang off a
+    Customer *or* an Account: this organisation's own records, plus those on
+    its accounts that the user may open.
+
+    Being able to open the organisation is not enough for an account-level
+    record: an account owned by a colleague stays theirs (`visible_accounts`),
+    the same rule `get_visible_account` applies to the account's own nested
+    routes and the organisation story applies to its sources."""
+
+    # SOC2:AUTH-02 an account-level record follows its own account's visibility
+    return Q(customer=customer) | Q(account__in=visible_accounts(user).filter(customers=customer))
+
+
 def get_visible_customer(request, customer_id):
     """The one place Customer-scoped nested views resolve their parent.
 

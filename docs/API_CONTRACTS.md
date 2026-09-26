@@ -2851,8 +2851,12 @@ See `seed_demo_contacts` management command for demo data (run after
 Auth: `IsAuthenticated`. GET: every `Contact` under this `Customer`,
 rolled up from both levels a Contact can exist at — organisation-level
 (directly on this Customer) *and* account-level (on any of its
-Accounts) — scoped to the caller's own organisation, same
-404-not-empty-list convention as the Activity list endpoint. Which
+Accounts the caller may open, `visible_accounts`: an account a
+colleague owns keeps its records out even when the caller can open
+the organisation) — scoped to the caller's own organisation, same
+404-not-empty-list convention as the Activity list endpoint. The
+Opportunity, Risk, Survey and Canvas roll-ups below apply the same
+account rule (`customer_rollup_q`). Which
 level a row is at is `account_name`: `null` for organisation-level,
 that Account's name otherwise. Powers the Organization Details page's
 own Contacts tab, which renders both together.

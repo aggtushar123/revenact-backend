@@ -41,6 +41,34 @@ def create_account(customer, **kwargs):
     return account
 
 
+def blind_to_one_account(customer):
+    """A CSM who can open `customer` (they own one of its accounts) but
+    not its other account, which a colleague owns along with the
+    customer itself. Returns (viewer, seen_account, hidden_account).
+    For the `/customers/<id>/…` roll-ups: an account-level record must
+    follow its own account's visibility, not the organisation's."""
+    org = customer.organisation
+    colleague = User.objects.create_user(
+        email="owner@acme.io",
+        password="supersecret1",
+        name="Owner",
+        organisation=org,
+        role=User.Role.CSM,
+    )
+    viewer = User.objects.create_user(
+        email="viewer@acme.io",
+        password="supersecret1",
+        name="Viewer",
+        organisation=org,
+        role=User.Role.CSM,
+    )
+    customer.owner = colleague
+    customer.save(update_fields=["owner"])
+    seen = create_account(customer, name="Seen", owner=viewer)
+    hidden = create_account(customer, name="Hidden", owner=colleague)
+    return viewer, seen, hidden
+
+
 class CustomerListCreateTests(APITestCase):
     url = "/api/v1/customers/"
 
@@ -2112,6 +2140,18 @@ class CustomerContactListTests(APITestCase):
         org_row = next(row for row in response.data if row["name"] == "Org-Level Contact")
         self.assertIsNone(org_row["account_name"])
 
+    def test_hides_contacts_on_accounts_the_viewer_cannot_see(self):
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        Contact.objects.create(customer=self.customer, **self._contact_kwargs(name="Org-Level"))
+        Contact.objects.create(account=seen, **self._contact_kwargs(name="Seen-Account"))
+        Contact.objects.create(account=hidden, **self._contact_kwargs(name="Hidden-Account"))
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual({row["name"] for row in response.data}, {"Org-Level", "Seen-Account"})
+
     def test_does_not_leak_another_customers_accounts_contacts(self):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
         other_account = create_account(other_customer, name="Other Region")
@@ -2691,6 +2731,22 @@ class CustomerOpportunityListTests(APITestCase):
         account_row = next(row for row in response.data if row["title"] == "Account-Level Opp")
         self.assertEqual(account_row["account_name"], "North America")
 
+    def test_hides_opportunities_on_accounts_the_viewer_cannot_see(self):
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        Opportunity.objects.create(
+            customer=self.customer, **self._opportunity_kwargs(title="Org-Level")
+        )
+        Opportunity.objects.create(account=seen, **self._opportunity_kwargs(title="Seen-Account"))
+        Opportunity.objects.create(
+            account=hidden, **self._opportunity_kwargs(title="Hidden-Account")
+        )
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual({row["title"] for row in response.data}, {"Org-Level", "Seen-Account"})
+
     def test_does_not_leak_another_customers_opportunities(self):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
         Opportunity.objects.create(customer=other_customer, **self._opportunity_kwargs())
@@ -3092,6 +3148,18 @@ class CustomerRiskListTests(APITestCase):
         account_row = next(row for row in response.data if row["title"] == "Account-Level Risk")
         self.assertEqual(account_row["account_name"], "North America")
 
+    def test_hides_risks_on_accounts_the_viewer_cannot_see(self):
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        Risk.objects.create(customer=self.customer, **self._risk_kwargs(title="Org-Level"))
+        Risk.objects.create(account=seen, **self._risk_kwargs(title="Seen-Account"))
+        Risk.objects.create(account=hidden, **self._risk_kwargs(title="Hidden-Account"))
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual({row["title"] for row in response.data}, {"Org-Level", "Seen-Account"})
+
     def test_does_not_leak_another_customers_risks(self):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
         Risk.objects.create(customer=other_customer, **self._risk_kwargs())
@@ -3472,6 +3540,19 @@ class CustomerSurveyListTests(APITestCase):
 
         types = {row["survey_type"] for row in response.data}
         self.assertEqual(types, {"nps", "csat"})
+
+    def test_hides_surveys_on_accounts_the_viewer_cannot_see(self):
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        org_level, on_seen, _on_hidden = (
+            Survey.objects.create(survey_type=Survey.SurveyType.NPS, sent_at="2026-09-01", **parent)
+            for parent in ({"customer": self.customer}, {"account": seen}, {"account": hidden})
+        )
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual({row["id"] for row in response.data}, {org_level.id, on_seen.id})
 
     def test_nonexistent_customer_id_is_404(self):
         self.client.force_authenticate(self.admin)
@@ -3873,6 +3954,18 @@ class CustomerCanvasListTests(APITestCase):
 
         names = {row["name"] for row in response.data}
         self.assertEqual(names, {"Org Canvas", "Account Canvas"})
+
+    def test_hides_canvases_on_accounts_the_viewer_cannot_see(self):
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        Canvas.objects.create(customer=self.customer, name="Org-Level")
+        Canvas.objects.create(account=seen, name="Seen-Account")
+        Canvas.objects.create(account=hidden, name="Hidden-Account")
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual({row["name"] for row in response.data}, {"Org-Level", "Seen-Account"})
 
     def test_nonexistent_customer_id_is_404(self):
         self.client.force_authenticate(self.admin)

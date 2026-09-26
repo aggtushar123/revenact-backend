@@ -45,6 +45,7 @@ from .models import (
     with_pulse_inputs,
 )
 from .scoping import (
+    customer_rollup_q,
     get_visible_account,
     get_visible_customer,
     live_customers,
@@ -1427,7 +1428,7 @@ class CustomerContactListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Contact.objects.filter(Q(customer=customer) | Q(account__customers=customer))
+        return Contact.objects.filter(customer_rollup_q(self.request.user, customer))
 
     def perform_create(self, serializer):
         serializer.save(customer=self.get_customer())
@@ -1670,7 +1671,7 @@ class CustomerOpportunityListView(generics.ListCreateAPIView):
     def get_queryset(self):
         customer = self.get_customer()
         return Opportunity.objects.filter(pipeline_visible_q(self.request.user)).filter(
-            Q(customer=customer) | Q(account__customers=customer)
+            customer_rollup_q(self.request.user, customer)
         )
 
     def perform_create(self, serializer):
@@ -1794,7 +1795,7 @@ class CustomerRiskListView(generics.ListCreateAPIView):
     def get_queryset(self):
         customer = self.get_customer()
         return Risk.objects.filter(pipeline_visible_q(self.request.user)).filter(
-            Q(customer=customer) | Q(account__customers=customer)
+            customer_rollup_q(self.request.user, customer)
         )
 
     def perform_create(self, serializer):
@@ -1920,7 +1921,8 @@ class CustomerSurveyListView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/surveys/ — same shape as
     CustomerOpportunityListView: GET rolls up every Survey under this
     Customer, both organisation-level (directly on it) and
-    account-level (on any of its Accounts); POST always adds an
+    account-level (on any of its Accounts the caller may open — see
+    customer_rollup_q); POST always adds an
     organisation-level one, `customer` taken from the URL. An
     account-level Survey is added via AccountSurveyListView below
     instead. Powers the Activity Feed's own "Surveys" filter. Scoped to
@@ -1935,7 +1937,7 @@ class CustomerSurveyListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Survey.objects.filter(Q(customer=customer) | Q(account__customers=customer))
+        return Survey.objects.filter(customer_rollup_q(self.request.user, customer))
 
     def perform_create(self, serializer):
         serializer.save(customer=self.get_customer())
@@ -2066,7 +2068,7 @@ class CustomerCanvasListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Canvas.objects.filter(Q(customer=customer) | Q(account__customers=customer))
+        return Canvas.objects.filter(customer_rollup_q(self.request.user, customer))
 
     def perform_create(self, serializer):
         serializer.save(customer=self.get_customer())
