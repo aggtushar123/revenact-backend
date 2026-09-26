@@ -7,7 +7,7 @@ from services.customers.models import HealthSnapshot
 from services.organizations.story.health import describe_change, health_entries
 from services.organizations.story.sources import horizon_for
 
-from .story_fixtures import StoryFixture
+from .story_fixtures import StoryFixture, session_time_zone
 
 
 def reading(score, ai=None, csm=None):
@@ -111,4 +111,17 @@ class HealthEntriesTests(StoryFixture):
 
         horizon = horizon_for(self.today)
         entries = health_entries(self.scope(), horizon=horizon)
+        self.assertEqual([item["id"] for _key, item in entries], [changed.pk])
+
+    def test_the_horizon_is_midnight_utc_whatever_the_session_time_zone(self):
+        """East of UTC, tomorrow's midnight read in the session's zone falls
+        before tomorrow's midnight UTC, and a reading dated tomorrow would slip
+        under the horizon."""
+        self.snapshot(self.pizza, self.days_ago(60), "8.0")
+        changed = self.snapshot(self.pizza, self.days_ago(30), "3.5")
+        self.snapshot(self.pizza, self.today + timedelta(days=1), "9.0")
+
+        horizon = horizon_for(self.today)
+        with session_time_zone("Asia/Kolkata"):
+            entries = health_entries(self.scope(), horizon=horizon)
         self.assertEqual([item["id"] for _key, item in entries], [changed.pk])

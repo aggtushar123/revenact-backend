@@ -5,9 +5,10 @@ across every source. The cursor names the last item served; the next page is
 every item that sorts strictly after it. The cut is by value, not by a row
 count, so rows added or removed elsewhere never cause a skip or a repeat.
 
-The cursor also carries a hash of the filters it was cut under, the
-portfolio's rule (`shape.filter_fingerprint`): changing any filter while
-keeping the cursor reads the new list from its first page. A malformed or
+The cursor also carries a hash of the organisation and the filters it was
+cut under, the portfolio's rule (`shape.filter_fingerprint`): changing any
+filter, or the organisation, while keeping the cursor reads the new list from
+its first page. A malformed or
 tampered cursor reads as absent, the first page too.
 """
 
@@ -30,10 +31,18 @@ class Cut:
     id: int
 
 
-def fingerprint(params) -> str:
+def fingerprint(params, customer_id: int) -> str:
     """Everything that decides which items a list holds, but not `cursor`
-    or `limit`. `sources` is already sorted and de-duplicated."""
-    state = [params.group, list(params.sources), params.account, params.q, params.thread]
+    or `limit`: the organisation and the filters. `sources` is already
+    sorted and de-duplicated."""
+    state = [
+        customer_id,
+        params.group,
+        list(params.sources),
+        params.account,
+        params.q,
+        params.thread,
+    ]
     return hashlib.sha256(json.dumps(state, separators=(",", ":")).encode()).hexdigest()[:16]
 
 

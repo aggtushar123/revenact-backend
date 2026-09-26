@@ -1,6 +1,8 @@
+from contextlib import contextmanager
 from datetime import time, timedelta
 from decimal import Decimal
 
+from django.db import connection
 from django.utils import timezone
 
 from services.accounts.models import User
@@ -22,6 +24,20 @@ from services.organizations.story.scope import resolve_scope
 from services.organizations.story.sources import SOURCES, horizon_for
 
 from .fixtures import PortfolioFixture
+
+
+@contextmanager
+def session_time_zone(name):
+    """Run with the Postgres session in another time zone. Django sets it to
+    UTC on connect; a pooler or a `DATABASES` `TIME_ZONE` could leave it
+    elsewhere, and the story's day-to-timestamp reads must not care."""
+    with connection.cursor() as cursor:
+        cursor.execute("SET TIME ZONE %s", [name])
+    try:
+        yield
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TIME ZONE 'UTC'")
 
 
 class StoryFixture(PortfolioFixture):

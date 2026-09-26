@@ -8,7 +8,7 @@ from services.organizations.story.params import NO_ACCOUNT
 from services.organizations.story.scope import resolve_scope
 from services.organizations.story.sources import SOURCES
 
-from .story_fixtures import StoryFixture
+from .story_fixtures import StoryFixture, session_time_zone
 
 RECORD_KINDS = tuple(SOURCES)
 
@@ -157,6 +157,24 @@ class OccurredAtTests(StoryFixture):
             score=40,
         )
         self.assertEqual(self.base("survey").get(pk=answered.pk)._at, midnight)
+
+    def test_a_date_is_midnight_utc_whatever_the_session_time_zone(self):
+        """Compared in the database, where the horizon and the cursor cut
+        are applied: a date read as midnight in the session's zone would
+        miss midnight UTC, and one dated tomorrow would slip under the
+        horizon east of UTC."""
+        day = self.days_ago(3)
+        midnight = datetime.combine(day, time.min, tzinfo=UTC)
+        activity = self.activity(self.pizza, day=day)
+        answered = self.survey(
+            self.pizza, day=day, status=Survey.Status.RESPONDED, responded_at=day, score=40
+        )
+        tomorrow = self.activity(self.pizza, day=self.today + timedelta(days=1))
+        for name in ("Asia/Kolkata", "America/Los_Angeles"):
+            with self.subTest(name), session_time_zone(name):
+                self.assertEqual(ids(self.base("activity").filter(_at=midnight)), {activity.pk})
+                self.assertEqual(ids(self.base("survey").filter(_at=midnight)), {answered.pk})
+                self.assertNotIn(tomorrow.pk, ids(self.base("activity")))
 
     def test_a_task_reads_as_when_it_was_created_not_when_it_is_due(self):
         task = self.task(self.pizza, due=self.today + timedelta(days=30))

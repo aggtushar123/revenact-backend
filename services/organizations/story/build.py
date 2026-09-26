@@ -41,7 +41,7 @@ def matches_account(account_id, account) -> bool:
 
 
 def build_page(bases, health, params, scope):
-    fp = fingerprint(params)
+    fp = fingerprint(params, scope.customer.pk)
     cut = decode_cursor(params.cursor, fp)
     candidates = []
     for kind in params.page_kinds:

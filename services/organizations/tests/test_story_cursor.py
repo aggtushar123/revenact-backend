@@ -22,18 +22,18 @@ def raw_token(data):
 
 class CursorTests(SimpleTestCase):
     def test_a_cursor_round_trips(self):
-        fp = fingerprint(StoryParams())
+        fp = fingerprint(StoryParams(), 1)
         token = encode_cursor(Cut(AT, "email", 7), fp)
         self.assertNotIn("=", token)
         self.assertEqual(decode_cursor(token, fp), Cut(AT, "email", 7))
 
     def test_a_cursor_is_bound_to_the_filters_it_was_cut_under(self):
-        token = encode_cursor(Cut(AT, "email", 7), fingerprint(StoryParams(group="tickets")))
-        self.assertIsNone(decode_cursor(token, fingerprint(StoryParams())))
+        token = encode_cursor(Cut(AT, "email", 7), fingerprint(StoryParams(group="tickets"), 1))
+        self.assertIsNone(decode_cursor(token, fingerprint(StoryParams(), 1)))
 
     def test_the_fingerprint_ignores_only_cursor_and_limit(self):
-        base = fingerprint(StoryParams())
-        self.assertEqual(fingerprint(StoryParams(cursor="x", limit=5)), base)
+        base = fingerprint(StoryParams(), 1)
+        self.assertEqual(fingerprint(StoryParams(cursor="x", limit=5), 1), base)
         for changed in (
             StoryParams(group="tasks"),
             StoryParams(sources=("email",)),
@@ -42,16 +42,19 @@ class CursorTests(SimpleTestCase):
             StoryParams(q="sso"),
             StoryParams(thread="t-1"),
         ):
-            self.assertNotEqual(fingerprint(changed), base, changed)
+            self.assertNotEqual(fingerprint(changed, 1), base, changed)
+
+    def test_the_fingerprint_is_bound_to_the_organisation(self):
+        self.assertNotEqual(fingerprint(StoryParams(), 1), fingerprint(StoryParams(), 2))
 
     def test_garbage_is_the_first_page(self):
-        fp = fingerprint(StoryParams())
+        fp = fingerprint(StoryParams(), 1)
         truncated = encode_cursor(Cut(AT, "email", 7), fp)[:-3]
         for token in ("", "%%%", "bm90IGpzb24", truncated):
             self.assertIsNone(decode_cursor(token, fp), token)
 
     def test_a_well_formed_cursor_with_bad_fields_is_the_first_page(self):
-        fp = fingerprint(StoryParams())
+        fp = fingerprint(StoryParams(), 1)
         good = {"at": AT.isoformat(), "k": "email", "id": 7, "f": fp}
         self.assertEqual(decode_cursor(raw_token(good), fp), Cut(AT, "email", 7))
         for bad in (

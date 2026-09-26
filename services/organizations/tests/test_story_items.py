@@ -144,5 +144,7 @@ class RenderTests(StoryFixture):
             self.pizza, status=Survey.Status.RESPONDED, score=40, responded_at=self.today
         )
         self.assertEqual(self.item("survey", answered)["summary"], "Responded · score 40")
+        unscored = self.survey(self.pizza, status=Survey.Status.RESPONDED, responded_at=self.today)
+        self.assertEqual(self.item("survey", unscored)["summary"], "Responded")
         expired = self.survey(self.pizza, status=Survey.Status.EXPIRED)
         self.assertEqual(self.item("survey", expired)["summary"], "Expired without a response")

@@ -2590,6 +2590,8 @@ otherwise `404` (archived and churned organisations open). Unknown parameter val
   stored), and `Customer.pulse`'s undated dots.
 - **Horizon.** A record dated after today is not story yet: every source excludes rows at or past tomorrow
   midnight UTC (an upcoming meeting, a future-dated ticket), and the health snapshots read under the same horizon.
+  A date is compared as that day's midnight UTC in SQL (`::timestamp AT TIME ZONE 'UTC'`), whatever the database
+  session's time zone.
 - **Scope.** A record is in the story when it is filed on this organisation (`account: null`) or on one of its
   accounts the viewer may open (`visible_accounts`, the per-account endpoints' rule; a shared account's records
   appear on each of its organisations). Records on any other organisation or account never appear.
@@ -2607,7 +2609,8 @@ otherwise `404` (archived and churned organisations open). Unknown parameter val
   or a call's recording, only when it is `http(s)`.
 - **Order and pages.** Newest first by `(occurred_at, kind, id)`, all descending. `next_cursor` is `null` on the
   last page. It names the last item served, so rows added or removed elsewhere never cause a skip or a repeat. A
-  cursor from other `group`/`source`/`account`/`q`/`thread` values, or a malformed one, reads the first page.
+  cursor from another organisation, from other `group`/`source`/`account`/`q`/`thread` values, or a malformed one,
+  reads the first page.
 - **Counts** cover the whole filtered set, not the page. `by_kind` and `by_group` follow `account` and `q` but not
   `group`/`source`; `by_account` follows `group`, `source` and `q` but not `account`, and lists `all`, `none` (the
   organisation's own records) and exactly the accounts in scope. None of the three follow `thread`.

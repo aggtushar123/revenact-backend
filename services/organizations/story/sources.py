@@ -17,8 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
-from django.db.models import DateTimeField, F, Q
-from django.db.models.functions import Cast, Coalesce
+from django.db.models import DateTimeField, F, Func, Q
+from django.db.models.functions import Coalesce
 
 from services.customers.models import (
     Activity,
@@ -39,9 +39,24 @@ def _open_to_the_organisation(user, queryset):
     return queryset
 
 
+class UTCMidnight(Func):
+    """A date as the story's timestamp: that day's midnight in UTC.
+
+    Spelled out in SQL rather than `Cast(date, DateTimeField())`: Postgres
+    casts a date to `timestamptz` at midnight in the *session's* time zone.
+    Django sets that to UTC on connect, but a pooler or a `DATABASES`
+    `TIME_ZONE` could leave it elsewhere, and then the horizon and the cursor
+    cut would move by the offset. `date::timestamp AT TIME ZONE 'UTC'` does not
+    read the session's zone at all, so every comparison made in SQL holds.
+    (Reading a `timestamptz` back into Python still relies on Django's own
+    invariant that the session is UTC, for every model in the project.)"""
+
+    template = "((%(expressions)s)::timestamp AT TIME ZONE 'UTC')"
+    output_field = DateTimeField()
+
+
 def _day(expression):
-    """A date as the story's timestamp: midnight UTC, the project TIME_ZONE."""
-    return Cast(expression, DateTimeField())
+    return UTCMidnight(expression)
 
 
 def _labels(choices, q):

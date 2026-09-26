@@ -73,6 +73,18 @@ class StoryOrderTests(StoryFixture):
         moved = self.story(limit="1", group="tasks", cursor=first["next_cursor"])
         self.assertEqual(self.keys(moved), self.keys(first))
 
+    def test_a_cursor_from_another_organisation_reads_the_first_page(self):
+        taco = self.customer("Taco Co")
+        for _ in range(3):
+            self.note(self.pizza)
+        for _ in range(3):
+            self.note(taco)
+        cursor = self.story(limit="1")["next_cursor"]
+        self.assertIsNotNone(cursor)
+        first = self.story(customer=taco, limit="1")
+        moved = self.story(customer=taco, limit="1", cursor=cursor)
+        self.assertEqual(self.keys(moved), self.keys(first))
+
 
 class StoryHorizonTests(StoryFixture):
     def test_tomorrow_s_health_change_and_ticket_are_absent(self):

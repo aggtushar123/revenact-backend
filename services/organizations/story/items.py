@@ -117,7 +117,7 @@ def _note(row):
 
 def _survey(row):
     if row.status == Survey.Status.RESPONDED:
-        summary = f"Responded · score {row.score}"
+        summary = "Responded" if row.score is None else f"Responded · score {row.score}"
     elif row.status == Survey.Status.EXPIRED:
         summary = "Expired without a response"
     else:
