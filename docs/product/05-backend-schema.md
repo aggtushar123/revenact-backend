@@ -348,6 +348,11 @@ No model. `services.organizations.book.load_portfolio` reads `Customer` (with `w
 `shape.py` orders, groups and totals it in Python — the same reuse-the-existing-rule shape as the
 dashboard rollups. Bulk edits write `Customer` through `CustomerSerializer`.
 
+The organisation page's Story (`services.organizations.story`) has no model either. It reads `Activity`, `Call`,
+`Email`, `CalendarEvent`, `Ticket`, `Task`, `Note`, `Survey` and `HealthSnapshot` for one organisation and its
+visible accounts, each under its own record rule, plus `Question` and `AnomalyEvidence` for the Needs attention
+block.
+
 ---
 
 ### `metrics` (brief delivery)

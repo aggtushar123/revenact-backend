@@ -145,6 +145,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 |---|---|---|
 | Organisations (customers): list, board, detail, create, edit, churn, archive | Built | 34 selectable table columns, health and CSAT popovers show real breakdowns |
 | Organizations portfolio (list redesign) | Built (backend) | One endpoint for the page: rows with health trend, renewal runway, pulse, last touch and one signal computed by the dashboard's own code; the six detail panels; group, sort, filters and cursor pages; summary tiles over the filtered set; CSV export of all 34 fields; bulk owner, stage and archive under the single-edit rules |
+| Organisation page Story (detail redesign) | Built (backend) | One endpoint for the Story tab: every record on the organisation and its accounts (activities, CallSense calls, emails, meetings, tickets, tasks, notes, surveys, health and pulse changes), newest first under one cursor; group, source, account, search and thread filters; counts per group, kind and account; Needs attention (renewal, urgent tickets, overdue tasks, open questions, latest anomaly). Every record read under its own rule |
 | Accounts: list, board, detail, create, edit | Built | Many-to-many with customers. No churn or archive by design |
 | Contacts: list, detail, CRUD, computed sentiment | Built | Sentiment read from that contact's own calls, tickets and emails |
 | Activity feed: activities, emails, tasks, notes, tickets, calendar events, surveys, sessions, headlines, files, CallSense | Built | Tasks and notes can be created in place; emails can be composed |
@@ -311,3 +312,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-24 | Dashboard attention list; Ask Revenact on the Dashboard (backend) |
 | 2026-09-25 | Organizations portfolio (backend): portfolio endpoint, export, bulk edit |
 | 2026-09-26 | Ask Revenact on Organizations (backend) |
+| 2026-09-26 | Organisation page Story (backend): `GET /organizations/<id>/story/` |

@@ -58,7 +58,7 @@ expects.
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
-| Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`) |
+| Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`); the organisation page's Story is `GET /organizations/<id>/story/` |
 | Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
@@ -2522,6 +2522,99 @@ An id the caller cannot see reads `"Not found."`, like one that does not exist. 
 it in `failed` with the reason `"Could not be updated."` and the batch continues with the rest. Audited as
 `organizations.bulk_updated`, written in a `finally` so a batch that raised still records what was saved;
 outcome `failure` when nothing was updated or the batch did not finish.
+
+### `GET /api/v1/organizations/<id>/story/`
+
+The organisation page's Story tab (spec: react-ts-app `docs/superpowers/specs/2026-09-26-organization-detail-design.md`
+§2): every record on the organisation and on its accounts, newest first under one cursor across all sources, with
+counts and the Needs attention block. No model: `services/organizations/story/` reads the existing records. The
+per-type `/customers/<id>/…` endpoints are unchanged and still handle create and edit.
+
+Auth: `IsAuthenticated` — `401` unauthenticated. GET only. The organisation must be in `visible_customers(user)`,
+otherwise `404` (archived and churned organisations open). Unknown parameter values are ignored, never a 400.
+
+| Param | Meaning |
+|---|---|
+| `group` | `conversations` (activity, call, email, calendar_event), `tickets` (ticket), `tasks` (task, note), `feedback` (survey), `health` (health) |
+| `source` | comma list of exact kinds: `activity`, `calendar_event`, `call`, `email`, `health`, `note`, `survey`, `task`, `ticket`; intersected with `group` |
+| `account` | an account id: that account's records only (an account not linked to this organisation, or one the viewer can't open, reads nothing); or `none`: the organisation's own records |
+| `q` | case-insensitive contains, first 200 characters, over: activity type; call title, summary, host; email subject, body, sender, recipient; meeting title, description; ticket title, number, description, requester; task title, assignee; note title, body, author; survey type. `health` items are never matched |
+| `thread` | an email `thread_id`: the emails of that thread only (opening an email shows its thread). Narrows `items` only — `counts` ignore it, so under `?thread=` the counts stay the organisation's totals |
+| `cursor` | opaque, from `next_cursor` |
+| `limit` | default 30, max 100 |
+
+```json
+{
+  "items": [{
+    "id": 41, "kind": "call", "source": "zoom",
+    "occurred_at": "2026-09-25T14:05:00+00:00", "all_day": false,
+    "account": {"id": 9, "name": "EMEA"},
+    "title": "Quarterly review", "summary": "They want SSO before the renewal.",
+    "actor": {"id": null, "name": "Carl CSM"},
+    "link": {"thread_id": null, "url": "https://zoom.us/rec/1"}
+  }, {
+    "id": 17, "kind": "note", "source": "revenact",
+    "occurred_at": "2026-09-24T00:00:00+00:00", "all_day": true,
+    "account": null,
+    "title": "Champion left", "summary": "Sam moved on to Globex.",
+    "actor": {"id": 2, "name": "Carl CSM"},
+    "link": {"thread_id": null, "url": null}
+  }],
+  "next_cursor": "eyJhdCI6IjIwMjYtMDktMjRUMDA6MDA6MDArMDA6MDAiLCJrIjoibm90ZSIsImlkIjoxNywiZiI6IjEyMzQ1Njc4OWFiY2RlZjAifQ",
+  "counts": {
+    "by_group": {"all": 12, "conversations": 6, "tickets": 2, "tasks": 3, "feedback": 1, "health": 0},
+    "by_kind": {"activity": 1, "calendar_event": 1, "call": 2, "email": 2, "health": 0, "note": 2,
+                "survey": 1, "task": 1, "ticket": 2},
+    "by_account": {"all": 12, "none": 5, "9": 7}
+  },
+  "attention": {
+    "renewal": {"date": "2026-10-08", "days": 12, "overdue": false},
+    "tickets": {"count": 2, "oldest_days": 9},
+    "overdue_tasks": {"count": 1, "oldest_days": 3},
+    "questions": {"count": 1},
+    "anomaly": {"id": 5, "title": "Similar reports across 1 of your companies",
+                "first_seen_at": "2026-09-20T08:00:00+00:00", "last_seen_at": "2026-09-25T10:00:00+00:00"}
+  }
+}
+```
+
+- **Kinds.** Only kinds with real data exist: `activity` (logged activities), `call` (CallSense: `summary` is the
+  call's own summary), `email`, `calendar_event` (meetings up to today; upcoming ones stay on
+  `/customers/<id>/calendar-events/`), `ticket`, `task` (from when it was created), `note`, `survey`, and `health`:
+  a month-end `HealthSnapshot` whose health category, AI pulse or CSM pulse differs from the same parent's previous
+  one. Not sources: Slack, in-app conversations and Revenact Support (added when real), lifecycle changes (not
+  stored), and `Customer.pulse`'s undated dots.
+- **Horizon.** A record dated after today is not story yet: every source excludes rows at or past tomorrow
+  midnight UTC (an upcoming meeting, a future-dated ticket), and the health snapshots read under the same horizon.
+- **Scope.** A record is in the story when it is filed on this organisation (`account: null`) or on one of its
+  accounts the viewer may open (`visible_accounts`, the per-account endpoints' rule; a shared account's records
+  appear on each of its organisations). Records on any other organisation or account never appear.
+- **Privacy (twice filtered).** After the organisation, each record is read under its own rule: mail by its
+  mailbox owner and their chain (`visible_emails`), notes by author and chain (`visible_notes`), tasks by creator,
+  assignee and the chains above them (`visible_tasks`), tickets by department (`visible_tickets`); activities,
+  calls, meetings, surveys and health readings by the organisation's rule alone, as on their endpoints. Items,
+  counts, attention and search all read the same filtered rows.
+- **Items.** `occurred_at` is ISO 8601 UTC. `all_day: true` marks a record that stores only a date (activity,
+  meeting, ticket, note, survey, health): read the date part, it is not a moment. `source` is where the record came
+  from: the connector's provider (`zendesk`, `jira`, `zoom`, …), the mailbox's provider (`google`, `microsoft`,
+  `imap`), or `revenact`. `summary` is one line, at most 240 characters. `actor.id` is a user id when the record
+  links a user, else `null` with the name the record stores; `actor` is `null` for activities, meetings, surveys and
+  health. `link.thread_id` is an email's thread (pass it as `thread`); `link.url` is a ticket's source-system URL
+  or a call's recording, only when it is `http(s)`.
+- **Order and pages.** Newest first by `(occurred_at, kind, id)`, all descending. `next_cursor` is `null` on the
+  last page. It names the last item served, so rows added or removed elsewhere never cause a skip or a repeat. A
+  cursor from other `group`/`source`/`account`/`q`/`thread` values, or a malformed one, reads the first page.
+- **Counts** cover the whole filtered set, not the page. `by_kind` and `by_group` follow `account` and `q` but not
+  `group`/`source`; `by_account` follows `group`, `source` and `q` but not `account`, and lists `all`, `none` (the
+  organisation's own records) and exactly the accounts in scope. None of the three follow `thread`.
+- **Attention** follows `account` (tickets, tasks, anomaly) and nothing else. `renewal`: renewal date overdue or
+  within 30 days, `null` for a churned organisation. `tickets`: open High/Critical. `overdue_tasks`: not completed,
+  due before today. `questions`: open Knowledge questions on this organisation the viewer may read
+  (`visible_questions`). `anomaly`: the latest live anomaly with evidence the viewer may read on this organisation
+  or its accounts; its title is the stored one only for a viewer who sees every account, otherwise "Similar reports
+  across 1 of your companies". Its summary is never returned. Each entry is `null` when nothing needs attention.
+- 33 constant queries per request, whatever the organisation's size — 31 in `build_story` plus 2 the view itself
+  adds loading the fresh request's user (organisation, role) (pinned by `StoryQueryCountTests`).
 
 ### Ask Revenact on Organizations
 
