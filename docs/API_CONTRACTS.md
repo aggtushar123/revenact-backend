@@ -4965,7 +4965,9 @@ call (purpose `feature_request`).
 
 **Reading** is open to any member, but the revenue, the counts and the
 evidence are computed **over the companies that member may open**
-(`visible_customers`): two people legitimately see different ARR on the
+(evidence on an organisation through `visible_customers`, evidence on an
+account through `visible_accounts` — an account under an organisation they
+may open can still be closed to them): two people legitimately see different ARR on the
 same request. **Gathering and curating** (`PATCH`, merge, evidence move
 and dismiss) need `view_all_accounts`, since gather spends credits and
 curation is an organisation-wide judgement. An account's ask counts the

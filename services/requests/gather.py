@@ -27,7 +27,7 @@ from services.copilot.embeddings import embed
 from services.customers.classification import _text_for
 from services.customers.models import Account, Call, Email, Ticket
 from services.customers.personal import readable_evidence_q
-from services.customers.scoping import visible_customers
+from services.customers.scoping import visible_accounts, visible_customers
 from services.customers.taxonomy import AICategory
 
 from .models import FeatureRequest, RequestEvidence
@@ -331,12 +331,13 @@ def readable_q(viewer) -> Q:
 
 
 def visible_evidence(organisation, viewer, *, request=None):
-    """Every evidence row this person may read, as a queryset: on a company
-    they may open, and a record they may read."""
+    """Every evidence row this person may read, as a queryset: on an
+    organisation or account they may open, and a record they may read. An
+    account is its own rule: one under an organisation they may open can
+    still be closed to them."""
     customer_ids = set(visible_customers(viewer).values_list("id", flat=True))
-    account_ids = set(
-        Account.objects.filter(customers__id__in=customer_ids).values_list("id", flat=True)
-    )
+    # SOC2:AUTH-02 accounts by their own rule, not by their organisation's
+    account_ids = set(visible_accounts(viewer).values_list("id", flat=True))
     rows = RequestEvidence.objects.filter(organisation=organisation, dismissed=False)
     if request is not None:
         rows = rows.filter(request=request)
