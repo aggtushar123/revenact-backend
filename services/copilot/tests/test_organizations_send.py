@@ -122,6 +122,23 @@ class OrganizationsSendTests(OrganizationsAskFixture):
         )
         self.assertEqual(completion.call_args.kwargs["purpose"], "dashboard")
 
+    def test_a_dashboard_first_origin_survives_a_later_organizations_send(self, completion):
+        dashboard = {
+            "surface": "dashboard",
+            "area": "overview",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": ""},
+            "focus": None,
+        }
+        first = self.send(dashboard).data
+
+        second = self.send(self.context(health="poor"), conversation_id=first["id"]).data
+
+        self.assertEqual(second["origin"], first["origin"])
+        self.assertEqual(second["origin"]["surface"], "dashboard")
+        self.assertEqual(Conversation.objects.get().origin["surface"], "dashboard")
+        self.assertEqual(completion.call_args.kwargs["purpose"], "organizations")
+
     def test_the_reply_records_the_turn_it_answers(self, completion):
         self.send(self.context())
 

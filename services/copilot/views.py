@@ -272,15 +272,17 @@ def _reply_readable_by(turn, user, user_turn=None):
     scope, a customer's record on a customer they may open — and withheld
     otherwise, so a reply cannot quote what its reader may not read.
 
-    A dashboard reply (`user_turn.context` set) also carries aggregates and
-    company names drawn from the *asker's* filtered book — totals, top
-    lists, facts on companies never individually cited — not just the
-    records `turn.sources` names. A partial-visibility viewer therefore
-    needs the asker's whole filtered book to be inside their own visible
-    customers, not merely the cited records; the asker always reads their
-    own dashboard reply regardless. A context-less (Communications) reply
-    keeps exactly the per-source checks below for every viewer, the asker
-    included — there is no whole-book aggregate to guard there.
+    An Ask reply (`user_turn.context` set — the Dashboard or Organizations)
+    also carries aggregates and company names drawn from the *asker's*
+    filtered book — totals, top lists, facts on companies never individually
+    cited — not just the records `turn.sources` names. A partial-visibility
+    viewer therefore needs the asker's whole filtered book, rebuilt by the
+    surface's own filter rules (`ask.asker_book`; an Organizations list is
+    widened by dropping `renews_within`), to be inside their own visible
+    customers, not merely the cited records; the asker always reads their own
+    reply regardless. A context-less (Communications) reply keeps exactly the
+    per-source checks below for every viewer, the asker included — there is
+    no whole-book aggregate to guard there.
 
     `user_turn` is the real user turn this reply answers (`turn.reply_to`
     when set; the immediately preceding user turn only for a legacy row
@@ -290,15 +292,18 @@ def _reply_readable_by(turn, user, user_turn=None):
     no book check, no asker short-circuit, only the per-source checks
     below — fails closed, and is exactly the pre-dashboard behaviour.
 
-    Two more dashboard-only guards live here, both fail-closed:
-    a null `user_turn.author` (the asker's account was deleted) has no
-    book to check at all, so nobody but the owner — who never reaches this
+    Three more Ask-reply guards live here, all fail-closed: a surface this
+    code has no book rule for (unknown or missing) is unreadable; a null
+    `user_turn.author` (the asker's account was deleted) has no book to
+    check at all, so nobody but the owner — who never reaches this
     function, see `sees_whole_conversation` — may read it; and the stored,
     model-written anomaly title/summary (services.attention.rules) is
     org-wide and can name a company outside this viewer's book even when
     the asker's *filtered* book above is a subset of what they see, so a
     reader who doesn't see everything never reads a reply that could carry
-    one from an asker who does."""
+    one from an asker who does. An Organizations turn has no area and only a
+    companies focus, so it never trips this gate: its digest carries no
+    stored anomaly text."""
     from services.customers.scoping import sees_everything, visible_customers
     from services.knowledge.models import Contribution
     from services.knowledge.views import visible_contributions
@@ -308,11 +313,12 @@ def _reply_readable_by(turn, user, user_turn=None):
             return False
         if user_turn.author_id == user.id:
             return True
-        from services.customers import forecast
+        from .ask import asker_book
 
-        filters = user_turn.context.get("filters") or {}
-        filtered = forecast.filtered_customers(user_turn.author, filters)
-        if filtered.exclude(pk__in=visible_customers(user)).exists():
+        # SOC2:AUTH-02 the reader must see the asker's whole filtered book,
+        # rebuilt by the surface's own filter rules; an unknown surface fails closed
+        filtered = asker_book(user_turn.author, user_turn.context)
+        if filtered is None or filtered.exclude(pk__in=visible_customers(user)).exists():
             return False
 
         focus = user_turn.context.get("focus") or {}
