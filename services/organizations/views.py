@@ -13,6 +13,9 @@ from .params import parse_params
 from .rows import row_payload
 from .serializers import BulkRequestSerializer
 from .shape import build_listing, select
+from .story.build import build_story
+from .story.params import parse_story_params
+from .story.scope import resolve_scope
 
 
 class PortfolioView(APIView):
@@ -99,3 +102,21 @@ class BulkUpdateView(APIView):
                 },
             )
         return Response(result)
+
+
+class OrganizationStoryView(APIView):
+    """GET /api/v1/organizations/<id>/story/ — the organisation page's Story:
+    every record on the organisation and on its accounts the viewer may open,
+    newest first across all sources under one keyset cursor, filtered by
+    group, source, account, search and email thread, with counts over the
+    whole filtered set and the Needs attention block. Twice filtered: the
+    organisation must be visible (404 otherwise, before anything is read),
+    then each record is read under its own rule. Unknown parameter values are
+    ignored. See docs/API_CONTRACTS.md."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        scope = resolve_scope(request.user, pk)
+        params = parse_story_params(request.query_params)
+        return Response(build_story(request.user, scope, params, today=timezone.localdate()))

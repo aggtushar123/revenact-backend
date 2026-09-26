@@ -10,4 +10,5 @@ urlpatterns = [
     ),
     path("portfolio/", views.PortfolioView.as_view(), name="organizations-portfolio"),
     path("bulk/", views.BulkUpdateView.as_view(), name="organizations-bulk"),
+    path("<int:pk>/story/", views.OrganizationStoryView.as_view(), name="organizations-story"),
 ]
