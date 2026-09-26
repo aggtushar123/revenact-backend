@@ -204,11 +204,15 @@ def reads_first_turn(conversation, user, turns=None):
     turn's, so both follow this."""
     if sees_whole_conversation(conversation, user):
         return True
+    if turns is None:
+        turns = visible_messages(conversation, user)
+    return _holds_first_turn(conversation, turns)
+
+
+def _holds_first_turn(conversation, turns):
     first_id = (
         conversation.messages.order_by("created_at", "id").values_list("id", flat=True).first()
     )
-    if turns is None:
-        turns = visible_messages(conversation, user)
     return first_id is not None and any(t.id == first_id for t in turns)
 
 
@@ -223,7 +227,7 @@ def header_for(conversation, user, turns=None):
         return conversation.title, conversation.origin
     if turns is None:
         turns = visible_messages(conversation, user)
-    if not reads_first_turn(conversation, user, turns):
+    if not _holds_first_turn(conversation, turns):
         return NEUTRAL_TITLE, None
     if conversation.origin is None:
         return conversation.title, None
@@ -393,8 +397,7 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
     from services.knowledge.views import visible_contributions
 
     asked_here = user_turn is not None and bool(user_turn.context)
-    # A context-less reply fed an earlier Ask reply (ask_snapshot set its flag).
-    fed_ask = user_turn is not None and not asked_here and turn.carries_anomaly_text is not None
+    fed_ask = user_turn is not None and not asked_here and _is_fed_followup(turn)
     if asked_here or fed_ask:
         if asked_here and not isinstance(user_turn.context, dict):
             return False
@@ -462,6 +465,15 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
             ).exists():
                 return False
     return True
+
+
+def _is_fed_followup(turn):
+    """On a reply whose own turn has no context, `carries_anomaly_text` has a
+    second meaning: set (True or False) means it was fed an Ask reply as
+    history (`ask_snapshot`, or the legacy backfill in migration 0015) and is
+    checked against its snapshot; null means a plain reply, checked per
+    source only. (On an Ask reply, null instead reads as "could carry one".)"""
+    return turn.carries_anomaly_text is not None
 
 
 def names_a_stored_anomaly(context):
