@@ -13,7 +13,7 @@ from services.accounts.permissions import CanViewAllAccounts
 from services.copilot.anthropic_client import BudgetExceeded, CopilotNotConfigured
 from services.customers.models import Account
 from services.customers.personal import readable_evidence_q
-from services.customers.scoping import sees_everything, visible_customers
+from services.customers.scoping import sees_everything, visible_accounts, visible_customers
 
 from .detect import DetectionStopped, detect
 from .models import Anomaly, AnomalyEvidence
@@ -24,12 +24,13 @@ def _org_anomalies(request):
 
 
 def visible_evidence(organisation, viewer, *, anomaly=None):
-    """Evidence this person may read: on a company they may open, and a
-    record they may read (the shared rule in services.customers.personal)."""
+    """Evidence this person may read: on an organisation or account they
+    may open, and a record they may read (the shared rule in
+    services.customers.personal). An account is its own rule: one under an
+    organisation they may open can still be closed to them."""
     customer_ids = set(visible_customers(viewer).values_list("id", flat=True))
-    account_ids = set(
-        Account.objects.filter(customers__id__in=customer_ids).values_list("id", flat=True)
-    )
+    # SOC2:AUTH-02 accounts by their own rule, not by their organisation's
+    account_ids = set(visible_accounts(viewer).values_list("id", flat=True))
     rows = AnomalyEvidence.objects.filter(organisation=organisation)
     if anomaly is not None:
         rows = rows.filter(anomaly=anomaly)
