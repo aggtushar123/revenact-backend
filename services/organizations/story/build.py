@@ -16,6 +16,7 @@ from collections import Counter
 
 from django.db.models import Count
 
+from .attention import build_attention
 from .cursor import Cut, after_q, decode_cursor, encode_cursor, fingerprint, is_after
 from .health import health_entries
 from .items import render
@@ -122,4 +123,5 @@ def build_story(user, scope, params, *, today):
         "items": items,
         "next_cursor": next_cursor,
         "counts": build_counts(tally(bases, health, params.q), params, scope),
+        "attention": build_attention(user, scope, bases, params.account, today=today),
     }

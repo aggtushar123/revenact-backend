@@ -314,6 +314,9 @@ class StoryQueryCountTests(StoryFixture):
         self.assertEqual(small, large)
         self.assertEqual(large, after)
         # The scope (3), the org chart for mail, notes and tasks (3), health (1),
-        # then one page query and one count per record source (8 + 8).
-        self.assertEqual(large, 23)
+        # one page query and one count per record source (8 + 8), then the
+        # attention block's own aggregates and rules (8): tickets, tasks,
+        # the questions rule's org chart plus its count, and the anomaly
+        # rule's org chart plus its evidence query.
+        self.assertEqual(large, 31)
         self.assertLessEqual(searched, large)
