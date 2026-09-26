@@ -125,7 +125,17 @@ class ParseStoryParamsTests(SimpleTestCase):
     def test_the_kinds_are_the_nine_with_real_data(self):
         self.assertEqual(
             KINDS,
-            ("activity", "calendar_event", "call", "email", "health", "note", "survey", "task", "ticket"),
+            (
+                "activity",
+                "calendar_event",
+                "call",
+                "email",
+                "health",
+                "note",
+                "survey",
+                "task",
+                "ticket",
+            ),
         )
         self.assertEqual(
             set(GROUP_KINDS), {"conversations", "tickets", "tasks", "feedback", "health"}
@@ -601,7 +611,9 @@ class StoryFixture(PortfolioFixture):
             **fields,
         )
 
-    def call(self, parent, *, at=None, title="Quarterly review", summary="They want SSO.", **fields):
+    def call(
+        self, parent, *, at=None, title="Quarterly review", summary="They want SSO.", **fields
+    ):
         return Call.objects.create(
             title=title,
             host_name="Carl CSM",
@@ -1286,7 +1298,9 @@ class RenderTests(StoryFixture):
 
     def test_a_survey_reads_its_state(self):
         sent = self.item("survey", self.survey(self.pizza))
-        self.assertEqual((sent["title"], sent["summary"]), ("NPS survey", "Sent · awaiting a response"))
+        self.assertEqual(
+            (sent["title"], sent["summary"]), ("NPS survey", "Sent · awaiting a response")
+        )
         answered = self.survey(
             self.pizza, status=Survey.Status.RESPONDED, score=40, responded_at=self.today
         )
@@ -1436,7 +1450,11 @@ def _task(row):
     return {
         "title": row.title,
         "summary": " · ".join(
-            [f"Due {row.due_date.isoformat()}", row.get_priority_display(), row.get_status_display()]
+            [
+                f"Due {row.due_date.isoformat()}",
+                row.get_priority_display(),
+                row.get_status_display(),
+            ]
         ),
         "actor": person(row.assignee, row.assignee_name),
     }
@@ -1737,23 +1755,25 @@ from services.organizations.story.params import parse_story_params
 Then append these methods to `StoryFixture`:
 
 ```python
-    def story(self, user=None, customer=None, **query):
-        user = user or self.csm
-        scope = self.scope(user, customer)
-        return build_story(user, scope, parse_story_params(query), today=self.today)
+def story(self, user=None, customer=None, **query):
+    user = user or self.csm
+    scope = self.scope(user, customer)
+    return build_story(user, scope, parse_story_params(query), today=self.today)
 
-    @staticmethod
-    def keys(body):
-        return [(item["kind"], item["id"]) for item in body["items"]]
 
-    def walk(self, user=None, **query):
-        seen, cursor = [], None
-        while True:
-            body = self.story(user, **query, **({"cursor": cursor} if cursor else {}))
-            seen += self.keys(body)
-            cursor = body["next_cursor"]
-            if cursor is None:
-                return seen
+@staticmethod
+def keys(body):
+    return [(item["kind"], item["id"]) for item in body["items"]]
+
+
+def walk(self, user=None, **query):
+    seen, cursor = [], None
+    while True:
+        body = self.story(user, **query, **({"cursor": cursor} if cursor else {}))
+        seen += self.keys(body)
+        cursor = body["next_cursor"]
+        if cursor is None:
+            return seen
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -2040,7 +2060,9 @@ def build_counts(counts, params, scope):
     )
     selected = params.selected_kinds
     by_account = {"all": total(selected, None), NO_ACCOUNT: total(selected, NO_ACCOUNT)}
-    by_account.update({str(account_id): total(selected, account_id) for account_id in scope.accounts})
+    by_account.update(
+        {str(account_id): total(selected, account_id) for account_id in scope.accounts}
+    )
     return {"by_group": by_group, "by_kind": by_kind, "by_account": by_account}
 
 
@@ -2185,7 +2207,10 @@ class AttentionTests(StoryFixture):
             day=self.days_ago(30),
         )
         self.ticket(
-            self.apac, priority=Ticket.Priority.HIGH, department="engineering", day=self.days_ago(40)
+            self.apac,
+            priority=Ticket.Priority.HIGH,
+            department="engineering",
+            day=self.days_ago(40),
         )
         self.assertEqual(self.attention()["tickets"], {"count": 2, "oldest_days": 9})
         self.assertEqual(self.attention(self.admin)["tickets"], {"count": 3, "oldest_days": 40})
@@ -2307,8 +2332,7 @@ RENEWAL_WINDOW_DAYS = 30
 
 def renewal(customer, today):
     churned = (
-        customer.churn_date is not None
-        or customer.lifecycle_stage == Customer.LifecycleStage.CHURN
+        customer.churn_date is not None or customer.lifecycle_stage == Customer.LifecycleStage.CHURN
     )
     if churned or customer.renewal_date is None:
         return None
@@ -2776,7 +2800,7 @@ class OrganizationStoryView(APIView):
 In `services/organizations/urls.py`, add this entry at the end of `urlpatterns`:
 
 ```python
-    path("<int:pk>/story/", views.OrganizationStoryView.as_view(), name="organizations-story"),
+(path("<int:pk>/story/", views.OrganizationStoryView.as_view(), name="organizations-story"),)
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -3030,7 +3054,9 @@ class OrganizationStoryFlowTests(LiveServerTestCase):
         )
         self.assertEqual(status, 201, body)
         pizza = body["id"]
-        status, body = http_post(self.api(f"/customers/{pizza}/accounts/"), {"name": "EMEA"}, token=carl)
+        status, body = http_post(
+            self.api(f"/customers/{pizza}/accounts/"), {"name": "EMEA"}, token=carl
+        )
         self.assertEqual(status, 201, body)
         emea = body["id"]
 
