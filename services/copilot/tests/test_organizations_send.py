@@ -43,6 +43,25 @@ class OrganizationsSendTests(OrganizationsAskFixture):
         self.assertNotIn("Dana's Co", kwargs["system"])
         self.assertNotIn("Real-data summary", kwargs["system"])
 
+    def test_the_filter_options_are_loaded_once_per_send(self, completion):
+        from services.organizations import book
+
+        with (
+            patch(
+                "services.copilot.organizations_context.filter_options",
+                wraps=book.filter_options,
+            ) as validating,
+            patch(
+                "services.copilot.organizations_grounding.filter_options",
+                wraps=book.filter_options,
+            ) as grounding,
+        ):
+            response = self.send(self.context(owner=str(self.csm.pk)))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(validating.call_count + grounding.call_count, 1)
+        self.assertIn("Filters: Owner: Carl CSM", completion.call_args.kwargs["system"])
+
     def test_the_context_is_stored_canonical_with_its_labels_and_becomes_the_origin(
         self, completion
     ):

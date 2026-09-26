@@ -228,8 +228,10 @@ def _renewal_lines(entries, organisation):
 
 
 def build_organizations_grounding(user, context, question, *, today=None):
-    """Only `view`, `filters` and `focus` are read from the context; the
-    labels are rebuilt here from the asker's own options."""
+    """`view`, `filters` and `focus` are read from the context, and the
+    `labels` the send's serializer built from the asker's own options
+    (`OrganizationsContextSerializer` — the client's are never kept), so the
+    options load once per send; a context with none has them built here."""
     today = today or timezone.localdate()
     organisation = user.organisation
     params = params_of(context["filters"], view=context["view"])
@@ -239,7 +241,10 @@ def build_organizations_grounding(user, context, question, *, today=None):
     figures = organizations_figures(user, params, today=today)
     currency = organisation.currency
 
-    lines = _header(context["view"], filter_labels(params, filter_options(user)), currency)
+    labels = context.get("labels")
+    if labels is None:
+        labels = filter_labels(params, filter_options(user))
+    lines = _header(context["view"], labels, currency)
     lines.extend(_summary_lines(figures["summary"], currency))
     lines.extend(_group_lines(params.group, figures["groups"], figures["entries"], organisation))
     lines.extend(_riskiest_lines(figures["riskiest"], organisation))
