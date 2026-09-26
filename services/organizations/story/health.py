@@ -35,6 +35,15 @@ def _pulse(value):
     return "—" if value is None else str(value)
 
 
+def _pulse_title(name, old, new):
+    """One pulse's move, worded like the category's: "AI pulse rose to 4"."""
+    if new is None:
+        return f"{name} cleared"
+    if old is None:
+        return f"{name} set to {new}"
+    return f"{name} {'rose' if new > old else 'fell'} to {new}"
+
+
 def describe_change(before, after):
     old, new = before.health_category, after.health_category
     ai_moved = before.ai_pulse_value != after.ai_pulse_value
@@ -46,9 +55,15 @@ def describe_change(before, after):
         title = f"Health fell to {label}"
     elif _RANK[new] > _RANK[old]:
         title = f"Health rose to {label}"
-    else:
+    elif ai_moved and csm_moved:
         title = "Pulse changed"
-    parts = [f"Health {_score(before.health_score)} → {_score(after.health_score)}"]
+    elif ai_moved:
+        title = _pulse_title("AI pulse", before.ai_pulse_value, after.ai_pulse_value)
+    else:
+        title = _pulse_title("CSM pulse", before.csm_pulse_score, after.csm_pulse_score)
+    parts = []
+    if before.health_score != after.health_score:
+        parts.append(f"Health {_score(before.health_score)} → {_score(after.health_score)}")
     if ai_moved:
         parts.append(f"AI pulse {_pulse(before.ai_pulse_value)} → {_pulse(after.ai_pulse_value)}")
     if csm_moved:

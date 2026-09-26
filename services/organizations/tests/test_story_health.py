@@ -28,11 +28,35 @@ class DescribeChangeTests(SimpleTestCase):
     def test_a_pulse_change_alone_is_a_change(self):
         self.assertEqual(
             describe_change(reading("8.0", ai=4, csm=4), reading("8.2", ai=2, csm=4)),
-            ("Pulse changed", "Health 8.0 → 8.2 · AI pulse 4 → 2"),
+            ("AI pulse fell to 2", "Health 8.0 → 8.2 · AI pulse 4 → 2"),
         )
+
+    def test_an_ai_pulse_change_alone_names_the_ai_pulse(self):
+        self.assertEqual(
+            describe_change(reading("9.5", ai=3, csm=4), reading("9.5", ai=4, csm=4)),
+            ("AI pulse rose to 4", "AI pulse 3 → 4"),
+        )
+
+    def test_a_csm_pulse_change_alone_names_the_csm_pulse(self):
+        self.assertEqual(
+            describe_change(reading("8.0", ai=3, csm=4), reading("8.0", ai=3, csm=2)),
+            ("CSM pulse fell to 2", "CSM pulse 4 → 2"),
+        )
+
+    def test_both_pulses_moving_is_pulse_changed(self):
+        self.assertEqual(
+            describe_change(reading("8.0", ai=3, csm=2), reading("8.0", ai=2, csm=4)),
+            ("Pulse changed", "AI pulse 3 → 2 · CSM pulse 2 → 4"),
+        )
+
+    def test_a_pulse_with_no_reading_on_one_side_is_set_or_cleared(self):
         self.assertEqual(
             describe_change(reading("8.0"), reading("8.0", csm=3)),
-            ("Pulse changed", "Health 8.0 → 8.0 · CSM pulse — → 3"),
+            ("CSM pulse set to 3", "CSM pulse — → 3"),
+        )
+        self.assertEqual(
+            describe_change(reading("8.0", ai=3), reading("8.0")),
+            ("AI pulse cleared", "AI pulse 3 → —"),
         )
 
     def test_movement_inside_one_category_is_not_a_change(self):
@@ -66,7 +90,8 @@ class HealthEntriesTests(StoryFixture):
 
         _key, item = by_id[moved.pk]
         self.assertEqual(item["account"], {"id": self.emea.pk, "name": "EMEA"})
-        self.assertEqual(item["summary"], "Health 5.0 → 5.0 · AI pulse 3 → 1")
+        self.assertEqual(item["title"], "AI pulse fell to 1")
+        self.assertEqual(item["summary"], "AI pulse 3 → 1")
 
     def test_only_this_organisation_and_the_accounts_the_viewer_may_open(self):
         taco = self.customer("Taco Co")

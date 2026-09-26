@@ -2582,7 +2582,11 @@ otherwise `404` (archived and churned organisations open). Unknown parameter val
   call's own summary), `email`, `calendar_event` (meetings up to today; upcoming ones stay on
   `/customers/<id>/calendar-events/`), `ticket`, `task` (from when it was created), `note`, `survey`, and `health`:
   a month-end `HealthSnapshot` whose health category, AI pulse or CSM pulse differs from the same parent's previous
-  one. Not sources: Slack, in-app conversations and Revenact Support (added when real), lifecycle changes (not
+  one. Its `title` is "Health fell to Poor" / "Health rose to Good" when the category moved; otherwise it names the
+  pulse that moved ("AI pulse rose to 4", "CSM pulse fell to 2", "… set to N" from no reading, "… cleared" to
+  none), or "Pulse changed" when both did. Its `summary` lists only what moved, e.g. "Health 7.6 → 3.5 · AI pulse
+  3 → 1" (the score part only when the score itself changed). An organisation reading and an account reading on
+  the same date are two items. Not sources: Slack, in-app conversations and Revenact Support (added when real), lifecycle changes (not
   stored), and `Customer.pulse`'s undated dots.
 - **Horizon.** A record dated after today is not story yet: every source excludes rows at or past tomorrow
   midnight UTC (an upcoming meeting, a future-dated ticket), and the health snapshots read under the same horizon.
