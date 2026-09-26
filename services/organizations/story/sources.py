@@ -39,6 +39,9 @@ def _open_to_the_organisation(user, queryset):
     return queryset
 
 
+# The template is a fixed string and its one expression is compiled by the ORM
+# (a model DateField, never user input), so nothing reaches the SQL unescaped.
+# nosemgrep: python.django.security.audit.extends-custom-expression.extends-custom-expression
 class UTCMidnight(Func):
     """A date as the story's timestamp: that day's midnight in UTC.
 
