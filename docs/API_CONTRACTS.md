@@ -58,7 +58,7 @@ expects.
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
-| Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/` |
+| Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`) |
 | Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
@@ -2523,6 +2523,13 @@ it in `failed` with the reason `"Could not be updated."` and the batch continues
 `organizations.bulk_updated`, written in a `finally` so a batch that raised still records what was saved;
 outcome `failure` when nothing was updated or the batch did not finish.
 
+### Ask Revenact on Organizations
+
+Not an endpoint of this app: the page's Ask rail sends `POST /api/v1/copilot/messages/` with
+`context.surface = "organizations"` (see the `copilot` section). The answer is grounded in
+`load_portfolio`, `select` and `build_summary` for the asker and the same filters, so every figure it
+quotes is the figure `GET /organizations/portfolio/` returns.
+
 ## Files — the Files tab on organisations and accounts
 
 ### `GET/POST /api/v1/customers/<id>/files/`, `.../accounts/<id>/files/`
@@ -3842,19 +3849,44 @@ are only the values among the asker's own filter options (`forecast.
 filter_options`); anything else is treated as "all" rather than copied into
 the prompt verbatim.
 
+**Ask Revenact on Organizations** (`services/copilot/organizations_context.py`,
+`organizations_grounding.py`) is the same send with `context.surface =
+"organizations"`. `services/copilot/ask.py` holds one row per surface — the
+serializer, the grounding, the fenced system prompt, the metering purpose and
+the book a shared reply is checked against — and `AskContextSerializer` hands
+a `context` to its surface's serializer. The filters go through the
+portfolio's own parser (`services/organizations/params.py`) and are stored in
+one canonical form; the labels that name them ("Owner: Carl CSM") are built on
+the server from the asker's own filter options, and an owner or product
+outside them reads "not in your book". The digest is recomputed with
+`load_portfolio`, `select` and `build_summary` for the asker and those
+filters: the screen and filters, the five tiles, the sections, the ten
+riskiest accounts by the rows' Triage score, and the renewals inside 90 days
+(overdue in, churned out) — the same numbers `GET /organizations/portfolio/`
+returns — fenced in `<dashboard_data>` exactly as the Dashboard's digest is.
+Owner names in it come from the organisation only, and it never carries a
+stored anomaly title or summary.
+
 ### Models
 
 - `Conversation` — `organisation`, `user` (private per-user, not shared
   org-wide), `title` (derived from the first message's own text — no
-  rename UI), `origin` (the first dashboard message's `context` without its
-  `focus`, set once; null otherwise), `created_at`/`updated_at`. Lazily
-  created on the first message actually sent, same "no ghost rows"
-  convention as Canvas/Campaign's own editors (POST on first Save).
+  rename UI), `origin` (the first Ask message's `context` — Dashboard or
+  Organizations — without its `focus`, set once; null otherwise),
+  `created_at`/`updated_at`. Lazily created on the first message actually
+  sent, same "no ghost rows" convention as Canvas/Campaign's own editors
+  (POST on first Save).
 - `Message` — `conversation`, `role` (`user`/`assistant` — mirrors the
   Anthropic Messages API's own two-role shape exactly), `content`,
-  `author`, `sources`, `ask_suggestions`, `context` (a user turn asked on
-  the Dashboard; null otherwise), `reply_to` (an assistant reply's own
-  user turn, set on every new reply), `created_at`.
+  `author`, `sources`, `ask_suggestions`, `context` (a user turn asked
+  from an Ask rail, Dashboard or Organizations; null otherwise), `reply_to`
+  (an assistant reply's own user turn, set on every new reply),
+  `grounded_customer_ids`/`carries_anomaly_text` (an Ask reply's shared-
+  session snapshot, fixed when it is written — the ids of every customer
+  its digest could have drawn on, and whether it could carry a stored
+  anomaly title; a mentioned-only reader needs every id and, for the
+  anomaly flag, to see every account — null on a reply written before
+  they existed, which such a reader never reads), `created_at`.
 
 ### Conventions specific to this app
 
@@ -3946,13 +3978,19 @@ invite card is gone.
 ```json
 [
   { "id": 5, "title": "What's my churn risk?", "origin": null, "created_at": "2026-09-05T10:00:00Z", "updated_at": "2026-09-05T10:01:00Z" },
-  { "id": 7, "title": "Why is at-risk ARR up?", "origin": { "surface": "dashboard", "area": "revenue", "view": "forecast", "filters": { "owner": "2", "lifecycle": "", "customer": "" } }, "created_at": "2026-09-24T10:00:00Z", "updated_at": "2026-09-24T10:01:00Z" }
+  { "id": 7, "title": "Why is at-risk ARR up?", "origin": { "surface": "dashboard", "area": "revenue", "view": "forecast", "filters": { "owner": "2", "lifecycle": "", "customer": "" } }, "created_at": "2026-09-24T10:00:00Z", "updated_at": "2026-09-24T10:01:00Z" },
+  { "id": 9, "title": "Which accounts need me first?", "origin": { "surface": "organizations", "view": "list", "filters": { "owner": "2", "health": "poor" }, "labels": ["Owner: Carl CSM", "Health: Poor"] }, "created_at": "2026-09-26T10:00:00Z", "updated_at": "2026-09-26T10:01:00Z" }
 ]
 ```
 
-`origin` is where the conversation started on the Dashboard — the first
-dashboard message's `context` without its `focus` — or `null`. Set once,
-never changed. The history shows it as a tag.
+`origin` is where the conversation started — the first Ask message's
+`context` without its `focus` — or `null`. Set once, never changed. The
+history shows it as a tag. For the Dashboard the tag is the area and view. For
+Organizations it is "Organizations" followed by the `labels`, joined with " · "
+("Organizations · Owner: Carl CSM"). Reopening it opens
+`/organizations/<view>?<filters>`, because `filters` are the page's own URL
+parameters in canonical form. The server builds `labels` when the question is
+asked, and the client never sends them.
 
 ### `GET/DELETE /api/v1/copilot/conversations/<id>/`
 
@@ -3992,7 +4030,7 @@ client never sends figures.
 }
 ```
 
-- `surface`: `"dashboard"` only.
+- `surface`: `"dashboard"` (the fields below) or `"organizations"` (see **Asked from Organizations** below). Any other value is `{"context": {"surface": ["\"x\" is not a valid choice."]}}`.
 - `area`: `overview | revenue | health | support`.
 - `view`: one of the area's sub-views (`DASHBOARD_VIEWS` in `services/copilot/dashboard_context.py`, mirroring the frontend's `src/pages/dashboard/areas.ts`): revenue `forecast|customers|products`; health `triage|divergence|movement|renewals|usage|activity|distribution`; support `tickets|topics`. The Overview takes `null`.
 - `filters`: only `owner`, `lifecycle`, `customer`; other keys are dropped, and a value that is not text or a whole number is ignored.
@@ -4004,13 +4042,59 @@ same code as the area's endpoint (`/dashboard/attention/`, `/customers/forecast/
 the records behind the focus company or companies, or the one the question names — each read
 under its own rule. Money is in the organisation currency. Metered as the `dashboard` purpose.
 
+**Asked from Organizations.**
+
+```json
+{
+  "content": "Which accounts need me first?",
+  "context": {
+    "surface": "organizations",
+    "view": "list",
+    "filters": {"owner": "2", "health": "poor", "sort": "-risk", "cursor": "…"},
+    "focus": {"kind": "companies", "ids": [7]}
+  }
+}
+```
+
+- `view`: `list | board`, required.
+- `filters`: the page's portfolio parameters (`GET /organizations/portfolio/`): `search`, `owner`, `lifecycle`, `health`, `product`, `renews_within`, `nps`, `ids`, `include_churned`, `sort`, `group`. Each is text, a whole number, or a list of them (joined with commas). `cursor`, `limit`, `group_value` and any other key are dropped. A value the portfolio would ignore is dropped, not rejected. A `search` over 100 characters, or any value over 6,000 characters, is ignored. Filters are stored in canonical form, and the default sort `-arr` is left out. A missing `group` means the view's default (`health` on the list, `lifecycle` on the board). `group: ""` means not grouped.
+- `focus`: `null`, or `{"kind": "companies", "ids": [..]}` (at most 200 ids). Ids outside the caller's filtered, visible list are dropped silently. Any other kind gives `400 {"context": {"focus": {"kind": ["Must be companies."]}}}`.
+- The stored context gains `labels`, which the server builds: "Opened from the dashboard (N)", `Search: "…"`, "Owner: <name>" (from the caller's own owner options, or "Unassigned", or "not in your book"), "Lifecycle: …", "Health: …", "Product: …" (or "not in your book"), "Renews within N days", "NPS: Promoters|Passives|Detractors", "Includes churned". Labels sent by the client are ignored.
+
+The answer is grounded in the caller's filtered list, recomputed by the portfolio's code. It contains:
+
+- the five tiles;
+- the sections for the effective group;
+- the ten riskiest accounts (Triage score above 0, highest first);
+- the renewals inside 90 days (overdue in, churned out), with the total and at most 25 of them listed;
+- the records behind the focused company or companies, or the one company in the list the question names, each read under its own rule.
+
+It is metered as the `organizations` purpose.
+
+**Shared sessions.** Every Ask reply (Dashboard or Organizations) stores a snapshot when it is
+written: `grounded_customer_ids` — the ids of every customer its digest could have drawn on — and
+`carries_anomaly_text` — whether it could carry a stored, org-wide anomaly title or summary
+(`services/copilot/views.ask_snapshot`, migration `0013_message_grounded_customer_ids`). A
+mentioned-only reader in a shared session reads the reply only when every id in its stored
+snapshot is one they can see (`visible_customers`), and, if `carries_anomaly_text` is not `False`,
+only when they see every account (`sees_everything`) — the stored anomaly title is org-wide and
+can name a company outside their own book even when the asker's filtered book is a subset of what
+they see. Folding history in: an earlier Ask reply's own snapshot ids and anomaly flag are unioned
+into the new reply's. A legacy reply (written before the snapshot existed), a Communications or
+plain Copilot reply with no Ask context, or a snapshot that is missing or malformed leaves the new
+reply's snapshot empty (`None`), so it fails closed — such a reply is withheld from mentioned-only
+readers, including a legacy Dashboard reply from before this snapshot existed. The owner and grant
+holders (`grant_holders`) always read their own or a shared session's replies whole, regardless of
+the snapshot.
+
 `400` if `content` is blank or over 8000 characters, or `{"context": {<field>: [..]}}` for a
-wrong `surface`, `area`, `view`, `focus.kind`, more than 200 `ids`, or an attention key not on
-the caller's list (`{"context": {"focus": {"key": ["Not an item on your list."]}}}` — the same
-for a malformed key and someone else's). `403` if `Organisation.ai_agent_enabled` is `false`.
-`429` if the organisation's monthly budget for the purpose (`copilot`, or `dashboard` with a
-`context`) is spent. `503` if the selected provider's credentials aren't configured. `502` if
-the API call itself fails.
+wrong `surface`, `area`, `view` (Dashboard or Organizations), `focus.kind`, more than 200 `ids`, or
+an attention key not on the caller's list (`{"context": {"focus": {"key": ["Not an item on your
+list."]}}}` — the same for a malformed key and someone else's). `403` if
+`Organisation.ai_agent_enabled` is `false`. `429` if the organisation's monthly budget for the
+purpose (`copilot`; or `dashboard` / `organizations` for a `context` from that surface) is spent.
+`503` if the selected provider's credentials aren't configured. `502` if the API call itself
+fails.
 
 **Response `200`** — the (possibly newly created) Conversation, same nested shape as the detail
 endpoint's GET, including this turn's user message (with `context` echoed, after the focus

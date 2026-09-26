@@ -219,8 +219,8 @@ available in `taxonomy.py`.
 
 | Model | Purpose |
 |---|---|
-| `Conversation` | One chat thread, owned by a user within an organisation. `origin`: where it started on the Dashboard (the first dashboard message's context without its focus), set once; null otherwise |
-| `Message` | One turn: `role`, `content`, `author`, `sources` (citation snapshots), `ask_suggestions`, `context` (user turns asked on the Dashboard: area, view, filters and focus ids — never record text), `reply_to` (an assistant reply's own user turn; set on every new reply, legacy rows fall back to the immediately preceding user turn) |
+| `Conversation` | One chat thread, owned by a user within an organisation. `origin`: where it started, which is the first Ask message's context without its focus (Dashboard: area, view, filters; Organizations: view, filters, labels). Set once; null otherwise |
+| `Message` | One turn: `role`, `content`, `author`, `sources` (citation snapshots), `ask_suggestions`, `context` (user turns asked from an Ask rail: Dashboard area, view, filters and focus; or Organizations view, canonical filters, server-built labels and focus ids. Never record text), `reply_to` (an assistant reply's own user turn; set on every new reply, legacy rows fall back to the immediately preceding user turn), `grounded_customer_ids`/`carries_anomaly_text` (an Ask reply only: the shared-session snapshot fixed when it is written — every customer id its digest could have drawn on, and whether it could carry a stored anomaly title; null on a reply from before they existed) |
 | `CopilotSession` | Multiplayer wrapper, one-to-one with a conversation. Optional customer or account context. `status`: private, live, awaiting_handoff, closed |
 | `SessionInvite` | The access gate. One per user per session, pending, accepted or declined |
 | `SessionParticipant` | Who joined, and when they left |
