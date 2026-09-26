@@ -16,6 +16,8 @@ from services.customers.models import (
     Task,
     Ticket,
 )
+from services.organizations.story.build import build_story
+from services.organizations.story.params import parse_story_params
 from services.organizations.story.scope import resolve_scope
 from services.organizations.story.sources import SOURCES, horizon_for
 
@@ -177,3 +179,21 @@ class StoryFixture(PortfolioFixture):
     def base(self, kind, user=None, customer=None):
         user = user or self.csm
         return SOURCES[kind].base(user, self.scope(user, customer), horizon=horizon_for(self.today))
+
+    def story(self, user=None, customer=None, **query):
+        user = user or self.csm
+        scope = self.scope(user, customer)
+        return build_story(user, scope, parse_story_params(query), today=self.today)
+
+    @staticmethod
+    def keys(body):
+        return [(item["kind"], item["id"]) for item in body["items"]]
+
+    def walk(self, user=None, **query):
+        seen, cursor = [], None
+        while True:
+            body = self.story(user, **query, **({"cursor": cursor} if cursor else {}))
+            seen += self.keys(body)
+            cursor = body["next_cursor"]
+            if cursor is None:
+                return seen
