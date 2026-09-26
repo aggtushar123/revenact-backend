@@ -31,10 +31,11 @@ class Conversation(models.Model):
     origin = models.JSONField(
         null=True,
         blank=True,
-        help_text="Where the conversation started on the Dashboard: the first dashboard "
-        "message's context without its focus ({surface, area, view, filters}). Set once, "
-        "never overwritten. Null for a conversation that never had a dashboard message. "
-        "Ids and filter values only.",
+        help_text="Where the conversation started: the first Ask message's context without "
+        "its focus — on the Dashboard {surface, area, view, filters}, on Organizations "
+        "{surface, view, filters, labels}. Set once, never overwritten. Null for a "
+        "conversation that never had an Ask message. Ids, filter values and server-built "
+        "filter labels only, never record text.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -93,10 +94,10 @@ class Message(models.Model):
     context = models.JSONField(
         null=True,
         blank=True,
-        help_text="User turns asked on the Dashboard: the validated screen context "
-        "({surface, area, view, filters, focus}) after the focus was intersected with the "
-        "asker's filtered book (services/copilot/dashboard_context.py). Ids and filter "
-        "values only, never record text. Null on every other turn.",
+        help_text="User turns asked from an Ask rail (Dashboard or Organizations): the "
+        "validated context after the focus was intersected with the asker's filtered book "
+        "(services/copilot/ask.py). Ids, filter values and server-built filter labels only, "
+        "never record text. Null on every other turn.",
     )
     reply_to = models.ForeignKey(
         "self",

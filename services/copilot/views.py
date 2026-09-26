@@ -30,9 +30,9 @@ from .anthropic_client import (
     CopilotRequestFailed,
     get_completion,
 )
+from .ask import SURFACES, AskContextSerializer
 from .context import build_grounding
-from .dashboard_context import DashboardContextSerializer, origin_of
-from .dashboard_grounding import build_dashboard_grounding, dashboard_system_prompt
+from .dashboard_context import origin_of
 from .models import (
     Conversation,
     CopilotSession,
@@ -461,13 +461,16 @@ class SendMessageView(APIView):
     see CopilotSession's own docstring) — logged as a `redirected`
     SessionEvent tagging the real new Message, not re-storing its text.
 
-    Dashboard: an optional `context` ({surface, area, view, filters, focus})
-    says where on the Dashboard the question was asked. It is validated by
-    DashboardContextSerializer (a 400 `{"context": {...}}` otherwise), the
-    answer is grounded by dashboard_grounding in that screen's recomputed
-    figures and records, metered as `dashboard`, and the validated context is
-    stored on the user turn; the conversation's `origin` is set from the first
-    one and never changed."""
+    Ask rails: an optional `context` says where the question was asked — on
+    the Dashboard ({surface: "dashboard", area, view, filters, focus}) or on
+    Organizations ({surface: "organizations", view, filters, focus}). It is
+    validated by AskContextSerializer, which hands it to the surface's own
+    serializer (a 400 `{"context": {...}}` otherwise); the answer is grounded
+    by that surface's grounding in the recomputed screen and its records,
+    metered under the surface's purpose (`dashboard`, `organizations`), and
+    the validated context is stored on the user turn; the conversation's
+    `origin` is set from the first one and never changed. See
+    services/copilot/ask.py."""
 
     permission_classes = [IsAuthenticated]
 
@@ -511,21 +514,24 @@ class SendMessageView(APIView):
             # session — hand-off, invite, close and decisions stay gated
             # by _can_change_session.
 
-        # A send from the Dashboard says where it was asked; the server
-        # recomputes what is there (services/copilot/dashboard_grounding.py).
-        # Absent or null, this is the Communications/Copilot send, unchanged.
-        dashboard = None
+        # A send from an Ask rail (the Dashboard, Organizations) says where it
+        # was asked; the server recomputes what is there (services/copilot/
+        # ask.py names each surface's grounding). Absent or null, this is the
+        # Communications/Copilot send, unchanged.
+        ask = None
+        surface = None
         raw_context = request.data.get("context")
         if raw_context is not None:
-            checked = DashboardContextSerializer(data=raw_context, context={"user": request.user})
+            checked = AskContextSerializer(data=raw_context, context={"user": request.user})
             if not checked.is_valid():
                 return Response({"context": checked.errors}, status=status.HTTP_400_BAD_REQUEST)
-            dashboard = checked.validated_data
+            ask = checked.validated_data
+            surface = SURFACES[ask["surface"]]
 
         default_tone = TONE_INSTRUCTIONS[Organisation.AgentTone.PROFESSIONAL]
         tone_instruction = TONE_INSTRUCTIONS.get(organisation.ai_agent_tone, default_tone)
-        if dashboard is not None:
-            grounding = build_dashboard_grounding(request.user, dashboard, content)
+        if surface is not None:
+            grounding = surface.ground(request.user, ask, content)
         else:
             grounding = build_grounding(organisation, user=request.user, query=content)
         # "@Mei, why is usage down?" or "@engineering, does SSO still break?"
@@ -546,8 +552,8 @@ class SendMessageView(APIView):
                 "notified and their answer will be recorded. Acknowledge that in one "
                 "sentence, then answer whatever the summary already covers."
             )
-        if dashboard is not None:
-            system = dashboard_system_prompt(tone_instruction, grounding.summary) + routing_note
+        if surface is not None:
+            system = surface.system_prompt(tone_instruction, grounding.summary) + routing_note
         else:
             system = (
                 f"{SYSTEM_PERSONA}\n\n{tone_instruction}\n\nReal-data summary:\n"
@@ -567,7 +573,7 @@ class SendMessageView(APIView):
             reply = get_completion(
                 system=system,
                 messages=history,
-                purpose="dashboard" if dashboard is not None else "copilot",
+                purpose=surface.purpose if surface is not None else "copilot",
                 organisation=request.user.organisation,
                 user=request.user,
             )
@@ -587,7 +593,7 @@ class SendMessageView(APIView):
             role=Message.Role.USER,
             content=content,
             author=request.user,
-            context=dashboard,
+            context=ask,
         )
         Message.objects.create(
             conversation=conversation,
@@ -605,13 +611,13 @@ class SendMessageView(APIView):
             # between (see _reply_readable_by's own docstring).
             reply_to=user_message,
         )
-        # Set once, from the first dashboard message, and never overwritten:
-        # the history's tag says where a conversation started. A conditional
-        # update, not an in-memory `origin is None` check — two concurrent
-        # first sends into the same conversation can't both win the race.
-        if dashboard is not None:
+        # Set once, from the first Ask message on any surface, and never
+        # overwritten: the history's tag says where a conversation started. A
+        # conditional update, not an in-memory `origin is None` check — two
+        # concurrent first sends into the same conversation can't both win.
+        if ask is not None:
             changed = Conversation.objects.filter(pk=conversation.pk, origin__isnull=True).update(
-                origin=origin_of(dashboard), updated_at=timezone.now()
+                origin=origin_of(ask), updated_at=timezone.now()
             )
             if changed:
                 conversation.refresh_from_db(fields=["origin", "updated_at"])
@@ -629,11 +635,11 @@ class SendMessageView(APIView):
                 message=user_message,
                 assignees=asked,
             )
-        elif dashboard is None and asked_about is not None and not grounding.sources:
+        elif ask is None and asked_about is not None and not grounding.sources:
             # The question was about a company and retrieval found nothing
             # to answer it from. That is not a failure of the model, it is
             # something the company does not know about its own customer —
-            # see services.knowledge.gaps. A dashboard focus/attention
+            # see services.knowledge.gaps. An Ask focus/attention
             # question names a company through the screen, not through the
             # asker naming it — "Why is this on my list?" on every renewal
             # with no notes would otherwise raise a bogus gap even though

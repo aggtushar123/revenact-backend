@@ -92,6 +92,21 @@ class CatalogueTests(TestCase):
 
 
 class ViewTests(APITestCase):
+    def test_organizations_has_its_own_purpose_and_skill(self):
+        self.assertEqual(usage.PURPOSES["organizations"], "Ask Revenact on Organizations")
+        skill = skills.BY_PURPOSE["organizations"]
+        self.assertEqual(skill.surface, "/organizations")
+        self.assertIn("See accounts outside the asker's filtered book", skill.never)
+
+    def test_every_ask_surface_is_metered_under_a_described_purpose(self):
+        from services.copilot.ask import SURFACES
+
+        self.assertEqual(
+            {surface.purpose for surface in SURFACES.values()}, {"dashboard", "organizations"}
+        )
+        for surface in SURFACES.values():
+            self.assertIn(surface.purpose, skills.BY_PURPOSE)
+
     def setUp(self):
         self.org, self.admin, self.csm = _org()
 
