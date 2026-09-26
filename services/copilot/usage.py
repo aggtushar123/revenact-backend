@@ -16,6 +16,7 @@ from .models import ModelBudget, ModelCall
 PURPOSES = {
     "copilot": "Copilot chat",
     "dashboard": "Ask Revenact on the Dashboard",
+    "organizations": "Ask Revenact on Organizations",
     "headlines": "Account headlines",
     "classification": "Interaction classifier",
     "brief": "Management brief",
