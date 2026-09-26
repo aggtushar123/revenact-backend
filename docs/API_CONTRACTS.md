@@ -5187,8 +5187,11 @@ without the rejected text.
 ### Conventions specific to this app
 
 Reading is open to any member and scoped twice, as everywhere else that
-copies record text: the companies they may open, and the records they may
-read (`services.customers.personal.readable_evidence_q`, shared with
+copies record text: the companies they may open (evidence on an
+organisation through `visible_customers`, evidence on an account through
+`visible_accounts` — an account under an organisation they may open can
+still be closed to them), and the records they may read
+(`services.customers.personal.readable_evidence_q`, shared with
 feature requests). A cluster a reader can see nothing of is left out
 rather than shown as a zero, and its detail is a 404 for them: its title
 was written from reports they may not read. Detecting and setting a
