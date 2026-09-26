@@ -325,16 +325,18 @@ class QueryCountTests(DashboardFixture):
     #: Queries for one question with no focus, per area and lifecycle filter.
     #: Before the book was shared: overview 52/51, revenue 22, health 20,
     #: support 23. Support under a lifecycle filter still loads its own,
-    #: wider book (the Support screen has no lifecycle filter).
+    #: wider book (the Support screen has no lifecycle filter); the reply's
+    #: grounding snapshot (`Grounding.customer_ids`) reads that wider book's ids
+    #: once more, two queries, so a name only it could supply is covered.
     EXPECTED = {
         ("overview", False): 39,
         ("revenue", False): 19,
         ("health", False): 17,
         ("support", False): 20,
-        ("overview", True): 41,
+        ("overview", True): 43,
         ("revenue", True): 19,
         ("health", True): 17,
-        ("support", True): 23,
+        ("support", True): 25,
     }
 
     def setUp(self):

@@ -489,6 +489,7 @@ class DashboardReplyRedactionTests(ChartFixture):
             role="assistant",
             content="At-risk ARR is up because of renewals across the book.",
             sources=[],
+            grounded_customer_ids=[self.pizza.pk, self.secret.pk],
             reply_to=self.asked,
         )
 
@@ -569,6 +570,7 @@ class DashboardReplyRedactionTests(ChartFixture):
             role="assistant",
             content="At-risk ARR is up because of renewals across the book, again.",
             sources=[],
+            grounded_customer_ids=[self.pizza.pk, self.secret.pk],
             reply_to=self.asked,
         )
 
@@ -609,6 +611,7 @@ class DashboardReplyRedactionTests(ChartFixture):
             role="assistant",
             content="Pizza Hut is renewing on schedule.",
             sources=[],
+            grounded_customer_ids=[self.pizza.pk],
             reply_to=asked_narrow,
         )
 
@@ -654,6 +657,7 @@ class DashboardReplyRedactionTests(ChartFixture):
             role="assistant",
             content="Theirs and Mine both report SSO failures.",
             sources=[],
+            grounded_customer_ids=[self.pizza.pk],
             reply_to=asked,
         )
 
@@ -694,6 +698,7 @@ class DashboardReplyRedactionTests(ChartFixture):
             role="assistant",
             content="Theirs and Mine both report SSO failures.",
             sources=[],
+            grounded_customer_ids=[self.pizza.pk],
             reply_to=asked,
         )
 
@@ -744,11 +749,66 @@ class DashboardReplyRedactionTests(ChartFixture):
             role="assistant",
             content="Theirs and Mine both report SSO failures.",
             sources=[],
+            grounded_customer_ids=[self.pizza.pk, self.secret.pk],
             reply_to=asked,
         )
 
         kept = [m.content for m in visible_messages(self.conversation, grace)]
         self.assertIn(reply.content, kept)
+
+    def test_a_legacy_reply_without_a_snapshot_is_withheld_from_a_slice_viewer(self):
+        """A reply written before `grounded_customer_ids` existed has nothing to
+        check against: rebuilding the asker's book now would read today's data,
+        not the answer's. It fails closed for a mentioned-only reader, even on
+        a screen narrowed to a company she may open; the owner still reads it."""
+        from services.copilot.views import REDACTED_REPLY, visible_messages
+
+        narrow_context = {
+            "surface": "dashboard",
+            "area": "revenue",
+            "view": None,
+            "filters": {"owner": "", "lifecycle": "", "customer": str(self.pizza.pk)},
+            "focus": None,
+        }
+        asked = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="@Priya Nair what about Pizza Hut?",
+            author=self.carl,
+            context=narrow_context,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.carl,
+            assignee=self.priya,
+            text=asked.content,
+            message=asked,
+        )
+        legacy = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="Pizza Hut renews next month.",
+            sources=[],
+            reply_to=asked,
+        )
+
+        kept_by_priya = [m.content for m in visible_messages(self.conversation, self.priya)]
+        self.assertNotIn(legacy.content, kept_by_priya)
+        self.assertIn(REDACTED_REPLY, kept_by_priya)
+        kept_by_owner = [m.content for m in visible_messages(self.conversation, self.carl)]
+        self.assertIn(legacy.content, kept_by_owner)
+
+    def test_a_dashboard_reply_is_read_against_its_snapshot_not_a_rebuilt_book(self):
+        """Drift: Carl asked about his book (Pizza Hut and Secret Corp); Secret
+        Corp moved to Raj afterwards. Rebuilt now, Carl's book is only Pizza
+        Hut, which Priya may open — but the reply was written about both."""
+        from services.copilot.views import REDACTED_REPLY, visible_messages
+
+        Customer.objects.filter(pk=self.secret.pk).update(owner=self.raj)
+
+        kept = [m.content for m in visible_messages(self.conversation, self.priya)]
+        self.assertEqual([m for m in kept if m != REDACTED_REPLY], [self.asked.content])
 
     def test_a_deleted_askers_dashboard_reply_is_unreadable_by_anyone_but_the_owner(self):
         """Null author (final review): `Message.author` is `SET_NULL`, so a

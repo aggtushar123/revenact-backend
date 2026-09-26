@@ -54,6 +54,26 @@ class DashboardSendTests(DashboardFixture):
         self.assertEqual(data["origin"], origin)
         self.assertEqual(Conversation.objects.get().origin, origin)
 
+    def test_the_reply_keeps_the_ids_of_the_book_it_was_grounded_on(self, completion):
+        self.send(self.context("revenue", "forecast", owner=str(self.csm.pk)))
+
+        grounded = Message.objects.get(role="assistant").grounded_customer_ids
+        self.assertIn(self.shaky.pk, grounded)
+        self.assertNotIn(self.theirs.pk, grounded)
+        self.assertIsNone(Message.objects.get(role="user").grounded_customer_ids)
+
+    def test_the_support_screens_wider_book_is_in_the_snapshot(self, completion):
+        # A lifecycle filter narrows the shared book to nothing, but the Support
+        # figures read their own book without it, so Shaky can be named.
+        self.send(self.context("support", "tickets", lifecycle="onboarding"))
+
+        self.assertIn(self.shaky.pk, Message.objects.get(role="assistant").grounded_customer_ids)
+
+    def test_a_reply_without_an_ask_context_keeps_no_snapshot(self, completion):
+        self.api.post(URL, {"content": "Hello"}, format="json")
+
+        self.assertIsNone(Message.objects.get(role="assistant").grounded_customer_ids)
+
     def test_the_reply_records_the_turn_it_answers(self, completion):
         self.send(self.context("overview"))
 

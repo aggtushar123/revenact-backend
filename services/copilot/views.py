@@ -275,11 +275,13 @@ def _reply_readable_by(turn, user, user_turn=None):
     An Ask reply (`user_turn.context` set — the Dashboard or Organizations)
     also carries aggregates and company names drawn from the *asker's*
     filtered book — totals, top lists, facts on companies never individually
-    cited — not just the records `turn.sources` names. A partial-visibility
-    viewer therefore needs the asker's whole filtered book, rebuilt by the
-    surface's own filter rules (`ask.asker_book`; an Organizations list is
-    widened by dropping `renews_within`), to be inside their own visible
-    customers, not merely the cited records; the asker always reads their own
+    cited — not just the records `turn.sources` names. When the reply was
+    written, the ids of every customer its digest could have drawn on were
+    fixed on it (`Message.grounded_customer_ids`, `Grounding.customer_ids`).
+    A partial-visibility viewer needs every one of those ids inside their own
+    visible customers. The book is never rebuilt here: health, owners, churn
+    and the asker's own seat all move after the ask, and a rebuilt book would
+    read today's data, not the answer's. The asker always reads their own
     reply regardless. A context-less (Communications) reply keeps exactly the
     per-source checks below for every viewer, the asker included — there is
     no whole-book aggregate to guard there.
@@ -292,8 +294,11 @@ def _reply_readable_by(turn, user, user_turn=None):
     no book check, no asker short-circuit, only the per-source checks
     below — fails closed, and is exactly the pre-dashboard behaviour.
 
-    Three more Ask-reply guards live here, all fail-closed: a surface this
-    code has no book rule for (unknown or missing) is unreadable; a null
+    More Ask-reply guards live here, all fail-closed: a reply with no
+    snapshot (written before it existed) or a malformed one, a surface this
+    code does not know (unknown or missing), stored filters that are not a
+    flat mapping of text, and an asker now in another organisation than the
+    conversation's are all unreadable; a null
     `user_turn.author` (the asker's account was deleted) has no book to
     check at all, so nobody but the owner — who never reaches this
     function, see `sees_whole_conversation` — may read it; and the stored,
@@ -309,20 +314,29 @@ def _reply_readable_by(turn, user, user_turn=None):
     from services.knowledge.views import visible_contributions
 
     if user_turn is not None and user_turn.context:
-        if user_turn.author_id is None:
+        context = user_turn.context
+        if not isinstance(context, dict) or user_turn.author_id is None:
+            return False
+        if user_turn.author.organisation_id != turn.conversation.organisation_id:
             return False
         if user_turn.author_id == user.id:
             return True
-        from .ask import asker_book
+        from .ask import SURFACES
 
-        # SOC2:AUTH-02 the reader must see the asker's whole filtered book,
-        # rebuilt by the surface's own filter rules; an unknown surface fails closed
-        filtered = asker_book(user_turn.author, user_turn.context)
-        if filtered is None or filtered.exclude(pk__in=visible_customers(user)).exists():
+        if context.get("surface") not in SURFACES or not _well_formed_filters(context):
+            return False
+        # SOC2:AUTH-02 the reader must see every customer the reply was grounded
+        # on, fixed when it was written; no snapshot (a legacy row) fails closed
+        grounded = _grounded_ids(turn)
+        if grounded is None:
+            return False
+        if visible_customers(user).filter(pk__in=grounded).count() != len(grounded):
             return False
 
-        focus = user_turn.context.get("focus") or {}
-        names_a_stored_anomaly = user_turn.context.get("area") == "overview" or (
+        focus = context.get("focus") or {}
+        if not isinstance(focus, dict):
+            return False
+        names_a_stored_anomaly = context.get("area") == "overview" or (
             focus.get("kind") == "attention" and str(focus.get("key") or "").startswith("anomaly:")
         )
         if (
@@ -369,6 +383,26 @@ def _reply_readable_by(turn, user, user_turn=None):
             ).exists():
                 return False
     return True
+
+
+def _grounded_ids(turn):
+    """The reply's stored grounding snapshot as a set of customer ids, or None
+    when it is missing or is anything but a list of whole numbers."""
+    ids = turn.grounded_customer_ids
+    if not isinstance(ids, list) or not all(
+        isinstance(pk, int) and not isinstance(pk, bool) for pk in ids
+    ):
+        return None
+    return set(ids)
+
+
+def _well_formed_filters(context):
+    """Stored filters are a flat mapping of text, as every Ask surface's
+    serializer writes them; anything else was not written by it."""
+    filters = context.get("filters", {})
+    return isinstance(filters, dict) and all(
+        isinstance(key, str) and isinstance(value, str) for key, value in filters.items()
+    )
 
 
 def _redacted(turn):
@@ -610,6 +644,9 @@ class SendMessageView(APIView):
             # and re-running retrieval later would cite whatever is
             # relevant now instead.
             sources=grounding.sources,
+            # SOC2:AUTH-02 an Ask reply keeps the ids of every customer it was
+            # grounded on, so a shared reader is checked against exactly those
+            grounded_customer_ids=grounding.customer_ids if ask is not None else None,
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
             # The real turn this reply answers, not just "whichever user turn
             # happens to sort immediately before it" — two participants

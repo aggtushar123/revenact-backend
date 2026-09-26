@@ -99,6 +99,16 @@ class Message(models.Model):
         "(services/copilot/ask.py). Ids, filter values and server-built filter labels only, "
         "never record text. Null on every other turn.",
     )
+    grounded_customer_ids = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Assistant turns answering an Ask rail (Dashboard or Organizations) only: "
+        "the ids of every customer the grounding digest could have drawn on, fixed when the "
+        "answer was written (Grounding.customer_ids). A mentioned-only reader reads the reply "
+        "only if they may see every one of them (views._reply_readable_by). Ids only, never "
+        "names. Null on every other turn, and on Ask replies written before it existed, "
+        "which then fail closed for such readers.",
+    )
     reply_to = models.ForeignKey(
         "self",
         related_name="replies",

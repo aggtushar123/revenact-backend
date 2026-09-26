@@ -122,6 +122,13 @@ class OrganizationsSendTests(OrganizationsAskFixture):
         )
         self.assertEqual(completion.call_args.kwargs["purpose"], "dashboard")
 
+    def test_the_reply_keeps_the_ids_of_the_list_it_was_grounded_on(self, completion):
+        self.send(self.context(owner=str(self.csm.pk)))
+
+        grounded = Message.objects.get(role="assistant").grounded_customer_ids
+        self.assertIn(self.hooli.pk, grounded)
+        self.assertNotIn(self.danas.pk, grounded)
+
     def test_a_dashboard_first_origin_survives_a_later_organizations_send(self, completion):
         dashboard = {
             "surface": "dashboard",
