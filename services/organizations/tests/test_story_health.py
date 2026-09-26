@@ -1,10 +1,11 @@
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 
 from django.test import SimpleTestCase
 
 from services.customers.models import HealthSnapshot
 from services.organizations.story.health import describe_change, health_entries
+from services.organizations.story.sources import horizon_for
 
 from .story_fixtures import StoryFixture
 
@@ -46,7 +47,10 @@ class HealthEntriesTests(StoryFixture):
         self.snapshot(self.emea, self.days_ago(60), "5.0", ai=3)
         moved = self.snapshot(self.emea, self.days_ago(30), "5.0", ai=1)
 
-        by_id = {item["id"]: (key, item) for key, item in health_entries(self.scope())}
+        horizon = horizon_for(self.today)
+        by_id = {
+            item["id"]: (key, item) for key, item in health_entries(self.scope(), horizon=horizon)
+        }
         self.assertEqual(set(by_id), {fell.pk, moved.pk})
 
         key, item = by_id[fell.pk]
@@ -71,5 +75,15 @@ class HealthEntriesTests(StoryFixture):
         for parent in (taco, self.account("Taco div", customers=[taco]), danas):
             self.snapshot(parent, self.days_ago(60), "8.0")
             self.snapshot(parent, self.days_ago(30), "2.0")
-        self.assertEqual(health_entries(self.scope()), [])
-        self.assertEqual(health_entries(self.scope(customer=open_co)), [])
+        horizon = horizon_for(self.today)
+        self.assertEqual(health_entries(self.scope(), horizon=horizon), [])
+        self.assertEqual(health_entries(self.scope(customer=open_co), horizon=horizon), [])
+
+    def test_a_future_dated_snapshot_yields_no_item(self):
+        self.snapshot(self.pizza, self.days_ago(60), "8.0")
+        changed = self.snapshot(self.pizza, self.days_ago(30), "3.5")
+        self.snapshot(self.pizza, self.today + timedelta(days=5), "1.0")
+
+        horizon = horizon_for(self.today)
+        entries = health_entries(self.scope(), horizon=horizon)
+        self.assertEqual([item["id"] for _key, item in entries], [changed.pk])

@@ -13,6 +13,9 @@ whole set loads in one query and pages in Python, like the portfolio.
 
 from datetime import UTC, datetime, time
 
+from django.db.models import DateTimeField
+from django.db.models.functions import Cast
+
 from services.customers.models import Customer, HealthSnapshot
 
 from .items import make_item
@@ -55,9 +58,11 @@ def describe_change(before, after):
     return title, " · ".join(parts)
 
 
-def health_entries(scope):
+def health_entries(scope, *, horizon):
     snapshots = (
         HealthSnapshot.objects.filter(scope.parent_q())
+        .annotate(_at=Cast("captured_on", DateTimeField()))
+        .filter(_at__lt=horizon)
         .only(
             "id",
             "customer_id",
