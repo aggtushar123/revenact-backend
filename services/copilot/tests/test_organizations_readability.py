@@ -451,3 +451,44 @@ class AskReplySnapshotDriftTests(ChartFixture):
         self.assertEqual(second.grounded_customer_ids, [self.pizza.pk])
         self.assertTrue(second.carries_anomaly_text)
         self.assertEqual(self.replies_read_by(self.priya), [REDACTED_REPLY, REDACTED_REPLY])
+
+    def test_an_ask_reply_fed_a_communications_reply_is_withheld_from_slice_readers(
+        self, completion
+    ):
+        # A Communications reply has no Ask snapshot: what it told Carl about
+        # Secret Corp can be repeated in the Pizza Hut-only Ask reply after it.
+        self.client.force_authenticate(self.carl)
+        completion.return_value = "Secret Corp's last email asked to cancel."
+        first = self.client.post(
+            self.URL, {"content": "[About: Secret Corp] What did their email say?"}, format="json"
+        ).data["id"]
+        completion.return_value = "Pizza Hut is steadier than Secret Corp."
+        self.send(
+            self.carl,
+            self.organizations(ids=str(self.pizza.pk)),
+            "@Priya Nair compare Pizza Hut to that",
+            conversation=first,
+        )
+
+        second = Message.objects.filter(role="assistant").order_by("id").last()
+        self.assertIsNone(second.grounded_customer_ids)
+        self.assertNotIn(second.content, self.replies_read_by(self.priya))
+        self.assertIn(second.content, self.replies_read_by(self.carl))
+        session = CopilotSession.objects.create(
+            conversation=Conversation.objects.get(), status=CopilotSession.Status.LIVE
+        )
+        SessionInvite.objects.create(
+            session=session,
+            invited_user=self.dana,
+            invited_by=self.carl,
+            status=SessionInvite.Status.ACCEPTED,
+        )
+        SessionParticipant.objects.create(session=session, user=self.dana)
+        self.assertIn(second.content, self.replies_read_by(self.dana))
+
+    def test_a_grounding_without_ids_leaves_the_reply_unsnapshotted(self, completion):
+        from services.copilot.context import Grounding
+
+        grounded, _ = ask_snapshot(self.carl, self.organizations(), Grounding("digest"), [])
+
+        self.assertIsNone(grounded)

@@ -399,12 +399,14 @@ def ask_snapshot(user, ask, grounding, fed):
     """`(grounded_customer_ids, carries_anomaly_text)` for a new Ask reply,
     fixed as it is written. `fed` is the turns given to the model as
     history: an earlier Ask reply's customers and anomaly text can be
-    repeated, so they are folded in. An earlier Ask reply with no snapshot
-    leaves the new one with none (None), so it fails closed too; a withheld
-    turn carried only the redaction notice and adds nothing."""
+    repeated, so they are folded in. An earlier Ask reply with no snapshot,
+    a fed reply with no Ask context at all (Communications or plain Copilot),
+    or a grounding with no ids leaves the new one with none (None), so it
+    fails closed for slice readers; a withheld turn carried only the
+    redaction notice and adds nothing."""
     from services.customers.scoping import sees_everything
 
-    grounded = set(grounding.customer_ids or [])
+    grounded = None if grounding.customer_ids is None else set(grounding.customer_ids)
     carries = names_a_stored_anomaly(ask) and sees_everything(user)
     last_user_turn = None
     for turn in fed:
@@ -415,6 +417,9 @@ def ask_snapshot(user, ask, grounding, fed):
             continue
         answered = turn.reply_to if turn.reply_to_id else last_user_turn
         if answered is None or not answered.context:
+            # A Communications or plain Copilot reply has no snapshot to fold
+            # in, and the new reply can repeat whatever it said: fail closed.
+            grounded = None
             continue
         earlier = _grounded_ids(turn)
         grounded = None if grounded is None or earlier is None else grounded | earlier
