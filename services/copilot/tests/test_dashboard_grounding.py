@@ -9,7 +9,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from services.accounts.models import User
+from services.accounts.models import Organisation, User
 from services.anomalies.models import AnomalyEvidence
 from services.copilot.dashboard_grounding import (
     build_dashboard_grounding,
@@ -163,6 +163,37 @@ class GroundingTests(DashboardFixture):
         grounding = self.ground(self.context(focus=focus, customer=str(self.steady.pk)))
         self.assertIn("outside the current filters", grounding.summary)
         self.assertNotIn("Shaky: health", grounding.summary)
+
+    def test_an_owner_from_another_organisation_is_never_named(self):
+        # A bad import can leave a customer owned by another tenant's user.
+        outsider_org = Organisation.objects.create(name="Globex", currency="USD")
+        mallory = User.objects.create_user(
+            email="mallory@globex.io",
+            password="supersecret1",
+            name="Mallory Outsider",
+            organisation=outsider_org,
+            role=User.Role.CSM,
+            function=User.Function.CS,
+        )
+        self.customer("Imported Co", owner=mallory)
+
+        grounding = self.ground(
+            self.context("revenue", "forecast"), "What about Imported Co?", user=self.admin
+        )
+
+        self.assertIn("Imported Co: health good", grounding.summary)
+        self.assertIn("owner an owner outside the organisation", grounding.summary)
+        self.assertNotIn("Mallory", grounding.summary)
+
+    def test_the_fence_takes_another_persona_and_heading(self):
+        prompt = dashboard_system_prompt(
+            "Be concise.", "Screen: X", persona="Persona P.", heading="Other data"
+        )
+
+        self.assertTrue(prompt.startswith("Persona P.\n\nBe concise."))
+        self.assertTrue(
+            prompt.endswith("Other data:\n<dashboard_data>\nScreen: X\n</dashboard_data>")
+        )
 
 
 class AnomalyTitleTests(DashboardFixture):
