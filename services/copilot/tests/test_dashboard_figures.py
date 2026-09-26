@@ -4,6 +4,7 @@ viewer and filters — the screen and the assistant can never disagree."""
 from datetime import timedelta
 from decimal import Decimal
 
+from django.test import SimpleTestCase
 from django.utils import timezone
 
 from services.accounts.models import User
@@ -370,3 +371,15 @@ class SharedBookTests(DashboardFixture):
             self.csm, filters, today=self.today, customers=book
         )
         self.assertEqual({row["name"] for row in figures["most_urgent"]}, {"Live", "Renewing"})
+
+
+class SupportBookTests(SimpleTestCase):
+    """`support_book` is public: the grounding's snapshot reads it too."""
+
+    def test_the_shared_book_stands_in_only_without_a_lifecycle_filter(self):
+        book = ["a customer"]
+
+        self.assertIs(dashboard_figures.support_book({}, book), book)
+        self.assertIs(dashboard_figures.support_book({"lifecycle": ""}, book), book)
+        self.assertIsNone(dashboard_figures.support_book({"lifecycle": "renewal"}, book))
+        self.assertIsNone(dashboard_figures.support_book({}, None))

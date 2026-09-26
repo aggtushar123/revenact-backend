@@ -67,12 +67,16 @@ _DASHBOARD_DATA_TOKEN = re.compile(r"dashboard_data", re.IGNORECASE)
 _FENCE_TAG = re.compile(r"</?\s*dashboard_data\s*>", re.IGNORECASE)
 
 
-def dashboard_system_prompt(tone_instruction, summary):
+def dashboard_system_prompt(
+    tone_instruction, summary, *, persona=DASHBOARD_PERSONA, heading="Dashboard data"
+):
+    """The persona, the tone, then the digest inside the one fence every Ask
+    surface uses. The body is neutralised first (see `_DASHBOARD_DATA_TOKEN`)."""
     summary = _DASHBOARD_DATA_TOKEN.sub("dashboard-data", summary)
     summary = _FENCE_TAG.sub("", summary)
     return (
-        f"{DASHBOARD_PERSONA}\n\n{tone_instruction}\n\n"
-        f"Dashboard data:\n<dashboard_data>\n{summary}\n</dashboard_data>"
+        f"{persona}\n\n{tone_instruction}\n\n{heading}:\n"
+        f"<dashboard_data>\n{summary}\n</dashboard_data>"
     )
 
 
@@ -82,6 +86,21 @@ def _money(value, currency):
 
 def _days(n):
     return f"{n} day" if n == 1 else f"{n} days"
+
+
+OUTSIDE_OWNER = "an owner outside the organisation"
+
+
+def owner_name(customer, organisation):
+    """The owner as the digest names them: only a person in the asker's own
+    organisation is named. `owner` is select_related by every book loader, so
+    this reads no query."""
+    owner = customer.owner
+    if owner is None:
+        return "Unassigned"
+    if owner.organisation_id != organisation.pk:
+        return OUTSIDE_OWNER
+    return owner.name
 
 
 def _filter_summary(user, filters):
@@ -234,7 +253,7 @@ def _facts_lines(customer, organisation, rates, today):
         else f"renews {customer.renewal_date.isoformat()} "
         f"({_days((customer.renewal_date - today).days)})"
     )
-    owner = customer.owner.name if customer.owner else "Unassigned"
+    owner = owner_name(customer, organisation)
     lines = [
         f"{customer.name}: health {customer.health_category} ({customer.health_score}/10), "
         f"{renewal}, {money}, owner {owner}"
@@ -334,7 +353,7 @@ def _attention_focus(user, key, book):
     )
 
 
-def _focus(user, focus, question, book):
+def focus_targets(user, focus, question, book):
     """(lines, targets, sources): who the question is about, inside the book."""
     if focus is not None and focus["kind"] == "attention":
         return _attention_focus(user, focus["key"], book)
@@ -350,10 +369,30 @@ def _focus(user, focus, question, book):
     return [f"The question names {named.name}."], [named], []
 
 
+def company_lines(user, targets, question, *, today, rates=None):
+    """A facts line for each of the first FACT_COMPANIES targets, then the
+    records of the first RECORD_COMPANIES through the existing retrieval, each
+    read under its own rule for `user` (the second filter). `targets` must
+    already be inside the asker's filtered, visible book — this narrows
+    nothing."""
+    organisation = user.organisation
+    rates = rates_for(organisation) if rates is None else rates
+    lines, sources = [], []
+    for customer in targets[:FACT_COMPANIES]:
+        lines.extend(_facts_lines(customer, organisation, rates, today))
+    limit = RECORDS_FOR_ONE if len(targets) == 1 else RECORDS_FOR_MANY
+    for customer in targets[:RECORD_COMPANIES]:
+        items = retrieve_with_sources(customer, limit=limit, query=question, viewer=user)
+        if items:
+            lines.append(f"Records for {customer.name}:")
+            lines.extend(f"  - {item.line}" for item in items)
+            sources.extend(item.source for item in items)
+    return lines, sources
+
+
 def build_dashboard_grounding(user, context, question, *, today=None, now=None):
     today = today or timezone.localdate()
     now = now or timezone.now()
-    organisation = user.organisation
     filters = context["filters"]
 
     area = context["area"]
@@ -365,20 +404,31 @@ def build_dashboard_grounding(user, context, question, *, today=None, now=None):
 
     lines = _header(user, context)
     lines.extend(AREA_DIGESTS[area](user, filters, customers, today=today, now=now))
-    focus_lines, targets, sources = _focus(user, context.get("focus"), question, book)
+    focus_lines, targets, sources = focus_targets(user, context.get("focus"), question, book)
     lines.extend(focus_lines)
-
-    rates = rates_for(organisation)
-    for customer in targets[:FACT_COMPANIES]:
-        lines.extend(_facts_lines(customer, organisation, rates, today))
-
-    limit = RECORDS_FOR_ONE if len(targets) == 1 else RECORDS_FOR_MANY
-    for customer in targets[:RECORD_COMPANIES]:
-        items = retrieve_with_sources(customer, limit=limit, query=question, viewer=user)
-        if items:
-            lines.append(f"Records for {customer.name}:")
-            lines.extend(f"  - {item.line}" for item in items)
-            sources.extend(item.source for item in items)
+    record_lines, record_sources = company_lines(user, targets, question, today=today)
+    lines.extend(record_lines)
+    sources.extend(record_sources)
 
     company = targets[0] if len(targets) == 1 else None
-    return Grounding("\n".join(lines), sources, company)
+    return Grounding(
+        "\n".join(lines),
+        sources,
+        company,
+        customer_ids=_grounded_ids(user, filters, area, customers, targets),
+    )
+
+
+def _grounded_ids(user, filters, area, customers, targets):
+    """Every customer this digest could have drawn on: the shared book, the
+    Support screen's own wider book when that area's figures loaded it (no
+    lifecycle filter there — `dashboard_figures.support_book`), and the
+    targets."""
+    grounded = {customer.pk for customer in customers}
+    grounded |= {customer.pk for customer in targets}
+    if area in ("overview", "support") and (
+        dashboard_figures.support_book(filters, customers) is None
+    ):
+        support = forecast.filtered_customers(user, dashboard_figures.support_filters(filters))
+        grounded |= set(support.values_list("pk", flat=True))
+    return sorted(grounded)

@@ -31,10 +31,11 @@ class Conversation(models.Model):
     origin = models.JSONField(
         null=True,
         blank=True,
-        help_text="Where the conversation started on the Dashboard: the first dashboard "
-        "message's context without its focus ({surface, area, view, filters}). Set once, "
-        "never overwritten. Null for a conversation that never had a dashboard message. "
-        "Ids and filter values only.",
+        help_text="Where the conversation started: the first Ask message's context without "
+        "its focus — on the Dashboard {surface, area, view, filters}, on Organizations "
+        "{surface, view, filters, labels}. Set once, never overwritten. Null for a "
+        "conversation that never had an Ask message. Ids, filter values and server-built "
+        "filter labels only, never record text.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -93,10 +94,37 @@ class Message(models.Model):
     context = models.JSONField(
         null=True,
         blank=True,
-        help_text="User turns asked on the Dashboard: the validated screen context "
-        "({surface, area, view, filters, focus}) after the focus was intersected with the "
-        "asker's filtered book (services/copilot/dashboard_context.py). Ids and filter "
-        "values only, never record text. Null on every other turn.",
+        help_text="User turns asked from an Ask rail (Dashboard or Organizations): the "
+        "validated context after the focus was intersected with the asker's filtered book "
+        "(services/copilot/ask.py). Ids, filter values and server-built filter labels only, "
+        "never record text. Null on every other turn.",
+    )
+    grounded_customer_ids = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Assistant turns answering an Ask rail (Dashboard or Organizations) only: "
+        "the ids of every customer the grounding digest could have drawn on, fixed when the "
+        "answer was written (Grounding.customer_ids). A mentioned-only reader reads the reply "
+        "only if they may see every one of them (views._reply_readable_by). Ids only, never "
+        "names. Null on every other turn, on Ask replies written before it existed, and on "
+        "an Ask reply fed an earlier Ask reply with none as history; all of those fail "
+        "closed for such readers. Includes the ids of every earlier Ask reply fed to "
+        "the model as history. A reply with no context of its own that was fed an Ask "
+        "reply as history carries the union of those (or null if any had none), and is "
+        "checked the same way.",
+    )
+    carries_anomaly_text = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text="Assistant turns answering an Ask rail only, fixed when the answer was "
+        "written: True when it could carry a stored, org-wide anomaly title or summary — "
+        "its own turn was anomaly-shaped (Overview, or an anomaly attention focus) and the "
+        "asker then saw every account, or an earlier reply fed to it as history could. A "
+        "reader who does not see every account never reads such a reply. Null (a reply "
+        "written before it existed) is read as True. On a reply with no context of its "
+        "own it is set only when that reply was fed an Ask reply as history, and marks "
+        "it as one to check against grounded_customer_ids; null there means a plain "
+        "reply, checked per source only.",
     )
     reply_to = models.ForeignKey(
         "self",

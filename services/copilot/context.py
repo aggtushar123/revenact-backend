@@ -90,6 +90,12 @@ class Grounding:
     #: The customer or account the question was found to be about, if any —
     #: so a caller can attach things (a routed question) to it.
     company: object = None
+    #: Ask surfaces only: the sorted ids of every customer the digest could
+    #: have drawn on — the asker's whole filtered book as it stood, plus any
+    #: company the focus or question named. Stored on the reply
+    #: (`Message.grounded_customer_ids`) so a shared reader is checked against
+    #: what the answer was built from, not a book rebuilt after data moved.
+    customer_ids: list | None = None
 
 
 def build_org_context_summary(organisation, user, query: str = "") -> str:

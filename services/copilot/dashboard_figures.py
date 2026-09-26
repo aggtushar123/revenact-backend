@@ -170,7 +170,7 @@ def _most_urgent(user, open_tickets, params, customers=None):
     return [{"id": pk, "name": book[pk].name, "open_urgent": n} for pk, n in ranked[:LIST_LIMIT]]
 
 
-def _support_book(filters, customers):
+def support_book(filters, customers):
     """The shared book is the Support book only when no lifecycle filter
     narrowed it: the Support screen has none, and a narrower book must never
     stand in for a wider one. Otherwise None, and Support loads its own."""
@@ -204,7 +204,7 @@ def support_figures(user, filters, *, today, customers=None):
         "open_count": open_count,
         "oldest_open_days": oldest,
         "priority_by_status": split,
-        "most_urgent": _most_urgent(user, open_tickets, params, _support_book(filters, customers)),
+        "most_urgent": _most_urgent(user, open_tickets, params, support_book(filters, customers)),
     }
 
 

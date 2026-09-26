@@ -192,6 +192,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | MCP server | Built | An agent outside Revenact reads as the person whose token it holds, read-only, under their own visibility |
 | Dashboard Overview — "Needs attention" | Built | Renewal, risk, going-quiet, support and anomaly items scored by ARR at stake × urgency, twice-filtered like every other dashboard; per-user snooze (a number of days, or Done) that reappears early if the item gets worse |
 | Ask Revenact on the Dashboard | Built (backend) | Questions asked on the Dashboard carry where they were asked; the server recomputes that area's figures for the asker's own filtered book with the same code as the screen, adds the records behind the companies asked about under their own rules, and answers only from those. Metered as its own purpose; one history across Communications, Copilot and Dashboard, tagged with where each conversation started |
+| Ask Revenact on Organizations | Built (backend) | The Ask rail on Organizations sends the list's view and filters. The server recomputes the asker's own filtered list with the portfolio's code (tiles, sections, the ten riskiest accounts, renewals inside 90 days), adds the records behind the account opened, and answers only from those. It is metered as its own purpose. History is tagged "Organizations · <filters>", and reopening a conversation restores the list |
 
 ### 5.4 Multiplayer Copilot (the centerpiece)
 
@@ -309,3 +310,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-18 | Agent skill sets vendored in both repos; Playwright agent CLI in the frontend |
 | 2026-09-24 | Dashboard attention list; Ask Revenact on the Dashboard (backend) |
 | 2026-09-25 | Organizations portfolio (backend): portfolio endpoint, export, bulk edit |
+| 2026-09-26 | Ask Revenact on Organizations (backend) |

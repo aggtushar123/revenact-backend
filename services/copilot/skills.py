@@ -79,6 +79,29 @@ SKILLS = (
         "/dashboard",
     ),
     Skill(
+        "organizations",
+        "Ask Revenact on Organizations",
+        "Answers a question about the accounts in view on Organizations, from the same list "
+        "and the records behind it.",
+        (
+            "The asker's list recomputed for its view and filters: the summary tiles, the "
+            "sections, the ten riskiest accounts and the renewals due within 90 days",
+            "The records retrieval finds for the companies asked about, under the asker's "
+            "own visibility",
+            "The conversation so far",
+        ),
+        ("Answer in prose", "Quote the records it used as sources on the reply"),
+        (
+            "Change a record",
+            "Send anything to a customer",
+            "See accounts outside the asker's filtered book",
+            "Take figures from the client",
+        ),
+        "A person asks from the Organizations page's Ask rail",
+        "Any signed-in user, while the organisation's AI agent is enabled",
+        "/organizations",
+    ),
+    Skill(
         "headlines",
         "Account headlines",
         "Summarises one account's last three months of real activity into headlines.",

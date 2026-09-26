@@ -72,6 +72,21 @@ def origin_of(context):
     return {key: value for key, value in context.items() if key != "focus"}
 
 
+def company_ids(focus):
+    """A companies focus's ids, checked for shape and size — the same 400 on
+    every Ask surface."""
+    ids = focus.get("ids")
+    if not isinstance(ids, list) or not all(
+        isinstance(pk, int) and not isinstance(pk, bool) for pk in ids
+    ):
+        raise serializers.ValidationError({"focus": {"ids": ["A list of company ids."]}})
+    if len(ids) > MAX_FOCUS_IDS:
+        raise serializers.ValidationError(
+            {"focus": {"ids": [f"At most {MAX_FOCUS_IDS} companies."]}}
+        )
+    return ids
+
+
 class DashboardContextSerializer(serializers.Serializer):
     """Validates a send's `context`. Needs `context={"user": user}`."""
 
@@ -101,15 +116,7 @@ class DashboardContextSerializer(serializers.Serializer):
         user = self.context["user"]
         kind = focus.get("kind")
         if kind == "companies":
-            ids = focus.get("ids")
-            if not isinstance(ids, list) or not all(
-                isinstance(pk, int) and not isinstance(pk, bool) for pk in ids
-            ):
-                raise serializers.ValidationError({"focus": {"ids": ["A list of company ids."]}})
-            if len(ids) > MAX_FOCUS_IDS:
-                raise serializers.ValidationError(
-                    {"focus": {"ids": [f"At most {MAX_FOCUS_IDS} companies."]}}
-                )
+            ids = company_ids(focus)
             # SOC2:AUTH-02 a focus is narrowed to the viewer's filtered, visible book;
             # ids outside it are dropped without saying so
             kept = (

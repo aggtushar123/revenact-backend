@@ -54,22 +54,24 @@ class ConversationListSerializer(serializers.ModelSerializer):
     """No nested `messages` — powers the sidebar's own chat-history list,
     which only ever shows a title and a relative time, never a preview
     of the content itself. The title is the first turn's opening words,
-    so it goes through views.title_for for the requesting viewer (a
-    neutral "Shared conversation" when that turn isn't theirs to read)."""
-
-    title = serializers.SerializerMethodField()
+    so it goes through views.header_for for the requesting viewer (a
+    neutral "Shared conversation" when that turn isn't theirs to read), and
+    so does `origin`, the first turn's Ask context (null for that viewer)."""
 
     class Meta:
         model = Conversation
         fields = ["id", "title", "origin", "created_at", "updated_at"]
 
-    def get_title(self, obj):
-        from .views import title_for
-
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
         request = self.context.get("request")
-        if request is None:
-            return obj.title
-        return title_for(obj, request.user)
+        if request is not None:
+            from .views import header_for
+
+            # SOC2:AUTH-02 the title and origin are the first turn's words and
+            # context: a reader who may not read that turn gets neither
+            data["title"], data["origin"] = header_for(instance, request.user)
+        return data
 
 
 class ConversationDetailSerializer(serializers.ModelSerializer):
@@ -78,10 +80,11 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
     every turn when read outside a view. `visibility` says whether that is
     the whole conversation ("full") or the slice a mentioned person gets
     ("partial"), so the screen can say so. `title` is `_title` when the
-    view set it (views.title_for — neutral unless the first turn is the
-    viewer's to read)."""
+    view set it (views.header_for — neutral unless the first turn is the
+    viewer's to read), and `origin` is `_origin` likewise (null then)."""
 
     title = serializers.SerializerMethodField()
+    origin = serializers.SerializerMethodField()
     messages = serializers.SerializerMethodField()
     visibility = serializers.SerializerMethodField()
 
@@ -91,6 +94,9 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
 
     def get_title(self, obj):
         return getattr(obj, "_title", obj.title)
+
+    def get_origin(self, obj):
+        return getattr(obj, "_origin", obj.origin)
 
     def get_messages(self, obj):
         turns = getattr(obj, "_visible_messages", None)
