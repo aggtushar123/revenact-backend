@@ -575,7 +575,7 @@ class CustomerForecastView(views.APIView):
         organisation = request.user.organisation
         customers = list(forecast.filtered_customers(request.user, request.query_params))
         horizon = forecast.horizon_days(request.query_params)
-        rows = forecast.build_rows(customers, organisation, horizon=horizon)
+        rows = forecast.build_rows(customers, organisation, viewer=request.user, horizon=horizon)
 
         segment = drill.parse_segment(
             request.query_params,
@@ -608,7 +608,9 @@ class CustomerForecastView(views.APIView):
                 "horizon_days": horizon,
                 "bridge": forecast.build_bridge(rows),
                 "scenarios": forecast.build_scenarios(rows),
-                "pipeline": forecast.pipeline_by_stage(customers, organisation),
+                "pipeline": forecast.pipeline_by_stage(
+                    customers, organisation, viewer=request.user
+                ),
                 "swing": forecast.swing_list(rows),
                 "accounts": len(rows),
                 "unpriced_count": sum(1 for row in rows if row.arr is None),

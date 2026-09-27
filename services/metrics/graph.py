@@ -39,7 +39,9 @@ def _edge(source, target, kind):
 def build_graph(organisation):
     actor = SystemActor(organisation)
     customers = list(forecast.filtered_customers(actor, {}))
-    rows = forecast.build_rows(customers, organisation, horizon=forecast.horizon_days({}))
+    rows = forecast.build_rows(
+        customers, organisation, viewer=actor, horizon=forecast.horizon_days({})
+    )
     rows.sort(key=lambda r: -r.arr)
     rows = rows[:CUSTOMER_LIMIT]
     open_tasks = {

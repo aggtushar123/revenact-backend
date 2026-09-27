@@ -1510,6 +1510,15 @@ Query params: `horizon_days` (default 365, **clamped** to 30–1095 rather
 than rejected), plus the usual `owner` / `lifecycle` / `customer`, plus
 `drill`.
 
+**Only pipeline the caller could list counts.** Opportunities and Risks
+feed contraction, expansion, the scenarios and `pipeline` only when the
+Pipelines board would show them to the caller: their department's or an
+undeparted one (`pipeline_visible_q`), and an account-level one only on an
+account they may open (`visible_accounts` — seeing its organisation is not
+enough). `forecast.readable_pipeline_q`. Whole-organisation jobs (metric
+snapshots, the Ops agent, the Brain graph) pass a `SystemActor` and count
+everything.
+
 **Drill.** `?drill=` opens a bridge step into the companies behind it:
 `at_risk` (every account carrying downside — churn and contraction
 together), `churn`, `contraction` or `expansion`. These are the exact
