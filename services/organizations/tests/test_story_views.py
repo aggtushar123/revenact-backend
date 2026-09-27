@@ -290,14 +290,15 @@ class StoryQueryCountTests(StoryEndpointFixture):
         self.assertEqual(small, self.EXPECTED)
 
     def test_a_csm_s_count_does_not_grow_with_the_book_either(self):
-        # 34: the admin's 33, plus one extra query — a CSM is not `sees_everything`,
-        # so `visible_customers` adds its own org-chart lookup (`subtree_ids`) that
-        # the admin's shortcut skips.
+        # 35: the admin's 33, plus two extra queries — a CSM is not
+        # `sees_everything`, so `visible_customers` and `visible_accounts` each
+        # add their own org-chart lookup (`subtree_ids`) that the admin's
+        # shortcut skips.
         self.book(3)
         small = self.count(self.csm)
         self.book(12)
         self.assertEqual(self.count(self.csm), small)
-        self.assertEqual(small, 34)
+        self.assertEqual(small, 35)
 
     def test_the_next_page_costs_the_same(self):
         self.book(5)

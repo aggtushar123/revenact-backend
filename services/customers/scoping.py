@@ -11,7 +11,8 @@ The rule, for a user *without* `view_all_accounts`:
 * A **Customer** is visible if you own it, if you own one of its
   Accounts, or if nobody owns it.
 * An **Account** is visible if you own it, if you own one of its parent
-  Customers, or if nobody owns it.
+  Customers, if someone below you in the org chart owns either, or if
+  nobody owns it.
 
 Reaching in both directions is deliberate. Owning "Apple Inc" gives you
 its divisions; owning "Apple EMEA" lets you see the company it belongs
@@ -149,12 +150,33 @@ def visible_accounts(user):
     owned by me" rather than requiring one single Customer to satisfy
     both at once. Within a tenant the two happen to coincide, but the
     chained form is the one that stays correct if that ever stops being
-    true."""
+    true.
+
+    The org chart reaches accounts the same way it reaches customers in
+    `visible_customers`: a manager sees an account a report owns, or one
+    under a customer a report owns, all the way down
+    (services.accounts.hierarchy). Without it a manager could open a
+    report's organisation but not the report's own division inside it.
+
+    Deliberately *not* widened for `visible_customers`' knowledge-layer
+    reach (function owners, questions, contributions): those open an
+    organisation's page so a question can be answered there, not its
+    accounts — a separate decision."""
 
     base = Account.objects.filter(customers__organisation=user.organisation)
     if sees_everything(user):
         return base.distinct()
-    return base.filter(Q(owner=user) | Q(customers__owner=user) | Q(owner__isnull=True)).distinct()
+    from services.accounts.hierarchy import subtree_ids
+
+    reports = subtree_ids(user)
+    # SOC2:AUTH-02 an account is visible to its owner's management chain
+    return base.filter(
+        Q(owner=user)
+        | Q(owner_id__in=reports)
+        | Q(customers__owner=user)
+        | Q(customers__owner_id__in=reports)
+        | Q(owner__isnull=True)
+    ).distinct()
 
 
 def pipeline_visible_q(user) -> Q:

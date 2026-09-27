@@ -373,14 +373,16 @@ class StoryQueryCountTests(StoryFixture):
         searched, _ = self.queries(limit="5", q="sso", account=str(self.emea.pk))
         self.assertEqual(small, large)
         self.assertEqual(large, after)
-        # The scope (3), the org chart for mail, notes and tasks (3), health (1),
+        # The scope (4: `visible_accounts` walks the org chart too, so a
+        # manager sees their reports' accounts), the org chart for mail, notes
+        # and tasks (3), health (1),
         # one page query and one count per record source (8 + 8), then the
         # attention block's own aggregates and rules (8): tickets, tasks,
         # the questions rule's org chart plus its count, and the anomaly
         # rule's org chart plus its evidence query. Both book sizes carry a
         # real open High ticket, open question and live anomaly (see `fill`),
         # so this is the cost of an attention block with content, not an
-        # empty one; it stays 31 because those rules are aggregates/`.first()`
+        # empty one; it stays 32 because those rules are aggregates/`.first()`
         # calls, never one query per matching row.
-        self.assertEqual(large, 31)
+        self.assertEqual(large, 32)
         self.assertLessEqual(searched, large)
