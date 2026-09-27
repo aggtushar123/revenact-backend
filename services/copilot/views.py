@@ -392,7 +392,7 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
     `reader` (`_Reader`) carries what one conversation read knows about the
     viewer, so the snapshot costs one query per read, not one per reply; a
     reader who sees every account skips the id check entirely."""
-    from services.customers.scoping import visible_customers
+    from services.customers.scoping import visible_accounts, visible_customers
     from services.knowledge.models import Contribution
     from services.knowledge.views import visible_contributions
 
@@ -458,11 +458,9 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
             if not visible_customers(user).filter(pk=source.get("company_id")).exists():
                 return False
         elif source.get("company_type") == "account":
-            from services.customers.models import Account
-
-            if not Account.objects.filter(
-                pk=source.get("company_id"), customers__in=visible_customers(user)
-            ).exists():
+            # SOC2:AUTH-02 an account-level record follows its own account's
+            # visibility; seeing the account's organisation is not enough
+            if not visible_accounts(user).filter(pk=source.get("company_id")).exists():
                 return False
     return True
 

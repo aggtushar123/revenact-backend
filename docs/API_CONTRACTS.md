@@ -4390,7 +4390,9 @@ carry `visibility: "full" | "partial"` and each turn its `author`
 redirect events). A follow-up posted by a mentioned person is grounded
 and given history from their slice only. **A Copilot reply is withheld
 from a sliced viewer when it cites a record they may not read** — a
-contribution outside their scope, a customer they may not open — and
+contribution outside their scope, a customer they may not open, an
+account-level record on an account they may not open (`visible_accounts`;
+seeing the account's organisation is not enough) — and
 shows as "This reply isn't shared with you…" instead (`copilot.views.
 _reply_readable_by`); the stored turn is untouched. Pairing a reply with
 the question it answers uses `Message.reply_to`, set on every new reply
