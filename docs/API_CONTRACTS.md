@@ -809,8 +809,11 @@ organisation-wide, deliberately **not** narrowed to
 section below and `services/copilot/context.py`'s own docstring for why:
 an engineer, a sales rep or the CEO, none of whom own a book and none of
 whom may necessarily open the customer's own record, can still ask their
-Copilot about any customer in the org. The privacy boundary is enforced
-one level down instead, per record, inside `retrieve_with_sources`.
+Copilot about any customer in the org and be told who answers for it.
+Matching never reads records: `retrieve_with_sources` reads nothing on a
+company the asker may not open (`visible_accounts` for an account,
+`visible_customers` for an organisation), and then only records passing
+their own rule.
 
 #### Known consequences (accepted, not oversights)
 
@@ -3909,8 +3912,10 @@ to `visible_customers`/`visible_accounts` (any customer or account in the
 org can be named and asked about; see `services/copilot/context.py`'s own
 docstring and `test_the_copilot_grounds_only_in_what_the_asker_may_see`
 in `services/knowledge/tests/test_hierarchy.py`, which pins this): the
-privacy boundary is enforced one level down, per record, inside
-`retrieve_with_sources`. `find_mentioned_company` is a plain, free,
+privacy boundary is enforced one level down, inside
+`retrieve_with_sources`: nothing is read on a company the asker may not
+open (`visible_accounts` / `visible_customers`), and on one they may, only
+records passing their own rule. `find_mentioned_company` is a plain, free,
 case-insensitive substring match of the question against those company
 names, tried first; if that fails, `find_relevant_company_semantic` (see
 `services/copilot/embeddings.py`) embeds the question against each
@@ -4052,7 +4057,10 @@ and no conversation is stored. `email` is a filed `customers.Email` on a
 customer or account the person may open (`visible_children_q` — an account's
 mail needs the account itself visible), under the mailbox visibility rule (the
 whole thread on that mailbox goes into the prompt);
-`mail_message` is a row of the person's own inbox, owner only. The prompt
+`mail_message` is a row of the person's own inbox, owner only; when that row
+is filed on a customer or account the person may not open, the draft is
+written from the thread alone, with no account history and no company name.
+The prompt
 carries the thread plus up to eight of the account's most relevant records from
 the same retrieval the Copilot answers with (`retrieve_with_sources`), and those
 records come back as `sources` in the message-source shape (`type, id, label,
@@ -4410,10 +4418,15 @@ carry `visibility: "full" | "partial"` and each turn its `author`
 (`Message.author`, backfilled for older turns from the session's
 redirect events). A follow-up posted by a mentioned person is grounded
 and given history from their slice only. **A Copilot reply is withheld
-from a sliced viewer when it cites a record they may not read** — a
-contribution outside their scope, a customer they may not open, an
-account-level record on an account they may not open (`visible_accounts`;
-seeing the account's organisation is not enough) — and
+from a viewer when it cites a record they may not read** — every cited
+record (email, note, ticket, contribution, activity, …) needs its company
+open to the viewer (`visible_accounts` for an account-level record — seeing
+the account's organisation is not enough — `visible_customers` for an
+organisation-level one) *and* must pass its own rule (a contribution
+outside their scope, mail outside their chain, another department's
+ticket). Strict by design: someone who loses access to a company stops
+seeing replies that quoted its records, their own questions' replies
+included — and
 shows as "This reply isn't shared with you…" instead (`copilot.views.
 _reply_readable_by`); the stored turn is untouched. Pairing a reply with
 the question it answers uses `Message.reply_to`, set on every new reply

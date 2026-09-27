@@ -429,6 +429,15 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
                     return False
 
     for source in turn.sources or []:
+        # SOC2:AUTH-02 strict: every cited record's company must be one the
+        # viewer may open — an account by its own rule, never through its
+        # organisation — on top of the record's own rule below
+        if source.get("company_type") == "customer":
+            if not visible_customers(user).filter(pk=source.get("company_id")).exists():
+                return False
+        elif source.get("company_type") == "account":
+            if not visible_accounts(user).filter(pk=source.get("company_id")).exists():
+                return False
         if source.get("type") == "contribution":
             rows = Contribution.objects.filter(pk=source.get("id"))
             if rows.exists() and not visible_contributions(user, rows).exists():
@@ -453,14 +462,6 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
 
             rows = Ticket.objects.filter(pk=source.get("id"))
             if rows.exists() and not visible_tickets(user, rows).exists():
-                return False
-        elif source.get("company_type") == "customer":
-            if not visible_customers(user).filter(pk=source.get("company_id")).exists():
-                return False
-        elif source.get("company_type") == "account":
-            # SOC2:AUTH-02 an account-level record follows its own account's
-            # visibility; seeing the account's organisation is not enough
-            if not visible_accounts(user).filter(pk=source.get("company_id")).exists():
                 return False
     return True
 
@@ -1450,6 +1451,14 @@ class ModelBudgetView(APIView):
 DRAFT_SOURCES = 8
 
 
+def _company_open_to(user, company):
+    from services.customers.models import Account
+    from services.customers.scoping import visible_accounts, visible_customers
+
+    visible = visible_accounts(user) if isinstance(company, Account) else visible_customers(user)
+    return visible.filter(pk=company.pk).exists()
+
+
 def _org_emails(user):
     """Every filed email the person may read: on a customer or account they
     may open, then the mailbox rule (owner and management chain) on top."""
@@ -1510,6 +1519,11 @@ class DraftReplyView(APIView):
         else:
             row = get_object_or_404(MailMessage.objects.filter(owner=request.user), pk=pk)
             company = (row.email.customer or row.email.account) if row.email_id else None
+            if company is not None and not _company_open_to(request.user, company):
+                # SOC2:AUTH-02 the row is the person's own mail, but the company
+                # it was filed on is not theirs to read: draft from the thread
+                # alone, with no account history and no company name
+                company = None
             subject = row.subject
             sender = row.from_name or row.from_address
             thread_text = f"{sender} ({row.sent_at:%Y-%m-%d}): {row.body or row.snippet}"

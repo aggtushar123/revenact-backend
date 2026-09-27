@@ -166,7 +166,17 @@ class KnowledgeScopeTests(ChartFixture):
 
         self.note(self.raj, "SALES-ONLY procurement stalled")
         self.note(self.alice, "LEADERSHIP board wants this kept")
+        # Priya may not open Pizza Hut: the company is named (and who answers
+        # for it), but nothing on it is quoted — the Copilot is strict.
         summary = build_grounding(self.org, self.priya, query="What about Pizza Hut?").summary
+        self.assertIn("Responsible for Pizza Hut", summary)
+        self.assertNotIn("LEADERSHIP board", summary)
+        self.assertNotIn("SALES-ONLY", summary)
+        # Once she has written on it herself she may open it, and reads what
+        # her scope permits: leadership's note, not sales'.
+        self.note(self.priya, "ENGINEERING fix is scheduled")
+        priya = User.objects.get(pk=self.priya.pk)
+        summary = build_grounding(self.org, priya, query="What about Pizza Hut?").summary
         self.assertIn("LEADERSHIP board", summary)
         self.assertNotIn("SALES-ONLY", summary)
 

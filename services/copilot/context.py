@@ -31,11 +31,14 @@ necessarily *open* the customer's own record — can still ask their
 Copilot about any customer in the org and be told who's responsible for
 it, same as the knowledge layer's own "asked about" reach
 (`services.knowledge`; `test_the_copilot_grounds_only_in_what_the_asker_may_see`
-pins this). The privacy boundary lives one level down instead, in
-`retrieve_with_sources`/`_gather_candidates`' own per-record `viewer`
-checks (`visible_notes`/`visible_emails`/`visible_tickets`/
-`visible_contributions`) — the company can be *named*, but only the
-content the asker may actually see is ever quoted back to them.
+pins this). Matching is only for working out which company a question is
+about, never for reading records: `retrieve_with_sources`/
+`_gather_candidates` read nothing on a company the asker may not open
+(`visible_accounts` for an account, `visible_customers` for an
+organisation), and then only records passing their own rule
+(`visible_notes`/`visible_emails`/`visible_tickets`/
+`visible_contributions`) — the company can be *named*, but only content
+the asker may actually see is ever quoted back to them.
 
 Aggregates in Python over the caller's own rows, same reasoning as
 CustomerStatsView's own docstring: health_category is a derived Python
