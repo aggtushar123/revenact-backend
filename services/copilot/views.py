@@ -297,6 +297,43 @@ def visible_messages(conversation, user):
     return kept
 
 
+def _contribution_rule():
+    from services.knowledge.models import Contribution
+    from services.knowledge.views import visible_contributions
+
+    return Contribution, visible_contributions
+
+
+def _email_rule():
+    from services.customers.models import Email
+
+    return Email, visible_emails
+
+
+def _note_rule():
+    from services.customers.models import Note
+    from services.customers.personal import visible_notes
+
+    return Note, visible_notes
+
+
+def _ticket_rule():
+    from services.customers.models import Ticket
+    from services.customers.personal import visible_tickets
+
+    return Ticket, visible_tickets
+
+
+#: Cited record kinds with an object-level rule of their own, beyond their
+#: company: kind -> () -> (model, rule(user, queryset)).
+RECORD_RULES = {
+    "contribution": _contribution_rule,
+    "email": _email_rule,
+    "note": _note_rule,
+    "ticket": _ticket_rule,
+}
+
+
 class _Reader:
     """What one read of a conversation needs to know about its reader,
     worked out at most once however many Ask replies it holds: whether they
@@ -324,6 +361,51 @@ class _Reader:
         if not stored:
             return set()
         return set(visible_customers(self.user).filter(pk__in=stored).values_list("pk", flat=True))
+
+    @cached_property
+    def visible_company_ids(self):
+        """`{"customer": ids, "account": ids}`: of the companies any reply
+        here cites, those the reader may open — two queries for the union,
+        not one per source."""
+        from services.customers.scoping import visible_accounts, visible_customers
+
+        cited = {"customer": set(), "account": set()}
+        for turn in self.turns:
+            for source in turn.sources or []:
+                if source.get("company_type") in cited:
+                    cited[source["company_type"]].add(source.get("company_id"))
+        rules = {"customer": visible_customers, "account": visible_accounts}
+        return {
+            kind: (
+                set(rules[kind](self.user).filter(pk__in=ids).values_list("pk", flat=True))
+                if ids
+                else set()
+            )
+            for kind, ids in cited.items()
+        }
+
+    def readable_ids(self, kind):
+        """`(existing, readable)` ids of the `kind` records any reply here
+        cites: two queries per kind for the union, cached. A cited record
+        since deleted is in neither, and passes, as it always has."""
+        cache = self.__dict__.setdefault("_readable_ids", {})
+        if kind not in cache:
+            model, rule = RECORD_RULES[kind]()
+            ids = {
+                source.get("id")
+                for turn in self.turns
+                for source in turn.sources or []
+                if source.get("type") == kind and isinstance(source.get("id"), int)
+            }
+            if not ids:
+                cache[kind] = (set(), set())
+            else:
+                rows = model.objects.filter(pk__in=ids)
+                cache[kind] = (
+                    set(rows.values_list("pk", flat=True)),
+                    set(rule(self.user, rows).values_list("pk", flat=True)),
+                )
+        return cache[kind]
 
     @cached_property
     def visible_pipeline_account_ids(self):
@@ -407,10 +489,6 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
     `reader` (`_Reader`) carries what one conversation read knows about the
     viewer, so the snapshot costs one query per read, not one per reply; a
     reader who sees every account skips the id check entirely."""
-    from services.customers.scoping import visible_accounts, visible_customers
-    from services.knowledge.models import Contribution
-    from services.knowledge.views import visible_contributions
-
     asked_here = user_turn is not None and bool(user_turn.context)
     fed_ask = user_turn is not None and not asked_here and _is_fed_followup(turn)
     if asked_here or fed_ask:
@@ -453,40 +531,19 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
                 if not pipeline_readable_by(user, pipeline, reader.visible_pipeline_account_ids):
                     return False
 
+    reader = reader or _Reader(user, [turn])
+    companies = reader.visible_company_ids
     for source in turn.sources or []:
         # SOC2:AUTH-02 strict: every cited record's company must be one the
         # viewer may open — an account by its own rule, never through its
         # organisation — on top of the record's own rule below
-        if source.get("company_type") == "customer":
-            if not visible_customers(user).filter(pk=source.get("company_id")).exists():
-                return False
-        elif source.get("company_type") == "account":
-            if not visible_accounts(user).filter(pk=source.get("company_id")).exists():
-                return False
-        if source.get("type") == "contribution":
-            rows = Contribution.objects.filter(pk=source.get("id"))
-            if rows.exists() and not visible_contributions(user, rows).exists():
-                return False
-        elif source.get("type") == "email":
-            from services.customers.models import Email
-            from services.mail.visibility import visible_emails
-
-            rows = Email.objects.filter(pk=source.get("id"))
-            if rows.exists() and not visible_emails(user, rows).exists():
-                return False
-        elif source.get("type") == "note":
-            from services.customers.models import Note
-            from services.customers.personal import visible_notes
-
-            rows = Note.objects.filter(pk=source.get("id"))
-            if rows.exists() and not visible_notes(user, rows).exists():
-                return False
-        elif source.get("type") == "ticket":
-            from services.customers.models import Ticket
-            from services.customers.personal import visible_tickets
-
-            rows = Ticket.objects.filter(pk=source.get("id"))
-            if rows.exists() and not visible_tickets(user, rows).exists():
+        company_type = source.get("company_type")
+        if company_type in companies and source.get("company_id") not in companies[company_type]:
+            return False
+        kind = source.get("type")
+        if kind in RECORD_RULES:
+            existing, readable = reader.readable_ids(kind)
+            if source.get("id") in existing and source.get("id") not in readable:
                 return False
     return True
 
