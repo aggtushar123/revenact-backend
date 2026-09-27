@@ -325,6 +325,21 @@ class _Reader:
             return set()
         return set(visible_customers(self.user).filter(pk__in=stored).values_list("pk", flat=True))
 
+    @cached_property
+    def visible_pipeline_account_ids(self):
+        """Of the accounts any reply here counted pipeline on, those the
+        reader may open: one query for the union."""
+        from services.customers.scoping import visible_accounts
+
+        stored = set()
+        for turn in self.turns:
+            pipeline = _stored_pipeline(turn)
+            if pipeline is not None:
+                stored |= set(pipeline["account_ids"])
+        if not stored:
+            return set()
+        return set(visible_accounts(self.user).filter(pk__in=stored).values_list("pk", flat=True))
+
 
 REDACTED_REPLY = "This reply isn't shared with you: it draws on records outside what you may see."
 
@@ -426,6 +441,16 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
                 # was written, never re-read: a missing value reads as "could
                 # carry one".
                 if turn.carries_anomaly_text is not False:
+                    return False
+                # SOC2:AUTH-02 and could list every opportunity and risk its
+                # figures counted — accounts and departments fixed when it was
+                # written; a reply that could carry pipeline with none fails closed
+                pipeline = _pipeline_of(turn, user_turn)
+                if pipeline is None:
+                    return False
+                from services.customers.forecast import pipeline_readable_by
+
+                if not pipeline_readable_by(user, pipeline, reader.visible_pipeline_account_ids):
                     return False
 
     for source in turn.sources or []:
@@ -533,6 +558,84 @@ def ask_snapshot(user, ask, grounding, fed):
     if carries is None:
         return None, None
     return (None if grounded is None else sorted(grounded)), carries
+
+
+#: A pipeline snapshot that counted nothing.
+NO_PIPELINE = {"account_ids": [], "departments": []}
+
+#: Dashboard areas whose digest folds in pipeline figures (mirrors
+#: `dashboard_grounding.PIPELINE_AREAS`).
+PIPELINE_AREAS = ("overview", "revenue")
+
+
+def pipeline_snapshot(ask, grounding, fed):
+    """`Message.grounded_pipeline` for a new Ask-shaped reply: its own
+    grounding's pipeline (an Ask send), folded with every Ask reply it was
+    fed as history — the same walk and the same None-is-sticky rule as
+    `ask_snapshot`. None fails closed for slice readers."""
+    if ask is not None:
+        snapshot = _well_formed_pipeline(grounding.pipeline)
+    else:
+        snapshot = NO_PIPELINE
+    last_user_turn = None
+    for turn in fed:
+        if turn.role == Message.Role.USER:
+            last_user_turn = turn
+            continue
+        if getattr(turn, "withheld", False):
+            continue
+        answered = turn.reply_to if turn.reply_to_id else last_user_turn
+        from_ask = answered is not None and bool(answered.context)
+        if not from_ask and ask is not None:
+            snapshot = None
+            continue
+        if not from_ask and turn.carries_anomaly_text is None:
+            continue
+        earlier = _pipeline_of(turn, answered)
+        if snapshot is None or earlier is None:
+            snapshot = None
+        else:
+            snapshot = {key: sorted(set(snapshot[key]) | set(earlier[key])) for key in NO_PIPELINE}
+    return snapshot
+
+
+def _well_formed_pipeline(value):
+    """A stored or built pipeline snapshot, or None when it is anything but
+    `{account_ids: [int], departments: [str]}`."""
+    if not isinstance(value, dict) or set(value) != set(NO_PIPELINE):
+        return None
+    ids, departments = value["account_ids"], value["departments"]
+    if not isinstance(ids, list) or not isinstance(departments, list):
+        return None
+    if not all(isinstance(pk, int) and not isinstance(pk, bool) for pk in ids):
+        return None
+    if not all(isinstance(d, str) for d in departments):
+        return None
+    return value
+
+
+def _stored_pipeline(turn):
+    return _well_formed_pipeline(turn.grounded_pipeline)
+
+
+def _pipeline_of(turn, answered):
+    """The pipeline a reply's figures rest on: its stored snapshot, or for a
+    reply written before snapshots existed, nothing when its own Ask turn's
+    digest never carried pipeline (a Dashboard Health or Support area, the
+    Organizations list) — and None, failing closed, when it could have (a
+    Dashboard Overview or Revenue reply, or a context-less reply fed Ask
+    history, whose sources are unknown)."""
+    stored = _stored_pipeline(turn)
+    if stored is not None:
+        return stored
+    if turn.grounded_pipeline is not None:
+        return None  # malformed
+    context = answered.context if answered is not None else None
+    if not isinstance(context, dict) or not context:
+        return None
+    if context.get("surface") == "dashboard" and context.get("area") in PIPELINE_AREAS:
+        return None
+    return NO_PIPELINE
 
 
 def _grounded_ids(turn):
@@ -802,6 +905,9 @@ class SendMessageView(APIView):
             # against those
             grounded_customer_ids=snapshot[0],
             carries_anomaly_text=snapshot[1],
+            grounded_pipeline=(
+                None if snapshot[1] is None else pipeline_snapshot(ask, grounding, fed)
+            ),
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
             # The real turn this reply answers, not just "whichever user turn
             # happens to sort immediately before it" — two participants

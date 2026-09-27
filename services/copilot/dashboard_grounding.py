@@ -230,6 +230,10 @@ def _support_lines(user, filters, customers, *, today, now):
 #: snapshot history.
 HISTORY_AREAS = ("overview", "health")
 
+#: Areas whose figures fold in open opportunities and risks (the forecast's
+#: expansion and contraction): their replies snapshot that pipeline.
+PIPELINE_AREAS = ("overview", "revenue")
+
 AREA_DIGESTS = {
     "overview": _overview_lines,
     "revenue": _revenue_lines,
@@ -416,6 +420,11 @@ def build_dashboard_grounding(user, context, question, *, today=None, now=None):
         sources,
         company,
         customer_ids=_grounded_ids(user, filters, area, customers, targets),
+        pipeline=(
+            forecast.counted_pipeline(customers, user)
+            if area in PIPELINE_AREAS
+            else {"account_ids": [], "departments": []}
+        ),
     )
 
 

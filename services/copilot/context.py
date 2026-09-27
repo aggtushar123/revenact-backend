@@ -99,6 +99,10 @@ class Grounding:
     #: (`Message.grounded_customer_ids`) so a shared reader is checked against
     #: what the answer was built from, not a book rebuilt after data moved.
     customer_ids: list | None = None
+    #: Ask surfaces only: the accounts and departments of the open pipeline
+    #: the digest's figures counted (`forecast.counted_pipeline`; empty lists
+    #: when none). Stored on the reply (`Message.grounded_pipeline`).
+    pipeline: dict | None = None
 
 
 def build_org_context_summary(organisation, user, query: str = "") -> str:
@@ -218,11 +222,22 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
         my_scope = Q(customer__organisation=organisation, customer__owner=user) | Q(
             account__customers__organisation=organisation, account__owner=user
         )
-        open_opportunities = Opportunity.objects.filter(my_scope).exclude(
-            stage=Opportunity.Stage.CLOSED_WON
+        from services.customers.forecast import readable_pipeline_q
+        from services.customers.personal import visible_tickets
+
+        # SOC2:AUTH-02 counts follow the viewer: pipeline by department and
+        # account (as the Pipelines board lists it), tickets by department
+        open_opportunities = (
+            Opportunity.objects.filter(my_scope)
+            .filter(readable_pipeline_q(user))
+            .exclude(stage=Opportunity.Stage.CLOSED_WON)
         )
-        open_risks = Risk.objects.filter(my_scope).exclude(stage=Risk.Stage.ABANDONED)
-        open_tickets = Ticket.objects.filter(my_scope).exclude(
+        open_risks = (
+            Risk.objects.filter(my_scope)
+            .filter(readable_pipeline_q(user))
+            .exclude(stage=Risk.Stage.ABANDONED)
+        )
+        open_tickets = visible_tickets(user, Ticket.objects.filter(my_scope)).exclude(
             status__in=[Ticket.Status.RESOLVED, Ticket.Status.CLOSED]
         )
 

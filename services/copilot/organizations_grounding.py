@@ -266,4 +266,11 @@ def build_organizations_grounding(user, context, question, *, today=None):
     # Every row the tiles, sections and lists were built from, plus the targets.
     grounded = {entry.customer.pk for entry in figures["portfolio"].entries}
     grounded |= {customer.pk for customer in targets}
-    return Grounding("\n".join(lines), sources, company, customer_ids=sorted(grounded))
+    # The portfolio carries no pipeline figures.
+    return Grounding(
+        "\n".join(lines),
+        sources,
+        company,
+        customer_ids=sorted(grounded),
+        pipeline={"account_ids": [], "departments": []},
+    )

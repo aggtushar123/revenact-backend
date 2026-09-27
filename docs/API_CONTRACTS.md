@@ -1465,6 +1465,17 @@ first, longest silence next.
 `timeline`, `sources`, `cadence`, `by_owner`, `going_dark`,
 `going_dark_threshold`, `window_days`, `currency`, `filters`.
 
+**Counts follow the viewer.** The touch counts (`timeline`, `sources`,
+`kpis.touches`), `kpis.inbound` and the task counts count only records the
+caller could read: on a customer or on an account they may open
+(`visible_children_q` — an account by its own rule), and under each
+record's own rule — mail by its mailbox chain, notes by their author's
+chain, tickets by department, tasks by creator and assignee
+(`activity_tracking.readable`). The last-contact date behind cadence and
+going-dark is an organisation fact and is not narrowed (see the Health
+Overview notes). A whole-organisation job (`SystemActor`) counts
+everything.
+
 Three definitions decide what these numbers mean, and all three are
 places a screen like this can mislead:
 
@@ -3900,7 +3911,9 @@ with `live_customers` — visible, not archived, and **not churned**
 (`services/customers/scoping.py`) — not the whole tenant's, same "My"
 framing as Cockpit's own `CockpitSummaryView`/`TaskListView`'s
 `?mine=true`: health/NPS/lifecycle breakdown, top at-risk customers, open
-opportunity/risk/ticket counts scoped to those same owned companies),
+opportunity/risk/ticket counts scoped to those same owned companies and
+to what the caller could list — pipeline under `forecast.readable_pipeline_q`
+(department and account), tickets under their department rule),
 injected into the system prompt; this is grounding, not tool-calling —
 the model can read this digest and converse, but can't run its own
 queries or take real actions.
@@ -4438,9 +4451,20 @@ top lists, company names never individually sourced — so a sliced viewer
 needs every customer in `forecast.filtered_customers(asker, the answered
 turn's context.filters)` to be inside their own visible customers, on
 top of the per-source checks above; the asker always sees their own
-dashboard replies regardless. A context-less (Communications/Copilot)
-reply keeps exactly the per-source checks for every viewer, the asker
-included.
+dashboard replies regardless. **Pipeline too:** an Overview or Revenue
+reply's figures count the open opportunities and risks the asker could
+list, so the reply stores their accounts and departments
+(`Message.grounded_pipeline`, `{account_ids, departments}` from
+`forecast.counted_pipeline`; empty lists for areas and surfaces whose digest
+counts none) and a sliced reader needs every account in their
+`visible_accounts` and every department readable under
+`pipeline_visible_q`. A follow-up fed the reply folds its snapshot in, as
+with customer ids. A reply written before the field existed has none: it
+fails closed when it could have carried pipeline (an Overview or Revenue
+reply, or a context-less reply fed Ask history) and reads as before
+otherwise — no backfill, since what an old reply counted cannot be
+re-derived. A context-less (Communications/Copilot) reply keeps exactly
+the per-source checks for every viewer, the asker included.
 
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei
 report to her; Dana to Carl.

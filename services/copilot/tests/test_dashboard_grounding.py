@@ -331,13 +331,16 @@ class QueryCountTests(DashboardFixture):
     #: The viewer's reports (`subtree_ids`) are walked once per question and
     #: memoised on the user, not once per visibility rule: overview 34/35,
     #: revenue 17, health 15, support 17/20 since (39/43, 19, 17, 20/25 before).
+    #: Overview and Revenue then add two: the reply's pipeline snapshot reads
+    #: the opportunities and risks its figures counted
+    #: (`forecast.counted_pipeline`), one query each.
     EXPECTED = {
-        ("overview", False): 34,
-        ("revenue", False): 17,
+        ("overview", False): 36,
+        ("revenue", False): 19,
         ("health", False): 15,
         ("support", False): 17,
-        ("overview", True): 35,
-        ("revenue", True): 17,
+        ("overview", True): 37,
+        ("revenue", True): 19,
         ("health", True): 15,
         ("support", True): 20,
     }

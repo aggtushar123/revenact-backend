@@ -378,3 +378,87 @@ class ActivityTrackingViewTests(APITestCase):
 
         self.assertEqual([row["name"] for row in options["customers"]], ["Acme"])
         self.assertEqual([row["name"] for row in options["owners"]], ["Carl"])
+
+
+class ActivityTrackingFollowsTheViewerTests(APITestCase):
+    """Touch, inbound and task counts count only what the viewer could read:
+    records on accounts they may open, under each record's own rule (mail by
+    its mailbox chain, notes by their author's chain, tickets by department,
+    tasks by creator and assignee)."""
+
+    url = "/api/v1/customers/activity/"
+
+    def setUp(self):
+        from services.customers.tests.test_views import blind_to_one_account
+
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(
+            organisation=self.org, name="Globex", lifecycle_stage=Customer.LifecycleStage.LIVE
+        )
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.customer)
+        self.colleague = self.customer.owner
+        self.admin = User.objects.create_user(
+            email="admin@acme.io",
+            password="x",
+            name="Admin",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+            function=User.Function.LEADERSHIP,
+        )
+        # The colleague reports to the admin, so every record rule below lets
+        # the admin read their mail, notes and tasks too.
+        self.colleague.reports_to = self.admin
+        self.colleague.save(update_fields=["reports_to"])
+        today = timezone.localdate()
+        now = timezone.now()
+        for parent in (self.seen, self.hidden):
+            Activity.objects.create(account=parent, type="other", occurred_at=today)
+            Email.objects.create(account=parent, subject="Hi", body="x", sent_at=now)
+            Ticket.objects.create(
+                account=parent, ticket_number=f"T-{parent.pk}", title="t", opened_at=today
+            )
+            Task.objects.create(account=parent, title="Follow up", due_date=today)
+        # On the seen account, but outside the viewer's own record rules.
+        Email.objects.create(
+            account=self.seen, subject="Theirs", body="x", sent_at=now, mailbox_owner=self.colleague
+        )
+        Note.objects.create(
+            account=self.seen, title="Theirs", body="x", logged_at=today, author=self.colleague
+        )
+        Ticket.objects.create(
+            account=self.seen,
+            ticket_number="T-eng",
+            title="t",
+            opened_at=today,
+            department=User.Function.ENGINEERING,
+        )
+        Task.objects.create(
+            account=self.seen,
+            title="Theirs",
+            due_date=today,
+            created_by=self.colleague,
+            assignee=self.colleague,
+        )
+
+    def kpis(self, user):
+        self.client.force_authenticate(user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.data["kpis"], {row["key"]: row["count"] for row in response.data["sources"]}
+
+    def test_the_blind_viewer_counts_only_what_they_could_read(self):
+        kpis, sources = self.kpis(self.viewer)
+        self.assertEqual(sources["activities"], 1)
+        self.assertEqual(sources["emails"], 1)
+        self.assertEqual(sources["notes"], 0)
+        self.assertEqual(kpis["touches"], 2)
+        self.assertEqual(kpis["inbound"], 1)
+        self.assertEqual(kpis["open_tasks"], 1)
+
+    def test_someone_who_sees_everything_counts_it_all(self):
+        kpis, sources = self.kpis(self.admin)
+        self.assertEqual(sources["activities"], 2)
+        self.assertEqual(sources["emails"], 3)
+        self.assertEqual(sources["notes"], 1)
+        self.assertEqual(kpis["inbound"], 3)
+        self.assertEqual(kpis["open_tasks"], 3)

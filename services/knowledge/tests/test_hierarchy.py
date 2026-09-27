@@ -623,6 +623,8 @@ class DashboardReplyRedactionTests(ChartFixture):
             sources=[],
             grounded_customer_ids=[self.pizza.pk],
             carries_anomaly_text=False,
+            # Written today: Overview figures count pipeline, and none was open.
+            grounded_pipeline={"account_ids": [], "departments": []},
             reply_to=asked_narrow,
         )
 

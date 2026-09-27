@@ -151,6 +151,57 @@ def readable_pipeline_q(viewer) -> Q:
     )
 
 
+def counted_opportunities(ids, viewer):
+    """Every opportunity the forecast counts for these customer ids — the one
+    queryset its expansion, its stage breakdown and a Copilot reply's
+    pipeline snapshot all read, so they cannot disagree."""
+    return (
+        Opportunity.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
+        .filter(readable_pipeline_q(viewer))
+        .distinct()
+    )
+
+
+def counted_risks(ids, viewer):
+    """Every open risk the forecast counts for these customer ids."""
+    return (
+        Risk.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
+        .filter(stage__in=OPEN_RISK_STAGES)
+        .filter(readable_pipeline_q(viewer))
+        .distinct()
+    )
+
+
+def counted_pipeline(customers, viewer):
+    """What the forecast's pipeline figures for `customers` rest on, as ids
+    and labels only: the accounts its account-level opportunities and risks
+    hang off, and the departments they belong to (blank for undeparted).
+    Fixed on a Copilot reply built from those figures
+    (`copilot.Message.grounded_pipeline`), so a shared reader is checked
+    against what the answer counted."""
+    ids = [customer.pk for customer in customers]
+    accounts, departments = set(), set()
+    for rows in (counted_opportunities(ids, viewer), counted_risks(ids, viewer)):
+        for account_id, department in rows.values_list("account_id", "department"):
+            if account_id is not None:
+                accounts.add(account_id)
+            departments.add(department)
+    return {"account_ids": sorted(accounts), "departments": sorted(departments)}
+
+
+def pipeline_readable_by(viewer, snapshot, visible_account_ids):
+    """Whether `viewer` could list every opportunity and risk a
+    `counted_pipeline` snapshot names: each department under
+    `pipeline_visible_q`'s rule, each account in `visible_account_ids`
+    (their `visible_accounts`, passed in so a caller reads it once)."""
+    from services.accounts.models import User
+
+    if not (sees_everything(viewer) or viewer.function == User.Function.LEADERSHIP):
+        if any(d not in ("", viewer.function) for d in snapshot["departments"]):
+            return False
+    return set(snapshot["account_ids"]) <= visible_account_ids
+
+
 def _pipeline_by_customer(customers, organisation, rates, viewer):
     """Open expansion per customer id: `(weighted, unweighted)` ARR.
 
@@ -161,11 +212,9 @@ def _pipeline_by_customer(customers, organisation, rates, viewer):
 
     ids = [customer.pk for customer in customers]
     opportunities = (
-        Opportunity.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
-        .filter(readable_pipeline_q(viewer))
+        counted_opportunities(ids, viewer)
         .select_related("customer")
         .prefetch_related("account__customers")
-        .distinct()
     )
 
     by_customer = {}
@@ -198,12 +247,7 @@ def _risk_by_customer(customers, organisation, rates, viewer):
 
     ids = [customer.pk for customer in customers]
     risks = (
-        Risk.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
-        .filter(stage__in=OPEN_RISK_STAGES)
-        .filter(readable_pipeline_q(viewer))
-        .select_related("customer")
-        .prefetch_related("account__customers")
-        .distinct()
+        counted_risks(ids, viewer).select_related("customer").prefetch_related("account__customers")
     )
 
     by_customer = {}
@@ -454,12 +498,7 @@ def pipeline_by_stage(customers, organisation, *, viewer):
         for stage, label in Opportunity.Stage.choices
     }
 
-    opportunities = (
-        Opportunity.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
-        .filter(readable_pipeline_q(viewer))
-        .prefetch_related("account__customers")
-        .distinct()
-    )
+    opportunities = counted_opportunities(ids, viewer).prefetch_related("account__customers")
 
     for opportunity in opportunities:
         parents = (
