@@ -65,3 +65,19 @@ class VisibleEvidenceAccountTests(APITestCase):
         listed = {row["id"] for row in self.client.get(URL).json()}
         self.assertNotIn(lonely.pk, listed)
         self.assertIn(self.feature.pk, listed)
+
+    def test_a_viewer_who_sees_everything_still_reads_hidden_to_others_evidence(self):
+        admin = User.objects.create_user(
+            email="admin@acme.io",
+            password="x",
+            name="Admin",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        every = {self.on_org, self.on_shown, self.on_hidden}
+        self.assertEqual(set(visible_evidence(self.org, admin)), every)
+        self.client.force_authenticate(admin)
+        response = self.client.get(f"{URL}{self.feature.pk}/")
+        self.assertEqual(response.status_code, 200)
+        ids = {row["id"] for row in response.json()["evidence"]}
+        self.assertEqual(ids, {row.pk for row in every})
