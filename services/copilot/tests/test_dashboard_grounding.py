@@ -328,20 +328,18 @@ class QueryCountTests(DashboardFixture):
     #: wider book (the Support screen has no lifecycle filter); the reply's
     #: grounding snapshot (`Grounding.customer_ids`) reads that wider book's ids
     #: once more, two queries, so a name only it could supply is covered.
-    #: `visible_accounts` follows the org chart (a manager sees their
-    #: reports' accounts), so each call walks `subtree_ids` — one query for
-    #: a viewer with no reports, the same walk `visible_customers` already
-    #: pays: overview +5 (was 39/43), revenue +2 (the forecast's opportunities
-    #: and risks, was 19), support +1 (was 20/25).
+    #: The viewer's reports (`subtree_ids`) are walked once per question and
+    #: memoised on the user, not once per visibility rule: overview 34/35,
+    #: revenue 17, health 15, support 17/20 since (39/43, 19, 17, 20/25 before).
     EXPECTED = {
-        ("overview", False): 44,
-        ("revenue", False): 21,
-        ("health", False): 17,
-        ("support", False): 21,
-        ("overview", True): 48,
-        ("revenue", True): 21,
-        ("health", True): 17,
-        ("support", True): 26,
+        ("overview", False): 34,
+        ("revenue", False): 17,
+        ("health", False): 15,
+        ("support", False): 17,
+        ("overview", True): 35,
+        ("revenue", True): 17,
+        ("health", True): 15,
+        ("support", True): 20,
     }
 
     def setUp(self):

@@ -116,6 +116,8 @@ class RecordRuleTests(StoryFixture):
         self.assertEqual(ids(self.base("email")), {mine.pk, logged.pk})
         self.other.reports_to = self.csm
         self.other.save(update_fields=["reports_to"])
+        # The next request's user: the reports lookup is memoised per instance.
+        self.csm = type(self.csm).objects.get(pk=self.csm.pk)
         self.assertEqual(ids(self.base("email")), {mine.pk, danas.pk, logged.pk})
 
     def test_a_note_is_its_author_s_and_their_chain_s(self):

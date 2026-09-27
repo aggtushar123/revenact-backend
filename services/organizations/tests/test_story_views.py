@@ -200,7 +200,7 @@ class StoryQueryCountTests(StoryEndpointFixture):
     queries. A per-row query anywhere would make the count grow with the book,
     which the two-size test catches.
 
-    Thirty-three for an admin, who sees everything (so no org-chart lookup in
+    Twenty-eight for an admin, who sees everything (so no org-chart lookup in
     `visible_customers` itself):
       1. `user.organisation` (`visible_customers`'s own `Customer.objects
          .filter(organisation=user.organisation)`) — a real FK fetch, because
@@ -216,21 +216,24 @@ class StoryQueryCountTests(StoryEndpointFixture):
          this is a second FK fetch independent of query 2's join)
       4. the organisation (`visible_customers`, get_object_or_404)
       5. its accounts the caller may open (`visible_accounts`)
-      6-8. the org chart below the caller, once each as the mail, note and task
-           rules are built (`chain_visible_q`, `visible_tasks`)
-      9. the health snapshots
-      10-17. one page query per record source (activity, calendar_event, call,
+      6. the org chart below the caller (`subtree_ids`), walked once and
+         memoised on the user like the membership: the mail, note and task
+         rules, `scope_ids`, `visible_questions` and the evidence rule all
+         reuse it
+      7. the health snapshots
+      8-15. one page query per record source (activity, calendar_event, call,
             email, note, survey, task, ticket), related rows joined
-      18-25. one count aggregate per record source
-      26. attention: urgent tickets (one aggregate)
-      27. attention: overdue tasks (one aggregate)
-      28-31. attention: open questions: `scope_ids`'s own org chart and
-             function-mates queries, `visible_questions`'s separate
-             `subtree_ids` call, then the count
-      32-33. attention: the evidence rule's org chart (`readable_evidence_q`),
-             then the latest readable evidence with its anomaly
+      16-23. one count aggregate per record source
+      24. attention: urgent tickets (one aggregate)
+      25. attention: overdue tasks (one aggregate)
+      26-27. attention: open questions: `scope_ids`'s function-mates query,
+             then the count
+      28. attention: the latest readable evidence with its anomaly
 
-    This is 31 plus the two queries the view itself adds (1 and 3 above):
+    A CSM costs the same 28: `visible_customers`' own org-chart lookup is the
+    same memoised walk.
+
+    This is 26 plus the two queries the view itself adds (1 and 3 above):
     `build_story`'s own pinned test (`test_story_build.py`) warms the
     membership/organisation/role cache with a throwaway call on a *reused*
     user instance first, so it never pays them. A real request — and this
@@ -243,7 +246,7 @@ class StoryQueryCountTests(StoryEndpointFixture):
     one is a bug to fix, not a number to bump.
     """
 
-    EXPECTED = 33
+    EXPECTED = 28
 
     def book(self, size):
         for i in range(size):
@@ -290,15 +293,13 @@ class StoryQueryCountTests(StoryEndpointFixture):
         self.assertEqual(small, self.EXPECTED)
 
     def test_a_csm_s_count_does_not_grow_with_the_book_either(self):
-        # 35: the admin's 33, plus two extra queries — a CSM is not
-        # `sees_everything`, so `visible_customers` and `visible_accounts` each
-        # add their own org-chart lookup (`subtree_ids`) that the admin's
-        # shortcut skips.
+        # The admin's 28: `visible_customers`' org-chart lookup for a CSM is the
+        # same memoised `subtree_ids` walk the rules below already make.
         self.book(3)
         small = self.count(self.csm)
         self.book(12)
         self.assertEqual(self.count(self.csm), small)
-        self.assertEqual(small, 35)
+        self.assertEqual(small, self.EXPECTED)
 
     def test_the_next_page_costs_the_same(self):
         self.book(5)

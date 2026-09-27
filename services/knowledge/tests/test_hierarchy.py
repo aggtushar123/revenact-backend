@@ -943,3 +943,34 @@ class ManagerSeesTeamTests(ChartFixture):
         self.assertEqual(
             self.client.get(f"/api/v1/customers/{mine.id}/").status_code, status.HTTP_404_NOT_FOUND
         )
+
+
+class SubtreeCacheTests(ChartFixture):
+    """The reports lookup is memoised on the user instance — one object for
+    the life of a request — like the membership lookup, so every visibility
+    rule that asks it costs one walk of the chart, not one each."""
+
+    def test_the_second_ask_costs_no_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        alice = User.objects.get(pk=self.alice.pk)
+        first = hierarchy.subtree_ids(alice)
+        with CaptureQueriesContext(connection) as ctx:
+            second = hierarchy.subtree_ids(alice)
+        self.assertEqual(len(ctx.captured_queries), 0)
+        self.assertEqual(first, second)
+        self.assertEqual(first, {self.carl.pk, self.dana.pk, self.priya.pk, self.raj.pk})
+
+    def test_a_caller_mutating_the_answer_does_not_change_the_cache(self):
+        alice = User.objects.get(pk=self.alice.pk)
+        hierarchy.subtree_ids(alice).add(999)
+        self.assertNotIn(999, hierarchy.subtree_ids(alice))
+
+    def test_a_fresh_instance_reads_the_chart_again(self):
+        carl = User.objects.get(pk=self.carl.pk)
+        self.assertEqual(hierarchy.subtree_ids(carl), {self.dana.pk})
+        User.objects.filter(pk=self.raj.pk).update(reports_to=self.carl)
+        self.assertEqual(
+            hierarchy.subtree_ids(User.objects.get(pk=self.carl.pk)), {self.dana.pk, self.raj.pk}
+        )
