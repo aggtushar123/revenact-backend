@@ -1451,12 +1451,12 @@ DRAFT_SOURCES = 8
 
 
 def _org_emails(user):
-    """Every filed email the person may read: their organisation's, then
-    the mailbox rule (owner and management chain) on top."""
-    organisation = user.organisation
-    rows = Email.objects.filter(
-        Q(customer__organisation=organisation) | Q(account__customers__organisation=organisation)
-    ).distinct()
+    """Every filed email the person may read: on a customer or account they
+    may open, then the mailbox rule (owner and management chain) on top."""
+    from services.customers.scoping import visible_children_q
+
+    # SOC2:AUTH-02 an account's email follows the account's visibility too
+    rows = Email.objects.filter(visible_children_q(user)).distinct()
     return visible_emails(user, rows)
 
 

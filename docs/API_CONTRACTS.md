@@ -1334,6 +1334,14 @@ Notes on the shape:
   Touch component is built from — not a second definition of "touched".
   An account nobody has ever touched is measured from when it arrived, so
   a logo onboarded last week doesn't read as neglected.
+* The last touch, and the pulse inputs (open tickets, recent classified
+  conversations — `contact.last_contact_by_customer`/
+  `last_contact_annotation`, `models.with_customer_pulse_inputs`), count
+  the organisation's own records and **every** one of its accounts',
+  whoever is reading: they are organisation facts, the same values the
+  health job stores, not a per-record read, so they are deliberately not
+  narrowed to the viewer's `visible_accounts`. No record, name or text
+  from a hidden account reaches the viewer through them.
 * This is a **Customer-level** endpoint. Accounts carry their own health
   and renewal dates, and no tab reads them yet; adding them would change
   what "the book" means on every tab at once.
@@ -4040,8 +4048,10 @@ budgeted.
 `{"kind": "email" | "mail_message", "id": <int>}` → `{"draft": "…", "sources": [...]}`.
 
 A reply written as the current user, for them to edit and send: nothing is sent
-and no conversation is stored. `email` is a filed `customers.Email` under the
-mailbox visibility rule (the whole thread on that mailbox goes into the prompt);
+and no conversation is stored. `email` is a filed `customers.Email` on a
+customer or account the person may open (`visible_children_q` — an account's
+mail needs the account itself visible), under the mailbox visibility rule (the
+whole thread on that mailbox goes into the prompt);
 `mail_message` is a row of the person's own inbox, owner only. The prompt
 carries the thread plus up to eight of the account's most relevant records from
 the same retrieval the Copilot answers with (`retrieve_with_sources`), and those
@@ -6002,13 +6012,14 @@ reading a bounded number of rows per model.
 ### `POST /api/v1/communications/emails/<id>/reply/`
 
 Answer a queue email from the person's own mailbox. Body `{"body": "…"}`. The
-email must be readable under the mailbox rule (owner and management chain) and
+email must be on a customer or account the person may open (`visible_children_q`),
+readable under the mailbox rule (owner and management chain), and
 must be one somebody wrote to them (`direction=received` with a sender); the
 reply goes to that sender under `Re: <subject>`, through the requesting user's
 own `MailboxConnection`, and the copy is filed on the same customer or account,
 which is what takes the debt out of the queue. Returns **201**
 `{id, direction: "sent", subject, sent_at, thread_id}`. 400 when empty or when
-the email has nobody to reply to; 404 outside the chain; 409 when the person has
+the email has nobody to reply to; 404 outside the chain or on a hidden account; 409 when the person has
 no mailbox connected; 502 with the provider's reason. Audited as
 `mailbox.reply`.
 
