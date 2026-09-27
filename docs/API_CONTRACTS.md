@@ -2381,9 +2381,11 @@ call is logged, and for every contact in `run_health_maintenance`.
 
 `Call.participants` (write `participant_ids`, read `participants
 [{id, name, role_display, sentiment}]`) says who from the customer's side
-was on a call; only contacts of that company are accepted, and a
-transcript that names a contact (full name or email address) links them
-automatically.
+was on a call; only contacts of that company that the logger may see
+are accepted (organisation-level ones, and those on accounts in
+`visible_accounts` — a colleague's account's contacts are dropped), and a
+transcript that names such a contact (full name or email address) links
+them automatically.
 
 ### `GET /api/v1/contacts/<id>/interactions/`
 

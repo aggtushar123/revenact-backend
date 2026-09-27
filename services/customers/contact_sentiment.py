@@ -189,11 +189,17 @@ def recompute_all(organisation=None):
     return changed
 
 
-def match_participants(parent_customer, parent_account, text, *, emails=()):
+def match_participants(parent_customer, parent_account, text, *, viewer, emails=()):
     """Contacts of this company mentioned in a transcript, by email address
     or full name, plus any explicit addresses. Used to pre-fill a logged
-    call's participants."""
+    call's participants.
+
+    Only contacts `viewer` (the person logging the call) may see: an
+    organisation's own, and those on accounts they may open — a contact on
+    a colleague's account under the same organisation is not theirs to
+    attach (the twice-filter)."""
     from .models import Customer
+    from .scoping import visible_children_q
 
     if parent_customer is not None:
         contacts = Contact.objects.filter(
@@ -202,6 +208,8 @@ def match_participants(parent_customer, parent_account, text, *, emails=()):
     else:
         customers = Customer.objects.filter(accounts=parent_account)
         contacts = Contact.objects.filter(Q(account=parent_account) | Q(customer__in=customers))
+    # SOC2:AUTH-02 a logged call links only contacts the logger may see
+    contacts = contacts.filter(visible_children_q(viewer))
     lowered = (text or "").lower()
     wanted = {e.lower() for e in emails if e}
     matched = []

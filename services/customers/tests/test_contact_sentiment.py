@@ -151,9 +151,12 @@ class ScoringTests(Fixture):
 class ParticipantTests(Fixture):
     def test_transcript_names_and_addresses_match_this_companys_contacts(self):
         text = "Carl: hi all. SAM PIZZA: we are unhappy. uma@pizzahut.co.uk joined late."
-        matched = contact_sentiment.match_participants(self.pizza, None, text)
+        matched = contact_sentiment.match_participants(self.pizza, None, text, viewer=self.carl)
         self.assertEqual({c.id for c in matched}, {self.sam.id, self.uma.id})
-        self.assertEqual(contact_sentiment.match_participants(self.pizza, None, "nobody here"), [])
+        self.assertEqual(
+            contact_sentiment.match_participants(self.pizza, None, "nobody here", viewer=self.carl),
+            [],
+        )
 
     def test_logging_a_call_links_chosen_and_named_participants(self):
         self.client.force_authenticate(self.carl)
@@ -226,3 +229,54 @@ class ContactApiTests(Fixture):
 
 
 __all__ = ["datetime", "dt_timezone"]
+
+
+class ParticipantVisibilityTests(Fixture):
+    """Logging a call attaches only contacts the logger may see: the
+    organisation's own, and those on accounts they may open."""
+
+    def setUp(self):
+        from services.customers.tests.test_views import blind_to_one_account
+
+        super().setUp()
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.pizza)
+        self.seen_contact = Contact.objects.create(
+            account=self.seen, name="Sue Seen", email="sue@pizzahut.com"
+        )
+        self.hidden_contact = Contact.objects.create(
+            account=self.hidden, name="Hal Hidden", email="hal@pizzahut.com"
+        )
+
+    def test_a_hidden_accounts_contact_named_in_the_transcript_is_not_attached(self):
+        self.client.force_authenticate(self.viewer)
+        response = self.client.post(
+            f"/api/v1/customers/{self.pizza.id}/calls/",
+            {
+                "title": "QBR",
+                "occurred_at": NOW.isoformat(),
+                "summary": "Fine.",
+                "participant_ids": [self.hidden_contact.id],
+                "transcript_text": "Sam Pizza, Sue Seen and Hal Hidden joined.",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        names = sorted(p["name"] for p in response.data["participants"])
+        self.assertEqual(names, ["Sam Pizza", "Sue Seen"])
+
+    def test_a_viewer_who_sees_everything_matches_every_account(self):
+        admin = User.objects.create_user(
+            email="admin@acme.io",
+            password="x",
+            name="Admin",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        matched = contact_sentiment.match_participants(
+            self.pizza, None, "Sue Seen and Hal Hidden", viewer=admin
+        )
+        self.assertEqual({c.id for c in matched}, {self.seen_contact.id, self.hidden_contact.id})
+        matched = contact_sentiment.match_participants(
+            self.pizza, None, "Sue Seen and Hal Hidden", viewer=self.viewer
+        )
+        self.assertEqual({c.id for c in matched}, {self.seen_contact.id})

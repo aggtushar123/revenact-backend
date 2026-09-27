@@ -2939,13 +2939,16 @@ class _CallListView(generics.ListCreateAPIView):
             transcript=transcript,
         )
         # Who was on it: the contacts chosen, plus anyone from this company
-        # the transcript names. Only this company's own contacts count.
+        # the transcript names. Only this company's own contacts count, and
+        # only those the logger may see.
         from .contact_sentiment import match_participants, recompute
 
-        matched = match_participants(customer, account, transcript_text)
+        matched = match_participants(customer, account, transcript_text, viewer=request.user)
         own = {
             c.id
-            for c in match_participants(customer, account, "", emails=[c.email for c in chosen])
+            for c in match_participants(
+                customer, account, "", viewer=request.user, emails=[c.email for c in chosen]
+            )
         }
         participants = {c.id: c for c in matched}
         participants.update({c.id: c for c in chosen if c.id in own})
