@@ -132,3 +132,46 @@ class StrictCopilotSources(APITestCase):
         self.assertNotIn("Hidden renewal terms", system)
         self.assertNotIn("Hidden champion left", system)
         self.assertNotIn("Hidden", system.split("Account history", 1)[1])
+
+
+class CitedIdShapeTests(APITestCase):
+    """A cited record's id is checked whatever shape it was stored in: a
+    numeric string is the record it names, anything else fails closed."""
+
+    def setUp(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=org, name="Globex")
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.customer)
+
+    def private_note(self):
+        # On the seen account, but the colleague's own note: not the viewer's.
+        return Note.objects.create(
+            account=self.seen,
+            title="Private",
+            author_name="Owner",
+            author=self.customer.owner,
+            body="x",
+            logged_at=timezone.localdate(),
+        )
+
+    def cite(self, record_id):
+        return Turn(
+            sources=[
+                {
+                    "type": "note",
+                    "id": record_id,
+                    "company_type": "account",
+                    "company_id": self.seen.id,
+                }
+            ]
+        )
+
+    def test_a_numeric_string_id_is_checked_against_its_record(self):
+        note = self.private_note()
+        self.assertFalse(_reply_readable_by(self.cite(str(note.id)), self.viewer))
+        self.assertFalse(_reply_readable_by(self.cite(note.id), self.viewer))
+
+    def test_a_junk_id_fails_closed(self):
+        for junk in ("abc", "5.0", None, True, [1], -3, "0"):
+            with self.subTest(junk=junk):
+                self.assertFalse(_reply_readable_by(self.cite(junk), self.viewer))

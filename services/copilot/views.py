@@ -325,6 +325,20 @@ def _ticket_rule():
     return Ticket, visible_tickets
 
 
+def _record_id(value):
+    """A cited record's id as a positive int — an int, or a string of
+    digits as a stored JSON source may carry it — or None for anything
+    else, which the caller treats as unreadable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        number = int(value)
+        return number if number > 0 else None
+    return None
+
+
 #: Cited record kinds with an object-level rule of their own, beyond their
 #: company: kind -> () -> (model, rule(user, queryset)).
 RECORD_RULES = {
@@ -393,11 +407,11 @@ class _Reader:
         if kind not in cache:
             model, rule = RECORD_RULES[kind]()
             ids = {
-                source.get("id")
+                _record_id(source.get("id"))
                 for turn in self.turns
                 for source in turn.sources or []
-                if source.get("type") == kind and isinstance(source.get("id"), int)
-            }
+                if source.get("type") == kind
+            } - {None}
             if not ids:
                 cache[kind] = (set(), set())
             else:
@@ -563,8 +577,12 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
             return False
         kind = source.get("type")
         if kind in RECORD_RULES:
+            # SOC2:AUTH-02 an id that names no record shape fails closed
+            record_id = _record_id(source.get("id"))
+            if record_id is None:
+                return False
             existing, readable = reader.readable_ids(kind)
-            if source.get("id") in existing and source.get("id") not in readable:
+            if record_id in existing and record_id not in readable:
                 return False
     return True
 
