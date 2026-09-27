@@ -986,3 +986,10 @@ class SubtreeCacheTests(ChartFixture):
         self.assertEqual(
             hierarchy.subtree_ids(User.objects.get(pk=self.carl.pk)), {self.dana.pk, self.raj.pk}
         )
+
+    def test_refreshing_the_user_reads_the_chart_again(self):
+        carl = User.objects.get(pk=self.carl.pk)
+        self.assertEqual(hierarchy.subtree_ids(carl), {self.dana.pk})
+        User.objects.filter(pk=self.raj.pk).update(reports_to=self.carl)
+        carl.refresh_from_db()
+        self.assertEqual(hierarchy.subtree_ids(carl), {self.dana.pk, self.raj.pk})

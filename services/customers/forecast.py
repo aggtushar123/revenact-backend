@@ -178,7 +178,13 @@ def counted_pipeline(customers, viewer):
     hang off, and the departments they belong to (blank for undeparted).
     Fixed on a Copilot reply built from those figures
     (`copilot.Message.grounded_pipeline`), so a shared reader is checked
-    against what the answer counted."""
+    against what the answer counted.
+
+    Every stage, Closed Won included, on purpose: the expansion figure
+    weights a Closed Won opportunity at 1.0 (`STAGE_PROBABILITY`) and the
+    stage breakdown lists it, so it *is* counted — leaving it out would
+    under-snapshot. (A row the figures skip for want of an exchange rate is
+    still named: a superset only ever fails closed.)"""
     ids = [customer.pk for customer in customers]
     accounts, departments = set(), set()
     for rows in (counted_opportunities(ids, viewer), counted_risks(ids, viewer)):

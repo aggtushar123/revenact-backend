@@ -332,6 +332,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.email
 
+    def refresh_from_db(self, *args, **kwargs):
+        """Also forget the memoised org-chart walk
+        (`hierarchy.subtree_ids`): a refresh asks for today's data."""
+        self.__dict__.pop("_subtree_ids_cache", None)
+        super().refresh_from_db(*args, **kwargs)
+
     def has_capability(self, capability) -> bool:
         """The single authorization question this codebase asks — see
         permissions.py, which turns it into DRF permission classes.

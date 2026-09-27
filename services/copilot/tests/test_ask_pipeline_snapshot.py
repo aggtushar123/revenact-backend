@@ -24,7 +24,7 @@ def dashboard(area, view=None, **filters):
     }
 
 
-class PipelineSnapshotTests(AskFixture):
+class PipelineFixture(AskFixture):
     LEAK = "Pipeline is 12k."
 
     def setUp(self):
@@ -50,6 +50,8 @@ class PipelineSnapshotTests(AskFixture):
             **fields,
         )
 
+
+class PipelineSnapshotTests(PipelineFixture):
     def test_the_snapshot_names_the_accounts_and_departments_counted(self):
         self.opportunity(account=self.division, department="cs")
         Risk.objects.create(
@@ -103,3 +105,70 @@ class PipelineSnapshotTests(AskFixture):
         )
         Message.objects.filter(role="assistant").update(grounded_pipeline=None)
         self.assertEqual(self.replies(self.priya, first), [self.LEAK])
+
+
+class PipelineSnapshotOtherDepartmentReaderTests(PipelineFixture):
+    """Pipeline is read department-wise except by Leadership and by a role
+    that may view all accounts (`pipeline_visible_q`); the snapshot check
+    follows the same rule."""
+
+    def setUp(self):
+        super().setUp()
+        from services.accounts.capabilities import Capability
+        from services.accounts.models import Role, User
+
+        mk = lambda email, name, function, **kw: User.objects.create_user(  # noqa: E731
+            email=email, password="x", name=name, organisation=self.org, function=function, **kw
+        )
+        # Leadership without view-all: every department, but only the
+        # accounts it may open.
+        self.lead = mk("lee@acme.io", "Lee Lead", User.Function.LEADERSHIP, role=User.Role.CSM)
+        viewer = Role.objects.create(
+            organisation=self.org,
+            name="Viewer",
+            slug="viewer",
+            permissions=[Capability.VIEW_ALL_ACCOUNTS],
+        )
+        self.vic = mk("vic@acme.io", "Vic View", User.Function.ENGINEERING, role=viewer)
+
+    def ask(self):
+        return self.send(
+            self.carl,
+            "@Priya Nair @Lee Lead @Vic View what moves the forecast?",
+            dashboard("revenue", "forecast", customer=str(self.pizza.pk)),
+            reply=self.LEAK,
+        )
+
+    def test_leadership_reads_another_departments_pipeline(self):
+        from services.knowledge.models import Question
+
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.carl,
+            assignee=self.lead,
+            text="Pizza Hut?",
+        )
+        self.opportunity(customer=self.pizza, department="cs")
+        first = self.ask()
+        self.assertEqual(self.replies(self.lead, first), [self.LEAK])
+        self.assertEqual(self.replies(self.priya, first), [REDACTED_REPLY])
+
+    def test_leadership_still_needs_the_account(self):
+        from services.knowledge.models import Question
+
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.carl,
+            assignee=self.lead,
+            text="Pizza Hut?",
+        )
+        self.opportunity(account=self.division, department="cs")
+        first = self.ask()
+        self.assertEqual(self.replies(self.lead, first), [REDACTED_REPLY])
+
+    def test_a_view_all_reader_in_another_department_reads_it(self):
+        self.opportunity(account=self.division, department="cs")
+        first = self.ask()
+        self.assertEqual(self.replies(self.vic, first), [self.LEAK])

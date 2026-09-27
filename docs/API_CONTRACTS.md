@@ -4445,8 +4445,9 @@ the account's organisation is not enough — `visible_customers` for an
 organisation-level one) *and* must pass its own rule (a contribution
 outside their scope, mail outside their chain, another department's
 ticket). Strict by design: someone who loses access to a company stops
-seeing replies that quoted its records, their own questions' replies
-included — and
+seeing replies that quoted its records — on a plain Copilot or
+Communications reply that includes replies to their own questions (an
+Ask asker still reads their own Ask reply regardless) — and
 shows as "This reply isn't shared with you…" instead (`copilot.views.
 _reply_readable_by`); the stored turn is untouched. Pairing a reply with
 the question it answers uses `Message.reply_to`, set on every new reply

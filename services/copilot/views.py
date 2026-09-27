@@ -35,6 +35,7 @@ from .anthropic_client import (
 from .ask import SURFACES, AskContextSerializer
 from .context import build_grounding
 from .dashboard_context import origin_of
+from .dashboard_grounding import PIPELINE_AREAS
 from .models import (
     Conversation,
     CopilotSession,
@@ -619,10 +620,6 @@ def ask_snapshot(user, ask, grounding, fed):
 
 #: A pipeline snapshot that counted nothing.
 NO_PIPELINE = {"account_ids": [], "departments": []}
-
-#: Dashboard areas whose digest folds in pipeline figures (mirrors
-#: `dashboard_grounding.PIPELINE_AREAS`).
-PIPELINE_AREAS = ("overview", "revenue")
 
 
 def pipeline_snapshot(ask, grounding, fed):
