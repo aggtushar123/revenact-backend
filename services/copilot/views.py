@@ -730,8 +730,8 @@ def _tickets_of(turn, answered):
     reply written before snapshots existed, nothing when its own Ask turn's
     digest never counted tickets — and None, failing closed, when it could
     have (a Dashboard Overview or Support reply, a support attention focus,
-    or a context-less reply fed Ask history). A legacy Organizations reply
-    reads as before."""
+    an Organizations reply — its rows' signals count urgent tickets — or a
+    context-less reply fed Ask history)."""
     stored = _stored_tickets(turn)
     if stored is not None:
         return stored
@@ -739,6 +739,8 @@ def _tickets_of(turn, answered):
         return None  # malformed
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
+        return None
+    if context.get("surface") == "organizations":
         return None
     if context.get("surface") == "dashboard" and (
         context.get("area") in TICKET_AREAS or is_support_focus(context.get("focus"))

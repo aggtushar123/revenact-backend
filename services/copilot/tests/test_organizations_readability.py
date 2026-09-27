@@ -85,6 +85,8 @@ class OrganizationsReplyReadabilityTests(ChartFixture):
             sources=grounding.sources,
             grounded_customer_ids=grounded,
             carries_anomaly_text=carries,
+            grounded_pipeline=grounding.pipeline,
+            grounded_tickets=grounding.tickets,
             reply_to=asked,
         )
 

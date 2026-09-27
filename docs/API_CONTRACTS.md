@@ -4481,9 +4481,8 @@ Leadership only (`visible_tickets`), so every mentioned-only reader —
 view-all included — needs each department readable under it, and a reader
 who doesn't see every account needs each account in `visible_accounts`.
 Legacy replies with none fail closed on the Overview and Support areas, a
-support attention focus, and a context-less reply fed Ask history, except
-for a Leadership reader who sees every account; a legacy Organizations
-reply reads as before. Follow-ups fold it like pipeline. A context-less (Communications/Copilot) reply keeps exactly
+support attention focus, an Organizations reply, and a context-less reply
+fed Ask history, except for a Leadership reader who sees every account. Follow-ups fold it like pipeline. A context-less (Communications/Copilot) reply keeps exactly
 the per-source checks for every viewer, the asker included.
 
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei

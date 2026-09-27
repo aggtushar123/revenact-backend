@@ -136,7 +136,8 @@ class Message(models.Model):
         "every account in their visible accounts (views._reply_readable_by). Null on "
         "every other turn and on replies written before it existed; such a reply fails "
         "closed for those readers when it could have counted tickets (a Dashboard "
-        "Overview or Support reply, a support attention focus, or one fed an Ask reply).",
+        "Overview or Support reply, a support attention focus, an Organizations reply, or "
+        "one fed an Ask reply).",
     )
     carries_anomaly_text = models.BooleanField(
         null=True,

@@ -147,3 +147,16 @@ class TicketSnapshotTests(AskFixture):
         self.assertEqual(reply.grounded_tickets, {"account_ids": [], "departments": ["cs"]})
         self.assertEqual(self.replies(self.priya, first), [REDACTED_REPLY])
         self.assertEqual(self.replies(self.lead, first), [self.LEAK])
+
+    def test_a_legacy_organizations_reply_with_no_snapshot_fails_closed(self):
+        from .test_ask_followups import organizations
+
+        first = self.send(
+            self.carl,
+            "@Priya Nair which need us?",
+            organizations(ids=str(self.pizza.pk)),
+            reply=self.LEAK,
+        )
+        self.assertEqual(self.replies(self.priya, first), [self.LEAK])
+        Message.objects.filter(role="assistant").update(grounded_tickets=None)
+        self.assertEqual(self.replies(self.priya, first), [REDACTED_REPLY])
