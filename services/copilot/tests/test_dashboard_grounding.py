@@ -333,16 +333,19 @@ class QueryCountTests(DashboardFixture):
     #: revenue 17, health 15, support 17/20 since (39/43, 19, 17, 20/25 before).
     #: Overview and Revenue then add two: the reply's pipeline snapshot reads
     #: the opportunities and risks its figures counted
-    #: (`forecast.counted_pipeline`), one query each.
+    #: (`forecast.counted_pipeline`), one query each. The ticket snapshot
+    #: (`dashboard_grounding.counted_tickets`) reads the Support figures' rows
+    #: once more on Overview and Support, and the attention list's support
+    #: rows once more on Overview: Overview +2, Support +1.
     EXPECTED = {
-        ("overview", False): 36,
+        ("overview", False): 38,
         ("revenue", False): 19,
         ("health", False): 15,
-        ("support", False): 17,
-        ("overview", True): 37,
+        ("support", False): 18,
+        ("overview", True): 39,
         ("revenue", True): 19,
         ("health", True): 15,
-        ("support", True): 20,
+        ("support", True): 21,
     }
 
     def setUp(self):

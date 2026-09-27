@@ -103,6 +103,10 @@ class Grounding:
     #: the digest's figures counted (`forecast.counted_pipeline`; empty lists
     #: when none). Stored on the reply (`Message.grounded_pipeline`).
     pipeline: dict | None = None
+    #: Ask surfaces only: the accounts and departments of the tickets the
+    #: digest's figures counted (`personal.ticket_snapshot`; empty lists when
+    #: none). Stored on the reply (`Message.grounded_tickets`).
+    tickets: dict | None = None
 
 
 def build_org_context_summary(organisation, user, query: str = "") -> str:

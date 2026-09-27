@@ -45,6 +45,36 @@ def visible_tickets(user, queryset):
     return queryset.filter(Q(department="") | Q(department=user.function))
 
 
+def ticket_snapshot(*querysets):
+    """`{account_ids, departments}` of the tickets in these querysets — ids
+    and department codes only, fixed on a Copilot reply whose figures
+    counted them (`copilot.Message.grounded_tickets`)."""
+    accounts, departments = set(), set()
+    for rows in querysets:
+        for account_id, department in rows.values_list("account_id", "department"):
+            if account_id is not None:
+                accounts.add(account_id)
+            departments.add(department)
+    return {"account_ids": sorted(accounts), "departments": sorted(departments)}
+
+
+def reads_every_ticket_department(user):
+    """`visible_tickets`' exemption: Leadership only. Holding
+    view-all-accounts does not grant it."""
+    from services.accounts.models import User
+
+    return user.function == User.Function.LEADERSHIP
+
+
+def ticket_departments_readable(user, departments):
+    """Whether `user` may read tickets in every one of these departments —
+    `visible_tickets`' own rule: Leadership reads all, anyone else their own
+    department's and the undeparted."""
+    if reads_every_ticket_department(user):
+        return True
+    return all(d in ("", user.function) for d in departments)
+
+
 def readable_evidence_q(viewer, *, email="email", ticket="ticket", call="call"):
     """Rows that *copy* a record's text — a feature request's evidence, an
     anomaly's — read under the rule the record itself lives by.

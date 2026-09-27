@@ -35,7 +35,7 @@ from .anthropic_client import (
 from .ask import SURFACES, AskContextSerializer
 from .context import build_grounding
 from .dashboard_context import origin_of
-from .dashboard_grounding import PIPELINE_AREAS
+from .dashboard_grounding import PIPELINE_AREAS, TICKET_AREAS, is_support_focus
 from .models import (
     Conversation,
     CopilotSession,
@@ -409,16 +409,16 @@ class _Reader:
         return cache[kind]
 
     @cached_property
-    def visible_pipeline_account_ids(self):
-        """Of the accounts any reply here counted pipeline on, those the
-        reader may open: one query for the union."""
+    def visible_snapshot_account_ids(self):
+        """Of the accounts any reply here counted pipeline or tickets on,
+        those the reader may open: one query for the union."""
         from services.customers.scoping import visible_accounts
 
         stored = set()
         for turn in self.turns:
-            pipeline = _stored_pipeline(turn)
-            if pipeline is not None:
-                stored |= set(pipeline["account_ids"])
+            for snapshot in (_stored_pipeline(turn), _stored_tickets(turn)):
+                if snapshot is not None:
+                    stored |= set(snapshot["account_ids"])
         if not stored:
             return set()
         return set(visible_accounts(self.user).filter(pk__in=stored).values_list("pk", flat=True))
@@ -513,6 +513,22 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
             grounded = _grounded_ids(turn)
             if grounded is None:
                 return False
+            # SOC2:AUTH-02 and could read every ticket its figures counted. The
+            # ticket department rule exempts Leadership only, never view-all,
+            # so it is checked before the sees-everything shortcut below.
+            from services.customers.personal import (
+                reads_every_ticket_department,
+                ticket_departments_readable,
+            )
+
+            tickets = _tickets_of(turn, user_turn)
+            # Unknown matters only to a reader some part of the rule binds: a
+            # Leadership reader who sees every account reads every ticket.
+            if tickets is None:
+                if not (reader.sees_everything and reads_every_ticket_department(user)):
+                    return False
+            elif not ticket_departments_readable(user, tickets["departments"]):
+                return False
             if not reader.sees_everything:
                 if not grounded <= reader.visible_grounded_ids:
                     return False
@@ -529,7 +545,11 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
                     return False
                 from services.customers.forecast import pipeline_readable_by
 
-                if not pipeline_readable_by(user, pipeline, reader.visible_pipeline_account_ids):
+                if not pipeline_readable_by(user, pipeline, reader.visible_snapshot_account_ids):
+                    return False
+                if tickets is None or not (
+                    set(tickets["account_ids"]) <= reader.visible_snapshot_account_ids
+                ):
                     return False
 
     reader = reader or _Reader(user, [turn])
@@ -618,19 +638,28 @@ def ask_snapshot(user, ask, grounding, fed):
     return (None if grounded is None else sorted(grounded)), carries
 
 
-#: A pipeline snapshot that counted nothing.
+#: A pipeline or ticket snapshot that counted nothing.
 NO_PIPELINE = {"account_ids": [], "departments": []}
 
 
 def pipeline_snapshot(ask, grounding, fed):
-    """`Message.grounded_pipeline` for a new Ask-shaped reply: its own
-    grounding's pipeline (an Ask send), folded with every Ask reply it was
+    """`Message.grounded_pipeline` for a new Ask-shaped reply (see
+    `_folded_snapshot`)."""
+    return _folded_snapshot(ask, grounding.pipeline, fed, _pipeline_of)
+
+
+def tickets_snapshot(ask, grounding, fed):
+    """`Message.grounded_tickets` for a new Ask-shaped reply (see
+    `_folded_snapshot`)."""
+    return _folded_snapshot(ask, grounding.tickets, fed, _tickets_of)
+
+
+def _folded_snapshot(ask, own, fed, snapshot_of):
+    """An `{account_ids, departments}` snapshot for a new Ask-shaped reply:
+    its own grounding's (an Ask send), folded with every Ask reply it was
     fed as history — the same walk and the same None-is-sticky rule as
     `ask_snapshot`. None fails closed for slice readers."""
-    if ask is not None:
-        snapshot = _well_formed_pipeline(grounding.pipeline)
-    else:
-        snapshot = NO_PIPELINE
+    snapshot = _well_formed_pipeline(own) if ask is not None else NO_PIPELINE
     last_user_turn = None
     for turn in fed:
         if turn.role == Message.Role.USER:
@@ -645,7 +674,7 @@ def pipeline_snapshot(ask, grounding, fed):
             continue
         if not from_ask and turn.carries_anomaly_text is None:
             continue
-        earlier = _pipeline_of(turn, answered)
+        earlier = snapshot_of(turn, answered)
         if snapshot is None or earlier is None:
             snapshot = None
         else:
@@ -672,6 +701,10 @@ def _stored_pipeline(turn):
     return _well_formed_pipeline(turn.grounded_pipeline)
 
 
+def _stored_tickets(turn):
+    return _well_formed_pipeline(turn.grounded_tickets)
+
+
 def _pipeline_of(turn, answered):
     """The pipeline a reply's figures rest on: its stored snapshot, or for a
     reply written before snapshots existed, nothing when its own Ask turn's
@@ -688,6 +721,28 @@ def _pipeline_of(turn, answered):
     if not isinstance(context, dict) or not context:
         return None
     if context.get("surface") == "dashboard" and context.get("area") in PIPELINE_AREAS:
+        return None
+    return NO_PIPELINE
+
+
+def _tickets_of(turn, answered):
+    """The tickets a reply's figures rest on: its stored snapshot, or for a
+    reply written before snapshots existed, nothing when its own Ask turn's
+    digest never counted tickets — and None, failing closed, when it could
+    have (a Dashboard Overview or Support reply, a support attention focus,
+    or a context-less reply fed Ask history). A legacy Organizations reply
+    reads as before."""
+    stored = _stored_tickets(turn)
+    if stored is not None:
+        return stored
+    if turn.grounded_tickets is not None:
+        return None  # malformed
+    context = answered.context if answered is not None else None
+    if not isinstance(context, dict) or not context:
+        return None
+    if context.get("surface") == "dashboard" and (
+        context.get("area") in TICKET_AREAS or is_support_focus(context.get("focus"))
+    ):
         return None
     return NO_PIPELINE
 
@@ -961,6 +1016,9 @@ class SendMessageView(APIView):
             carries_anomaly_text=snapshot[1],
             grounded_pipeline=(
                 None if snapshot[1] is None else pipeline_snapshot(ask, grounding, fed)
+            ),
+            grounded_tickets=(
+                None if snapshot[1] is None else tickets_snapshot(ask, grounding, fed)
             ),
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
             # The real turn this reply answers, not just "whichever user turn

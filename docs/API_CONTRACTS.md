@@ -4471,7 +4471,19 @@ with customer ids. A reply written before the field existed has none: it
 fails closed when it could have carried pipeline (an Overview or Revenue
 reply, or a context-less reply fed Ask history) and reads as before
 otherwise — no backfill, since what an old reply counted cannot be
-re-derived. A context-less (Communications/Copilot) reply keeps exactly
+re-derived. **Tickets too, separately** (`Message.grounded_tickets`,
+`{account_ids, departments}` from `personal.ticket_snapshot`): an Overview
+reply's "Open tickets" and attention support items, a Support reply, a
+support attention focus (any area) and an Organizations reply's urgent-ticket
+signals count tickets the asker could read (`ticket_filters.filtered_tickets`,
+`attention.rules.support_tickets`). The ticket department rule exempts
+Leadership only (`visible_tickets`), so every mentioned-only reader —
+view-all included — needs each department readable under it, and a reader
+who doesn't see every account needs each account in `visible_accounts`.
+Legacy replies with none fail closed on the Overview and Support areas, a
+support attention focus, and a context-less reply fed Ask history, except
+for a Leadership reader who sees every account; a legacy Organizations
+reply reads as before. Follow-ups fold it like pipeline. A context-less (Communications/Copilot) reply keeps exactly
 the per-source checks for every viewer, the asker included.
 
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei

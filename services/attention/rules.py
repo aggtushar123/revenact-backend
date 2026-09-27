@@ -245,6 +245,21 @@ def _going_quiet_items(customers, money, today, organisation, rates):
     return items
 
 
+def support_tickets(user, ids):
+    """Open High/Critical tickets on these companies (directly or on one of
+    their accounts), read under the department rule on visible parents only.
+    The attention list's support items, the Organizations rows' urgent count
+    and a Copilot reply's ticket snapshot all read this one queryset."""
+    # SOC2:AUTH-02 tickets are read department-wise, on visible parents only
+    return (
+        visible_tickets(user, Ticket.objects.filter(visible_children_q(user)).distinct())
+        .filter(priority__in=SUPPORT_PRIORITIES)
+        .exclude(status__in=Ticket.RESOLVED_STATUSES)
+        .filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
+        .distinct()
+    )
+
+
 def _support_items(user, customers, money, today):
     """Tickets read under the department rule, then grouped per company. A
     ticket on an account counts for each of that account's companies that
@@ -253,14 +268,7 @@ def _support_items(user, customers, money, today):
     if not by_id:
         return []
     ids = list(by_id)
-    tickets = (
-        visible_tickets(user, Ticket.objects.filter(visible_children_q(user)).distinct())
-        .filter(priority__in=SUPPORT_PRIORITIES)
-        .exclude(status__in=Ticket.RESOLVED_STATUSES)
-        .filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
-        .distinct()
-        .prefetch_related("account__customers")
-    )
+    tickets = support_tickets(user, ids).prefetch_related("account__customers")
     ages, open_ids = defaultdict(list), defaultdict(list)
     for ticket in tickets:
         age = max(0, (today - ticket.opened_at).days)

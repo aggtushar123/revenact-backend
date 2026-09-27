@@ -26,17 +26,15 @@ from django.db.models import (
 )
 from django.db.models.functions import Cast
 
-from services.attention.rules import SUPPORT_PRIORITIES
+from services.attention.rules import support_tickets
 from services.customers.models import (
     Customer,
     HealthSnapshot,
     Product,
-    Ticket,
     health_category_for,
     with_health_inputs,
 )
-from services.customers.personal import visible_tickets
-from services.customers.scoping import visible_children_q, visible_customers
+from services.customers.scoping import visible_customers
 from services.customers.triage import ACTION_THRESHOLD, Triage, triage
 from services.customers.views import CustomerHealthView
 from services.fx_rates.conversion import convert_to_org_currency, rates_for
@@ -182,15 +180,7 @@ def urgent_ticket_counts(user, ids):
     and a ticket on an account counts for each of its companies in `ids`."""
     if not ids:
         return Counter()
-    # SOC2:AUTH-02 tickets are read department-wise, on visible parents only
-    tickets = (
-        visible_tickets(user, Ticket.objects.filter(visible_children_q(user)).distinct())
-        .filter(priority__in=SUPPORT_PRIORITIES)
-        .exclude(status__in=Ticket.RESOLVED_STATUSES)
-        .filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
-        .distinct()
-        .prefetch_related("account__customers")
-    )
+    tickets = support_tickets(user, ids).prefetch_related("account__customers")
     wanted = set(ids)
     counts = Counter()
     for ticket in tickets:
