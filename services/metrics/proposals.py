@@ -101,7 +101,9 @@ def build_evidence(organisation):
     slices = compute_slices(organisation)
 
     customers = list(forecast.filtered_customers(actor, {}))
-    rows = forecast.build_rows(customers, organisation, horizon=forecast.horizon_days({}))
+    rows = forecast.build_rows(
+        customers, organisation, viewer=actor, horizon=forecast.horizon_days({})
+    )
     exposure = forecast.exposure_list(rows, limit=EXPOSURE_LIMIT)
     owners = {c.owner_id: c.owner for c in customers if c.owner_id}
     # The account team: who answers for each account in each function

@@ -113,6 +113,32 @@ class Message(models.Model):
         "reply as history carries the union of those (or null if any had none), and is "
         "checked the same way.",
     )
+    grounded_pipeline = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Assistant turns answering an Ask rail, or fed one as history, only: "
+        "{account_ids, departments} of the open opportunities and risks the digest's "
+        "figures counted (forecast.counted_pipeline), fixed when the answer was written; "
+        "empty lists when it counted none. A mentioned-only reader reads the reply only if "
+        "they could list every one (views._reply_readable_by). Ids and department codes "
+        "only. Null on every other turn and on replies written before it existed; such a "
+        "reply fails closed for those readers when it could have carried pipeline (a "
+        "Dashboard Overview or Revenue reply, or one fed an Ask reply).",
+    )
+    grounded_tickets = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Assistant turns answering an Ask rail, or fed one as history, only: "
+        "{account_ids, departments} of the tickets the digest's figures counted "
+        "(personal.ticket_snapshot), fixed when the answer was written; empty lists when "
+        "it counted none. A mentioned-only reader needs every department readable under "
+        "the ticket rule (Leadership only is exempt) and, unless they see every account, "
+        "every account in their visible accounts (views._reply_readable_by). Null on "
+        "every other turn and on replies written before it existed; such a reply fails "
+        "closed for those readers when it could have counted tickets (a Dashboard "
+        "Overview or Support reply, a support attention focus, an Organizations reply, or "
+        "one fed an Ask reply).",
+    )
     carries_anomaly_text = models.BooleanField(
         null=True,
         blank=True,

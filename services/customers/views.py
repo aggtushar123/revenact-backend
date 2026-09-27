@@ -575,7 +575,7 @@ class CustomerForecastView(views.APIView):
         organisation = request.user.organisation
         customers = list(forecast.filtered_customers(request.user, request.query_params))
         horizon = forecast.horizon_days(request.query_params)
-        rows = forecast.build_rows(customers, organisation, horizon=horizon)
+        rows = forecast.build_rows(customers, organisation, viewer=request.user, horizon=horizon)
 
         segment = drill.parse_segment(
             request.query_params,
@@ -608,7 +608,9 @@ class CustomerForecastView(views.APIView):
                 "horizon_days": horizon,
                 "bridge": forecast.build_bridge(rows),
                 "scenarios": forecast.build_scenarios(rows),
-                "pipeline": forecast.pipeline_by_stage(customers, organisation),
+                "pipeline": forecast.pipeline_by_stage(
+                    customers, organisation, viewer=request.user
+                ),
                 "swing": forecast.swing_list(rows),
                 "accounts": len(rows),
                 "unpriced_count": sum(1 for row in rows if row.arr is None),
@@ -2937,13 +2939,16 @@ class _CallListView(generics.ListCreateAPIView):
             transcript=transcript,
         )
         # Who was on it: the contacts chosen, plus anyone from this company
-        # the transcript names. Only this company's own contacts count.
+        # the transcript names. Only this company's own contacts count, and
+        # only those the logger may see.
         from .contact_sentiment import match_participants, recompute
 
-        matched = match_participants(customer, account, transcript_text)
+        matched = match_participants(customer, account, transcript_text, viewer=request.user)
         own = {
             c.id
-            for c in match_participants(customer, account, "", emails=[c.email for c in chosen])
+            for c in match_participants(
+                customer, account, "", viewer=request.user, emails=[c.email for c in chosen]
+            )
         }
         participants = {c.id: c for c in matched}
         participants.update({c.id: c for c in chosen if c.id in own})

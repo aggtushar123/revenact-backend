@@ -57,7 +57,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 
 from . import churn
 from .models import Customer, Opportunity, Risk, with_health_inputs
-from .scoping import live_customers
+from .scoping import live_customers, pipeline_visible_q, sees_everything, visible_accounts
 
 #: The forecast window. Twelve months is the horizon an ARR forecast is quoted
 #: over, and it is long enough to contain every account's renewal exactly once.
@@ -136,7 +136,79 @@ def horizon_days(params):
     return max(30, min(1095, value))
 
 
-def _pipeline_by_customer(customers, organisation, rates):
+def readable_pipeline_q(viewer) -> Q:
+    """The opportunities and risks `viewer` could list on the Pipelines board:
+    their department's (`pipeline_visible_q`), and an account-level one only
+    when the account is one they may open. The forecast's customers are
+    already the viewer's visible book, so an organisation-level record needs
+    nothing more; an account-level one is not visible just because its
+    organisation is (the twice-filter)."""
+    if sees_everything(viewer):
+        return pipeline_visible_q(viewer)
+    # SOC2:AUTH-02 forecast totals count only pipeline the viewer may read
+    return pipeline_visible_q(viewer) & (
+        Q(account__isnull=True) | Q(account__in=visible_accounts(viewer))
+    )
+
+
+def counted_opportunities(ids, viewer):
+    """Every opportunity the forecast counts for these customer ids — the one
+    queryset its expansion, its stage breakdown and a Copilot reply's
+    pipeline snapshot all read, so they cannot disagree."""
+    return (
+        Opportunity.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
+        .filter(readable_pipeline_q(viewer))
+        .distinct()
+    )
+
+
+def counted_risks(ids, viewer):
+    """Every open risk the forecast counts for these customer ids."""
+    return (
+        Risk.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
+        .filter(stage__in=OPEN_RISK_STAGES)
+        .filter(readable_pipeline_q(viewer))
+        .distinct()
+    )
+
+
+def counted_pipeline(customers, viewer):
+    """What the forecast's pipeline figures for `customers` rest on, as ids
+    and labels only: the accounts its account-level opportunities and risks
+    hang off, and the departments they belong to (blank for undeparted).
+    Fixed on a Copilot reply built from those figures
+    (`copilot.Message.grounded_pipeline`), so a shared reader is checked
+    against what the answer counted.
+
+    Every stage, Closed Won included, on purpose: the expansion figure
+    weights a Closed Won opportunity at 1.0 (`STAGE_PROBABILITY`) and the
+    stage breakdown lists it, so it *is* counted — leaving it out would
+    under-snapshot. (A row the figures skip for want of an exchange rate is
+    still named: a superset only ever fails closed.)"""
+    ids = [customer.pk for customer in customers]
+    accounts, departments = set(), set()
+    for rows in (counted_opportunities(ids, viewer), counted_risks(ids, viewer)):
+        for account_id, department in rows.values_list("account_id", "department"):
+            if account_id is not None:
+                accounts.add(account_id)
+            departments.add(department)
+    return {"account_ids": sorted(accounts), "departments": sorted(departments)}
+
+
+def pipeline_readable_by(viewer, snapshot, visible_account_ids):
+    """Whether `viewer` could list every opportunity and risk a
+    `counted_pipeline` snapshot names: each department under
+    `pipeline_visible_q`'s rule, each account in `visible_account_ids`
+    (their `visible_accounts`, passed in so a caller reads it once)."""
+    from services.accounts.models import User
+
+    if not (sees_everything(viewer) or viewer.function == User.Function.LEADERSHIP):
+        if any(d not in ("", viewer.function) for d in snapshot["departments"]):
+            return False
+    return set(snapshot["account_ids"]) <= visible_account_ids
+
+
+def _pipeline_by_customer(customers, organisation, rates, viewer):
     """Open expansion per customer id: `(weighted, unweighted)` ARR.
 
     One query for the whole page. Opportunities hang off a Customer *or* one of
@@ -146,10 +218,9 @@ def _pipeline_by_customer(customers, organisation, rates):
 
     ids = [customer.pk for customer in customers]
     opportunities = (
-        Opportunity.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
+        counted_opportunities(ids, viewer)
         .select_related("customer")
         .prefetch_related("account__customers")
-        .distinct()
     )
 
     by_customer = {}
@@ -177,16 +248,12 @@ def _pipeline_by_customer(customers, organisation, rates):
     return by_customer
 
 
-def _risk_by_customer(customers, organisation, rates):
+def _risk_by_customer(customers, organisation, rates, viewer):
     """Open contraction risk per customer id, weighted by priority."""
 
     ids = [customer.pk for customer in customers]
     risks = (
-        Risk.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
-        .filter(stage__in=OPEN_RISK_STAGES)
-        .select_related("customer")
-        .prefetch_related("account__customers")
-        .distinct()
+        counted_risks(ids, viewer).select_related("customer").prefetch_related("account__customers")
     )
 
     by_customer = {}
@@ -255,14 +322,17 @@ class ForecastRow:
         return self.expansion - self.downside
 
 
-def build_rows(customers, organisation, *, horizon=DEFAULT_HORIZON_DAYS, today=None):
+def build_rows(customers, organisation, *, viewer, horizon=DEFAULT_HORIZON_DAYS, today=None):
+    """One `ForecastRow` per customer. `viewer` decides which opportunities
+    and risks count (`readable_pipeline_q`): a person's, or a `SystemActor`
+    for a whole-organisation job."""
     today = today or timezone.localdate()
     cutoff = today + timedelta(days=horizon)
     rates = rates_for(organisation)
 
     customers = list(customers)
-    pipeline = _pipeline_by_customer(customers, organisation, rates)
-    risks = _risk_by_customer(customers, organisation, rates)
+    pipeline = _pipeline_by_customer(customers, organisation, rates, viewer)
+    risks = _risk_by_customer(customers, organisation, rates, viewer)
 
     rows = []
     for customer in customers:
@@ -417,7 +487,7 @@ def swing_list(rows):
     return [_row_payload(row) for row in ranked[:LIST_LIMIT]]
 
 
-def pipeline_by_stage(customers, organisation):
+def pipeline_by_stage(customers, organisation, *, viewer):
     """Open expansion by sales stage, weighted and not.
 
     Both numbers, deliberately: the gap between them is how much of the upside
@@ -434,11 +504,7 @@ def pipeline_by_stage(customers, organisation):
         for stage, label in Opportunity.Stage.choices
     }
 
-    opportunities = (
-        Opportunity.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
-        .prefetch_related("account__customers")
-        .distinct()
-    )
+    opportunities = counted_opportunities(ids, viewer).prefetch_related("account__customers")
 
     for opportunity in opportunities:
         parents = (

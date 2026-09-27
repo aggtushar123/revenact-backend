@@ -66,7 +66,7 @@ class BridgeByTests(TestCase):
         with the whole — the point of not re-summing."""
         org, *_ = _org()
         actor = SystemActor(org)
-        rows = forecast.build_rows(list(forecast.filtered_customers(actor, {})), org)
+        rows = forecast.build_rows(list(forecast.filtered_customers(actor, {})), org, viewer=actor)
         whole = forecast.build_bridge(rows)
 
         by_owner = forecast.bridge_by(rows, lambda row: row.customer.owner_id)

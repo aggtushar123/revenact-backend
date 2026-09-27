@@ -428,3 +428,83 @@ class ForecastViewTests(APITestCase):
         long = self.client.get(self.url, {"drill": "churn", "horizon_days": 365}).json()["drill"]
         self.assertEqual(short["companies"], [])
         self.assertEqual([c["name"] for c in long["companies"]], ["Later"])
+
+
+class ForecastPipelineVisibilityTests(APITestCase):
+    """Forecast totals only count pipeline the viewer could list on the
+    Pipelines board: their department's (or undeparted) opportunities and
+    risks, and on an account only when that account is one they may open."""
+
+    url = "/api/v1/customers/forecast/"
+
+    def setUp(self):
+        from services.customers.tests.test_views import blind_to_one_account
+
+        self.org = Organisation.objects.create(name="Acme Inc", currency="USD")
+        self.customer = Customer.objects.create(
+            organisation=self.org,
+            name="Globex",
+            arr_billed_at_account=Decimal("100000"),
+            lifecycle_stage=Customer.LifecycleStage.LIVE,
+            health_score=Decimal("9.0"),
+        )
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.customer)
+        self.admin = User.objects.create_user(
+            email="admin@acme.io",
+            password="supersecret1",
+            name="Admin",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+
+    def _opportunity(self, **kwargs):
+        return Opportunity.objects.create(
+            title="Seats", mrr=Decimal("1000"), stage=Opportunity.Stage.NEGOTIATION, **kwargs
+        )
+
+    def _risk(self, **kwargs):
+        return Risk.objects.create(
+            title="Sponsor left",
+            mrr=Decimal("1000"),
+            priority=Risk.Priority.HIGH,
+            stage=Risk.Stage.OPEN,
+            **kwargs,
+        )
+
+    def _read(self, user):
+        self.client.force_authenticate(user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        pipeline = {row["key"]: row for row in response.data["pipeline"]}
+        return response.data["bridge"], pipeline["negotiation"]
+
+    def test_a_hidden_accounts_opportunity_is_left_out(self):
+        self._opportunity(account=self.seen)
+        self._opportunity(account=self.hidden)
+
+        bridge, negotiation = self._read(self.viewer)
+        self.assertEqual(bridge["expansion"], 9600.0)  # one 12k opportunity at 0.8
+        self.assertEqual(negotiation["open"], 12000.0)
+        self.assertEqual(negotiation["count"], 1)
+
+        bridge, negotiation = self._read(self.admin)
+        self.assertEqual(bridge["expansion"], 19200.0)
+        self.assertEqual(negotiation["count"], 2)
+
+    def test_another_departments_opportunity_is_left_out(self):
+        self._opportunity(customer=self.customer, department=User.Function.CS)
+        self._opportunity(customer=self.customer, department=User.Function.SALES)
+
+        bridge, negotiation = self._read(self.viewer)
+        self.assertEqual(bridge["expansion"], 9600.0)
+        self.assertEqual(negotiation["count"], 1)
+
+        bridge, negotiation = self._read(self.admin)
+        self.assertEqual(bridge["expansion"], 19200.0)
+
+    def test_a_hidden_or_other_department_risk_is_left_out(self):
+        self._risk(account=self.hidden)
+        self._risk(customer=self.customer, department=User.Function.SALES)
+
+        self.assertEqual(self._read(self.viewer)[0]["contraction"], 0.0)
+        self.assertGreater(self._read(self.admin)[0]["contraction"], 0.0)

@@ -31,11 +31,14 @@ necessarily *open* the customer's own record — can still ask their
 Copilot about any customer in the org and be told who's responsible for
 it, same as the knowledge layer's own "asked about" reach
 (`services.knowledge`; `test_the_copilot_grounds_only_in_what_the_asker_may_see`
-pins this). The privacy boundary lives one level down instead, in
-`retrieve_with_sources`/`_gather_candidates`' own per-record `viewer`
-checks (`visible_notes`/`visible_emails`/`visible_tickets`/
-`visible_contributions`) — the company can be *named*, but only the
-content the asker may actually see is ever quoted back to them.
+pins this). Matching is only for working out which company a question is
+about, never for reading records: `retrieve_with_sources`/
+`_gather_candidates` read nothing on a company the asker may not open
+(`visible_accounts` for an account, `visible_customers` for an
+organisation), and then only records passing their own rule
+(`visible_notes`/`visible_emails`/`visible_tickets`/
+`visible_contributions`) — the company can be *named*, but only content
+the asker may actually see is ever quoted back to them.
 
 Aggregates in Python over the caller's own rows, same reasoning as
 CustomerStatsView's own docstring: health_category is a derived Python
@@ -96,6 +99,14 @@ class Grounding:
     #: (`Message.grounded_customer_ids`) so a shared reader is checked against
     #: what the answer was built from, not a book rebuilt after data moved.
     customer_ids: list | None = None
+    #: Ask surfaces only: the accounts and departments of the open pipeline
+    #: the digest's figures counted (`forecast.counted_pipeline`; empty lists
+    #: when none). Stored on the reply (`Message.grounded_pipeline`).
+    pipeline: dict | None = None
+    #: Ask surfaces only: the accounts and departments of the tickets the
+    #: digest's figures counted (`personal.ticket_snapshot`; empty lists when
+    #: none). Stored on the reply (`Message.grounded_tickets`).
+    tickets: dict | None = None
 
 
 def build_org_context_summary(organisation, user, query: str = "") -> str:
@@ -215,11 +226,22 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
         my_scope = Q(customer__organisation=organisation, customer__owner=user) | Q(
             account__customers__organisation=organisation, account__owner=user
         )
-        open_opportunities = Opportunity.objects.filter(my_scope).exclude(
-            stage=Opportunity.Stage.CLOSED_WON
+        from services.customers.forecast import readable_pipeline_q
+        from services.customers.personal import visible_tickets
+
+        # SOC2:AUTH-02 counts follow the viewer: pipeline by department and
+        # account (as the Pipelines board lists it), tickets by department
+        open_opportunities = (
+            Opportunity.objects.filter(my_scope)
+            .filter(readable_pipeline_q(user))
+            .exclude(stage=Opportunity.Stage.CLOSED_WON)
         )
-        open_risks = Risk.objects.filter(my_scope).exclude(stage=Risk.Stage.ABANDONED)
-        open_tickets = Ticket.objects.filter(my_scope).exclude(
+        open_risks = (
+            Risk.objects.filter(my_scope)
+            .filter(readable_pipeline_q(user))
+            .exclude(stage=Risk.Stage.ABANDONED)
+        )
+        open_tickets = visible_tickets(user, Ticket.objects.filter(my_scope)).exclude(
             status__in=[Ticket.Status.RESOLVED, Ticket.Status.CLOSED]
         )
 

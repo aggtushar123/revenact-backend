@@ -230,6 +230,43 @@ def _support_lines(user, filters, customers, *, today, now):
 #: snapshot history.
 HISTORY_AREAS = ("overview", "health")
 
+#: Areas whose figures fold in open opportunities and risks (the forecast's
+#: expansion and contraction): their replies snapshot that pipeline.
+PIPELINE_AREAS = ("overview", "revenue")
+
+#: Areas whose figures count tickets: the Overview's "Open tickets" and its
+#: attention list's support items, and the Support area. A support attention
+#: focus counts them in any area (`is_support_focus`).
+TICKET_AREAS = ("overview", "support")
+
+
+def is_support_focus(focus):
+    return (
+        isinstance(focus, dict)
+        and focus.get("kind") == "attention"
+        and str(focus.get("key") or "").startswith("support:")
+    )
+
+
+def counted_tickets(user, filters, area, customers, focus):
+    """The ticket snapshot for a reply: the Support figures' own rows
+    (`ticket_filters.filtered_tickets` under the Support filters — the
+    Overview's "Open tickets" and the Support area), and the attention list's
+    support rows over the book (`attention.rules.support_tickets` — the
+    Overview's list, and a support attention focus, whose company is in the
+    book)."""
+    from services.attention.rules import support_tickets
+    from services.customers.personal import ticket_snapshot
+    from services.customers.ticket_filters import filtered_tickets
+
+    counted = []
+    if area in TICKET_AREAS:
+        counted.append(filtered_tickets(user, dashboard_figures.support_filters(filters)))
+    if area == "overview" or is_support_focus(focus):
+        counted.append(support_tickets(user, [customer.pk for customer in customers]))
+    return ticket_snapshot(*counted)
+
+
 AREA_DIGESTS = {
     "overview": _overview_lines,
     "revenue": _revenue_lines,
@@ -416,6 +453,12 @@ def build_dashboard_grounding(user, context, question, *, today=None, now=None):
         sources,
         company,
         customer_ids=_grounded_ids(user, filters, area, customers, targets),
+        pipeline=(
+            forecast.counted_pipeline(customers, user)
+            if area in PIPELINE_AREAS
+            else {"account_ids": [], "departments": []}
+        ),
+        tickets=counted_tickets(user, filters, area, customers, context.get("focus")),
     )
 
 

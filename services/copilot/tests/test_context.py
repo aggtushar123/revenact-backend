@@ -180,6 +180,23 @@ class BuildOrgContextSummaryTests(TestCase):
         self.assertIn("1 open risks", summary)
         self.assertIn("1 open tickets", summary)
 
+    def test_the_pipeline_counts_follow_the_viewers_department(self):
+        customer = Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
+        Opportunity.objects.create(customer=customer, title="Ours", department="cs")
+        Opportunity.objects.create(customer=customer, title="Sales'", department="sales")
+        Risk.objects.create(customer=customer, title="Sales risk", department="sales")
+        Ticket.objects.create(
+            customer=customer,
+            ticket_number="TKT-9",
+            title="Kernel",
+            opened_at="2026-01-01",
+            department="engineering",
+        )
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Your pipeline: 1 open opportunities, 0 open risks, 0 open tickets.", summary)
+
     def test_a_company_named_in_the_query_gets_its_own_real_retrieval(self):
         Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
         Note.objects.create(

@@ -93,8 +93,16 @@ customer. Tasks and decisions only.
 def _account_row(customer, organisation):
     """The session's account in the same shape as the exposure list, so
     it is a valid task target even when it carries no measurable downside."""
+    from services.customers.scoping import SystemActor
+
+    # Whole-organisation, like the Ops agent evidence it joins.
     row = forecast._row_payload(
-        forecast.build_rows([customer], organisation, horizon=forecast.horizon_days({}))[0]
+        forecast.build_rows(
+            [customer],
+            organisation,
+            viewer=SystemActor(organisation),
+            horizon=forecast.horizon_days({}),
+        )[0]
     )
     return {
         "id": row["id"],

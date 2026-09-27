@@ -116,7 +116,9 @@ def build_evidence(organisation, key):
             )
 
     customers = list(forecast.filtered_customers(actor, {}))
-    rows = forecast.build_rows(customers, organisation, horizon=forecast.horizon_days({}))
+    rows = forecast.build_rows(
+        customers, organisation, viewer=actor, horizon=forecast.horizon_days({})
+    )
     accounts = [
         {
             "name": row["name"],

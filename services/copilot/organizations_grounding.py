@@ -266,4 +266,17 @@ def build_organizations_grounding(user, context, question, *, today=None):
     # Every row the tiles, sections and lists were built from, plus the targets.
     grounded = {entry.customer.pk for entry in figures["portfolio"].entries}
     grounded |= {customer.pk for customer in targets}
-    return Grounding("\n".join(lines), sources, company, customer_ids=sorted(grounded))
+    # The portfolio carries no pipeline figures; its rows' signals count the
+    # urgent tickets `book.urgent_ticket_counts` read for every entry.
+    from services.attention.rules import support_tickets
+    from services.customers.personal import ticket_snapshot
+
+    entry_ids = [entry.customer.pk for entry in figures["portfolio"].entries]
+    return Grounding(
+        "\n".join(lines),
+        sources,
+        company,
+        customer_ids=sorted(grounded),
+        pipeline={"account_ids": [], "departments": []},
+        tickets=ticket_snapshot(support_tickets(user, entry_ids)),
+    )

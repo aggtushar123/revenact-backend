@@ -789,6 +789,13 @@ the account page header names its parent org and its Organizations tab
 lists it, so a strictly-own rule would 404 inside a page you are
 allowed to open.
 
+**The org chart reaches both directions too.** A manager sees what anyone
+below them owns, all the way down (`subtree_ids`): their reports'
+customers and accounts, the accounts under a report's customer, and the
+organisation above an account a report owns — the same two legs as
+above, for the whole subtree. Function-owner and question reach open an
+organisation only, never its accounts.
+
 **Unowned records stay visible to everyone.** An unowned record is
 nobody's secret, and hiding it would make the unassigned queue
 invisible to the people meant to work it.
@@ -809,8 +816,11 @@ organisation-wide, deliberately **not** narrowed to
 section below and `services/copilot/context.py`'s own docstring for why:
 an engineer, a sales rep or the CEO, none of whom own a book and none of
 whom may necessarily open the customer's own record, can still ask their
-Copilot about any customer in the org. The privacy boundary is enforced
-one level down instead, per record, inside `retrieve_with_sources`.
+Copilot about any customer in the org and be told who answers for it.
+Matching never reads records: `retrieve_with_sources` reads nothing on a
+company the asker may not open (`visible_accounts` for an account,
+`visible_customers` for an organisation), and then only records passing
+their own rule.
 
 #### Known consequences (accepted, not oversights)
 
@@ -1334,6 +1344,14 @@ Notes on the shape:
   Touch component is built from — not a second definition of "touched".
   An account nobody has ever touched is measured from when it arrived, so
   a logo onboarded last week doesn't read as neglected.
+* The last touch, and the pulse inputs (open tickets, recent classified
+  conversations — `contact.last_contact_by_customer`/
+  `last_contact_annotation`, `models.with_customer_pulse_inputs`), count
+  the organisation's own records and **every** one of its accounts',
+  whoever is reading: they are organisation facts, the same values the
+  health job stores, not a per-record read, so they are deliberately not
+  narrowed to the viewer's `visible_accounts`. No record, name or text
+  from a hidden account reaches the viewer through them.
 * This is a **Customer-level** endpoint. Accounts carry their own health
   and renewal dates, and no tab reads them yet; adding them would change
   what "the book" means on every tab at once.
@@ -1454,6 +1472,17 @@ first, longest silence next.
 `timeline`, `sources`, `cadence`, `by_owner`, `going_dark`,
 `going_dark_threshold`, `window_days`, `currency`, `filters`.
 
+**Counts follow the viewer.** The touch counts (`timeline`, `sources`,
+`kpis.touches`), `kpis.inbound` and the task counts count only records the
+caller could read: on a customer or on an account they may open
+(`visible_children_q` — an account by its own rule), and under each
+record's own rule — mail by its mailbox chain, notes by their author's
+chain, tickets by department, tasks by creator and assignee
+(`activity_tracking.readable`). The last-contact date behind cadence and
+going-dark is an organisation fact and is not narrowed (see the Health
+Overview notes). A whole-organisation job (`SystemActor`) counts
+everything.
+
 Three definitions decide what these numbers mean, and all three are
 places a screen like this can mislead:
 
@@ -1509,6 +1538,15 @@ place that reads renewals, open Risks and open Opportunities together.
 Query params: `horizon_days` (default 365, **clamped** to 30–1095 rather
 than rejected), plus the usual `owner` / `lifecycle` / `customer`, plus
 `drill`.
+
+**Only pipeline the caller could list counts.** Opportunities and Risks
+feed contraction, expansion, the scenarios and `pipeline` only when the
+Pipelines board would show them to the caller: their department's or an
+undeparted one (`pipeline_visible_q`), and an account-level one only on an
+account they may open (`visible_accounts` — seeing its organisation is not
+enough). `forecast.readable_pipeline_q`. Whole-organisation jobs (metric
+snapshots, the Ops agent, the Brain graph) pass a `SystemActor` and count
+everything.
 
 **Drill.** `?drill=` opens a bridge step into the companies behind it:
 `at_risk` (every account carrying downside — churn and contraction
@@ -2372,9 +2410,11 @@ call is logged, and for every contact in `run_health_maintenance`.
 
 `Call.participants` (write `participant_ids`, read `participants
 [{id, name, role_display, sentiment}]`) says who from the customer's side
-was on a call; only contacts of that company are accepted, and a
-transcript that names a contact (full name or email address) links them
-automatically.
+was on a call; only contacts of that company that the logger may see
+are accepted (organisation-level ones, and those on accounts in
+`visible_accounts` — a colleague's account's contacts are dropped), and a
+transcript that names such a contact (full name or email address) links
+them automatically.
 
 ### `GET /api/v1/contacts/<id>/interactions/`
 
@@ -3878,7 +3918,9 @@ with `live_customers` — visible, not archived, and **not churned**
 (`services/customers/scoping.py`) — not the whole tenant's, same "My"
 framing as Cockpit's own `CockpitSummaryView`/`TaskListView`'s
 `?mine=true`: health/NPS/lifecycle breakdown, top at-risk customers, open
-opportunity/risk/ticket counts scoped to those same owned companies),
+opportunity/risk/ticket counts scoped to those same owned companies and
+to what the caller could list — pipeline under `forecast.readable_pipeline_q`
+(department and account), tickets under their department rule),
 injected into the system prompt; this is grounding, not tool-calling —
 the model can read this digest and converse, but can't run its own
 queries or take real actions.
@@ -3890,8 +3932,10 @@ to `visible_customers`/`visible_accounts` (any customer or account in the
 org can be named and asked about; see `services/copilot/context.py`'s own
 docstring and `test_the_copilot_grounds_only_in_what_the_asker_may_see`
 in `services/knowledge/tests/test_hierarchy.py`, which pins this): the
-privacy boundary is enforced one level down, per record, inside
-`retrieve_with_sources`. `find_mentioned_company` is a plain, free,
+privacy boundary is enforced one level down, inside
+`retrieve_with_sources`: nothing is read on a company the asker may not
+open (`visible_accounts` / `visible_customers`), and on one they may, only
+records passing their own rule. `find_mentioned_company` is a plain, free,
 case-insensitive substring match of the question against those company
 names, tried first; if that fails, `find_relevant_company_semantic` (see
 `services/copilot/embeddings.py`) embeds the question against each
@@ -4029,9 +4073,14 @@ budgeted.
 `{"kind": "email" | "mail_message", "id": <int>}` → `{"draft": "…", "sources": [...]}`.
 
 A reply written as the current user, for them to edit and send: nothing is sent
-and no conversation is stored. `email` is a filed `customers.Email` under the
-mailbox visibility rule (the whole thread on that mailbox goes into the prompt);
-`mail_message` is a row of the person's own inbox, owner only. The prompt
+and no conversation is stored. `email` is a filed `customers.Email` on a
+customer or account the person may open (`visible_children_q` — an account's
+mail needs the account itself visible), under the mailbox visibility rule (the
+whole thread on that mailbox goes into the prompt);
+`mail_message` is a row of the person's own inbox, owner only; when that row
+is filed on a customer or account the person may not open, the draft is
+written from the thread alone, with no account history and no company name.
+The prompt
 carries the thread plus up to eight of the account's most relevant records from
 the same retrieval the Copilot answers with (`retrieve_with_sources`), and those
 records come back as `sources` in the message-source shape (`type, id, label,
@@ -4389,8 +4438,16 @@ carry `visibility: "full" | "partial"` and each turn its `author`
 (`Message.author`, backfilled for older turns from the session's
 redirect events). A follow-up posted by a mentioned person is grounded
 and given history from their slice only. **A Copilot reply is withheld
-from a sliced viewer when it cites a record they may not read** — a
-contribution outside their scope, a customer they may not open — and
+from a viewer when it cites a record they may not read** — every cited
+record (email, note, ticket, contribution, activity, …) needs its company
+open to the viewer (`visible_accounts` for an account-level record — seeing
+the account's organisation is not enough — `visible_customers` for an
+organisation-level one) *and* must pass its own rule (a contribution
+outside their scope, mail outside their chain, another department's
+ticket). Strict by design: someone who loses access to a company stops
+seeing replies that quoted its records — on a plain Copilot or
+Communications reply that includes replies to their own questions (an
+Ask asker still reads their own Ask reply regardless) — and
 shows as "This reply isn't shared with you…" instead (`copilot.views.
 _reply_readable_by`); the stored turn is untouched. Pairing a reply with
 the question it answers uses `Message.reply_to`, set on every new reply
@@ -4402,9 +4459,31 @@ top lists, company names never individually sourced — so a sliced viewer
 needs every customer in `forecast.filtered_customers(asker, the answered
 turn's context.filters)` to be inside their own visible customers, on
 top of the per-source checks above; the asker always sees their own
-dashboard replies regardless. A context-less (Communications/Copilot)
-reply keeps exactly the per-source checks for every viewer, the asker
-included.
+dashboard replies regardless. **Pipeline too:** an Overview or Revenue
+reply's figures count the open opportunities and risks the asker could
+list, so the reply stores their accounts and departments
+(`Message.grounded_pipeline`, `{account_ids, departments}` from
+`forecast.counted_pipeline`; empty lists for areas and surfaces whose digest
+counts none) and a sliced reader needs every account in their
+`visible_accounts` and every department readable under
+`pipeline_visible_q`. A follow-up fed the reply folds its snapshot in, as
+with customer ids. A reply written before the field existed has none: it
+fails closed when it could have carried pipeline (an Overview or Revenue
+reply, or a context-less reply fed Ask history) and reads as before
+otherwise — no backfill, since what an old reply counted cannot be
+re-derived. **Tickets too, separately** (`Message.grounded_tickets`,
+`{account_ids, departments}` from `personal.ticket_snapshot`): an Overview
+reply's "Open tickets" and attention support items, a Support reply, a
+support attention focus (any area) and an Organizations reply's urgent-ticket
+signals count tickets the asker could read (`ticket_filters.filtered_tickets`,
+`attention.rules.support_tickets`). The ticket department rule exempts
+Leadership only (`visible_tickets`), so every mentioned-only reader —
+view-all included — needs each department readable under it, and a reader
+who doesn't see every account needs each account in `visible_accounts`.
+Legacy replies with none fail closed on the Overview and Support areas, a
+support attention focus, an Organizations reply, and a context-less reply
+fed Ask history, except for a Leadership reader who sees every account. Follow-ups fold it like pipeline. A context-less (Communications/Copilot) reply keeps exactly
+the per-source checks for every viewer, the asker included.
 
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei
 report to her; Dana to Carl.
@@ -5989,13 +6068,14 @@ reading a bounded number of rows per model.
 ### `POST /api/v1/communications/emails/<id>/reply/`
 
 Answer a queue email from the person's own mailbox. Body `{"body": "…"}`. The
-email must be readable under the mailbox rule (owner and management chain) and
+email must be on a customer or account the person may open (`visible_children_q`),
+readable under the mailbox rule (owner and management chain), and
 must be one somebody wrote to them (`direction=received` with a sender); the
 reply goes to that sender under `Re: <subject>`, through the requesting user's
 own `MailboxConnection`, and the copy is filed on the same customer or account,
 which is what takes the debt out of the queue. Returns **201**
 `{id, direction: "sent", subject, sent_at, thread_id}`. 400 when empty or when
-the email has nobody to reply to; 404 outside the chain; 409 when the person has
+the email has nobody to reply to; 404 outside the chain or on a hidden account; 409 when the person has
 no mailbox connected; 502 with the provider's reason. Audited as
 `mailbox.reply`.
 

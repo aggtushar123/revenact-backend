@@ -166,7 +166,17 @@ class KnowledgeScopeTests(ChartFixture):
 
         self.note(self.raj, "SALES-ONLY procurement stalled")
         self.note(self.alice, "LEADERSHIP board wants this kept")
+        # Priya may not open Pizza Hut: the company is named (and who answers
+        # for it), but nothing on it is quoted — the Copilot is strict.
         summary = build_grounding(self.org, self.priya, query="What about Pizza Hut?").summary
+        self.assertIn("Responsible for Pizza Hut", summary)
+        self.assertNotIn("LEADERSHIP board", summary)
+        self.assertNotIn("SALES-ONLY", summary)
+        # Once she has written on it herself she may open it, and reads what
+        # her scope permits: leadership's note, not sales'.
+        self.note(self.priya, "ENGINEERING fix is scheduled")
+        priya = User.objects.get(pk=self.priya.pk)
+        summary = build_grounding(self.org, priya, query="What about Pizza Hut?").summary
         self.assertIn("LEADERSHIP board", summary)
         self.assertNotIn("SALES-ONLY", summary)
 
@@ -613,6 +623,10 @@ class DashboardReplyRedactionTests(ChartFixture):
             sources=[],
             grounded_customer_ids=[self.pizza.pk],
             carries_anomaly_text=False,
+            # Written today: Overview figures count pipeline and tickets, and
+            # none were open.
+            grounded_pipeline={"account_ids": [], "departments": []},
+            grounded_tickets={"account_ids": [], "departments": []},
             reply_to=asked_narrow,
         )
 
@@ -943,3 +957,41 @@ class ManagerSeesTeamTests(ChartFixture):
         self.assertEqual(
             self.client.get(f"/api/v1/customers/{mine.id}/").status_code, status.HTTP_404_NOT_FOUND
         )
+
+
+class SubtreeCacheTests(ChartFixture):
+    """The reports lookup is memoised on the user instance — one object for
+    the life of a request — like the membership lookup, so every visibility
+    rule that asks it costs one walk of the chart, not one each."""
+
+    def test_the_second_ask_costs_no_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        alice = User.objects.get(pk=self.alice.pk)
+        first = hierarchy.subtree_ids(alice)
+        with CaptureQueriesContext(connection) as ctx:
+            second = hierarchy.subtree_ids(alice)
+        self.assertEqual(len(ctx.captured_queries), 0)
+        self.assertEqual(first, second)
+        self.assertEqual(first, {self.carl.pk, self.dana.pk, self.priya.pk, self.raj.pk})
+
+    def test_a_caller_mutating_the_answer_does_not_change_the_cache(self):
+        alice = User.objects.get(pk=self.alice.pk)
+        hierarchy.subtree_ids(alice).add(999)
+        self.assertNotIn(999, hierarchy.subtree_ids(alice))
+
+    def test_a_fresh_instance_reads_the_chart_again(self):
+        carl = User.objects.get(pk=self.carl.pk)
+        self.assertEqual(hierarchy.subtree_ids(carl), {self.dana.pk})
+        User.objects.filter(pk=self.raj.pk).update(reports_to=self.carl)
+        self.assertEqual(
+            hierarchy.subtree_ids(User.objects.get(pk=self.carl.pk)), {self.dana.pk, self.raj.pk}
+        )
+
+    def test_refreshing_the_user_reads_the_chart_again(self):
+        carl = User.objects.get(pk=self.carl.pk)
+        self.assertEqual(hierarchy.subtree_ids(carl), {self.dana.pk})
+        User.objects.filter(pk=self.raj.pk).update(reports_to=self.carl)
+        carl.refresh_from_db()
+        self.assertEqual(hierarchy.subtree_ids(carl), {self.dana.pk, self.raj.pk})

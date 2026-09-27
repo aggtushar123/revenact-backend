@@ -464,7 +464,10 @@ class ReadingCost(Fixture):
         self.gather()
         self.client.force_authenticate(self.alice)
         self.client.get(URL)  # warm any per-process caches
-        with self.assertNumQueries(8):
+        # `force_authenticate` hands both requests the same user instance, so
+        # the second reuses its memoised reports lookup (`subtree_ids`); a real
+        # request loads a fresh user and pays that one query.
+        with self.assertNumQueries(7):
             self.client.get(URL)
 
 

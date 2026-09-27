@@ -164,16 +164,28 @@ def _source_ref(*, kind: str, record_id: int, label: str, date, company) -> dict
 
 def _gather_candidates(company, viewer=None) -> list[RetrievedItem]:
     """Every real candidate item for `company` — see RetrievedItem.
-    `viewer` scopes each source to what that person may see: mail/notes by
-    their own chain-visibility rule, tickets by department, activities by
-    whether they may open `company` itself (it carries no finer rule of
-    its own), and contributions by the knowledge layer's own rule
-    (services.accounts.hierarchy). `None` means every real caller's own
+    `viewer` scopes each source to what that person may see: nothing at all
+    unless they may open `company` itself (`visible_accounts` /
+    `visible_customers`), then mail/notes by their own chain-visibility
+    rule, tickets by department, and contributions by the knowledge layer's
+    own rule (services.accounts.hierarchy). `None` means every real caller's own
     default — always pass the asker."""
 
     scope = _scope_kwargs(company)
     is_account = company.__class__.__name__ == "Account"
     candidates: list[RetrievedItem] = []
+
+    if viewer is not None:
+        from services.customers.scoping import visible_accounts, visible_customers
+
+        # SOC2:AUTH-02 the Copilot is strict: a record is read only when the
+        # asker may open its company as well as read the record itself.
+        # Company *matching* is deliberately organisation-wide (context.py),
+        # so a company the asker can't open can still be the `company` here;
+        # naming it is allowed, reading its records is not.
+        visible = visible_accounts(viewer) if is_account else visible_customers(viewer)
+        if not visible.filter(pk=company.pk).exists():
+            return candidates
 
     emails = Email.objects.filter(**scope)
     if viewer is not None:
@@ -244,20 +256,9 @@ def _gather_candidates(company, viewer=None) -> list[RetrievedItem]:
             )
         )
 
+    # An Activity carries no author or department of its own: the company
+    # check above is its whole rule.
     activities = Activity.objects.filter(**scope).order_by("-occurred_at")
-    if viewer is not None:
-        from services.customers.scoping import visible_accounts, visible_customers
-
-        # SOC2:AUTH-02 an Activity carries no author or department of its
-        # own — unlike Note/Ticket/Contribution above, it has no finer
-        # object-level rule than the company it belongs to. Company
-        # *matching* is deliberately organisation-wide (see context.py's
-        # own docstring), so a company the viewer can't open can still be
-        # the `company` passed in here; this is the one check standing
-        # between that and its activities reaching the model.
-        visible = visible_accounts(viewer) if is_account else visible_customers(viewer)
-        if not visible.filter(pk=company.pk).exists():
-            activities = Activity.objects.none()
     for activity in activities[:CANDIDATE_POOL_PER_SOURCE]:
         activity_type = activity.get_type_display()
         candidates.append(

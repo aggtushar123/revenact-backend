@@ -8,7 +8,6 @@ What waiting means lives in `communications.py`; this file only turns it into
 HTTP.
 """
 
-from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status, views
 from rest_framework.pagination import PageNumberPagination
@@ -22,6 +21,7 @@ from services.mail.visibility import visible_emails
 
 from . import communications
 from .models import Email
+from .scoping import visible_children_q
 
 
 class QueuePagination(PageNumberPagination):
@@ -128,11 +128,9 @@ class EmailReplyView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        organisation = request.user.organisation
-        rows = Email.objects.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).distinct()
+        # SOC2:AUTH-02 on a customer or account the person may open, then the
+        # mailbox rule
+        rows = Email.objects.filter(visible_children_q(request.user)).distinct()
         email = get_object_or_404(visible_emails(request.user, rows), pk=pk)
         body = (request.data.get("body") or "").strip()
         if not body:

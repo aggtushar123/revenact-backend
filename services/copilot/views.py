@@ -35,6 +35,7 @@ from .anthropic_client import (
 from .ask import SURFACES, AskContextSerializer
 from .context import build_grounding
 from .dashboard_context import origin_of
+from .dashboard_grounding import PIPELINE_AREAS, TICKET_AREAS, is_support_focus
 from .models import (
     Conversation,
     CopilotSession,
@@ -297,6 +298,57 @@ def visible_messages(conversation, user):
     return kept
 
 
+def _contribution_rule():
+    from services.knowledge.models import Contribution
+    from services.knowledge.views import visible_contributions
+
+    return Contribution, visible_contributions
+
+
+def _email_rule():
+    from services.customers.models import Email
+
+    return Email, visible_emails
+
+
+def _note_rule():
+    from services.customers.models import Note
+    from services.customers.personal import visible_notes
+
+    return Note, visible_notes
+
+
+def _ticket_rule():
+    from services.customers.models import Ticket
+    from services.customers.personal import visible_tickets
+
+    return Ticket, visible_tickets
+
+
+def _record_id(value):
+    """A cited record's id as a positive int — an int, or a string of
+    digits as a stored JSON source may carry it — or None for anything
+    else, which the caller treats as unreadable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        number = int(value)
+        return number if number > 0 else None
+    return None
+
+
+#: Cited record kinds with an object-level rule of their own, beyond their
+#: company: kind -> () -> (model, rule(user, queryset)).
+RECORD_RULES = {
+    "contribution": _contribution_rule,
+    "email": _email_rule,
+    "note": _note_rule,
+    "ticket": _ticket_rule,
+}
+
+
 class _Reader:
     """What one read of a conversation needs to know about its reader,
     worked out at most once however many Ask replies it holds: whether they
@@ -324,6 +376,66 @@ class _Reader:
         if not stored:
             return set()
         return set(visible_customers(self.user).filter(pk__in=stored).values_list("pk", flat=True))
+
+    @cached_property
+    def visible_company_ids(self):
+        """`{"customer": ids, "account": ids}`: of the companies any reply
+        here cites, those the reader may open — two queries for the union,
+        not one per source."""
+        from services.customers.scoping import visible_accounts, visible_customers
+
+        cited = {"customer": set(), "account": set()}
+        for turn in self.turns:
+            for source in turn.sources or []:
+                if source.get("company_type") in cited:
+                    cited[source["company_type"]].add(source.get("company_id"))
+        rules = {"customer": visible_customers, "account": visible_accounts}
+        return {
+            kind: (
+                set(rules[kind](self.user).filter(pk__in=ids).values_list("pk", flat=True))
+                if ids
+                else set()
+            )
+            for kind, ids in cited.items()
+        }
+
+    def readable_ids(self, kind):
+        """`(existing, readable)` ids of the `kind` records any reply here
+        cites: two queries per kind for the union, cached. A cited record
+        since deleted is in neither, and passes, as it always has."""
+        cache = self.__dict__.setdefault("_readable_ids", {})
+        if kind not in cache:
+            model, rule = RECORD_RULES[kind]()
+            ids = {
+                _record_id(source.get("id"))
+                for turn in self.turns
+                for source in turn.sources or []
+                if source.get("type") == kind
+            } - {None}
+            if not ids:
+                cache[kind] = (set(), set())
+            else:
+                rows = model.objects.filter(pk__in=ids)
+                cache[kind] = (
+                    set(rows.values_list("pk", flat=True)),
+                    set(rule(self.user, rows).values_list("pk", flat=True)),
+                )
+        return cache[kind]
+
+    @cached_property
+    def visible_snapshot_account_ids(self):
+        """Of the accounts any reply here counted pipeline or tickets on,
+        those the reader may open: one query for the union."""
+        from services.customers.scoping import visible_accounts
+
+        stored = set()
+        for turn in self.turns:
+            for snapshot in (_stored_pipeline(turn), _stored_tickets(turn)):
+                if snapshot is not None:
+                    stored |= set(snapshot["account_ids"])
+        if not stored:
+            return set()
+        return set(visible_accounts(self.user).filter(pk__in=stored).values_list("pk", flat=True))
 
 
 REDACTED_REPLY = "This reply isn't shared with you: it draws on records outside what you may see."
@@ -392,10 +504,6 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
     `reader` (`_Reader`) carries what one conversation read knows about the
     viewer, so the snapshot costs one query per read, not one per reply; a
     reader who sees every account skips the id check entirely."""
-    from services.customers.scoping import visible_customers
-    from services.knowledge.models import Contribution
-    from services.knowledge.views import visible_contributions
-
     asked_here = user_turn is not None and bool(user_turn.context)
     fed_ask = user_turn is not None and not asked_here and _is_fed_followup(turn)
     if asked_here or fed_ask:
@@ -419,6 +527,22 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
             grounded = _grounded_ids(turn)
             if grounded is None:
                 return False
+            # SOC2:AUTH-02 and could read every ticket its figures counted. The
+            # ticket department rule exempts Leadership only, never view-all,
+            # so it is checked before the sees-everything shortcut below.
+            from services.customers.personal import (
+                reads_every_ticket_department,
+                ticket_departments_readable,
+            )
+
+            tickets = _tickets_of(turn, user_turn)
+            # Unknown matters only to a reader some part of the rule binds: a
+            # Leadership reader who sees every account reads every ticket.
+            if tickets is None:
+                if not (reader.sees_everything and reads_every_ticket_department(user)):
+                    return False
+            elif not ticket_departments_readable(user, tickets["departments"]):
+                return False
             if not reader.sees_everything:
                 if not grounded <= reader.visible_grounded_ids:
                     return False
@@ -427,42 +551,38 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
                 # carry one".
                 if turn.carries_anomaly_text is not False:
                     return False
+                # SOC2:AUTH-02 and could list every opportunity and risk its
+                # figures counted — accounts and departments fixed when it was
+                # written; a reply that could carry pipeline with none fails closed
+                pipeline = _pipeline_of(turn, user_turn)
+                if pipeline is None:
+                    return False
+                from services.customers.forecast import pipeline_readable_by
 
+                if not pipeline_readable_by(user, pipeline, reader.visible_snapshot_account_ids):
+                    return False
+                if tickets is None or not (
+                    set(tickets["account_ids"]) <= reader.visible_snapshot_account_ids
+                ):
+                    return False
+
+    reader = reader or _Reader(user, [turn])
+    companies = reader.visible_company_ids
     for source in turn.sources or []:
-        if source.get("type") == "contribution":
-            rows = Contribution.objects.filter(pk=source.get("id"))
-            if rows.exists() and not visible_contributions(user, rows).exists():
+        # SOC2:AUTH-02 strict: every cited record's company must be one the
+        # viewer may open — an account by its own rule, never through its
+        # organisation — on top of the record's own rule below
+        company_type = source.get("company_type")
+        if company_type in companies and source.get("company_id") not in companies[company_type]:
+            return False
+        kind = source.get("type")
+        if kind in RECORD_RULES:
+            # SOC2:AUTH-02 an id that names no record shape fails closed
+            record_id = _record_id(source.get("id"))
+            if record_id is None:
                 return False
-        elif source.get("type") == "email":
-            from services.customers.models import Email
-            from services.mail.visibility import visible_emails
-
-            rows = Email.objects.filter(pk=source.get("id"))
-            if rows.exists() and not visible_emails(user, rows).exists():
-                return False
-        elif source.get("type") == "note":
-            from services.customers.models import Note
-            from services.customers.personal import visible_notes
-
-            rows = Note.objects.filter(pk=source.get("id"))
-            if rows.exists() and not visible_notes(user, rows).exists():
-                return False
-        elif source.get("type") == "ticket":
-            from services.customers.models import Ticket
-            from services.customers.personal import visible_tickets
-
-            rows = Ticket.objects.filter(pk=source.get("id"))
-            if rows.exists() and not visible_tickets(user, rows).exists():
-                return False
-        elif source.get("company_type") == "customer":
-            if not visible_customers(user).filter(pk=source.get("company_id")).exists():
-                return False
-        elif source.get("company_type") == "account":
-            from services.customers.models import Account
-
-            if not Account.objects.filter(
-                pk=source.get("company_id"), customers__in=visible_customers(user)
-            ).exists():
+            existing, readable = reader.readable_ids(kind)
+            if record_id in existing and record_id not in readable:
                 return False
     return True
 
@@ -534,6 +654,117 @@ def ask_snapshot(user, ask, grounding, fed):
     if carries is None:
         return None, None
     return (None if grounded is None else sorted(grounded)), carries
+
+
+#: A pipeline or ticket snapshot that counted nothing.
+NO_PIPELINE = {"account_ids": [], "departments": []}
+
+
+def pipeline_snapshot(ask, grounding, fed):
+    """`Message.grounded_pipeline` for a new Ask-shaped reply (see
+    `_folded_snapshot`)."""
+    return _folded_snapshot(ask, grounding.pipeline, fed, _pipeline_of)
+
+
+def tickets_snapshot(ask, grounding, fed):
+    """`Message.grounded_tickets` for a new Ask-shaped reply (see
+    `_folded_snapshot`)."""
+    return _folded_snapshot(ask, grounding.tickets, fed, _tickets_of)
+
+
+def _folded_snapshot(ask, own, fed, snapshot_of):
+    """An `{account_ids, departments}` snapshot for a new Ask-shaped reply:
+    its own grounding's (an Ask send), folded with every Ask reply it was
+    fed as history — the same walk and the same None-is-sticky rule as
+    `ask_snapshot`. None fails closed for slice readers."""
+    snapshot = _well_formed_pipeline(own) if ask is not None else NO_PIPELINE
+    last_user_turn = None
+    for turn in fed:
+        if turn.role == Message.Role.USER:
+            last_user_turn = turn
+            continue
+        if getattr(turn, "withheld", False):
+            continue
+        answered = turn.reply_to if turn.reply_to_id else last_user_turn
+        from_ask = answered is not None and bool(answered.context)
+        if not from_ask and ask is not None:
+            snapshot = None
+            continue
+        if not from_ask and turn.carries_anomaly_text is None:
+            continue
+        earlier = snapshot_of(turn, answered)
+        if snapshot is None or earlier is None:
+            snapshot = None
+        else:
+            snapshot = {key: sorted(set(snapshot[key]) | set(earlier[key])) for key in NO_PIPELINE}
+    return snapshot
+
+
+def _well_formed_pipeline(value):
+    """A stored or built pipeline snapshot, or None when it is anything but
+    `{account_ids: [int], departments: [str]}`."""
+    if not isinstance(value, dict) or set(value) != set(NO_PIPELINE):
+        return None
+    ids, departments = value["account_ids"], value["departments"]
+    if not isinstance(ids, list) or not isinstance(departments, list):
+        return None
+    if not all(isinstance(pk, int) and not isinstance(pk, bool) for pk in ids):
+        return None
+    if not all(isinstance(d, str) for d in departments):
+        return None
+    return value
+
+
+def _stored_pipeline(turn):
+    return _well_formed_pipeline(turn.grounded_pipeline)
+
+
+def _stored_tickets(turn):
+    return _well_formed_pipeline(turn.grounded_tickets)
+
+
+def _pipeline_of(turn, answered):
+    """The pipeline a reply's figures rest on: its stored snapshot, or for a
+    reply written before snapshots existed, nothing when its own Ask turn's
+    digest never carried pipeline (a Dashboard Health or Support area, the
+    Organizations list) — and None, failing closed, when it could have (a
+    Dashboard Overview or Revenue reply, or a context-less reply fed Ask
+    history, whose sources are unknown)."""
+    stored = _stored_pipeline(turn)
+    if stored is not None:
+        return stored
+    if turn.grounded_pipeline is not None:
+        return None  # malformed
+    context = answered.context if answered is not None else None
+    if not isinstance(context, dict) or not context:
+        return None
+    if context.get("surface") == "dashboard" and context.get("area") in PIPELINE_AREAS:
+        return None
+    return NO_PIPELINE
+
+
+def _tickets_of(turn, answered):
+    """The tickets a reply's figures rest on: its stored snapshot, or for a
+    reply written before snapshots existed, nothing when its own Ask turn's
+    digest never counted tickets — and None, failing closed, when it could
+    have (a Dashboard Overview or Support reply, a support attention focus,
+    an Organizations reply — its rows' signals count urgent tickets — or a
+    context-less reply fed Ask history)."""
+    stored = _stored_tickets(turn)
+    if stored is not None:
+        return stored
+    if turn.grounded_tickets is not None:
+        return None  # malformed
+    context = answered.context if answered is not None else None
+    if not isinstance(context, dict) or not context:
+        return None
+    if context.get("surface") == "organizations":
+        return None
+    if context.get("surface") == "dashboard" and (
+        context.get("area") in TICKET_AREAS or is_support_focus(context.get("focus"))
+    ):
+        return None
+    return NO_PIPELINE
 
 
 def _grounded_ids(turn):
@@ -803,6 +1034,12 @@ class SendMessageView(APIView):
             # against those
             grounded_customer_ids=snapshot[0],
             carries_anomaly_text=snapshot[1],
+            grounded_pipeline=(
+                None if snapshot[1] is None else pipeline_snapshot(ask, grounding, fed)
+            ),
+            grounded_tickets=(
+                None if snapshot[1] is None else tickets_snapshot(ask, grounding, fed)
+            ),
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
             # The real turn this reply answers, not just "whichever user turn
             # happens to sort immediately before it" — two participants
@@ -1452,13 +1689,21 @@ class ModelBudgetView(APIView):
 DRAFT_SOURCES = 8
 
 
+def _company_open_to(user, company):
+    from services.customers.models import Account
+    from services.customers.scoping import visible_accounts, visible_customers
+
+    visible = visible_accounts(user) if isinstance(company, Account) else visible_customers(user)
+    return visible.filter(pk=company.pk).exists()
+
+
 def _org_emails(user):
-    """Every filed email the person may read: their organisation's, then
-    the mailbox rule (owner and management chain) on top."""
-    organisation = user.organisation
-    rows = Email.objects.filter(
-        Q(customer__organisation=organisation) | Q(account__customers__organisation=organisation)
-    ).distinct()
+    """Every filed email the person may read: on a customer or account they
+    may open, then the mailbox rule (owner and management chain) on top."""
+    from services.customers.scoping import visible_children_q
+
+    # SOC2:AUTH-02 an account's email follows the account's visibility too
+    rows = Email.objects.filter(visible_children_q(user)).distinct()
     return visible_emails(user, rows)
 
 
@@ -1512,6 +1757,11 @@ class DraftReplyView(APIView):
         else:
             row = get_object_or_404(MailMessage.objects.filter(owner=request.user), pk=pk)
             company = (row.email.customer or row.email.account) if row.email_id else None
+            if company is not None and not _company_open_to(request.user, company):
+                # SOC2:AUTH-02 the row is the person's own mail, but the company
+                # it was filed on is not theirs to read: draft from the thread
+                # alone, with no account history and no company name
+                company = None
             subject = row.subject
             sender = row.from_name or row.from_address
             thread_text = f"{sender} ({row.sent_at:%Y-%m-%d}): {row.body or row.snippet}"

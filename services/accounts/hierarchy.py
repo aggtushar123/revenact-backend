@@ -34,7 +34,24 @@ def ancestors(user):
 
 
 def subtree_ids(user):
-    """Everyone below `user` in the chart, recursively (not including them)."""
+    """Everyone below `user` in the chart, recursively (not including them).
+
+    Memoised on the user instance, the same way `identity.context.
+    active_membership` is: `request.user` is one object for the life of a
+    request, and `visible_customers`, `visible_accounts` and the chain rules
+    all ask this, so without it one request walked the chart once per rule.
+    A fresh instance (the next request, or a re-fetch) reads it again.
+    Returns a copy, so a caller adding to the answer cannot change it."""
+    cached = getattr(user, "_subtree_ids_cache", None)
+    if cached is not None:
+        return set(cached)
+    found = _walk_subtree(user)
+    if getattr(user, "pk", None):
+        user._subtree_ids_cache = frozenset(found)
+    return set(found)
+
+
+def _walk_subtree(user):
     found, frontier = set(), [user.id]
     while frontier:
         reports = list(

@@ -81,7 +81,9 @@ def _forecast(actor):
     slice can never disagree with the whole."""
     organisation = actor.organisation
     customers = list(forecast.filtered_customers(actor, {}))
-    rows = forecast.build_rows(customers, organisation, horizon=forecast.horizon_days({}))
+    rows = forecast.build_rows(
+        customers, organisation, viewer=actor, horizon=forecast.horizon_days({})
+    )
     bridge = forecast.build_bridge(rows)
     bridge["by"] = {
         OWNER: forecast.bridge_by(rows, lambda row: _owner_of(row.customer)),

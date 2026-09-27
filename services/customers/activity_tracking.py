@@ -52,7 +52,7 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from . import churn
 from .contact import TOUCH_SOURCES, last_contact_by_customer, parent_q
 from .models import Call, Customer, Email, Task, Ticket
-from .scoping import live_customers
+from .scoping import SystemActor, live_customers, visible_children_q
 
 #: The analysis window, in days. A quarter: long enough that a weekly trend has
 #: shape, short enough that "did we work it" is still a live question.
@@ -128,7 +128,34 @@ def filtered_customers(user, params):
     return queryset
 
 
-def _counts_by_week(model, field, ids, since):
+def readable(user, model):
+    """The rows of `model` this viewer could read, before any book filter:
+    on a customer or account they may open (`visible_children_q` — an
+    account by its own rule, never through its organisation), then the
+    record's own rule — mail by its mailbox chain, notes by their author's
+    chain, tickets by department, tasks by creator and assignee. Activities,
+    calls and meetings carry no finer rule than their company."""
+    from services.mail.visibility import visible_emails
+
+    from .models import Note
+    from .personal import visible_notes, visible_tasks, visible_tickets
+
+    # SOC2:AUTH-02 dashboard counts follow the viewer, record by record
+    rows = model.objects.filter(visible_children_q(user))
+    if isinstance(user, SystemActor):
+        # A whole-organisation job (metric snapshots) is the organisation
+        # itself: no person's mail chain or department narrows it.
+        return rows
+    rule = {
+        Email: visible_emails,
+        Note: visible_notes,
+        Ticket: visible_tickets,
+        Task: visible_tasks,
+    }.get(model)
+    return rule(user, rows) if rule else rows
+
+
+def _counts_by_week(user, model, field, ids, since):
     """`{week_start: count}` for one source inside the window.
 
     `.order_by()` before the annotate is load-bearing: every one of these
@@ -137,7 +164,8 @@ def _counts_by_week(model, field, ids, since):
     """
     lookup = f"{field}__date__gte" if model in (Email, Call) else f"{field}__gte"
     rows = (
-        model.objects.filter(parent_q(ids))
+        readable(user, model)
+        .filter(parent_q(ids))
         .filter(**{lookup: since})
         .order_by()
         .annotate(week=TruncWeek(field))
@@ -220,7 +248,7 @@ def build_stats(user, params):
     by_source = []
     touches = 0
     for key, (model, field, label) in TOUCH_SOURCES.items():
-        counts = _counts_by_week(model, field, ids, since) if ids else {}
+        counts = _counts_by_week(user, model, field, ids, since) if ids else {}
         total = sum(counts.values())
         touches += total
         by_source.append({"key": key, "name": label, "count": total})
@@ -234,7 +262,9 @@ def build_stats(user, params):
         if not ids:
             continue
         lookup = f"{field}__date__gte" if model in (Email, Call) else f"{field}__gte"
-        inbound += model.objects.filter(parent_q(ids)).filter(**{lookup: since}).distinct().count()
+        inbound += (
+            readable(user, model).filter(parent_q(ids)).filter(**{lookup: since}).distinct().count()
+        )
 
     timeline = [
         {"date": f"{week:%b} {week.day}", "iso": week.isoformat(), **counts}
@@ -271,7 +301,7 @@ def build_stats(user, params):
     dark = dark_accounts(customers, latest, today, organisation, rates)
 
     # ── tasks ────────────────────────────────────────────────────────
-    tasks = Task.objects.filter(parent_q(ids)).distinct() if ids else Task.objects.none()
+    tasks = readable(user, Task).filter(parent_q(ids)).distinct() if ids else Task.objects.none()
     overdue = tasks.filter(due_date__lt=today).exclude(status=Task.Status.COMPLETED).count()
     open_tasks = tasks.exclude(status=Task.Status.COMPLETED).count()
     completed = tasks.filter(status=Task.Status.COMPLETED).count()

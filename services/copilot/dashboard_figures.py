@@ -58,7 +58,9 @@ def revenue_figures(user, filters, *, customers=None):
     organisation = user.organisation
     if customers is None:
         customers = list(forecast.filtered_customers(user, filters))
-    rows = forecast.build_rows(customers, organisation, horizon=forecast.DEFAULT_HORIZON_DAYS)
+    rows = forecast.build_rows(
+        customers, organisation, viewer=user, horizon=forecast.DEFAULT_HORIZON_DAYS
+    )
     bridge = forecast.build_bridge(rows)
     return {
         "currency": organisation.currency,
