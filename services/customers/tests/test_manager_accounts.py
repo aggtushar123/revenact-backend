@@ -73,3 +73,41 @@ class ManagerSeesReportsAccounts(APITestCase):
         div = create_account(owned, name="Initech div", owner=other)
         self.assertIn(div, visible_accounts(self.manager))
         self.assertNotIn(div, visible_accounts(self.peer))
+
+
+class ManagerSeesReportsAccountsOrganisation(APITestCase):
+    """The same rule in the other direction: a report who owns an account
+    may open its organisation, so their manager may too — and the account's
+    pipeline counts in the manager's forecast."""
+
+    def test_the_manager_opens_the_organisation_and_counts_its_pipeline(self):
+        from decimal import Decimal
+
+        from services.customers.models import Opportunity
+        from services.customers.scoping import visible_customers
+
+        org = Organisation.objects.create(name="Acme Inc", currency="USD")
+        mk = lambda email, **kw: User.objects.create_user(  # noqa: E731
+            email=email, password="x", name=email, organisation=org, role=User.Role.CSM, **kw
+        )
+        manager = mk("m@acme.io")
+        rep = mk("r@acme.io", reports_to=manager)
+        colleague = mk("c@acme.io")
+        peer = mk("p@acme.io")
+        customer = Customer.objects.create(
+            organisation=org,
+            name="Globex",
+            owner=colleague,
+            arr_billed_at_account=Decimal("100000"),
+            lifecycle_stage=Customer.LifecycleStage.LIVE,
+        )
+        account = create_account(customer, name="Rep's div", owner=rep)
+        Opportunity.objects.create(
+            account=account, title="Seats", mrr=Decimal("1000"), stage="negotiation"
+        )
+
+        self.assertIn(customer, visible_customers(User.objects.get(pk=manager.pk)))
+        self.assertNotIn(customer, visible_customers(peer))
+        self.client.force_authenticate(User.objects.get(pk=manager.pk))
+        bridge = self.client.get("/api/v1/customers/forecast/").data["bridge"]
+        self.assertEqual(bridge["expansion"], 9600.0)

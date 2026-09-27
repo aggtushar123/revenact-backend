@@ -9,7 +9,8 @@ the organisation. Fine for a two-person team, wrong for a real one.
 The rule, for a user *without* `view_all_accounts`:
 
 * A **Customer** is visible if you own it, if you own one of its
-  Accounts, or if nobody owns it.
+  Accounts, if someone below you in the org chart owns either, or if
+  nobody owns it.
 * An **Account** is visible if you own it, if you own one of its parent
   Customers, if someone below you in the org chart owns either, or if
   nobody owns it.
@@ -103,14 +104,18 @@ def visible_customers(user):
     # function, or was asked or asked about in — the knowledge layer
     # (services.knowledge) brings engineers, sales and analysts to an
     # account's page, and a notification that links there must open it.
-    # The org chart: a manager sees the customers their reports own, all
-    # the way down (services.accounts.hierarchy).
+    # The org chart: a manager sees the customers their reports own, and
+    # those under which a report owns an account, all the way down
+    # (services.accounts.hierarchy) — the same reach `visible_accounts` gives.
+    # SOC2:AUTH-02
     from services.accounts.hierarchy import subtree_ids
 
+    reports = subtree_ids(user)
     return base.filter(
         Q(owner=user)
-        | Q(owner_id__in=subtree_ids(user))
+        | Q(owner_id__in=reports)
         | Q(accounts__owner=user)
+        | Q(accounts__owner_id__in=reports)
         | Q(owner__isnull=True)
         | Q(function_owners__user=user)
         | Q(questions__assignee=user)

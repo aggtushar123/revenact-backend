@@ -789,6 +789,13 @@ the account page header names its parent org and its Organizations tab
 lists it, so a strictly-own rule would 404 inside a page you are
 allowed to open.
 
+**The org chart reaches both directions too.** A manager sees what anyone
+below them owns, all the way down (`subtree_ids`): their reports'
+customers and accounts, the accounts under a report's customer, and the
+organisation above an account a report owns — the same two legs as
+above, for the whole subtree. Function-owner and question reach open an
+organisation only, never its accounts.
+
 **Unowned records stay visible to everyone.** An unowned record is
 nobody's secret, and hiding it would make the unassigned queue
 invisible to the people meant to work it.
