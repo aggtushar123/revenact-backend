@@ -588,7 +588,7 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
                 ):
                     return False
 
-    if turn.grounded_records is not None and _stored_records(turn) is None:
+    if turn.grounded_records not in (None, UNKNOWN) and _stored_records(turn) is None:
         return False  # SOC2:AUTH-02 a malformed records snapshot fails closed
     reader = reader or _Reader(user, [turn])
     companies = reader.visible_company_ids
@@ -683,6 +683,16 @@ def ask_snapshot(user, ask, grounding, fed):
 #: A pipeline or ticket snapshot that counted nothing.
 NO_PIPELINE = {"account_ids": [], "departments": []}
 
+#: What a fold unknown when its reply was written is stored as: every
+#: well-formed check rejects it, so it fails closed on every surface. A real
+#: null means only "written before the field existed".
+UNKNOWN = {"unknown": True}
+
+
+def stored_fold(snapshot):
+    """What a folded snapshot is stored as: itself, or UNKNOWN for None."""
+    return UNKNOWN if snapshot is None else snapshot
+
 
 def pipeline_snapshot(ask, grounding, fed):
     """`Message.grounded_pipeline` for a new Ask-shaped reply (see
@@ -729,7 +739,8 @@ def _folded_snapshot(
     by default, or whatever `empty`, `well_formed` and `union` describe: its
     own grounding's (an Ask send), folded with every Ask reply it was fed as
     history — the same walk and the same None-is-sticky rule as
-    `ask_snapshot`. None fails closed for slice readers."""
+    `ask_snapshot`. None fails closed for slice readers, and is stored as
+    `UNKNOWN` (`stored_fold`), never as null."""
     well_formed = well_formed or _well_formed_pipeline
     snapshot = well_formed(own) if ask is not None else empty
     last_user_turn = None
@@ -800,7 +811,7 @@ def _records_of(turn, answered):
     if stored is not None:
         return stored
     if turn.grounded_records is not None:
-        return None  # malformed
+        return None  # malformed, or UNKNOWN when it was written
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
         return None
@@ -820,7 +831,7 @@ def _pipeline_of(turn, answered):
     if stored is not None:
         return stored
     if turn.grounded_pipeline is not None:
-        return None  # malformed
+        return None  # malformed, or UNKNOWN when it was written
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
         return None
@@ -840,7 +851,7 @@ def _tickets_of(turn, answered):
     if stored is not None:
         return stored
     if turn.grounded_tickets is not None:
-        return None  # malformed
+        return None  # malformed, or UNKNOWN when it was written
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
         return None
@@ -1120,14 +1131,17 @@ class SendMessageView(APIView):
             # against those
             grounded_customer_ids=snapshot[0],
             carries_anomaly_text=snapshot[1],
+            # SOC2:AUTH-02 an unknown fold is stored as UNKNOWN, never null: a
+            # null reads as "written before the field existed", which off the
+            # organisation page reads as empty and would fail open
             grounded_pipeline=(
-                None if snapshot[1] is None else pipeline_snapshot(ask, grounding, fed)
+                None if snapshot[1] is None else stored_fold(pipeline_snapshot(ask, grounding, fed))
             ),
             grounded_tickets=(
-                None if snapshot[1] is None else tickets_snapshot(ask, grounding, fed)
+                None if snapshot[1] is None else stored_fold(tickets_snapshot(ask, grounding, fed))
             ),
             grounded_records=(
-                None if snapshot[1] is None else records_snapshot(ask, grounding, fed)
+                None if snapshot[1] is None else stored_fold(records_snapshot(ask, grounding, fed))
             ),
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
             # The real turn this reply answers, not just "whichever user turn

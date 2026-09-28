@@ -4,8 +4,11 @@ company open to them — an account by its own rule — and the record readable
 under its own rule. An organisation page reply without them fails closed; a
 reply fed one as history carries them on."""
 
+from unittest.mock import patch
+
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
+from rest_framework.test import APIClient
 
 from services.accounts.models import Organisation, User
 from services.copilot.context import Grounding
@@ -16,9 +19,18 @@ from services.copilot.grounded_records import (
     well_formed_records,
 )
 from services.copilot.models import Conversation, Message
-from services.copilot.views import NO_PIPELINE, _reply_readable_by, records_snapshot
+from services.copilot.views import (
+    NO_PIPELINE,
+    UNKNOWN,
+    _reply_readable_by,
+    records_snapshot,
+)
 from services.customers.models import Customer, Note, Task
 from services.customers.tests.test_views import blind_to_one_account
+
+from .test_organization_detail_grounding import _in_order
+
+URL = "/api/v1/copilot/messages/"
 
 
 class RecordShapeTests(SimpleTestCase):
@@ -63,7 +75,7 @@ class RecordShapeTests(SimpleTestCase):
         )
 
 
-class RecordReadabilityTests(TestCase):
+class RecordFixture(TestCase):
     """Alice sees everything and asks on Globex's page; the viewer, mentioned,
     can open Globex and its Seen account but not its Hidden one."""
 
@@ -127,6 +139,8 @@ class RecordReadabilityTests(TestCase):
             **{field: parent},
         )
 
+
+class RecordReadabilityTests(RecordFixture):
     def test_a_reply_that_drew_on_a_hidden_account_is_withheld(self):
         asked, reply = self.ask([account_ref(self.seen.pk), account_ref(self.hidden.pk)])
 
@@ -257,3 +271,113 @@ class RecordReadabilityTests(TestCase):
 
         self.assertFalse(_reply_readable_by(reply, self.viewer, follow_up))
         self.assertTrue(_reply_readable_by(reply, self.admin, follow_up))
+
+
+LIST_ASK = {"surface": "organizations", "view": "list", "filters": {}, "labels": [], "focus": None}
+REVENUE_ASK = {
+    "surface": "dashboard",
+    "area": "revenue",
+    "filters": {},
+    "labels": [],
+    "focus": None,
+}
+
+
+@patch("services.copilot.views.get_completion", return_value="Globex is waiting on terms.")
+@patch("services.copilot.retrieval.rank_by_similarity", side_effect=_in_order)
+class UnknownFoldTests(RecordFixture):
+    """A fold that is unknown when a reply is written is stored as a marker
+    every well-formed check rejects, never as a null a later reader could
+    take for "written before the field existed" — which on a list or
+    Dashboard reply reads as empty and would fail open."""
+
+    def follow_up(self, *, author=None, **folds):
+        """A reply to a turn with no context of its own, fed an Ask reply."""
+        asked = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="Summarise the above",
+            author=author or self.admin,
+        )
+        reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="In short…",
+            grounded_customer_ids=[self.globex.pk],
+            carries_anomaly_text=False,
+            reply_to=asked,
+            **folds,
+        )
+        return asked, reply
+
+    def send(self, context):
+        api = APIClient()
+        api.force_authenticate(self.admin)
+        response = api.post(
+            URL,
+            {"conversation_id": self.conversation.pk, "content": "And?", "context": context},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return Message.objects.filter(role="assistant").order_by("id").last()
+
+    def assert_withheld_from_the_viewer(self, reply):
+        self.assertFalse(_reply_readable_by(reply, self.viewer, reply.reply_to))
+        self.assertTrue(_reply_readable_by(reply, self.admin, reply.reply_to))
+
+    def test_a_legacy_context_less_follow_up_fed_through_a_page_reply_fails_closed(self, *_):
+        """F0 (a context-less follow-up from before grounded_records) → a page
+        reply D fed F0 → a list reply A fed D: A may repeat D's story."""
+        self.follow_up(grounded_pipeline=NO_PIPELINE, grounded_tickets=NO_PIPELINE)
+        page_reply = self.send(self.detail_context())
+        list_reply = self.send(LIST_ASK)
+
+        for reply in (page_reply, list_reply):
+            with self.subTest(reply=reply.pk):
+                self.assert_withheld_from_the_viewer(reply)
+                self.assertEqual(reply.grounded_records, UNKNOWN)
+
+    def test_a_list_reply_fed_a_page_reply_with_unknown_records_fails_closed(self, *_):
+        self.ask(None)  # a page reply whose records were unknown when written
+
+        list_reply = self.send(LIST_ASK)
+
+        self.assert_withheld_from_the_viewer(list_reply)
+        self.assertEqual(list_reply.grounded_records, UNKNOWN)
+
+    def test_a_list_reply_fed_a_legacy_revenue_reply_fails_closed_on_pipeline(self, *_):
+        """A Revenue reply from before grounded_pipeline existed could carry
+        pipeline; a list reply fed it must not read as having counted none."""
+        self.ask(None, context=REVENUE_ASK)
+        Message.objects.filter(role="assistant").update(
+            grounded_pipeline=None, grounded_tickets=None
+        )
+
+        list_reply = self.send(LIST_ASK)
+
+        self.assert_withheld_from_the_viewer(list_reply)
+        self.assertEqual(list_reply.grounded_pipeline, UNKNOWN)
+        self.assertNotEqual(list_reply.grounded_tickets, UNKNOWN)
+        self.assertEqual(list_reply.grounded_records, [])
+
+    def test_a_follow_ups_own_asker_still_reads_it_with_an_unknown_fold(self, *_):
+        self.ask(None)
+        asked, reply = self.follow_up(
+            author=self.viewer,
+            grounded_pipeline=NO_PIPELINE,
+            grounded_tickets=NO_PIPELINE,
+            grounded_records=UNKNOWN,
+        )
+
+        self.assertTrue(_reply_readable_by(reply, self.viewer, asked))
+        self.assertFalse(_reply_readable_by(reply, self.colleague, asked))
+
+    def detail_context(self):
+        return {
+            "surface": "organizations",
+            "view": "detail",
+            "organization": self.globex.pk,
+            "account": None,
+            "label": "Globex",
+            "focus": None,
+        }
