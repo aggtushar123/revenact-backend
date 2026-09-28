@@ -84,8 +84,13 @@ class ParseTests(TestCase):
     def test_reads_the_list_endpoints_keys_and_drops_unusable_values(self):
         self.assertEqual(
             parse_contact_filters(
-                {"search": "  sam ", "customer": "4", "account": "x", "sentiment": "negative",
-                 "role": "decision_maker"}
+                {
+                    "search": "  sam ",
+                    "customer": "4",
+                    "account": "x",
+                    "sentiment": "negative",
+                    "role": "decision_maker",
+                }
             ),
             ContactFilters(search="sam", customer=4, sentiment="negative", role="decision_maker"),
         )
@@ -101,8 +106,9 @@ class FilterTests(TestCase):
         self.org = Organisation.objects.create(name="Acme")
         self.pizza = Customer.objects.create(organisation=self.org, name="Pizza Hut")
         self.viewer, self.seen, self.hidden = blind_to_one_account(self.pizza)
-        self.sam = Contact.objects.create(customer=self.pizza, name="Sam", sentiment="negative",
-                                          role="decision_maker")
+        self.sam = Contact.objects.create(
+            customer=self.pizza, name="Sam", sentiment="negative", role="decision_maker"
+        )
         self.sid = Contact.objects.create(account=self.seen, name="Sid", sentiment="positive")
         self.hal = Contact.objects.create(account=self.hidden, name="Hal", sentiment="negative")
 
@@ -255,16 +261,17 @@ def contacts_summary(queryset):
   - Replace the view's two methods:
 
 ```python
-    def get_queryset(self):
-        return filtered_contacts(self.request.user, parse_contact_filters(self.request.query_params))
+def get_queryset(self):
+    return filtered_contacts(self.request.user, parse_contact_filters(self.request.query_params))
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        rows = self.get_serializer(page, many=True).data
-        response = self.get_paginated_response(rows)
-        response.data["summary"] = contacts_summary(queryset)
-        return response
+
+def list(self, request, *args, **kwargs):
+    queryset = self.filter_queryset(self.get_queryset())
+    page = self.paginate_queryset(queryset)
+    rows = self.get_serializer(page, many=True).data
+    response = self.get_paginated_response(rows)
+    response.data["summary"] = contacts_summary(queryset)
+    return response
 ```
 
   Leave the docstring as it is: the behaviour it describes is unchanged. `_int_param` stays if other views still use it (`grep -n "_int_param" services/customers/views.py`). Otherwise remove it.
@@ -346,9 +353,14 @@ class ListViewTests(ContextFixture):
             {
                 "surface": "contacts",
                 "view": "list",
-                "filters": {"q": " sam ", "customer": str(self.pizza.pk),
-                            "account": self.seen.pk, "sentiment": "negative",
-                            "role": "decision_maker", "junk": "x"},
+                "filters": {
+                    "q": " sam ",
+                    "customer": str(self.pizza.pk),
+                    "account": self.seen.pk,
+                    "sentiment": "negative",
+                    "role": "decision_maker",
+                    "junk": "x",
+                },
                 "label": "Spoofed",
             }
         )
@@ -358,17 +370,24 @@ class ListViewTests(ContextFixture):
             {
                 "surface": "contacts",
                 "view": "list",
-                "filters": {"q": "sam", "customer": str(self.pizza.pk),
-                            "account": str(self.seen.pk), "sentiment": "negative",
-                            "role": "decision_maker"},
+                "filters": {
+                    "q": "sam",
+                    "customer": str(self.pizza.pk),
+                    "account": str(self.seen.pk),
+                    "sentiment": "negative",
+                    "role": "decision_maker",
+                },
                 "label": 'Contacts · Pizza Hut › Seen · Negative · Decision Maker · "sam"',
             },
         )
 
     def test_no_filters_reads_contacts_alone_and_bad_values_are_dropped(self):
         valid, data = self.validate(
-            {"surface": "contacts", "view": "list",
-             "filters": {"sentiment": "angry", "role": ["x"], "q": "y" * 101}}
+            {
+                "surface": "contacts",
+                "view": "list",
+                "filters": {"sentiment": "angry", "role": ["x"], "q": "y" * 101},
+            }
         )
         self.assertTrue(valid, data)
         self.assertEqual((data["filters"], data["label"]), ({}, "Contacts"))
@@ -401,14 +420,24 @@ class PersonViewTests(ContextFixture):
         ):
             with self.subTest(label=label):
                 valid, data = self.validate(
-                    {"surface": "contacts", "view": "person", "contact": contact.pk,
-                     "focus": "sentiment", "label": "Spoofed"}
+                    {
+                        "surface": "contacts",
+                        "view": "person",
+                        "contact": contact.pk,
+                        "focus": "sentiment",
+                        "label": "Spoofed",
+                    }
                 )
                 self.assertTrue(valid, data)
                 self.assertEqual(
                     data,
-                    {"surface": "contacts", "view": "person", "contact": contact.pk,
-                     "label": label, "focus": "sentiment"},
+                    {
+                        "surface": "contacts",
+                        "view": "person",
+                        "contact": contact.pk,
+                        "label": label,
+                        "focus": "sentiment",
+                    },
                 )
 
     def test_a_person_the_asker_cannot_open_reads_the_same_as_a_missing_one(self):
@@ -421,12 +450,14 @@ class PersonViewTests(ContextFixture):
                 self.assertEqual(errors, {"contact": [NOT_A_PERSON]})
 
     def test_focus_is_sentiment_or_nothing(self):
-        valid, data = self.validate({"surface": "contacts", "view": "person",
-                                     "contact": self.sam.pk})
+        valid, data = self.validate(
+            {"surface": "contacts", "view": "person", "contact": self.sam.pk}
+        )
         self.assertTrue(valid, data)
         self.assertIsNone(data["focus"])
-        valid, errors = self.validate({"surface": "contacts", "view": "person",
-                                       "contact": self.sam.pk, "focus": "calls"})
+        valid, errors = self.validate(
+            {"surface": "contacts", "view": "person", "contact": self.sam.pk, "focus": "calls"}
+        )
         self.assertFalse(valid)
         self.assertIn("focus", errors)
 ```
@@ -694,8 +725,12 @@ class GroundingFixture(TestCase):
         self.viewer, self.seen, self.hidden = blind_to_one_account(self.pizza)
         self.colleague = self.pizza.owner
         self.sam = Contact.objects.create(
-            customer=self.pizza, name="Sam Pizza", email="sam@pizzahut.com",
-            role="decision_maker", sentiment="negative", last_contacted_at=WHEN,
+            customer=self.pizza,
+            name="Sam Pizza",
+            email="sam@pizzahut.com",
+            role="decision_maker",
+            sentiment="negative",
+            last_contacted_at=WHEN,
         )
         self.sid = Contact.objects.create(account=self.seen, name="Sid Seen", sentiment="positive")
         self.hal = Contact.objects.create(account=self.hidden, name="Hal Hidden")
@@ -714,8 +749,7 @@ class ListDigestTests(GroundingFixture):
         self.assertIn("Screen: Contacts (the list of people)", summary)
         self.assertIn("Filters: none", summary)
         self.assertIn(
-            "Summary: 2 people · 1 decision maker · 2 active · 1 positive · 0 neutral · "
-            "1 negative",
+            "Summary: 2 people · 1 decision maker · 2 active · 1 positive · 0 neutral · 1 negative",
             summary,
         )
         self.assertIn("People (all 2, in the list's order):", summary)
@@ -734,8 +768,12 @@ class ListDigestTests(GroundingFixture):
     def test_the_filters_narrow_the_digest_and_are_named(self):
         grounding = build_contacts_grounding(
             self.viewer,
-            {"surface": "contacts", "view": "list", "filters": {"sentiment": "positive"},
-             "label": "Contacts · Positive"},
+            {
+                "surface": "contacts",
+                "view": "list",
+                "filters": {"sentiment": "positive"},
+                "label": "Contacts · Positive",
+            },
             "",
         )
         self.assertIn("Filters: Contacts · Positive", grounding.summary)
@@ -988,9 +1026,15 @@ class PersonFixture(GroundingFixture):
     def call(self, title, days_ago=0, sentiment="positive", **parent):
         parent = parent or {"customer": self.pizza}
         call = Call.objects.create(
-            title=title, host_name="Carl", summary=f"{title} summary",
-            occurred_at=WHEN - timedelta(days=days_ago), duration_minutes=30,
-            sentiment=sentiment, ai_category="onboarding", ai_classified_at=WHEN, **parent,
+            title=title,
+            host_name="Carl",
+            summary=f"{title} summary",
+            occurred_at=WHEN - timedelta(days=days_ago),
+            duration_minutes=30,
+            sentiment=sentiment,
+            ai_category="onboarding",
+            ai_classified_at=WHEN,
+            **parent,
         )
         call.participants.add(self.sam)
         return call
@@ -998,17 +1042,30 @@ class PersonFixture(GroundingFixture):
     def email(self, subject, mailbox_owner=None, sentiment="neutral", **parent):
         parent = parent or {"customer": self.pizza}
         return Email.objects.create(
-            subject=subject, sender_name="Sam", recipient_name="Carl", body=f"{subject} body.",
-            sent_at=WHEN, from_address="sam@pizzahut.com", mailbox_owner=mailbox_owner,
-            sentiment=sentiment, ai_classified_at=WHEN, **parent,
+            subject=subject,
+            sender_name="Sam",
+            recipient_name="Carl",
+            body=f"{subject} body.",
+            sent_at=WHEN,
+            from_address="sam@pizzahut.com",
+            mailbox_owner=mailbox_owner,
+            sentiment=sentiment,
+            ai_classified_at=WHEN,
+            **parent,
         )
 
     def ticket(self, number, department="", sentiment="negative", **parent):
         parent = parent or {"customer": self.pizza}
         return Ticket.objects.create(
-            ticket_number=number, title=f"{number} broken export", priority="high",
-            opened_at=date(2026, 9, 19), requester_email="sam@pizzahut.com",
-            department=department, sentiment=sentiment, ai_classified_at=WHEN, **parent,
+            ticket_number=number,
+            title=f"{number} broken export",
+            priority="high",
+            opened_at=date(2026, 9, 19),
+            requester_email="sam@pizzahut.com",
+            department=department,
+            sentiment=sentiment,
+            ai_classified_at=WHEN,
+            **parent,
         )
 
     def person(self, contact=None, focus=None, user=None):
@@ -1020,8 +1077,13 @@ class PersonFixture(GroundingFixture):
     def _person(self, contact, focus, user):
         return build_contacts_grounding(
             user or self.viewer,
-            {"surface": "contacts", "view": "person", "contact": contact.pk,
-             "label": contact.name, "focus": focus},
+            {
+                "surface": "contacts",
+                "view": "person",
+                "contact": contact.pk,
+                "label": contact.name,
+                "focus": focus,
+            },
             "",
             today=WHEN.date(),
         )
@@ -1078,8 +1140,9 @@ class PersonDigestTests(PersonFixture):
 
         summary = self.person().summary
 
-        self.assertIn(f"Calls they were on: {PERSON_LIMIT + 3} (newest {PERSON_LIMIT} below)",
-                      summary)
+        self.assertIn(
+            f"Calls they were on: {PERSON_LIMIT + 3} (newest {PERSON_LIMIT} below)", summary
+        )
         self.assertNotIn(f"Call {PERSON_LIMIT + 2:02}", summary)
 
     def test_a_call_not_read_or_not_analysable_says_so(self):
@@ -1115,9 +1178,7 @@ class PersonDigestTests(PersonFixture):
                 key=lambda r: (r["type"], r["id"], r["company_type"], r["company_id"]),
             ),
         )
-        self.assertEqual(
-            grounding.tickets, {"account_ids": [self.seen.pk], "departments": ["cs"]}
-        )
+        self.assertEqual(grounding.tickets, {"account_ids": [self.seen.pk], "departments": ["cs"]})
 
     def test_an_account_level_person_snapshots_their_account(self):
         grounding = self.person(self.sid)
@@ -1145,8 +1206,9 @@ class WhyTests(PersonFixture):
         summary = self.person(focus="sentiment").summary
 
         self.assertIn("Sentiment: negative, computed from their calls, emails and tickets", summary)
-        self.assertIn("Why (only the records the asker can read; weight is kind × recency):",
-                      summary)
+        self.assertIn(
+            "Why (only the records the asker can read; weight is kind × recency):", summary
+        )
         self.assertIn("  - 2026-09-20 · Call · Seen call · negative · weight 1.00", summary)
         self.assertIn("  - 2026-09-20 · Email · Mine · negative · weight 0.60", summary)
         self.assertIn("  Weighted reading of these: -1.00 (negative)", summary)
@@ -1432,8 +1494,12 @@ class ContactsSendTests(PersonFixture):
     def test_the_context_is_stored_with_the_servers_label_and_becomes_the_origin(self, completion):
         data = self.send({**person(self.sam, focus="sentiment"), "label": "Spoofed"}).data
 
-        origin = {"surface": "contacts", "view": "person", "contact": self.sam.pk,
-                  "label": "Sam Pizza · Pizza Hut"}
+        origin = {
+            "surface": "contacts",
+            "view": "person",
+            "contact": self.sam.pk,
+            "label": "Sam Pizza · Pizza Hut",
+        }
         self.assertEqual(data["origin"], origin)
         self.assertEqual(data["messages"][0]["context"], {**origin, "focus": "sentiment"})
 
@@ -1442,8 +1508,12 @@ class ContactsSendTests(PersonFixture):
 
         self.assertEqual(
             data["origin"],
-            {"surface": "contacts", "view": "list", "filters": {"sentiment": "negative"},
-             "label": "Contacts · Negative"},
+            {
+                "surface": "contacts",
+                "view": "list",
+                "filters": {"sentiment": "negative"},
+                "label": "Contacts · Negative",
+            },
         )
         self.assertIn("Sam Pizza", completion.call_args.kwargs["system"])
 
@@ -1570,6 +1640,7 @@ from .contacts_grounding import build_contacts_grounding, contacts_system_prompt
   `services/copilot/skills.py`: after the `organizations` `Skill`, in the same shape:
 
 ```python
+(
     Skill(
         "contacts",
         "Ask Revenact on Contacts",
@@ -1595,6 +1666,7 @@ from .contacts_grounding import build_contacts_grounding, contacts_system_prompt
         "Any signed-in user, while the organisation's AI agent is enabled",
         "/contacts",
     ),
+)
 ```
 
   `services/copilot/views.py`:
@@ -1710,8 +1782,12 @@ class ContactsAskFlowTests(LiveServerTestCase):
         # 1. An organisation signs up; its admin adds two CSMs.
         status, body = http_post(
             self.api("/auth/signup/"),
-            {"organisation_name": "Acme Inc", "name": "Alice Admin",
-             "email": "alice@acme.io", "password": "supersecret1"},
+            {
+                "organisation_name": "Acme Inc",
+                "name": "Alice Admin",
+                "email": "alice@acme.io",
+                "password": "supersecret1",
+            },
         )
         self.assertEqual(status, 201, body)
         admin = body["access"]
@@ -1724,8 +1800,12 @@ class ContactsAskFlowTests(LiveServerTestCase):
         pizza = body["id"]
         status, body = http_post(
             self.api(f"/customers/{pizza}/contacts/"),
-            {"name": "Sam Pizza", "email": "sam@pizzahut.com", "role": "decision_maker",
-             "sentiment": "negative"},
+            {
+                "name": "Sam Pizza",
+                "email": "sam@pizzahut.com",
+                "role": "decision_maker",
+                "sentiment": "negative",
+            },
             token=carl,
         )
         self.assertEqual(status, 201, body)
@@ -1734,9 +1814,15 @@ class ContactsAskFlowTests(LiveServerTestCase):
         # 3. Carl asks about Sam from his profile.
         status, body = http_post(
             self.api("/copilot/messages/"),
-            {"content": "Why is Sam negative?",
-             "context": {"surface": "contacts", "view": "person", "contact": sam,
-                         "focus": "sentiment"}},
+            {
+                "content": "Why is Sam negative?",
+                "context": {
+                    "surface": "contacts",
+                    "view": "person",
+                    "contact": sam,
+                    "focus": "sentiment",
+                },
+            },
             token=carl,
         )
         self.assertEqual(status, 200, body)
@@ -1746,9 +1832,14 @@ class ContactsAskFlowTests(LiveServerTestCase):
         # 4. Carl asks about his negative people from the list.
         status, body = http_post(
             self.api("/copilot/messages/"),
-            {"content": "Who is unhappy?",
-             "context": {"surface": "contacts", "view": "list",
-                         "filters": {"sentiment": "negative"}}},
+            {
+                "content": "Who is unhappy?",
+                "context": {
+                    "surface": "contacts",
+                    "view": "list",
+                    "filters": {"sentiment": "negative"},
+                },
+            },
             token=carl,
         )
         self.assertEqual(status, 200, body)
@@ -1762,8 +1853,10 @@ class ContactsAskFlowTests(LiveServerTestCase):
         # 5. Dana cannot open Pizza Hut, so she cannot ask about Sam.
         status, body = http_post(
             self.api("/copilot/messages/"),
-            {"content": "Why?", "context": {"surface": "contacts", "view": "person",
-                                             "contact": sam}},
+            {
+                "content": "Why?",
+                "context": {"surface": "contacts", "view": "person", "contact": sam},
+            },
             token=dana,
         )
         self.assertEqual(status, 400, body)
