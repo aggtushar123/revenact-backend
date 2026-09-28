@@ -94,6 +94,13 @@ class FilterTests(Fixture):
         self.person("Hal Hidden", account=hidden)
         self.assertEqual(self.names(f"?account={hidden.id}", user=viewer), [])
 
+    def test_a_negative_or_zero_id_matches_nobody_rather_than_being_ignored(self):
+        # -1/0 parse fine as ints, so they are real ids to check visibility
+        # for, not a value to drop like "x" or "" — nobody has that id, so
+        # these behave the same as any other id the caller cannot open.
+        self.assertEqual(self.names("?customer=-1"), [])
+        self.assertEqual(self.names("?account=0"), [])
+
 
 class RowTests(Fixture):
     def row(self, name, query=""):

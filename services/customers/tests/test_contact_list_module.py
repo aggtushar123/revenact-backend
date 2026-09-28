@@ -31,7 +31,7 @@ class ParseTests(TestCase):
         self.assertEqual(parse_contact_filters({"company": "7"}), ContactFilters(customer=7))
         self.assertEqual(
             parse_contact_filters({"sentiment": "angry", "role": "king", "customer": "-1"}),
-            ContactFilters(),
+            ContactFilters(customer=-1),
         )
 
 

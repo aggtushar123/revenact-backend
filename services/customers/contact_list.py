@@ -31,23 +31,25 @@ class ContactFilters:
     role: str | None = None
 
 
-def _positive_int(raw):
+def _int_or_none(raw):
     try:
-        value = int(raw)
+        return int(raw)
     except (TypeError, ValueError):
         return None
-    return value if value > 0 else None
 
 
 def parse_contact_filters(query: Mapping[str, str]) -> ContactFilters:
-    """The list endpoint's query parameters; an unusable value is dropped,
-    never an error."""
+    """The list endpoint's query parameters; an unparseable value is
+    dropped, never an error. An id that parses but isn't one the caller
+    may open (negative, zero, or just not theirs) is kept and left to
+    `filtered_contacts`'s own `.none()` handling below — matching nobody,
+    same as the view did before this module existed."""
     sentiment = query.get("sentiment")
     role = query.get("role")
     return ContactFilters(
         search=(query.get("search") or "").strip(),
-        customer=_positive_int(query.get("customer") or query.get("company")),
-        account=_positive_int(query.get("account")),
+        customer=_int_or_none(query.get("customer") or query.get("company")),
+        account=_int_or_none(query.get("account")),
         sentiment=sentiment if sentiment in Contact.Sentiment.values else None,
         role=role if role in Contact.Role.values else None,
     )
