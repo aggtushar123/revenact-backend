@@ -4553,11 +4553,17 @@ account-level contact). The history tag is the `label`.
 The list digest is the summary line and the caller's filtered people, in the list's own order, at
 most 50 (`contacts_grounding.LIST_LIMIT`) — the same rows and the same summary
 `GET /api/v1/contacts/` and `contacts_summary` compute, with per-person call counts left out
-(strict: a digest never carries a figure the model could misquote as evidence). The person digest
-is their profile, then their calls, emails and tickets exactly as the asker may read them
-(`contact_history.history_querysets`), newest 20 of each kind quoted
+(strict: a digest never carries a figure the model could misquote as evidence). A list reply's own
+snapshot (`.customer_ids`/`.records` below) always includes the filtered organisation and account
+named at "Filters:", even when the filter matches nobody — a mentioned-only reader is shown that
+line too, so they must be checked against what it names, not only against who actually matched. The
+person digest is their profile, then their calls, emails and tickets exactly as the asker may read
+them (`contact_history.history_querysets`), newest 20 of each kind quoted
 (`contacts_grounding.PERSON_LIMIT`); a kind with none readable says so rather than omitting the
-section.
+section. "Last contacted" on either digest is the person's stored `last_contacted_at` — the same
+date the Contacts page shows anyone who can open them — so it can reflect an interaction the asker
+themself cannot read; it is stated exactly as the page states it, never explained or attributed
+further.
 
 **The "why" is strict.** `Contact.sentiment_evidence` counts every interaction behind a computed
 sentiment, readable or not, so it is never quoted. With `focus: "sentiment"`, the why block weighs

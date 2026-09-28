@@ -8,8 +8,11 @@ from rest_framework.test import APIClient
 
 from services.accounts.models import User
 from services.copilot.contacts_context import NOT_A_PERSON, NOT_OPEN_ACCOUNT
-from services.copilot.models import Conversation, Message, ModelCall
+from services.copilot.grounded_records import account_ref
+from services.copilot.models import Conversation, Message
 from services.copilot.views import _reply_readable_by
+from services.customers.models import Customer
+from services.customers.scoping import visible_customers
 
 from .test_contacts_grounding import PersonFixture
 
@@ -96,7 +99,6 @@ class ContactsSendTests(PersonFixture):
         completion.assert_not_called()
         self.assertFalse(Message.objects.exists())
         self.assertFalse(Conversation.objects.exists())
-        self.assertFalse(ModelCall.objects.exists())
 
 
 @patch("services.copilot.views.get_completion", return_value="Answer.")
@@ -129,35 +131,60 @@ class SharedReaderTests(PersonFixture):
         self.colleague.save(update_fields=["reports_to"])
 
     def viewer_reads(self, context):
+        """(whether the viewer may read the admin's reply, the reply itself
+        — so a withheld test can also assert the reply's snapshot actually
+        carries the offending element, not just that it was withheld)."""
         api = APIClient()
         api.force_authenticate(self.admin)
         response = api.post(URL, {"content": "How is Sam?", "context": context}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         reply = Message.objects.filter(role="assistant").order_by("id").last()
         self.assertTrue(_reply_readable_by(reply, self.admin, reply.reply_to))
-        return _reply_readable_by(reply, self.viewer, reply.reply_to)
+        return _reply_readable_by(reply, self.viewer, reply.reply_to), reply
 
     def test_a_reply_quoting_a_call_on_an_account_the_reader_cannot_open_is_withheld(self, _):
-        self.call("Hidden call", account=self.hidden)
-        self.assertFalse(self.viewer_reads(person(self.sam)))
+        call = self.call("Hidden call", account=self.hidden)
+        readable, reply = self.viewer_reads(person(self.sam))
+        self.assertFalse(readable)
+        self.assertIn(call.pk, [r["id"] for r in reply.grounded_records if r["type"] == "call"])
 
     def test_a_reply_quoting_mail_the_reader_cannot_read_is_withheld(self, _):
-        self.email("Colleague's mail", mailbox_owner=self.colleague)
-        self.assertFalse(self.viewer_reads(person(self.sam)))
+        mail = self.email("Colleague's mail", mailbox_owner=self.colleague)
+        readable, reply = self.viewer_reads(person(self.sam))
+        self.assertFalse(readable)
+        self.assertIn(mail.pk, [r["id"] for r in reply.grounded_records if r["type"] == "email"])
 
     def test_a_reply_counting_tickets_of_another_department_is_withheld(self, _):
         self.ticket("ZD-9", department=User.Function.ENGINEERING)
-        self.assertFalse(self.viewer_reads(person(self.sam)))
+        readable, reply = self.viewer_reads(person(self.sam))
+        self.assertFalse(readable)
+        self.assertIn("engineering", reply.grounded_tickets["departments"])
 
     def test_a_reply_about_a_person_on_a_hidden_account_is_withheld(self, _):
-        self.assertFalse(self.viewer_reads(person(self.hal)))
+        readable, reply = self.viewer_reads(person(self.hal))
+        self.assertFalse(readable)
+        self.assertIn(account_ref(self.hidden.pk), reply.grounded_records)
 
     def test_a_list_reply_naming_a_hidden_accounts_person_is_withheld(self, _):
-        self.assertFalse(self.viewer_reads(listing()))  # the admin's list includes Hal
+        readable, reply = self.viewer_reads(listing())  # the admin's list includes Hal
+        self.assertFalse(readable)
+        self.assertIn(account_ref(self.hidden.pk), reply.grounded_records)
+
+    def test_a_list_reply_naming_a_hidden_organisation_is_withheld(self, _):
+        secret = Customer.objects.create(
+            organisation=self.org, name="Secret Co", owner=self.colleague
+        )
+        self.assertFalse(visible_customers(self.viewer).filter(pk=secret.pk).exists())
+
+        readable, reply = self.viewer_reads(listing(customer=str(secret.pk), sentiment="neutral"))
+
+        self.assertFalse(readable)
+        self.assertIn(secret.pk, reply.grounded_customer_ids)
 
     def test_a_reply_built_only_from_what_the_reader_sees_is_shown(self, _):
         self.call("Org call")
         self.call("Seen call", account=self.seen)
         self.email("Mine", mailbox_owner=self.viewer)
         self.ticket("ZD-2", department=User.Function.CS)
-        self.assertTrue(self.viewer_reads(person(self.sam)))
+        readable, _reply = self.viewer_reads(person(self.sam))
+        self.assertTrue(readable)

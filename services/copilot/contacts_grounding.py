@@ -113,27 +113,35 @@ def _summary_line(summary):
     )
 
 
-def _companies(contacts, visible_ids):
-    """(organisation ids named, account refs) for every person in the set."""
-    customers, accounts = set(), set()
-    for contact in contacts:
-        organisation = organisation_of(contact, visible_ids)
-        if organisation is not None:
-            customers.add(organisation.pk)
-        if contact.account_id:
-            accounts.add(contact.account_id)
-    return sorted(customers), [account_ref(pk) for pk in sorted(accounts)]
+def _list_snapshot(queryset, visible_ids):
+    """(organisation ids named, account refs) for every filtered person,
+    from ids only — never loads the filtered set's objects (the snapshot
+    can cover thousands of people; the digest lines only ever show
+    LIST_LIMIT of them). An organisation-level person names their own
+    `customer_id`; an account-level person names the organisation their
+    account resolves to for this viewer (same rule as `organisation_of`:
+    the lowest-pk linked customer the viewer may open), found here with one
+    values_list over the account's linked customers rather than per-person."""
+    customer_ids = set(queryset.values_list("customer_id", flat=True)) - {None}
+    account_customers = queryset.filter(
+        account_id__isnull=False, account__customers__id__in=visible_ids
+    ).values_list("account_id", "account__customers__id")
+    lowest_by_account = {}
+    for account_id, customer_id in account_customers:
+        if customer_id < lowest_by_account.get(account_id, customer_id + 1):
+            lowest_by_account[account_id] = customer_id
+    customer_ids |= set(lowest_by_account.values())
+    account_ids = set(queryset.values_list("account_id", flat=True)) - {None}
+    return sorted(customer_ids), [account_ref(pk) for pk in sorted(account_ids)]
 
 
 def build_list_grounding(user, context):
     filters = filters_of(context.get("filters") or {})
     queryset = filtered_contacts(user, filters)
     summary = contacts_summary(queryset)
-    # Every filtered person, for the snapshot: the summary counts them all.
-    people = list(queryset)
     visible_ids = set(visible_customers(user).values_list("pk", flat=True))
-    shown = people[:LIST_LIMIT]
-    total = len(people)
+    shown = list(queryset[:LIST_LIMIT])
+    total = summary["total"]
     scope = f"all {total}" if total <= LIST_LIMIT else f"{LIST_LIMIT} of {total}"
     label = context.get("label") or "Contacts"
     lines = [
@@ -146,7 +154,14 @@ def build_list_grounding(user, context):
         lines.extend(f"  - {person_line(contact, visible_ids)}" for contact in shown)
     else:
         lines.append("People: nobody matches.")
-    customer_ids, records = _companies(people, visible_ids)
+    customer_ids, records = _list_snapshot(queryset, visible_ids)
+    # The organisation or account named at "Filters:" above must be in the
+    # snapshot even when the filter matches nobody — a mentioned-only reader
+    # is shown that line too, so they must be checked against it (owner
+    # ruling, 2026-09-29, fix round 2).
+    if filters.customer is not None:
+        customer_ids = sorted({*customer_ids, filters.customer})
+    filter_records = [account_ref(filters.account)] if filters.account is not None else []
     return Grounding(
         "\n".join(lines),
         [],
@@ -154,7 +169,7 @@ def build_list_grounding(user, context):
         customer_ids=customer_ids,
         pipeline=dict(NO_SNAPSHOT),
         tickets=dict(NO_SNAPSHOT),
-        records=union_records(records),
+        records=union_records(records, filter_records),
     )
 
 
@@ -259,12 +274,9 @@ def build_person_grounding(user, context, question, *, today=None):
     now = timezone.now()
     visible_ids = set(visible_customers(user).values_list("pk", flat=True))
     calls, emails, tickets = history_querysets(contact, user)
-    parents = ("customer", "account")
-    call_rows = list(calls.select_related(*parents).order_by("-occurred_at", "-pk")[:PERSON_LIMIT])
-    email_rows = list(emails.select_related(*parents).order_by("-sent_at", "-pk")[:PERSON_LIMIT])
-    ticket_rows = list(
-        tickets.select_related(*parents).order_by("-opened_at", "-pk")[:PERSON_LIMIT]
-    )
+    call_rows = list(calls.order_by("-occurred_at", "-pk")[:PERSON_LIMIT])
+    email_rows = list(emails.order_by("-sent_at", "-pk")[:PERSON_LIMIT])
+    ticket_rows = list(tickets.order_by("-opened_at", "-pk")[:PERSON_LIMIT])
     readable = (
         {("call", pk) for pk in calls.values_list("pk", flat=True)}
         | {("email", pk) for pk in emails.values_list("pk", flat=True)}

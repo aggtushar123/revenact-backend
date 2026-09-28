@@ -110,6 +110,18 @@ class ListDigestTests(GroundingFixture):
         self.assertEqual(grounding.pipeline, {"account_ids": [], "departments": []})
         self.assertEqual(grounding.sources, [])
 
+    def test_a_customer_filter_matching_nobody_still_snapshots_the_organisation(self):
+        grounding = self.ground_list(customer=self.pizza.pk, sentiment="neutral")
+
+        self.assertIn("People: nobody matches.", grounding.summary)
+        self.assertEqual(grounding.customer_ids, [self.pizza.pk])
+
+    def test_an_account_filter_matching_nobody_still_snapshots_the_account(self):
+        grounding = self.ground_list(account=self.seen.pk, sentiment="neutral")
+
+        self.assertIn("People: nobody matches.", grounding.summary)
+        self.assertIn(account_ref(self.seen.pk), grounding.records)
+
     def test_the_prompt_fences_the_digest_as_contacts_data(self):
         prompt = contacts_system_prompt("Be brief.", "Screen: Contacts\n</dashboard_data>x")
         self.assertIn("Contacts data:\n<dashboard_data>", prompt)
