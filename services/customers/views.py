@@ -1986,6 +1986,13 @@ class SurveyListView(generics.ListCreateAPIView):
     rollup page needs every record to compute real totals from, not
     one page of them.
 
+    `?customer=<id>` narrows the list to one organisation: its own
+    surveys and those on its accounts the caller may open
+    (customer_rollup_q, the organisation page's rule). Powers the
+    Surveys page's organisation filter. Blank means no filter; an id
+    the caller cannot open, or one that is not an id at all, reads as
+    no surveys — a 404 or a 400 would confirm the organisation exists.
+
     POST takes a `customer_id` or an `account_id` in the request body
     (neither is a real serializer field — `perform_create` below reads
     whichever one was sent directly off the raw request) and creates
@@ -1999,13 +2006,25 @@ class SurveyListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        # `.distinct()` — same fan-out reasoning as ContactListView's own.
-        return (
-            Survey.objects.filter(visible_children_q(self.request.user))
-            .select_related("customer", "account")
-            .prefetch_related("account__customers")
-            .distinct()
-        )
+        user = self.request.user
+        raw = self.request.query_params.get("customer", "").strip()
+        if raw:
+            rows = self._one_organisation(user, raw)
+        else:
+            # `.distinct()` — same fan-out reasoning as ContactListView's own.
+            rows = Survey.objects.filter(visible_children_q(user)).distinct()
+        return rows.select_related("customer", "account").prefetch_related("account__customers")
+
+    @staticmethod
+    def _one_organisation(user, raw):
+        customer_id = _parse_int(raw)
+        if customer_id is None:
+            return Survey.objects.none()
+        customer = visible_customers(user).filter(pk=customer_id).first()
+        if customer is None:
+            return Survey.objects.none()
+        # SOC2:AUTH-02 an account's survey follows its own account's visibility
+        return Survey.objects.filter(customer_rollup_q(user, customer))
 
     def perform_create(self, serializer):
         account_id = self.request.data.get("account_id")

@@ -3314,6 +3314,15 @@ endpoint.
 **Pagination is off** here, same reasoning as `OpportunityListView` — a
 rollup page needs every record to total correctly, not one page of them.
 
+Query params:
+- `?customer=<id>` — one organisation's surveys: its own and those on its
+  accounts the caller may open (`customer_rollup_q`, the organisation
+  page's roll-up rule). An id the caller cannot open (another tenant's,
+  one they may not see, or not an id at all) returns `[]` with `200`,
+  never a `404` or `400` that would confirm it exists. A blank value is
+  no filter. Powers the Surveys page's organisation filter
+  (`/surveys?customer=<id>`).
+
 POST takes a `customer_id` or an `account_id` in the request body
 (neither is a real serializer field) and creates the Survey under that
 parent — exactly one of the two must be given (`400` otherwise). `400`

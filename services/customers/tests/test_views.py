@@ -3705,6 +3705,88 @@ class SurveyListTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class SurveyListCustomerFilterTests(APITestCase):
+    """`GET /api/v1/surveys/?customer=<id>`: one organisation's surveys and
+    those of its accounts the viewer may open (customer_rollup_q). An id the
+    viewer cannot open reads as an empty list, never an error that would
+    confirm the organisation exists."""
+
+    url = "/api/v1/surveys/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.customer)
+        self.other = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.viewer)
+
+    def survey(self, **parent):
+        return Survey.objects.create(
+            survey_type=Survey.SurveyType.CSAT, sent_at="2026-09-01", **parent
+        )
+
+    def ids(self, query):
+        response = self.client.get(self.url, query)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {row["id"] for row in response.data}
+
+    def test_narrows_to_the_organisation_and_its_visible_accounts(self):
+        own = self.survey(customer=self.customer)
+        seen = self.survey(account=self.seen)
+        self.survey(account=self.hidden)
+        self.survey(customer=self.other)
+
+        self.assertEqual(self.ids({"customer": self.customer.id}), {own.id, seen.id})
+
+    def test_rows_carry_their_account(self):
+        self.survey(account=self.seen)
+
+        row = self.client.get(self.url, {"customer": self.customer.id}).data[0]
+
+        self.assertEqual((row["account_id"], row["account_name"]), (self.seen.id, "Seen"))
+
+    def test_without_the_filter_the_list_is_unchanged(self):
+        own = self.survey(customer=self.customer)
+        seen = self.survey(account=self.seen)
+        other = self.survey(customer=self.other)
+        self.survey(account=self.hidden)
+
+        self.assertEqual(self.ids({}), {own.id, seen.id, other.id})
+        self.assertEqual(self.ids({"customer": ""}), {own.id, seen.id, other.id})
+
+    def test_an_id_the_viewer_cannot_open_reads_as_empty(self):
+        secret = Customer.objects.create(
+            organisation=self.org, name="Secret", owner=self.customer.owner
+        )
+        self.survey(customer=secret)
+        foreign = Customer.objects.create(
+            organisation=Organisation.objects.create(name="Other Org"), name="Foreign"
+        )
+        self.survey(customer=foreign)
+        self.survey(customer=self.customer)
+
+        for value in (secret.id, foreign.id, 999999, "abc", "-1", "1.5"):
+            with self.subTest(customer=value):
+                response = self.client.get(self.url, {"customer": value})
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(response.data, [])
+
+    def test_the_query_count_does_not_grow_with_the_list(self):
+        query = {"customer": self.customer.id}
+        # The first read resolves the caller's membership and org chart, which
+        # are memoised on the user; what is pinned is every read after it.
+        self.client.get(self.url, query)
+        for batch in range(2):
+            for _ in range(3):
+                self.survey(customer=self.customer)
+                self.survey(account=self.seen)
+            # Three however long the list: the organisation, the surveys with
+            # their parents joined, and every account's organisations at once.
+            with self.assertNumQueries(3):
+                response = self.client.get(self.url, query)
+            self.assertEqual(len(response.data), 6 * (batch + 1))
+
+
 class SurveyDetailTests(APITestCase):
     """GET/PATCH/DELETE /api/v1/surveys/<id>/ — flat, not nested.
     Covers "Log Response" (PATCH status/score) and the score-sync onto
