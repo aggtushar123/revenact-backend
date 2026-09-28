@@ -4274,9 +4274,14 @@ The answer is grounded in the page, recomputed for the caller:
 
 - the organisation's portfolio row (`load_portfolio` with `ids` and `include_churned`): lifecycle,
   owner, health and its trend, ARR, renewal, NPS, Triage risk, pulses, last touch and signal;
-- the story's Needs attention block. The anomaly entry says only that a live anomaly exists and when
-  it was last seen, never its stored title or summary;
-- the story's counts by group, over every record up to today;
+- the story's Needs attention block, cut down to the renewal and the open High or Critical tickets.
+  Its overdue tasks, unanswered Knowledge questions and live anomaly are left out: each depends on
+  the asker's own rules (the personal task chain, `visible_questions`, reading the anomaly's
+  evidence), and the digest can be shown to a shared reader whose rules differ;
+- a count line, "Story records counted up to today (emails, notes and tasks are not counted)": every
+  call, meeting, activity, ticket, survey and health change up to today, narrowed by the account
+  chip, in four groups (Conversations, Tickets, Feedback, Health & usage). Emails, notes and tasks
+  follow the asker's personal record rules, so they are never counted;
 - the story items of the last 30 days, newest first, at most 25, narrowed by the account chip;
 - the focused item, even when it is older than 30 days;
 - the records retrieval finds for the question, on the organisation or on the chip's account, each
@@ -4542,7 +4547,15 @@ gains `task` → `visible_tasks`). So a reader who can open the organisation but
 accounts reads a reply about the whole organisation only when it was narrowed to accounts they see.
 Follow-ups fold the references in like the other snapshots. An organisation page reply without them,
 or with a malformed list, fails closed. Every other reply written before the field existed quoted no
-story, and reads as before.
+story, and reads as before. The exception is a legacy context-less reply that was fed Ask history
+(its sources are unknown): it fails closed on records, and so does any reply fed it.
+
+**Unknown is not empty.** When a fold is unknown as the reply is written — records, pipeline or
+tickets, because a reply it was fed had none — the new reply stores `{"unknown": true}` in that
+field, never `null`. Every well-formed check rejects the marker, so the reply fails closed for a
+mentioned-only reader on every surface. A context-less follow-up's own asker still reads it (their
+per-source checks are unchanged). `null` means only a reply written before the field existed, read
+under the legacy rules above.
 
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei
 report to her; Dana to Carl.

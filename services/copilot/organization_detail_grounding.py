@@ -67,7 +67,8 @@ KIND_LABELS = {
     "task": "Task",
     "ticket": "Ticket",
 }
-#: Counted in the digest's all-time line: kinds open to the whole
+#: Counted in the digest's count line (every record up to today, narrowed
+#: by the account chip): kinds open to the whole
 #: organisation (no personal author/mailbox rule), plus tickets, whose
 #: department-wise count is covered separately by the ticket snapshot a
 #: shared reader is checked against. Email, note and task counts follow the
@@ -189,7 +190,10 @@ def _count_line(by_kind):
         group: sum(by_kind[kind] for kind in kinds) for group, kinds in COUNTED_GROUP_KINDS.items()
     }
     parts = "; ".join(f"{label} {by_group[group]}" for group, label in GROUP_LABELS.items())
-    return f"Story records up to today (all time): {sum(by_group.values())} — {parts}"
+    return (
+        "Story records counted up to today (emails, notes and tasks are not counted): "
+        f"{sum(by_group.values())} — {parts}"
+    )
 
 
 def item_line(item):

@@ -148,7 +148,7 @@ class DetailDigestTests(DetailFixture):
 
     def test_the_story_counts_and_its_last_thirty_days(self):
         # Email, note and task counts follow the asker's own personal-record
-        # rule (author/mailbox chain), so they never appear in the all-time
+        # rule (author/mailbox chain), so they never appear in the
         # count line a shared reader could be shown; the ticket count is kept
         # (covered separately by the ticket snapshot), as are the kinds open
         # to the whole organisation (calls, meetings, activities, surveys,
@@ -160,7 +160,8 @@ class DetailDigestTests(DetailFixture):
         summary = self.ground().summary
 
         self.assertIn(
-            "Story records up to today (all time): 0 — Conversations 0; Tickets 0; "
+            "Story records counted up to today (emails, notes and tasks are not counted): "
+            "0 — Conversations 0; Tickets 0; "
             "Feedback 0; Health & usage 0",
             summary,
         )
