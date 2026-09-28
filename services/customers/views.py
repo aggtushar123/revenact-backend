@@ -1466,26 +1466,41 @@ class AccountContactListView(generics.ListCreateAPIView):
         serializer.save(account=self.get_account())
 
 
+#: The roles the Contacts page counts as decision makers, the same set the
+#: organisation page's People summary uses.
+DECISION_ROLES = (
+    Contact.Role.EXECUTIVE_SPONSOR,
+    Contact.Role.DECISION_MAKER,
+    Contact.Role.ECONOMIC_BUYER,
+)
+
+
+def _int_param(raw):
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 class ContactListView(generics.ListAPIView):
-    """GET /api/v1/contacts/ — every Contact across every Customer/
-    Account the caller's own organisation owns, organization-level and
-    account-level alike. Powers the standalone Contacts page
-    (react-ts-app's /contacts/list) — the one place a Contact is
-    browsed independent of which Customer/Account it belongs to, so
-    this is the one Contact view that isn't nested under
-    /customers/<id>/... (mounted directly at /api/v1/contacts/ in the
-    project's root urls.py instead).
+    """GET /api/v1/contacts/ — every Contact the caller may open, across
+    every Customer/Account, organisation-level and account-level alike.
+    Powers the Contacts page; the one Contact list not nested under
+    /customers/<id>/... (mounted in the project's root urls.py).
 
-    Paginated with the shared DEFAULT_PAGINATION_CLASS/PAGE_SIZE —
-    unlike every other List view in this file, which turns pagination
-    off for what's normally a single entity's already-small nested
-    list — since this one can span every contact the tenant has, same
-    reasoning as CustomerListCreateView.
+    Paginated with the shared DEFAULT_PAGINATION_CLASS/PAGE_SIZE, since it
+    can span every contact the tenant has.
 
-    `?search=` matches name/email/role (substring, case-insensitive),
-    same convention as CustomerListCreateView's own search. `?company=
-    <customer_id>` filters to one company, matching a contact directly
-    on that Customer or on any of its Accounts."""
+    Filters (an unusable value is ignored, never a 400):
+    `?search=` name/email/role, case-insensitive contains;
+    `?customer=<id>` (or the older `?company=`) a contact on that
+    organisation or on any of its accounts; `?account=<id>`;
+    `?sentiment=positive|neutral|negative`; `?role=<Contact.Role>`.
+
+    Each row carries `organisation` and `account` as `{id, name}` refs (the
+    organisation is the first linked one the caller may open) beside
+    ContactSerializer's fields. `summary` covers the whole filtered set,
+    not the page: `{total, positive, neutral, negative, decision_makers}`."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
@@ -1496,31 +1511,64 @@ class ContactListView(generics.ListAPIView):
         # account-level Contact whose Account is linked to two+
         # Customers in this same organisation would otherwise appear
         # more than once.
+        # SOC2:AUTH-02 a contact follows its organisation's or account's visibility
         queryset = (
             Contact.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
         )
+        params = self.request.query_params
 
-        search = self.request.query_params.get("search", "").strip()
+        search = params.get("search", "").strip()
         if search:
             queryset = queryset.filter(
                 Q(name__icontains=search) | Q(email__icontains=search) | Q(role__icontains=search)
             )
 
-        company = self.request.query_params.get("company")
-        if company:
-            try:
-                company_id = int(company)
-            except ValueError:
-                company_id = None
-            if company_id is not None:
-                queryset = queryset.filter(
-                    Q(customer_id=company_id) | Q(account__customers__id=company_id)
-                )
+        customer_id = _int_param(params.get("customer") or params.get("company"))
+        if customer_id is not None:
+            queryset = queryset.filter(
+                Q(customer_id=customer_id) | Q(account__customers__id=customer_id)
+            )
+
+        account_id = _int_param(params.get("account"))
+        if account_id is not None:
+            queryset = queryset.filter(account_id=account_id)
+
+        sentiment = params.get("sentiment")
+        if sentiment in Contact.Sentiment.values:
+            queryset = queryset.filter(sentiment=sentiment)
+
+        role = params.get("role")
+        if role in Contact.Role.values:
+            queryset = queryset.filter(role=role)
 
         return queryset
+
+    def get_serializer_context(self):
+        from .scoping import visible_customers
+
+        context = super().get_serializer_context()
+        context["visible_customer_ids"] = set(
+            visible_customers(self.request.user).values_list("pk", flat=True)
+        )
+        return context
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = self.get_serializer(page, many=True).data
+        response = self.get_paginated_response(rows)
+        counted = Contact.objects.filter(pk__in=queryset.values("pk")).aggregate(
+            total=Count("pk"),
+            positive=Count("pk", filter=Q(sentiment=Contact.Sentiment.POSITIVE)),
+            neutral=Count("pk", filter=Q(sentiment=Contact.Sentiment.NEUTRAL)),
+            negative=Count("pk", filter=Q(sentiment=Contact.Sentiment.NEGATIVE)),
+            decision_makers=Count("pk", filter=Q(role__in=DECISION_ROLES)),
+        )
+        response.data["summary"] = counted
+        return response
 
 
 class ContactStatsView(views.APIView):
