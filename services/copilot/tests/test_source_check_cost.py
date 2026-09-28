@@ -10,7 +10,7 @@ from django.utils import timezone
 from services.accounts.models import Organisation, User
 from services.copilot.models import Conversation, Message
 from services.copilot.views import REDACTED_REPLY, visible_messages
-from services.customers.models import Activity, Customer, Email, Note, Ticket
+from services.customers.models import Activity, Customer, Email, Note, Task, Ticket
 from services.customers.tests.test_views import create_account
 from services.knowledge.models import Contribution
 
@@ -60,6 +60,13 @@ class SourceCheckCost(TestCase):
                 function="cs",
                 body="b",
             )
+            task = Task.objects.create(
+                account=parent,
+                title="t",
+                assignee_name="x",
+                due_date=today,
+                priority=Task.Priority.MEDIUM,
+            )
             asked = Message.objects.create(
                 conversation=self.conversation, role="user", content="q", author=self.owner
             )
@@ -75,6 +82,7 @@ class SourceCheckCost(TestCase):
                     self.ref("activity", activity, parent),
                     self.ref("contribution", contribution, self.customer),
                 ],
+                grounded_records=[self.ref("task", task, parent)],
             )
 
     def read(self):
@@ -100,7 +108,9 @@ class SourceCheckCost(TestCase):
         self.assertEqual(small, large)
         # The messages, the session, the chart and scope (3), the questions,
         # membership and role, then the source check: two company queries,
-        # and existing + readable per kind with a rule (8, the contribution
-        # rule reading the scope's function-mates once more). 82 before the
-        # check was batched.
-        self.assertEqual(large, 19)
+        # and existing + readable per kind with a rule (10 — email, note,
+        # ticket, contribution and task, each cited once as a source or, for
+        # task, once as a grounded_records reference — plus one more for the
+        # contribution rule reading the scope's function-mates). 82 before
+        # the check was batched.
+        self.assertEqual(large, 21)

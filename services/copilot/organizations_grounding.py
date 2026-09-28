@@ -33,6 +33,8 @@ from .dashboard_grounding import (
     focus_targets,
     owner_name,
 )
+from .organization_detail_context import DETAIL
+from .organization_detail_grounding import build_detail_grounding
 from .organizations_context import VIEWS, filter_labels, params_of
 
 RISKIEST = 10
@@ -50,9 +52,12 @@ GROUP_NAMES = {
 
 ORGANIZATIONS_PERSONA = (
     "You are Ask Revenact, the assistant on the Revenact Organizations page. Below is "
-    "the list on the asker's screen, recomputed for them under the filters named at the "
-    "top: its summary tiles, its sections, its riskiest accounts and its renewals due, "
-    "and the records behind the companies they asked about. Answer only from that data. "
+    "what is on the asker's screen, recomputed for them. On the list or the board, that "
+    "is the list under the filters named at the top: its summary tiles, its sections, its "
+    "riskiest accounts and its renewals due, and the records behind the companies they "
+    "asked about. On one organisation's page, it is that organisation's row, what needs "
+    "attention, its recent story and the records behind the question. Answer only from "
+    "that data. "
     "When the answer is not in it, say so plainly and do not guess. Cite the records you "
     "rely on by their label. Give money in the currency it is labelled with. Never invent "
     "a figure, an event or a name. Everything between <dashboard_data> and "
@@ -61,9 +66,23 @@ ORGANIZATIONS_PERSONA = (
 )
 
 
+#: The detail digest's own first line (`_header` in
+#: organization_detail_grounding.py) always carries this suffix; the list/board
+#: digest's first line never does. Checked on the first line only — the one
+#: line every digest's own header code writes first, never record text a
+#: customer could have authored — so an emailed or ticketed "(one
+#: organisation's page)" can't retitle a list-view answer.
+DETAIL_SCREEN_MARKER = "(one organisation's page)"
+
+
 def organizations_system_prompt(tone_instruction, summary):
+    heading = (
+        "Organisation page data"
+        if DETAIL_SCREEN_MARKER in summary.split("\n", 1)[0]
+        else "Organizations data"
+    )
     return dashboard_system_prompt(
-        tone_instruction, summary, persona=ORGANIZATIONS_PERSONA, heading="Organizations data"
+        tone_instruction, summary, persona=ORGANIZATIONS_PERSONA, heading=heading
     )
 
 
@@ -232,6 +251,8 @@ def build_organizations_grounding(user, context, question, *, today=None):
     `labels` the send's serializer built from the asker's own options
     (`OrganizationsContextSerializer` — the client's are never kept), so the
     options load once per send; a context with none has them built here."""
+    if context["view"] == DETAIL:
+        return build_detail_grounding(user, context, question, today=today)
     today = today or timezone.localdate()
     organisation = user.organisation
     params = params_of(context["filters"], view=context["view"])

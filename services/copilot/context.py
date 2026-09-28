@@ -107,6 +107,12 @@ class Grounding:
     #: digest's figures counted (`personal.ticket_snapshot`; empty lists when
     #: none). Stored on the reply (`Message.grounded_tickets`).
     tickets: dict | None = None
+    #: Ask surfaces only: the records the digest quoted or counted without
+    #: citing them — an organisation page's story items, its focus and the
+    #: accounts it covered — as `grounded_records.record_ref` references.
+    #: Stored on the reply (`Message.grounded_records`) and checked like
+    #: `sources`. Empty for a digest that quotes nothing uncited.
+    records: list = field(default_factory=list)
 
 
 def build_org_context_summary(organisation, user, query: str = "") -> str:

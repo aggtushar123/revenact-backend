@@ -22,6 +22,7 @@ from services.organizations.book import filter_options, filtered_queryset
 from services.organizations.params import DEFAULT_SORT, parse_params
 
 from .dashboard_context import company_ids
+from .organization_detail_context import DETAIL, OrganizationDetailContextSerializer
 
 VIEWS = {"list": "List", "board": "Board"}
 
@@ -169,14 +170,25 @@ def filter_labels(params, options):
 class OrganizationsContextSerializer(serializers.Serializer):
     """Validates an Organizations send's `context`. Needs
     `context={"user": user}`. Anything else the client sends — `labels`
-    included — is ignored."""
+    included — is ignored. A send from one organisation's page
+    (`view: "detail"`) is validated by `OrganizationDetailContextSerializer`
+    instead, and its errors come back unchanged."""
 
     surface = serializers.ChoiceField(choices=["organizations"])
-    view = serializers.ChoiceField(choices=list(VIEWS))
+    view = serializers.ChoiceField(choices=[*VIEWS, DETAIL])
     filters = serializers.DictField(required=False, default=dict)
     focus = serializers.DictField(allow_null=True, required=False, default=None)
 
+    def to_internal_value(self, data):
+        if isinstance(data, dict) and data.get("view") == DETAIL:
+            inner = OrganizationDetailContextSerializer(data=data, context=self.context)
+            inner.is_valid(raise_exception=True)
+            return inner.validated_data
+        return super().to_internal_value(data)
+
     def validate(self, data):
+        if data["view"] == DETAIL:
+            return data  # already validated whole by its own serializer
         user = self.context["user"]
         filters = clean_filters(data.get("filters") or {})
         params = params_of(filters, view=data["view"])

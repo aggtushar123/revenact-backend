@@ -36,6 +36,7 @@ from .ask import SURFACES, AskContextSerializer
 from .context import build_grounding
 from .dashboard_context import origin_of
 from .dashboard_grounding import PIPELINE_AREAS, TICKET_AREAS, is_support_focus
+from .grounded_records import union_records, well_formed_records
 from .models import (
     Conversation,
     CopilotSession,
@@ -325,6 +326,13 @@ def _ticket_rule():
     return Ticket, visible_tickets
 
 
+def _task_rule():
+    from services.customers.models import Task
+    from services.customers.personal import visible_tasks
+
+    return Task, visible_tasks
+
+
 def _record_id(value):
     """A cited record's id as a positive int — an int, or a string of
     digits as a stored JSON source may carry it — or None for anything
@@ -346,7 +354,16 @@ RECORD_RULES = {
     "email": _email_rule,
     "note": _note_rule,
     "ticket": _ticket_rule,
+    "task": _task_rule,
 }
+
+
+def _checked_refs(turn):
+    """Every record a reply is checked against: the sources it cites, and the
+    records its digest quoted or counted without citing them
+    (`Message.grounded_records`; a malformed list adds none here and fails
+    the reply closed in `_reply_readable_by`)."""
+    return [*(turn.sources or []), *(_stored_records(turn) or [])]
 
 
 class _Reader:
@@ -386,7 +403,7 @@ class _Reader:
 
         cited = {"customer": set(), "account": set()}
         for turn in self.turns:
-            for source in turn.sources or []:
+            for source in _checked_refs(turn):
                 if source.get("company_type") in cited:
                     cited[source["company_type"]].add(source.get("company_id"))
         rules = {"customer": visible_customers, "account": visible_accounts}
@@ -409,7 +426,7 @@ class _Reader:
             ids = {
                 _record_id(source.get("id"))
                 for turn in self.turns
-                for source in turn.sources or []
+                for source in _checked_refs(turn)
                 if source.get("type") == kind
             } - {None}
             if not ids:
@@ -543,6 +560,11 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
                     return False
             elif not ticket_departments_readable(user, tickets["departments"]):
                 return False
+            # SOC2:AUTH-02 and the records its digest quoted without citing them
+            # (checked with the sources below, for every reader); a reply that
+            # could carry some with none stored fails closed
+            if _records_of(turn, user_turn) is None:
+                return False
             if not reader.sees_everything:
                 if not grounded <= reader.visible_grounded_ids:
                     return False
@@ -566,9 +588,11 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
                 ):
                     return False
 
+    if turn.grounded_records not in (None, UNKNOWN) and _stored_records(turn) is None:
+        return False  # SOC2:AUTH-02 a malformed records snapshot fails closed
     reader = reader or _Reader(user, [turn])
     companies = reader.visible_company_ids
-    for source in turn.sources or []:
+    for source in _checked_refs(turn):
         # SOC2:AUTH-02 strict: every cited record's company must be one the
         # viewer may open — an account by its own rule, never through its
         # organisation — on top of the record's own rule below
@@ -659,6 +683,16 @@ def ask_snapshot(user, ask, grounding, fed):
 #: A pipeline or ticket snapshot that counted nothing.
 NO_PIPELINE = {"account_ids": [], "departments": []}
 
+#: What a fold unknown when its reply was written is stored as: every
+#: well-formed check rejects it, so it fails closed on every surface. A real
+#: null means only "written before the field existed".
+UNKNOWN = {"unknown": True}
+
+
+def stored_fold(snapshot):
+    """What a folded snapshot is stored as: itself, or UNKNOWN for None."""
+    return UNKNOWN if snapshot is None else snapshot
+
 
 def pipeline_snapshot(ask, grounding, fed):
     """`Message.grounded_pipeline` for a new Ask-shaped reply (see
@@ -672,12 +706,43 @@ def tickets_snapshot(ask, grounding, fed):
     return _folded_snapshot(ask, grounding.tickets, fed, _tickets_of)
 
 
-def _folded_snapshot(ask, own, fed, snapshot_of):
-    """An `{account_ids, departments}` snapshot for a new Ask-shaped reply:
-    its own grounding's (an Ask send), folded with every Ask reply it was
-    fed as history — the same walk and the same None-is-sticky rule as
-    `ask_snapshot`. None fails closed for slice readers."""
-    snapshot = _well_formed_pipeline(own) if ask is not None else NO_PIPELINE
+def records_snapshot(ask, grounding, fed):
+    """`Message.grounded_records` for a new Ask-shaped reply (see
+    `_folded_snapshot`): its own grounding's records, and every record an
+    Ask reply it was fed had quoted."""
+    return _folded_snapshot(
+        ask,
+        grounding.records,
+        fed,
+        _records_of,
+        empty=[],
+        well_formed=well_formed_records,
+        union=union_records,
+    )
+
+
+def _union_snapshots(snapshot, earlier):
+    return {key: sorted(set(snapshot[key]) | set(earlier[key])) for key in NO_PIPELINE}
+
+
+def _folded_snapshot(
+    ask,
+    own,
+    fed,
+    snapshot_of,
+    *,
+    empty=NO_PIPELINE,
+    well_formed=None,
+    union=_union_snapshots,
+):
+    """A snapshot for a new Ask-shaped reply — `{account_ids, departments}`
+    by default, or whatever `empty`, `well_formed` and `union` describe: its
+    own grounding's (an Ask send), folded with every Ask reply it was fed as
+    history — the same walk and the same None-is-sticky rule as
+    `ask_snapshot`. None fails closed for slice readers, and is stored as
+    `UNKNOWN` (`stored_fold`), never as null."""
+    well_formed = well_formed or _well_formed_pipeline
+    snapshot = well_formed(own) if ask is not None else empty
     last_user_turn = None
     for turn in fed:
         if turn.role == Message.Role.USER:
@@ -696,7 +761,7 @@ def _folded_snapshot(ask, own, fed, snapshot_of):
         if snapshot is None or earlier is None:
             snapshot = None
         else:
-            snapshot = {key: sorted(set(snapshot[key]) | set(earlier[key])) for key in NO_PIPELINE}
+            snapshot = union(snapshot, earlier)
     return snapshot
 
 
@@ -723,6 +788,38 @@ def _stored_tickets(turn):
     return _well_formed_pipeline(turn.grounded_tickets)
 
 
+def _stored_records(turn):
+    return well_formed_records(turn.grounded_records)
+
+
+def _is_detail(context):
+    return (
+        isinstance(context, dict)
+        and context.get("surface") == "organizations"
+        and context.get("view") == "detail"
+    )
+
+
+def _records_of(turn, answered):
+    """The records a reply's digest quoted without citing them: its stored
+    references, or for a reply written before snapshots existed, nothing when
+    its own Ask turn's digest quoted none — every surface but an
+    organisation's page — and None, failing closed, when it could have (an
+    organisation page reply, or a context-less reply fed Ask history, whose
+    sources are unknown)."""
+    stored = _stored_records(turn)
+    if stored is not None:
+        return stored
+    if turn.grounded_records is not None:
+        return None  # malformed, or UNKNOWN when it was written
+    context = answered.context if answered is not None else None
+    if not isinstance(context, dict) or not context:
+        return None
+    if _is_detail(context):
+        return None
+    return []
+
+
 def _pipeline_of(turn, answered):
     """The pipeline a reply's figures rest on: its stored snapshot, or for a
     reply written before snapshots existed, nothing when its own Ask turn's
@@ -734,7 +831,7 @@ def _pipeline_of(turn, answered):
     if stored is not None:
         return stored
     if turn.grounded_pipeline is not None:
-        return None  # malformed
+        return None  # malformed, or UNKNOWN when it was written
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
         return None
@@ -754,7 +851,7 @@ def _tickets_of(turn, answered):
     if stored is not None:
         return stored
     if turn.grounded_tickets is not None:
-        return None  # malformed
+        return None  # malformed, or UNKNOWN when it was written
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
         return None
@@ -1034,11 +1131,17 @@ class SendMessageView(APIView):
             # against those
             grounded_customer_ids=snapshot[0],
             carries_anomaly_text=snapshot[1],
+            # SOC2:AUTH-02 an unknown fold is stored as UNKNOWN, never null: a
+            # null reads as "written before the field existed", which off the
+            # organisation page reads as empty and would fail open
             grounded_pipeline=(
-                None if snapshot[1] is None else pipeline_snapshot(ask, grounding, fed)
+                None if snapshot[1] is None else stored_fold(pipeline_snapshot(ask, grounding, fed))
             ),
             grounded_tickets=(
-                None if snapshot[1] is None else tickets_snapshot(ask, grounding, fed)
+                None if snapshot[1] is None else stored_fold(tickets_snapshot(ask, grounding, fed))
+            ),
+            grounded_records=(
+                None if snapshot[1] is None else stored_fold(records_snapshot(ask, grounding, fed))
             ),
             ask_suggestions=ask_suggestions_for(grounding.company, exclude=request.user),
             # The real turn this reply answers, not just "whichever user turn
