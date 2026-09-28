@@ -2456,6 +2456,11 @@ was on (`Call.participants`); emails are from their address and tickets
 raised by it, inside the contact's own tenant only. Each list holds the
 newest 100; `counts` is the whole visible total per kind.
 
+`sentiment_evidence` summarises all of the person's evidence in their
+tenant, as `contact.sentiment` does (counts only, never text), while
+`counts` and the rows are what the caller may read, so the two can differ.
+The page shows the evidence breakdown only, never one against the other.
+
 `analysis` is `pending` (not read yet), `not_analysable` (a call with
 nothing to judge: the UI says "Not enough to analyse") or `analysed`.
 `sentiment` is `null` unless `analysed`. `classification` holds the
