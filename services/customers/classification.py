@@ -130,7 +130,10 @@ def _text_for(record):
     if name == "email":
         return f"{record.subject}. {record.body}"
     if name == "call":
-        return f"{record.title}. {record.summary}" if record.summary else record.title
+        # The transcript, else the summary, after the title (calls.call_text).
+        from .calls import call_text
+
+        return call_text(record)
     # Ticket: the title is the whole description this model stores — see
     # Ticket's own docstring on the `description` the mock carried and no
     # component ever rendered. Priority and status give the model the
