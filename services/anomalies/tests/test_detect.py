@@ -14,9 +14,9 @@ from rest_framework.test import APITestCase
 from core.models import AuditEvent
 from services.accounts.capabilities import Capability
 from services.accounts.models import Organisation, Role, User
+from services.anomalies.detect import text_for
 from services.anomalies.models import Anomaly, AnomalyEvidence
 from services.copilot.anthropic_client import BudgetExceeded
-from services.customers.classification import _text_for
 from services.customers.models import Customer, Ticket
 from services.customers.taxonomy import AICategory
 
@@ -84,7 +84,7 @@ class Fixture(APITestCase):
         )
         # Keyed off the real text builder, so the fixture can never drift
         # from what detection actually embeds.
-        self.table[_text_for(row)] = vector
+        self.table[text_for(row)] = vector
         return row
 
     def detect(self, *titles):
@@ -275,7 +275,7 @@ class NamingStaysShared(Fixture):
             ai_category=AICategory.BUG_REPORT,
             ai_classified_at=when,
         )
-        self.table[_text_for(row)] = vector
+        self.table[text_for(row)] = vector
         return row
 
     def test_a_personal_mailbox_never_reaches_the_naming_prompt(self):
@@ -372,8 +372,8 @@ class MixedKinds(Fixture):
             ai_category=AICategory.BUG_REPORT,
             ai_classified_at=when,
         )
-        self.table[_text_for(email)] = SSO_TOO
-        self.table[_text_for(call)] = SSO_TOO
+        self.table[text_for(email)] = SSO_TOO
+        self.table[text_for(call)] = SSO_TOO
         response = self.detect("SSO login failures")
         self.assertEqual(response.data["found"], 1, response.data)
         self.assertEqual(
@@ -513,3 +513,65 @@ class NamingNeverNamesACustomer(Fixture):
         Customer.objects.create(organisation=other, name="Okta", domain="okta.com")
         anomaly, _ = self.run_with("Okta SSO login failures")
         self.assertEqual(anomaly.title, "Okta SSO login failures")
+
+
+class CallsAreReadFromTheirTitleAndSummary(Fixture):
+    """A call's transcript is never read by detection: it would be one file
+    read per call, and its opening lines would land in an evidence snippet.
+    A call marked not analysable said nothing, so it is no report either."""
+
+    def call(self, company, title, *, transcript=None, not_analysable=False):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from services.customers.models import Attachment, Call
+
+        when = timezone.now() - timezone.timedelta(days=2)
+        attachment = None
+        if transcript is not None:
+            attachment = Attachment.objects.create(
+                organisation=self.org,
+                customer=company,
+                file=SimpleUploadedFile("t.txt", transcript.encode(), content_type="text/plain"),
+                name="t.txt",
+                content_type="text/plain",
+                size=len(transcript),
+                source=Attachment.Source.TRANSCRIPT,
+            )
+        return Call.objects.create(
+            customer=company,
+            title=title,
+            summary="" if not_analysable else "They cannot sign in with SSO.",
+            occurred_at=when,
+            transcript=attachment,
+            not_analysable=not_analysable,
+            ai_category="" if not_analysable else AICategory.BUG_REPORT,
+            ai_classified_at=when,
+        )
+
+    def test_the_transcript_is_never_opened_and_never_filed(self):
+        from services.customers.files import read_transcript_text
+
+        for company in self.companies[:3]:
+            call = self.call(company, f"SSO outage {company.name}", transcript="Hi, how are you?")
+            self.table[text_for(call)] = SSO
+        with patch(
+            "services.customers.files.read_transcript_text", wraps=read_transcript_text
+        ) as spy:
+            response = self.detect("SSO login failures")
+        spy.assert_not_called()
+        self.assertEqual(response.data["found"], 1, response.data)
+        snippets = list(AnomalyEvidence.objects.values_list("snippet", flat=True))
+        self.assertEqual(len(snippets), 3)
+        for snippet in snippets:
+            self.assertTrue(snippet.endswith(". They cannot sign in with SSO."), snippet)
+            self.assertNotIn("how are you", snippet)
+
+    def test_a_call_marked_not_analysable_is_no_report(self):
+
+        for company in self.companies[:2]:
+            self.table[text_for(self.call(company, f"SSO outage {company.name}"))] = SSO
+        silent = self.call(self.companies[2], "SSO outage", not_analysable=True)
+        self.table[text_for(silent)] = SSO
+        response = self.detect("SSO login failures")
+        self.assertEqual(response.data["found"], 0, response.data)
+        self.assertFalse(AnomalyEvidence.objects.filter(record_id=silent.pk).exists())
