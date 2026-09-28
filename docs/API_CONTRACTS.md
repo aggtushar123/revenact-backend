@@ -2462,7 +2462,10 @@ nothing to judge: the UI says "Not enough to analyse") or `analysed`.
 taxonomy labels, blank when unset. `organisation` and `account` are
 `{id, name}` or `null`; an account's organisation is the first linked
 one the caller may open. `link.url` is an `http(s)` recording or ticket
-URL, else `null`; `link.thread_id` is the email's thread.
+URL, else `null`; `link.thread_id` is the email's thread. A ticket row
+carries its `department` (`User.Function` or blank) and
+`department_display` (its label, blank with no department), for the
+"Department · Status" line.
 
 **Response `200`**
 ```json
@@ -2523,6 +2526,8 @@ URL, else `null`; `link.thread_id` is the email's thread.
       "title": "Export fails",
       "status": "open",
       "status_display": "Open",
+      "department": "cs",
+      "department_display": "Customer Success",
       "opened_at": "2026-09-10",
       "analysis": "pending",
       "sentiment": null,

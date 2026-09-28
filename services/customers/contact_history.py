@@ -13,6 +13,7 @@ contact's own tenant only (`contact_sentiment.in_organisation_q`).
 is null, and the UI says "Not enough to analyse" or waits.
 """
 
+from services.accounts.models import User
 from services.mail.visibility import visible_emails
 from services.organizations.story.items import clip, safe_url
 
@@ -23,6 +24,8 @@ from .scoping import visible_children_q, visible_customers
 
 #: Newest first, per kind. `counts` carries the whole visible total.
 HISTORY_LIMIT = 100
+#: A ticket's department, as its label ("Customer Success").
+DEPARTMENTS = dict(User.Function.choices)
 
 
 def _ref(row):
@@ -96,6 +99,8 @@ def _ticket(ticket, visible_customer_ids):
         "title": ticket.title,
         "status": ticket.status,
         "status_display": ticket.get_status_display(),
+        "department": ticket.department,
+        "department_display": DEPARTMENTS.get(ticket.department, ""),
         "opened_at": ticket.opened_at.isoformat(),
         **_reading(ticket),
         "organisation": organisation,

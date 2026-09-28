@@ -159,6 +159,17 @@ class HistoryShapeTests(Fixture):
         )
         self.assertEqual(ticket["link"], {"url": "https://acme.zendesk.com/t/1"})
 
+    def test_a_ticket_row_names_its_department(self):
+        """The page reads "Department · Status"; no department reads blank."""
+        self.ticket("ZD-1", department="cs")
+        self.ticket("ZD-2")
+        rows = {t["ticket_number"]: t for t in self.read()["tickets"]}
+        self.assertEqual(
+            (rows["ZD-1"]["department"], rows["ZD-1"]["department_display"]),
+            ("cs", "Customer Success"),
+        )
+        self.assertEqual((rows["ZD-2"]["department"], rows["ZD-2"]["department_display"]), ("", ""))
+
     def test_the_breakdown_comes_with_it(self):
         from services.customers.contact_sentiment import recompute
 
