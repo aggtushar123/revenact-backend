@@ -2386,7 +2386,8 @@ Attachment (`source: "transcript"`) on the same company, and when
 "call_summary"`; no model configured means an empty summary, not an
 error). The new call is classified straight away by the one helper every
 path that creates a call runs (`calls.classify_call`): the classifier reads
-the title, then the transcript, else the summary. A call with no
+the title, then the summary (the model-written digest of the whole
+transcript), else the transcript's opening, else the title alone. A call with no
 transcript, no summary and a generic title ("Weekly sync") is marked not
 analysable without a model call, and so is one the model declines. A
 classifier failure never blocks the call: it stays `pending` for the

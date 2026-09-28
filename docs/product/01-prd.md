@@ -154,7 +154,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Activity feed: Pulse, Conversations, Revenact Support | Planned | Render "coming soon" |
 | Success Plans tab | Planned | Placeholder on both detail pages |
 | Files | Built | Closed type list, magic-byte check, 25 MB cap, authenticated download only. An organisation's list includes its visible accounts' files, tagged |
-| CallSense | Built | Log a call, attach a transcript, model writes the summary, call is classified immediately from its transcript, else its summary, else its title. A call with nothing to read is "not analysable", never guessed. An organisation's list includes its visible accounts' calls, tagged |
+| CallSense | Built | Log a call, attach a transcript, model writes the summary, call is classified immediately from its summary (a digest of the whole transcript), else its transcript, else its title. A call with nothing to read is "not analysable", never guessed. An organisation's list includes its visible accounts' calls, tagged |
 | Custom objects and fields | Built | Definitions, fields, records; records scoped to a customer or account |
 | Pipelines (opportunities and risks) | Built | Kanban with drag to stage; department and role scoped |
 | Surveys (NPS, CSAT, CES) | Partial | Logged and scored by hand; filter by organisation; no email delivery, no multi-question surveys |

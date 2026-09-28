@@ -130,7 +130,7 @@ def _text_for(record):
     if name == "email":
         return f"{record.subject}. {record.body}"
     if name == "call":
-        # The transcript, else the summary, after the title (calls.call_text).
+        # The summary, else the transcript, after the title (calls.call_text).
         from .calls import call_text
 
         return call_text(record)

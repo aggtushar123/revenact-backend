@@ -225,7 +225,7 @@ class CreatePathTests(CallFixture):
                     ("analysed", "positive"),
                 )
 
-    def test_a_pasted_transcript_is_what_the_classifier_reads(self):
+    def test_the_summary_written_from_a_pasted_transcript_is_what_the_classifier_reads(self):
         with (
             patch("services.customers.calls.get_completion", return_value="A summary."),
             patch(BATCH, side_effect=lambda batch, **_: placed(batch[0])) as batch,
@@ -238,7 +238,7 @@ class CreatePathTests(CallFixture):
                     "transcript_text": "We are unhappy with support.",
                 },
             )
-        self.assertEqual(_text_for(batch.call_args.args[0][0]), "QBR. We are unhappy with support.")
+        self.assertEqual(_text_for(batch.call_args.args[0][0]), "QBR. A summary.")
 
     def test_a_call_with_nothing_to_read_says_so(self):
         with patch(BATCH) as batch:

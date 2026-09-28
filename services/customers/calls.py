@@ -120,15 +120,18 @@ def transcript_text_of(call) -> str:
 
 def call_text(call) -> str:
     """What the classifier reads for a call: the title, then the best text
-    there is — the transcript, else the summary. The prompt caps every
-    record's text (classification.MAX_TEXT_CHARS)."""
-    body = transcript_text_of(call) or (call.summary or "").strip()
+    there is — the summary (a digest of the whole transcript, where the
+    transcript's first characters are often small talk), else the
+    transcript, else nothing. The transcript is not read when there is a
+    summary. The prompt caps every record's text
+    (classification.MAX_TEXT_CHARS)."""
+    body = (call.summary or "").strip() or transcript_text_of(call)
     return f"{call.title}. {body}" if body else call.title
 
 
 def has_something_to_read(call) -> bool:
     return bool(
-        transcript_text_of(call) or (call.summary or "").strip() or not is_generic_title(call.title)
+        (call.summary or "").strip() or transcript_text_of(call) or not is_generic_title(call.title)
     )
 
 

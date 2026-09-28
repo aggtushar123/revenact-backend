@@ -1,5 +1,6 @@
-"""What the classifier reads for a call: the title, then the transcript, else
-the summary. A title that only says a call happened is nothing to read."""
+"""What the classifier reads for a call: the title, then the summary (a digest
+of the whole transcript), else the transcript's opening, else the title alone.
+A title that only says a call happened is nothing to read."""
 
 from unittest.mock import patch
 
@@ -26,8 +27,20 @@ class GenericTitleTests(SimpleTestCase):
 
 
 class CallTextTests(CallFixture):
-    def test_the_transcript_comes_first(self):
-        call = self.call(summary="They want SSO.", transcript=self.transcript("We need SSO by Q4."))
+    def test_the_summary_comes_first_and_the_transcript_is_not_read(self):
+        """The summary digests the whole transcript; the transcript's first
+        characters are often small talk."""
+        call = self.call(summary="They want SSO.", transcript=self.transcript("Hi, how are you?"))
+        call = Call.objects.get(pk=call.pk)
+        with patch(
+            "services.customers.files.read_transcript_text", wraps=read_transcript_text
+        ) as spy:
+            self.assertEqual(_text_for(call), "Renewal readiness. They want SSO.")
+            self.assertTrue(calls.has_something_to_read(call))
+        spy.assert_not_called()
+
+    def test_then_the_transcript(self):
+        call = self.call(transcript=self.transcript("We need SSO by Q4."))
         self.assertEqual(_text_for(call), "Renewal readiness. We need SSO by Q4.")
 
     def test_a_transcript_handed_over_at_creation_beats_the_stored_one(self):
@@ -35,38 +48,30 @@ class CallTextTests(CallFixture):
         call._transcript_text = "pasted words"
         self.assertEqual(_text_for(call), "Renewal readiness. pasted words")
 
-    def test_then_the_summary(self):
-        self.assertEqual(
-            _text_for(self.call(summary="They want SSO.")), "Renewal readiness. They want SSO."
-        )
-
     def test_then_the_title_alone(self):
         self.assertEqual(_text_for(self.call()), "Renewal readiness")
 
     def test_an_unreadable_transcript_file_reads_as_none(self):
-        call = self.call(summary="They want SSO.", transcript=self.transcript("gone"))
+        call = self.call(transcript=self.transcript("gone"))
         call.transcript.file.storage.delete(call.transcript.file.name)
         call = Call.objects.get(pk=call.pk)
-        self.assertEqual(_text_for(call), "Renewal readiness. They want SSO.")
+        self.assertEqual(_text_for(call), "Renewal readiness")
 
     def test_a_storage_error_reads_as_no_transcript(self):
         """Not every read failure is an `OSError`/`ValueError` — a storage
         backend can raise its own exception (`SuspiciousFileOperation`,
         say). None of them may fail a classification batch."""
-        call = self.call(summary="They want SSO.", transcript=self.transcript("stored words"))
+        call = self.call(transcript=self.transcript("stored words"))
         call = Call.objects.get(pk=call.pk)
         storage = call.transcript.file.storage
         with patch.object(storage, "open", side_effect=SuspiciousFileOperation("nope")):
-            self.assertEqual(_text_for(call), "Renewal readiness. They want SSO.")
+            self.assertEqual(_text_for(call), "Renewal readiness")
 
     def test_a_binary_transcript_file_does_not_raise(self):
-        call = self.call(
-            summary="They want SSO.",
-            transcript=self.binary_transcript(b"\xff\xfe\x00\x01binary junk\x00"),
-        )
+        call = self.call(transcript=self.binary_transcript(b"\xff\xfe\x00\x01binary junk\x00"))
         call = Call.objects.get(pk=call.pk)
         text = _text_for(call)
-        self.assertTrue(text.startswith("Renewal readiness. "))
+        self.assertTrue(text.startswith("Renewal readiness"))
 
     def test_the_transcript_file_is_read_only_once(self):
         """`has_something_to_read` and `call_text` both ask for the
