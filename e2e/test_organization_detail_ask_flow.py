@@ -2,8 +2,10 @@
 Revenact on his organisation's page, narrowed to an account and about one
 story item, mentioning the admin; the history tags the conversation with the
 page. The admin, mentioned, sees everything but not the CSM's own note, so the
-reply that quoted it is withheld from her. A peer cannot ask about the page at
-all. The model call is stubbed in-process."""
+reply that quoted it is withheld from her — though she still sees where it
+was asked. A peer cannot ask about the page at all. On a page with nothing
+private, the admin, mentioned, reads the reply whole. The model call is
+stubbed in-process."""
 
 from unittest.mock import patch
 
@@ -112,6 +114,11 @@ class OrganizationDetailAskFlowTests(LiveServerTestCase):
             self.assertEqual(body["visibility"], "partial")
             self.assertIn("Alice Admin", body["messages"][0]["content"])
             self.assertIn("isn't shared with you", body["messages"][1]["content"])
+            # Deliberately, she still sees where it was asked: company names
+            # are visible across the organisation, so the user turn keeps
+            # its label and the conversation its origin.
+            self.assertEqual(body["messages"][0]["context"]["label"], "Pizza Hut · EMEA")
+            self.assertEqual(body["origin"], origin)
 
             # 6. Dana cannot ask about Carl's organisation at all.
             calls = completion.call_count
@@ -125,3 +132,24 @@ class OrganizationDetailAskFlowTests(LiveServerTestCase):
                 body, {"context": {"organization": ["Not an organisation you can open."]}}
             )
             self.assertEqual(completion.call_count, calls)
+
+            # 7. On a page with nothing only Carl may read, Alice, mentioned,
+            #    reads the reply whole.
+            status, body = http_post(self.api("/customers/"), {"name": "Taco Co"}, token=carl)
+            self.assertEqual(status, 201, body)
+            taco = body["id"]
+            status, body = http_post(
+                self.api(f"/customers/{taco}/accounts/"), {"name": "LATAM"}, token=carl
+            )
+            self.assertEqual(status, 201, body)
+            status, body = http_post(
+                self.api("/copilot/messages/"),
+                {"content": "@Alice Admin, how is Taco Co doing?", "context": detail(taco)},
+                token=carl,
+            )
+            self.assertEqual(status, 200, body)
+            shared = body["id"]
+            status, body = http_get(self.api(f"/copilot/conversations/{shared}/"), token=admin)
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body["messages"][1]["content"], "Sam's exit is the risk.")
+            self.assertEqual(body["messages"][0]["context"]["label"], "Taco Co")
