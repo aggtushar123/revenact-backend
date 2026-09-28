@@ -20,15 +20,32 @@ and every record quoted (`records`), and the departments of the tickets
 counted (`tickets`).
 """
 
+from django.http import Http404
 from django.utils import timezone
 
+from services.customers.contact_history import DEPARTMENTS, history_querysets
 from services.customers.contact_list import contacts_summary, filtered_contacts
+from services.customers.contact_sentiment import (
+    KIND_WEIGHT,
+    interactions_for,
+    recency_weight,
+    score,
+)
+from services.customers.personal import ticket_snapshot
 from services.customers.scoping import visible_customers
+from services.organizations.story.items import clip
 
-from .contacts_context import LIST, filters_of, organisation_of, place_label
+from .contacts_context import (
+    FOCUS_SENTIMENT,
+    LIST,
+    filters_of,
+    organisation_of,
+    place_label,
+    visible_contact,
+)
 from .context import Grounding
 from .dashboard_grounding import dashboard_system_prompt
-from .grounded_records import account_ref, union_records
+from .grounded_records import account_ref, record_ref, union_records
 
 #: The most people the list digest quotes (spec §4.2).
 LIST_LIMIT = 50
@@ -134,8 +151,147 @@ def build_list_grounding(user, context):
     )
 
 
+#: The most of each kind (calls, emails, tickets) the person digest quotes.
+PERSON_LIMIT = 20
+KIND_NAMES = {"call": "Call", "email": "Email", "ticket": "Ticket"}
+
+
+def _reading(record):
+    """The words the profile uses (`analysis`: pending, not_analysable,
+    analysed); a sentiment only when analysed."""
+    analysis = record.analysis
+    if analysis == "pending":
+        return "not read yet"
+    if analysis == "not_analysable":
+        return "not enough to analyse"
+    return f"reading {record.sentiment}"
+
+
+def _day(value):
+    return value.date().isoformat() if hasattr(value, "hour") else value.isoformat()
+
+
+def _call_line(call):
+    text = f"{_day(call.occurred_at)} · Call · {call.title}"
+    if call.summary:
+        text += f": {clip(call.summary)}"
+    text += f" · {_reading(call)}"
+    if call.host_name:
+        text += f" · host {call.host_name}"
+    if call.duration_minutes:
+        text += f" · {call.duration_minutes} min"
+    return text
+
+
+def _email_line(email):
+    text = f"{_day(email.sent_at)} · Email · {email.subject}"
+    if email.body:
+        text += f": {clip(email.body)}"
+    return f"{text} · {_reading(email)}"
+
+
+def _ticket_line(ticket):
+    department = DEPARTMENTS.get(ticket.department) or "No department"
+    return (
+        f"{_day(ticket.opened_at)} · Ticket {ticket.ticket_number} · {ticket.title} · "
+        f"{ticket.get_status_display()} · {department} · {_reading(ticket)}"
+    )
+
+
+def _section(title, rows, total, line):
+    if total == 0:
+        return [f"{title}: none the asker can read."]
+    return [f"{title}: {total} (newest {len(rows)} below)", *(f"  - {line(r)}" for r in rows)]
+
+
+def _record_ref(kind, record):
+    if record.account_id:
+        return record_ref(kind, record.pk, customer_id=None, account_id=record.account_id)
+    return record_ref(kind, record.pk, customer_id=record.customer_id)
+
+
+def _why_lines(contact, readable, focus, now):
+    """The sentiment and, strictly, why: only readable records are weighed or
+    named; hidden ones are acknowledged, never counted."""
+    if contact.sentiment_source != "computed":
+        return [f"Sentiment: {contact.sentiment}, set by hand; no record decides it."]
+    lines = [f"Sentiment: {contact.sentiment}, computed from their calls, emails and tickets"]
+    evidence = interactions_for(contact)
+    mine = [row for row in evidence if (row["kind"], row["record"].pk) in readable]
+    if len(mine) < len(evidence):
+        lines.append("The stored sentiment also rests on records the asker cannot open.")
+    if focus != FOCUS_SENTIMENT:
+        return lines
+    lines.append("Why (only the records the asker can read; weight is kind × recency):")
+    if not mine:
+        lines.append("  None of the records behind it are ones the asker can read.")
+        return lines
+    for row in mine:
+        weight = KIND_WEIGHT[row["kind"]] * recency_weight(row["when"], now)
+        title = getattr(row["record"], "title", None) or getattr(row["record"], "subject", "")
+        lines.append(
+            f"  - {_day(row['when'])} · {KIND_NAMES[row['kind']]} · {title} · "
+            f"{row['sentiment']} · weight {weight:.2f}"
+        )
+    value, label = score(mine, now)
+    lines.append(f"  Weighted reading of these: {value:.2f} ({label})")
+    return lines
+
+
 def build_person_grounding(user, context, question, *, today=None):
-    raise NotImplementedError  # Task 4
+    # SOC2:AUTH-02 the person is re-read for the asker; one they can no longer
+    # open is a 404 (the send's serializer already 400s the common case)
+    contact = visible_contact(user, context["contact"])
+    if contact is None:
+        raise Http404
+    now = timezone.now()
+    visible_ids = set(visible_customers(user).values_list("pk", flat=True))
+    calls, emails, tickets = history_querysets(contact, user)
+    parents = ("customer", "account")
+    call_rows = list(calls.select_related(*parents).order_by("-occurred_at", "-pk")[:PERSON_LIMIT])
+    email_rows = list(emails.select_related(*parents).order_by("-sent_at", "-pk")[:PERSON_LIMIT])
+    ticket_rows = list(
+        tickets.select_related(*parents).order_by("-opened_at", "-pk")[:PERSON_LIMIT]
+    )
+    readable = (
+        {("call", pk) for pk in calls.values_list("pk", flat=True)}
+        | {("email", pk) for pk in emails.values_list("pk", flat=True)}
+        | {("ticket", pk) for pk in tickets.values_list("pk", flat=True)}
+    )
+    place = place_label(contact, visible_ids)
+    lines = [
+        f"Screen: Contacts › {contact.name} · {place} (one person's profile)",
+        f"Person: {contact.name} · {contact.get_role_display()} · {place} · "
+        f"status {contact.get_status_display().lower()} · {_contacted(contact)}",
+        *_why_lines(contact, readable, context.get("focus"), now),
+        *_section("Calls they were on", call_rows, calls.count(), _call_line),
+        *_section("Emails from them", email_rows, emails.count(), _email_line),
+        *_section("Tickets they raised", ticket_rows, tickets.count(), _ticket_line),
+    ]
+    organisation = organisation_of(contact, visible_ids)
+    # Every account any quoted record sits on, plus the contact's own — a
+    # shared reader must be able to open each one (`_reply_readable_by`),
+    # not only infer it from a record ref's own `company_id`.
+    account_ids = {
+        row.account_id for row in (*call_rows, *email_rows, *ticket_rows) if row.account_id
+    }
+    if contact.account_id:
+        account_ids.add(contact.account_id)
+    refs = [
+        *(_record_ref("call", r) for r in call_rows),
+        *(_record_ref("email", r) for r in email_rows),
+        *(_record_ref("ticket", r) for r in ticket_rows),
+        *(account_ref(pk) for pk in account_ids),
+    ]
+    return Grounding(
+        "\n".join(lines),
+        [],
+        contact.customer if contact.customer_id else contact.account,
+        customer_ids=[organisation.pk] if organisation else [],
+        pipeline=dict(NO_SNAPSHOT),
+        tickets=ticket_snapshot(tickets),
+        records=union_records(refs),
+    )
 
 
 def build_contacts_grounding(user, context, question, *, today=None):
