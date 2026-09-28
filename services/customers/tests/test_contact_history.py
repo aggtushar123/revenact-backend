@@ -302,3 +302,44 @@ class HistoryQueryCountTests(Fixture):
             self.assertEqual(len(body["calls"]), 6 * (batch + 1))
             self.assertEqual(len(body["emails"]), 6 * (batch + 1))
             self.assertEqual(len(body["tickets"]), 6 * (batch + 1))
+
+
+class HandCorrectionTests(Fixture):
+    """A person reading a call the model could not: their correction is a
+    reading, so the call is analysed and counts towards the people on it."""
+
+    def test_a_not_analysable_call_corrected_by_hand_reads_as_analysed(self):
+        call = self.call("Weekly sync")
+        mark_not_analysable(call)
+        self.client.force_authenticate(self.viewer)
+        response = self.client.patch(
+            f"/api/v1/interactions/call/{call.pk}/classification/",
+            {"category": "bug_report", "sentiment": "negative"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        call.refresh_from_db()
+        self.assertFalse(call.not_analysable)
+        row = self.client.get(self.url).data["calls"][0]
+        self.assertEqual((row["analysis"], row["sentiment"]), ("analysed", "negative"))
+        self.sam.refresh_from_db()
+        self.assertEqual(
+            (self.sam.sentiment, self.sam.sentiment_source, self.sam.sentiment_evidence["calls"]),
+            ("negative", "computed", 1),
+        )
+
+    def test_a_hand_reading_of_neutral_still_counts(self):
+        """Neutral with no tags is what marking left behind, but a person
+        saying so is a reading all the same."""
+        call = self.call("Weekly sync")
+        mark_not_analysable(call)
+        self.client.force_authenticate(self.viewer)
+        response = self.client.patch(
+            f"/api/v1/interactions/call/{call.pk}/classification/",
+            {"sentiment": "neutral"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        call.refresh_from_db()
+        self.assertEqual(call.analysis, "analysed")
+        self.assertIsNotNone(call.classification_corrected_at)
