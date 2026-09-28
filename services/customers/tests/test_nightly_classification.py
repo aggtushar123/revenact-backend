@@ -320,3 +320,23 @@ class NightlyCommandTests(TestCase):
         self.assertEqual((uma.sentiment_source, uma.sentiment_evidence["emails"]), ("computed", 1))
         self.assertEqual(uma.sentiment_evidence["tickets"], 1)
         self.assertEqual((stranger.sentiment_source, stranger.sentiment_evidence), ("manual", {}))
+
+    def test_a_record_deleted_mid_run_is_skipped(self):
+        """Deleted between reading the pending pairs and fetching the rows:
+        skipped, not a KeyError."""
+        from django.db.models.query import QuerySet
+
+        gone, kept = self.email(self.pizza, 1), self.email(self.pizza, 2)
+        original = QuerySet.in_bulk
+
+        def delete_first(queryset, *args, **kwargs):
+            Email.objects.filter(pk=gone.pk).delete()
+            return original(queryset, *args, **kwargs)
+
+        with (
+            patch.object(QuerySet, "in_bulk", delete_first),
+            patch(BATCH, side_effect=lambda batch, **_: answer(batch)) as batch,
+        ):
+            out = self.run_command()
+        self.assertEqual([r.pk for r in batch.call_args.args[0]], [kept.pk])
+        self.assertIn("classified 1 of 1", out)

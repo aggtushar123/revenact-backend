@@ -229,7 +229,8 @@ class Command(BaseCommand):
             if model is Call:
                 queryset = queryset.select_related("transcript")
             rows[model] = queryset.in_bulk(wanted)
-        return [rows[model][pk] for _when, _name, pk, model in keys]
+        # A record deleted since its pk was read is simply not there.
+        return [rows[model][pk] for _when, _name, pk, model in keys if pk in rows.get(model, {})]
 
     def _classify(self, organisation, rows, options, totals):
         """One tenant's records, in batches. False when its budget ran out."""

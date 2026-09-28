@@ -354,3 +354,28 @@ class HandCorrectionTests(Fixture):
         call.refresh_from_db()
         self.assertEqual(call.analysis, "analysed")
         self.assertIsNotNone(call.classification_corrected_at)
+
+    def test_a_failed_recompute_does_not_fail_the_saved_correction(self):
+        from unittest.mock import patch
+
+        from services.metrics.models import Feedback
+
+        call = self.call("Weekly sync")
+        mark_not_analysable(call)
+        self.client.force_authenticate(self.viewer)
+        with (
+            patch(
+                "services.customers.contact_sentiment.recompute_for_records",
+                side_effect=RuntimeError("boom"),
+            ),
+            self.assertLogs("services.metrics.feedback", level="WARNING"),
+        ):
+            response = self.client.patch(
+                f"/api/v1/interactions/call/{call.pk}/classification/",
+                {"sentiment": "negative"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        call.refresh_from_db()
+        self.assertEqual((call.analysis, call.sentiment), ("analysed", "negative"))
+        self.assertTrue(Feedback.objects.filter(subject_id=call.pk).exists())

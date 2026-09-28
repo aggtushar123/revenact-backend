@@ -520,7 +520,15 @@ class CallsAreReadFromTheirTitleAndSummary(Fixture):
     read per call, and its opening lines would land in an evidence snippet.
     A call marked not analysable said nothing, so it is no report either."""
 
-    def call(self, company, title, *, transcript=None, not_analysable=False):
+    def call(
+        self,
+        company,
+        title,
+        *,
+        transcript=None,
+        not_analysable=False,
+        summary="They cannot sign in with SSO.",
+    ):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         from services.customers.models import Attachment, Call
@@ -540,7 +548,7 @@ class CallsAreReadFromTheirTitleAndSummary(Fixture):
         return Call.objects.create(
             customer=company,
             title=title,
-            summary="" if not_analysable else "They cannot sign in with SSO.",
+            summary="" if not_analysable else summary,
             occurred_at=when,
             transcript=attachment,
             not_analysable=not_analysable,
@@ -554,15 +562,22 @@ class CallsAreReadFromTheirTitleAndSummary(Fixture):
         for company in self.companies[:3]:
             call = self.call(company, f"SSO outage {company.name}", transcript="Hi, how are you?")
             self.table[text_for(call)] = SSO
+        # No summary: the classifier would read this one's transcript, and
+        # detection still must not.
+        bare = self.call(
+            self.companies[3], "SSO outage again", transcript="Hi, how are you?", summary=""
+        )
+        self.table[text_for(bare)] = SSO
         with patch(
             "services.customers.files.read_transcript_text", wraps=read_transcript_text
         ) as spy:
             response = self.detect("SSO login failures")
         spy.assert_not_called()
         self.assertEqual(response.data["found"], 1, response.data)
-        snippets = list(AnomalyEvidence.objects.values_list("snippet", flat=True))
-        self.assertEqual(len(snippets), 3)
-        for snippet in snippets:
+        snippets = dict(AnomalyEvidence.objects.values_list("record_id", "snippet"))
+        self.assertEqual(len(snippets), 4)
+        self.assertEqual(snippets.pop(bare.pk), "SSO outage again")
+        for snippet in snippets.values():
             self.assertTrue(snippet.endswith(". They cannot sign in with SSO."), snippet)
             self.assertNotIn("how are you", snippet)
 

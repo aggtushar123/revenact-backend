@@ -6,12 +6,16 @@ cases the next prompt, taxonomy or rubric change should be read against, and
 a cheap answer to "how often is the model wrong, and about what".
 """
 
+import logging
+
 from django.utils import timezone
 
 from services.customers import classification, taxonomy
 from services.customers.models import Call, Email, Ticket
 
 from .models import Feedback
+
+logger = logging.getLogger(__name__)
 
 #: The three models that carry the AI taxonomy, by the name a URL uses.
 INTERACTION_MODELS = {"ticket": Ticket, "email": Email, "call": Call}
@@ -120,10 +124,19 @@ def correct_classification(organisation, record_, fields, *, made_by, note=""):
             *extra,
         ]
     )
-    # The people on it sound different now, as after any reading.
+    # The people on it sound different now, as after any reading. The
+    # correction is saved already; a failure here must not undo the request.
     from services.customers.contact_sentiment import recompute_for_records
 
-    recompute_for_records([record_])
+    try:
+        recompute_for_records([record_])
+    except Exception:  # noqa: BLE001 — the correction stands whatever happens here
+        logger.warning(
+            "recomputing the people on %s %s failed",
+            record_._meta.model_name,
+            record_.pk,
+            exc_info=True,
+        )
     label = getattr(record_, "title", None) or getattr(record_, "subject", "") or str(record_.pk)
     entry = record(
         organisation,
