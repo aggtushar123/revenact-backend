@@ -13,7 +13,8 @@ from rest_framework.test import APITestCase
 from core.models import AuditEvent
 from services.accounts.models import Organisation, User
 from services.customers.files import safe_name, validate_upload
-from services.customers.models import Account, Attachment, Call, Customer
+from services.customers.models import Account, Attachment, Call, Contact, Customer
+from services.customers.tests.test_views import blind_to_one_account
 
 PDF = b"%PDF-1.4\n%fake\n"
 
@@ -66,6 +67,18 @@ class Fixture(APITestCase):
             f"/api/v1/customers/{self.pizza.id}/files/",
             {"file": SimpleUploadedFile(name, content, content_type=content_type), **fields},
             format="multipart",
+        )
+
+    def attach(self, name, **fields):
+        """A stored file straight through the ORM, for the list tests."""
+        return Attachment.objects.create(
+            organisation=self.org,
+            file=SimpleUploadedFile(name, b"hello", content_type="text/plain"),
+            name=name,
+            content_type="text/plain",
+            size=5,
+            uploaded_by=self.carl,
+            **fields,
         )
 
 
@@ -166,7 +179,15 @@ class FilesTests(Fixture):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
         self.assertEqual(Attachment.objects.get().account, self.hut_uk)
-        self.assertEqual(len(self.client.get(f"/api/v1/customers/{self.pizza.id}/files/").data), 0)
+        self.assertEqual(
+            (response.data["account_id"], response.data["account_name"]),
+            (self.hut_uk.id, "Pizza Hut UK"),
+        )
+        # The organisation's own list rolls the account's file up, tagged.
+        listed = self.client.get(f"/api/v1/customers/{self.pizza.id}/files/").data
+        self.assertEqual(
+            [(r["name"], r["account_id"]) for r in listed], [("notes.txt", self.hut_uk.id)]
+        )
 
     def test_another_organisation_cannot_see_or_download(self):
         row = self.upload(self.carl).data
@@ -178,6 +199,86 @@ class FilesTests(Fixture):
         )
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get(row["download_url"]).status_code, 401)
+
+
+class FileRollupTests(Fixture):
+    """The organisation's Files list: its own files and those of every account
+    the viewer may open, each tagged with its account (customer_rollup_q)."""
+
+    def setUp(self):
+        super().setUp()
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.pizza)
+        self.url = f"/api/v1/customers/{self.pizza.id}/files/"
+
+    def test_rolls_up_the_accounts_the_viewer_may_open(self):
+        self.attach("org.txt", customer=self.pizza)
+        self.attach("seen.txt", account=self.seen)
+        self.attach("hidden.txt", account=self.hidden)
+        self.client.force_authenticate(self.viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = {r["name"]: (r["account_id"], r["account_name"]) for r in response.data}
+        self.assertEqual(rows, {"org.txt": (None, None), "seen.txt": (self.seen.id, "Seen")})
+
+    def test_a_hidden_accounts_file_stays_unreachable_by_id(self):
+        hidden = self.attach("hidden.txt", account=self.hidden)
+        self.client.force_authenticate(self.viewer)
+
+        self.assertEqual(self.client.get(f"/api/v1/files/{hidden.id}/").status_code, 404)
+        download = self.client.get(f"/api/v1/files/{hidden.id}/download/")
+        self.assertEqual(download.status_code, 404)
+
+    def test_someone_who_sees_everything_gets_every_account(self):
+        self.attach("org.txt", customer=self.pizza)
+        self.attach("seen.txt", account=self.seen)
+        self.attach("hidden.txt", account=self.hidden)
+        self.client.force_authenticate(self.admin)
+
+        names = {r["name"] for r in self.client.get(self.url).data}
+
+        self.assertEqual(names, {"org.txt", "seen.txt", "hidden.txt"})
+
+    def test_uploading_on_the_organisation_path_stays_organisation_level(self):
+        self.client.force_authenticate(self.viewer)
+
+        response = self.client.post(
+            self.url,
+            {
+                "file": SimpleUploadedFile("deck.txt", b"hello", content_type="text/plain"),
+                "account_id": self.seen.id,
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual((response.data["account_id"], response.data["account_name"]), (None, None))
+        attachment = Attachment.objects.get()
+        self.assertEqual((attachment.customer, attachment.account), (self.pizza, None))
+
+    def test_a_file_read_by_id_carries_its_account(self):
+        seen = self.attach("seen.txt", account=self.seen)
+        self.client.force_authenticate(self.viewer)
+
+        row = self.client.get(f"/api/v1/files/{seen.id}/").data
+
+        self.assertEqual((row["account_id"], row["account_name"]), (self.seen.id, "Seen"))
+
+    def test_the_query_count_does_not_grow_with_the_list(self):
+        self.client.force_authenticate(self.viewer)
+        # The first read resolves the caller's membership and org chart, which
+        # are memoised on the user; what is pinned is every read after it.
+        self.client.get(self.url)
+        for batch in range(2):
+            for i in range(3):
+                self.attach(f"org-{batch}-{i}.txt", customer=self.pizza)
+                self.attach(f"seen-{batch}-{i}.txt", account=self.seen)
+            # Two however long the list: the organisation, and the files with
+            # their uploader and account joined.
+            with self.assertNumQueries(2):
+                response = self.client.get(self.url)
+            self.assertEqual(len(response.data), 6 * (batch + 1))
 
 
 class CallsTests(Fixture):
@@ -276,3 +377,136 @@ class CallsTests(Fixture):
         self.assertEqual(
             self.client.get(f"/api/v1/customers/{self.pizza.id}/calls/").status_code, 404
         )
+
+
+class CallRollupTests(Fixture):
+    """The organisation's Calls list: its own calls and those of every account
+    the viewer may open, each tagged with its account (customer_rollup_q)."""
+
+    WHEN = datetime(2026, 9, 16, 10, 0, tzinfo=dt_timezone.utc)
+
+    def setUp(self):
+        super().setUp()
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.pizza)
+        self.url = f"/api/v1/customers/{self.pizza.id}/calls/"
+
+    def call(self, title, **parent):
+        return Call.objects.create(title=title, host_name="Sam", occurred_at=self.WHEN, **parent)
+
+    def test_rolls_up_the_accounts_the_viewer_may_open(self):
+        self.call("Org call", customer=self.pizza)
+        self.call("Seen call", account=self.seen)
+        self.call("Hidden call", account=self.hidden)
+        self.client.force_authenticate(self.viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = {r["title"]: (r["account_id"], r["account_name"]) for r in response.data}
+        self.assertEqual(rows, {"Org call": (None, None), "Seen call": (self.seen.id, "Seen")})
+
+    def test_someone_who_sees_everything_gets_every_account(self):
+        self.call("Org call", customer=self.pizza)
+        self.call("Seen call", account=self.seen)
+        self.call("Hidden call", account=self.hidden)
+        self.client.force_authenticate(self.admin)
+
+        titles = {r["title"] for r in self.client.get(self.url).data}
+
+        self.assertEqual(titles, {"Org call", "Seen call", "Hidden call"})
+
+    def test_logging_on_the_organisation_path_stays_organisation_level(self):
+        self.client.force_authenticate(self.viewer)
+
+        response = self.client.post(
+            self.url,
+            {
+                "title": "Check-in",
+                "occurred_at": self.WHEN.isoformat(),
+                "summary": "All fine.",
+                "account_id": self.seen.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual((response.data["account_id"], response.data["account_name"]), (None, None))
+        call = Call.objects.get()
+        self.assertEqual((call.customer, call.account), (self.pizza, None))
+
+    def test_an_accounts_call_and_its_transcript_carry_the_account(self):
+        self.client.force_authenticate(self.viewer)
+        with patch("services.customers.calls.get_completion", return_value="SSO by Q4."):
+            response = self.client.post(
+                f"/api/v1/customers/{self.pizza.id}/accounts/{self.seen.id}/calls/",
+                {
+                    "title": "QBR",
+                    "occurred_at": self.WHEN.isoformat(),
+                    "transcript": SimpleUploadedFile(
+                        "qbr.txt", b"We need SSO by Q4.", content_type="text/plain"
+                    ),
+                },
+                format="multipart",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(
+            (response.data["account_id"], response.data["account_name"]), (self.seen.id, "Seen")
+        )
+        transcript = response.data["transcript"]
+        self.assertEqual(
+            (transcript["account_id"], transcript["account_name"]), (self.seen.id, "Seen")
+        )
+        listed = self.client.get(self.url).data
+        self.assertEqual([(r["title"], r["account_id"]) for r in listed], [("QBR", self.seen.id)])
+
+    def test_the_query_count_does_not_grow_with_the_list(self):
+        self.client.force_authenticate(self.viewer)
+        # The first read resolves the caller's membership and org chart, which
+        # are memoised on the user; what is pinned is every read after it.
+        self.client.get(self.url)
+        for batch in range(2):
+            for i in range(3):
+                for parent in ({"customer": self.pizza}, {"account": self.seen}):
+                    transcript = self.attach(
+                        f"{batch}-{i}.txt", source=Attachment.Source.TRANSCRIPT, **parent
+                    )
+                    call = Call.objects.create(
+                        title=f"Call {batch}-{i}",
+                        host_name="Sam",
+                        occurred_at=self.WHEN,
+                        logged_by=self.carl,
+                        transcript=transcript,
+                        **parent,
+                    )
+                    call.participants.add(
+                        Contact.objects.create(
+                            name=f"Guest {call.id}",
+                            email=f"guest{call.id}@pizza.io",
+                            role=Contact.Role.OTHER,
+                            **parent,
+                        )
+                    )
+            # Three however long the list: the organisation, the calls with
+            # their account, recorder, logger and transcript joined, and every
+            # call's participants at once.
+            with self.assertNumQueries(3):
+                response = self.client.get(self.url)
+            self.assertEqual(len(response.data), 6 * (batch + 1))
+
+    def test_a_hidden_accounts_transcript_stays_unreachable_by_download(self):
+        transcript = self.attach(
+            "hidden.txt", source=Attachment.Source.TRANSCRIPT, account=self.hidden
+        )
+        Call.objects.create(
+            title="Hidden call",
+            host_name="Sam",
+            occurred_at=self.WHEN,
+            account=self.hidden,
+            transcript=transcript,
+        )
+        self.client.force_authenticate(self.viewer)
+
+        download = self.client.get(f"/api/v1/files/{transcript.id}/download/")
+
+        self.assertEqual(download.status_code, status.HTTP_404_NOT_FOUND)

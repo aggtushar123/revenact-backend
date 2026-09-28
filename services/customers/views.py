@@ -29,6 +29,7 @@ from .interactions import _parse_int
 from .models import (
     Account,
     Attachment,
+    Call,
     Canvas,
     Contact,
     Customer,
@@ -826,7 +827,12 @@ class AccountListCreateView(generics.ListCreateAPIView):
         return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
-        return with_pulse_inputs(self.get_customer().accounts.all())
+        # SOC2:AUTH-02 — the organisation's own account chips and its
+        # Details -> Accounts tab both read this list; an account the
+        # viewer isn't allowed to open must not appear here either, even
+        # though they may open the organisation itself.
+        customer = self.get_customer()
+        return with_pulse_inputs(visible_accounts(self.request.user).filter(customers=customer))
 
     def perform_create(self, serializer):
         # `customer_ids` (if the client sent it) already set whatever
@@ -1582,13 +1588,12 @@ class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
     Contacts UIs (standalone list, Organization Details, standalone
     Account page) only ever needs the Contact's own id, never its
     parent's, so there's no reason to make the caller thread a
-    customer_id/account_id it may not even have on hand (the
-    standalone /contacts/list page's own rows don't carry an
-    account_id, only companies/account_name for display).
+    customer_id/account_id it may not even have on hand.
 
     PATCH can't move a Contact between parents — `customer`/`account`
-    aren't in ContactSerializer's own `fields` list at all, so a PATCH
-    body naming either is silently ignored rather than erroring."""
+    aren't in ContactSerializer's own `fields` list and `account_id` is
+    read-only, so a PATCH body naming any of them is silently ignored
+    rather than erroring."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
@@ -1985,6 +1990,13 @@ class SurveyListView(generics.ListCreateAPIView):
     rollup page needs every record to compute real totals from, not
     one page of them.
 
+    `?customer=<id>` narrows the list to one organisation: its own
+    surveys and those on its accounts the caller may open
+    (customer_rollup_q, the organisation page's rule). Powers the
+    Surveys page's organisation filter. Blank means no filter; an id
+    the caller cannot open, or one that is not an id at all, reads as
+    no surveys — a 404 or a 400 would confirm the organisation exists.
+
     POST takes a `customer_id` or an `account_id` in the request body
     (neither is a real serializer field — `perform_create` below reads
     whichever one was sent directly off the raw request) and creates
@@ -1998,13 +2010,25 @@ class SurveyListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        # `.distinct()` — same fan-out reasoning as ContactListView's own.
-        return (
-            Survey.objects.filter(visible_children_q(self.request.user))
-            .select_related("customer", "account")
-            .prefetch_related("account__customers")
-            .distinct()
-        )
+        user = self.request.user
+        raw = self.request.query_params.get("customer", "").strip()
+        if raw:
+            rows = self._one_organisation(user, raw)
+        else:
+            # `.distinct()` — same fan-out reasoning as ContactListView's own.
+            rows = Survey.objects.filter(visible_children_q(user)).distinct()
+        return rows.select_related("customer", "account").prefetch_related("account__customers")
+
+    @staticmethod
+    def _one_organisation(user, raw):
+        customer_id = _parse_int(raw)
+        if customer_id is None:
+            return Survey.objects.none()
+        customer = visible_customers(user).filter(pk=customer_id).first()
+        if customer is None:
+            return Survey.objects.none()
+        # SOC2:AUTH-02 an account's survey follows its own account's visibility
+        return Survey.objects.filter(customer_rollup_q(user, customer))
 
     def perform_create(self, serializer):
         account_id = self.request.data.get("account_id")
@@ -2753,7 +2777,12 @@ def _organisation_of(customer=None, account=None):
 class _FileListView(generics.ListCreateAPIView):
     """List the files on one company, and upload one (multipart: `file`,
     optional `description`). Anyone who may open the company may read and
-    add; the type list, size cap and name sanitising live in files.py."""
+    add; the type list, size cap and name sanitising live in files.py.
+
+    On an organisation the list rolls up its accounts' files too, under
+    customer_rollup_q (only accounts the caller may open), each tagged
+    with `account_id`/`account_name`. An upload there is always
+    organisation-level: the parent comes from the URL, never the body."""
 
     serializer_class = AttachmentSerializer
     permission_classes = [IsAuthenticated]
@@ -2765,8 +2794,12 @@ class _FileListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer, account = self._parent()
-        parent = customer if customer is not None else account
-        return parent.attachments.select_related("uploaded_by")
+        if customer is not None:
+            # SOC2:AUTH-02 an account's file follows its own account's visibility
+            rows = Attachment.objects.filter(customer_rollup_q(self.request.user, customer))
+        else:
+            rows = account.attachments.all()
+        return rows.select_related("uploaded_by", "account")
 
     def create(self, request, *args, **kwargs):
         from core import audit
@@ -2822,7 +2855,9 @@ class AccountFileListView(_FileListView):
 def _visible_attachment(request, pk):
     # SOC2:AUTH-02 a file is reachable only through a company the caller may open
     return get_object_or_404(
-        Attachment.objects.filter(visible_children_q(request.user)).select_related("uploaded_by"),
+        Attachment.objects.filter(visible_children_q(request.user)).select_related(
+            "uploaded_by", "account"
+        ),
         pk=pk,
     )
 
@@ -2872,7 +2907,12 @@ class FileDownloadView(views.APIView):
 
 class _CallListView(generics.ListCreateAPIView):
     """List the calls on one company, and log one. JSON or multipart; a
-    multipart body may carry a `transcript` file (.txt/.vtt/.srt/.md)."""
+    multipart body may carry a `transcript` file (.txt/.vtt/.srt/.md).
+
+    On an organisation the list rolls up its accounts' calls too, under
+    customer_rollup_q (only accounts the caller may open), each tagged
+    with `account_id`/`account_name`. A call logged there is always
+    organisation-level: the parent comes from the URL, never the body."""
 
     serializer_class = CallSerializer
     permission_classes = [IsAuthenticated]
@@ -2884,8 +2924,14 @@ class _CallListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer, account = self._parent()
-        parent = customer if customer is not None else account
-        return parent.calls.select_related("connector", "logged_by", "transcript__uploaded_by")
+        if customer is not None:
+            # SOC2:AUTH-02 an account's call follows its own account's visibility
+            rows = Call.objects.filter(customer_rollup_q(self.request.user, customer))
+        else:
+            rows = account.calls.all()
+        return rows.select_related(
+            "account", "connector", "logged_by", "transcript__uploaded_by", "transcript__account"
+        ).prefetch_related("participants")
 
     def perform_create(self, serializer):
         from core import audit
