@@ -44,7 +44,9 @@ def organisation_id_of(contact):
     account's first linked organisation's (an account never spans two)."""
     if contact.customer_id:
         return contact.customer.organisation_id
-    return contact.account.customers.values_list("organisation_id", flat=True).first()
+    # Through `.all()`, so a prefetch of `account__customers` is used.
+    customers = sorted(contact.account.customers.all(), key=lambda customer: customer.pk)
+    return customers[0].organisation_id if customers else None
 
 
 def in_organisation_q(organisation_id):
@@ -174,22 +176,55 @@ def recompute(contact, now=None):
 
 
 def contacts_for_records(records):
-    """The contacts whose sentiment these records bear on."""
-    ids = set()
-    addresses = set()
+    """The contacts whose sentiment these records bear on: the people on
+    the calls, and the senders of the emails and tickets, matched by address
+    inside each record's own tenant only. A fixed number of queries however
+    many records there are."""
+    from .models import Account, Customer
+
+    call_ids = set()
+    by_parent = []
     for record in records:
         name = record._meta.model_name
         if name == "call":
-            ids.update(record.participants.values_list("id", flat=True))
-        elif name == "email" and record.from_address:
-            addresses.add(record.from_address.lower())
-        elif name == "ticket" and record.requester_email:
-            addresses.add(record.requester_email.lower())
-    query = Q(pk__in=ids)
-    if addresses:
-        query |= Q(email__in=addresses)
+            call_ids.add(record.pk)
+            continue
+        address = record.from_address if name == "email" else record.requester_email
+        if address:
+            by_parent.append((record.customer_id, record.account_id, address.lower()))
+
+    # Each record's tenant, by its customer or its account's first customer
+    # (an account never spans two tenants).
+    customer_ids = {c for c, _a, _addr in by_parent if c}
+    account_ids = {a for c, a, _addr in by_parent if not c and a}
+    tenant_of_customer = dict(
+        Customer.objects.filter(pk__in=customer_ids).values_list("pk", "organisation_id")
+    )
+    tenant_of_account = {}
+    links = Account.customers.through.objects.filter(account_id__in=account_ids)
+    for account_id, organisation_id in links.order_by("customer_id").values_list(
+        "account_id", "customer__organisation_id"
+    ):
+        tenant_of_account.setdefault(account_id, organisation_id)
+    addresses = {}
+    for customer_id, account_id, address in by_parent:
+        tenant = (
+            tenant_of_customer.get(customer_id)
+            if customer_id
+            else tenant_of_account.get(account_id)
+        )
+        if tenant is not None:
+            addresses.setdefault(tenant, set()).add(address)
+
+    query = Q(calls__in=call_ids) if call_ids else Q()
+    for tenant, emails in addresses.items():
+        query |= Q(email__in=emails) & in_organisation_q(tenant)
+    if not query:
+        return Contact.objects.none()
     return (
-        Contact.objects.filter(query).distinct() if (ids or addresses) else Contact.objects.none()
+        Contact.objects.filter(pk__in=Contact.objects.filter(query).values("pk"))
+        .select_related("customer", "account")
+        .prefetch_related("account__customers")
     )
 
 
@@ -206,12 +241,16 @@ def recompute_all(organisation=None):
     contacts = Contact.objects.all()
     if organisation is not None:
         contacts = contacts.filter(
-            Q(customer__organisation=organisation)
-            | Q(account__customers__organisation=organisation)
-        ).distinct()
+            pk__in=Contact.objects.filter(
+                Q(customer__organisation=organisation)
+                | Q(account__customers__organisation=organisation)
+            ).values("pk")
+        )
+    # Each contact's tenant is read off these, not one query per contact.
+    contacts = contacts.select_related("customer", "account").prefetch_related("account__customers")
     now = timezone.now()
     changed = 0
-    for contact in contacts.iterator():
+    for contact in contacts.order_by("pk").iterator(chunk_size=500):
         if recompute(contact, now) is not None:
             changed += 1
     return changed

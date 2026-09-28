@@ -225,6 +225,34 @@ class CreatePathTests(CallFixture):
                     ("analysed", "positive"),
                 )
 
+    def test_the_people_on_a_new_call_are_recomputed_once(self):
+        """Read, marked or left pending, each participant is recomputed
+        exactly once, and being on the call is contact either way."""
+        from services.customers import contact_sentiment
+
+        cases = {
+            "read": ({"summary": "Going well."}, {"side_effect": lambda b, **_: placed(b[0])}),
+            "marked": ({"title": "Weekly sync"}, {}),
+            "pending": ({"summary": "Going well."}, {"side_effect": CopilotNotConfigured("x")}),
+        }
+        for name, (extra, reply) in cases.items():
+            with self.subTest(name):
+                sam = Contact.objects.create(
+                    customer=self.pizza, name=f"Sam {name}", email=f"sam.{name}@pizza.io"
+                )
+                body = {"title": "QBR", "occurred_at": WHEN.isoformat(), **extra}
+                with (
+                    patch(BATCH, **reply),
+                    patch.object(
+                        contact_sentiment, "recompute", wraps=contact_sentiment.recompute
+                    ) as recompute,
+                ):
+                    response = self.post("/calls/", {**body, "participant_ids": [sam.id]})
+                self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+                self.assertEqual([c.args[0].pk for c in recompute.call_args_list].count(sam.pk), 1)
+                sam.refresh_from_db()
+                self.assertEqual(sam.last_contacted_at, WHEN)
+
     def test_the_summary_written_from_a_pasted_transcript_is_what_the_classifier_reads(self):
         with (
             patch("services.customers.calls.get_completion", return_value="A summary."),

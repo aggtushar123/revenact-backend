@@ -148,9 +148,10 @@ def classify_call(call, *, transcript_text=None, user=None):
     record and on its participants before anyone looks.
 
     A call with nothing to read is marked not analysable without a model
-    call. Anything that goes wrong is logged and swallowed: classifying is
-    never a reason for a call not to be saved, and `classify_interactions`
-    picks up whatever was left pending.
+    call. Either way the people on it are recomputed exactly once. Anything
+    that goes wrong is logged and swallowed: classifying is never a reason
+    for a call not to be saved, and `classify_interactions` picks up
+    whatever was left pending.
 
     Not wrapped in one outer transaction: `classify_records` makes a real,
     paid model call, and `credits.charge` holds a row lock on the
@@ -179,3 +180,11 @@ def classify_call(call, *, transcript_text=None, user=None):
         )
     except Exception:  # noqa: BLE001 — the call is saved whatever happens here
         logger.warning("classifying call %s failed", call.pk, exc_info=True)
+    if call.ai_classified_at is None:
+        # Not read (no model, no budget, a failed batch): being on the call
+        # is still contact, so the people on it are recomputed here, once.
+        # A read or marked call already recomputed them.
+        try:
+            recompute_for_records([call])
+        except Exception:  # noqa: BLE001 — as above
+            logger.warning("recomputing the people on call %s failed", call.pk, exc_info=True)

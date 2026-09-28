@@ -3088,7 +3088,7 @@ class _CallListView(generics.ListCreateAPIView):
         # Who was on it: the contacts chosen, plus anyone from this company
         # the transcript names. Only this company's own contacts count, and
         # only those the logger may see.
-        from .contact_sentiment import match_participants, recompute
+        from .contact_sentiment import match_participants
 
         matched = match_participants(customer, account, transcript_text, viewer=request.user)
         own = {
@@ -3112,10 +3112,9 @@ class _CallListView(generics.ListCreateAPIView):
         )
         # Sentiment now: the pulse counts only classified conversations, and
         # the people on the call sound different once it is read. The one
-        # helper every path that creates a call runs; it never raises.
+        # helper every path that creates a call runs; it never raises, and
+        # it recomputes the participants once, read or not.
         classify_call(call, transcript_text=transcript_text, user=request.user)
-        for contact in participants.values():
-            recompute(contact)
 
 
 class CustomerCallListView(_CallListView):

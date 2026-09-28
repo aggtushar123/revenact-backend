@@ -45,10 +45,12 @@ Usage:
     python manage.py classify_interactions --only email --reclassify
 """
 
+from datetime import datetime, time
 from itertools import zip_longest
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
+from django.utils import timezone
 
 from services.accounts.models import Organisation, User
 from services.copilot.anthropic_client import (
@@ -56,6 +58,7 @@ from services.copilot.anthropic_client import (
     CopilotNotConfigured,
     CopilotRequestFailed,
 )
+from services.customers import classification
 from services.customers.classification import (
     BATCH_SIZE,
     apply_classification,
@@ -67,6 +70,8 @@ from services.customers.models import Call, Email, Ticket
 
 #: The three interaction types the dashboard counts, by the name `--only` takes.
 MODELS = {"email": Email, "call": Call, "ticket": Ticket}
+#: The field each is dated by: when it happened, not when it was stored.
+DATED_BY = {Email: "sent_at", Call: "occurred_at", Ticket: "opened_at"}
 
 
 def _org_filter(model, organisation):
@@ -122,14 +127,19 @@ class Command(BaseCommand):
             if user.organisation is None:
                 raise CommandError(f"{user.email} has no organisation.")
             organisation = user.organisation
+            if organisation.status != Organisation.Status.ACTIVE:
+                raise CommandError(f"{organisation.name} is {organisation.status}, not active.")
 
         limit = options["limit"]
         if limit is not None and limit < 1:
             raise CommandError("--limit must be at least 1.")
 
         names = options["only"] or sorted(MODELS)
+        # A suspended, archived or not-yet-active tenant is not spent on.
         organisations = (
-            [organisation] if organisation is not None else Organisation.objects.order_by("pk")
+            [organisation]
+            if organisation is not None
+            else Organisation.objects.filter(status=Organisation.Status.ACTIVE).order_by("pk")
         )
         # Each tenant's work is gathered, batched and metered on its own: a
         # batch never mixes tenants, so every model call is charged to the
@@ -143,14 +153,24 @@ class Command(BaseCommand):
             return
 
         if options["dry_run"]:
-            batches = sum(-(-len(rows) // BATCH_SIZE) for _org, rows in _by_org(pending))
+            # A call with nothing to read costs nothing: it is marked, not sent.
+            free = 0
+            batches = 0
             by_type = {}
-            for _org, record in pending:
-                by_type[record._meta.model_name] = by_type.get(record._meta.model_name, 0) + 1
-            breakdown = ", ".join(f"{count} {name}(s)" for name, count in sorted(by_type.items()))
+            for _org, rows in _by_org(pending):
+                marked, to_read = _split_free(rows)
+                free += len(marked)
+                batches += -(-len(to_read) // BATCH_SIZE)
+                for record in to_read:
+                    name = record._meta.model_name
+                    by_type[name] = by_type.get(name, 0) + 1
+            count = sum(by_type.values())
+            breakdown = ", ".join(f"{n} {name}(s)" for name, n in sorted(by_type.items()))
             self.stdout.write(
-                f"Would classify {len(pending)} record(s) — {breakdown} — "
-                f"in {batches} model call(s). Nothing written."
+                f"Would classify {count} record(s)"
+                + (f" — {breakdown} —" if breakdown else "")
+                + f" in {batches} model call(s); "
+                f"{free} call(s) would be marked not analysable without one. Nothing written."
             )
             return
 
@@ -177,7 +197,13 @@ class Command(BaseCommand):
             )
 
     def _pending(self, organisation, names, options, limit):
-        rows = []
+        """One tenant's pending records, oldest first across the kinds: on a
+        capped run, the records that have waited longest are the ones to
+        spend the budget on. Only `(pk, date)` pairs are read per kind (at
+        most `limit` of each); the full rows are fetched for the records
+        chosen, so a capped run never holds three kinds' worth of rows."""
+        keys = []
+        querysets = {}
         for name in names:
             model = MODELS[name]
             queryset = model.objects.filter(_org_filter(model, organisation)).distinct()
@@ -188,28 +214,35 @@ class Command(BaseCommand):
                 # is for a changed taxonomy or a better prompt, and neither is
                 # a reason to put the model's answer back over a human's.
                 queryset = queryset.filter(classification_corrected_at__isnull=True)
+            querysets[model] = queryset
+            dated = queryset.order_by(DATED_BY[model], "pk").values_list("pk", DATED_BY[model])
+            for pk, when in dated[:limit] if limit is not None else dated:
+                keys.append((_aware(when), model._meta.model_name, pk, model))
+        keys.sort(key=lambda key: key[:3])
+        if limit is not None:
+            keys = keys[:limit]
+        rows = {}
+        for model, queryset in querysets.items():
+            wanted = [pk for _when, _name, pk, of in keys if of is model]
+            if not wanted:
+                continue
             if model is Call:
                 queryset = queryset.select_related("transcript")
-            # Oldest first: on a capped run, the records that have been waiting
-            # longest are the ones to spend the budget on.
-            queryset = queryset.order_by("pk")
-            rows.extend(queryset[:limit] if limit is not None else queryset)
-        return rows
+            rows[model] = queryset.in_bulk(wanted)
+        return [rows[model][pk] for _when, _name, pk, model in keys]
 
     def _classify(self, organisation, rows, options, totals):
         """One tenant's records, in batches. False when its budget ran out."""
-        from services.customers.calls import has_something_to_read
         from services.customers.contact_sentiment import recompute_for_records
 
-        # A call with nothing to read is marked without paying for a look.
-        to_read = []
-        for record in rows:
-            if record._meta.model_name == "call" and not has_something_to_read(record):
-                mark_not_analysable(record)
-                totals["not_analysable"] += 1
-                recompute_for_records([record])
-            else:
-                to_read.append(record)
+        # A call with nothing to read is marked without paying for a look,
+        # and the people on them are recomputed once for all of them.
+        marked, to_read = _split_free(rows)
+        for record in marked:
+            mark_not_analysable(record)
+        totals["not_analysable"] += len(marked)
+        if marked:
+            recompute_for_records(marked)
 
         for start in range(0, len(to_read), BATCH_SIZE):
             batch = to_read[start : start + BATCH_SIZE]
@@ -231,23 +264,11 @@ class Command(BaseCommand):
 
             touched = []
             for record in batch:
-                fields = results.get(f"{record._meta.model_name}:{record.pk}")
-                if fields is not None:
+                verdict, fields = classification.reading_of(record, results, len(batch))
+                if verdict == classification.PLACED:
                     apply_classification(record, fields)
                     totals["classified"] += 1
-                elif record._meta.model_name == "call" and (results or len(batch) == 1):
-                    # Reaching here at all means the reply parsed (a malformed
-                    # one already sent the batch to `except ValueError` above,
-                    # leaving it pending). A lone call in the batch has nobody
-                    # else the empty reply could be about, so it is a genuine
-                    # decline — marked now, not retried (and re-billed) every
-                    # night. In a batch of more than one, `results` must be
-                    # non-empty too: since this record isn't the match above, a
-                    # non-empty `results` placed some OTHER record, proving the
-                    # model engaged with the batch rather than one poisoned
-                    # transcript emptying the whole reply — which proves
-                    # nothing about any particular record, so nobody in a
-                    # multi-record batch is marked off the back of it.
+                elif verdict == classification.DECLINED:
                     mark_not_analysable(record)
                     totals["not_analysable"] += 1
                 elif record._meta.model_name == "call":
@@ -269,6 +290,27 @@ class Command(BaseCommand):
             # The people on these calls, emails and tickets sound different now.
             recompute_for_records(touched)
         return True
+
+
+def _aware(when):
+    """A ticket is dated by day, the rest to the second: one timeline."""
+    if not isinstance(when, datetime):
+        when = timezone.make_aware(datetime.combine(when, time.min))
+    return when
+
+
+def _split_free(rows):
+    """(calls with nothing to read, everything else): the first are marked
+    not analysable without a model call."""
+    from services.customers.calls import has_something_to_read
+
+    marked, to_read = [], []
+    for record in rows:
+        if record._meta.model_name == "call" and not has_something_to_read(record):
+            marked.append(record)
+        else:
+            to_read.append(record)
+    return marked, to_read
 
 
 def _round_robin(queues, limit):

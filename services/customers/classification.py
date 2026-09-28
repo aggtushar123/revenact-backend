@@ -379,6 +379,32 @@ def mark_not_analysable(call):
     )
 
 
+PLACED, DECLINED, UNPLACED = "placed", "declined", "unplaced"
+
+
+def reading_of(record, results, batch_size):
+    """What one batch's reply says about one record: `(PLACED, fields)`,
+    `(DECLINED, None)` or `(UNPLACED, None)`. The one rule both
+    `classify_records` and `classify_interactions` read a reply by.
+
+    A placement with no fields is no placement. An unplaced call is
+    declined only when the reply is about it: reaching here at all means
+    the reply parsed (a malformed one sends the batch to the caller's
+    `except ValueError`, leaving it pending). A lone call has nobody else
+    an empty reply could be about, so it is a genuine decline — marked, not
+    retried (and re-billed) every night. In a batch of more than one,
+    `results` must be non-empty: it placed some OTHER record, proving the
+    model engaged with the batch rather than one poisoned transcript
+    emptying the whole reply, which proves nothing about any particular
+    record. Emails and tickets are never declined, only left unplaced."""
+    fields = results.get(_ref_for(record))
+    if fields:
+        return PLACED, fields
+    if record._meta.model_name == "call" and (results or batch_size == 1):
+        return DECLINED, None
+    return UNPLACED, None
+
+
 def classify_records(records, *, organisation=None, user=None):
     """Classify these records now, in batches — the same work
     `classify_interactions` does on a schedule, for a caller that has just
@@ -409,24 +435,12 @@ def classify_records(records, *, organisation=None, user=None):
             continue
         done = []
         for record in batch:
-            fields = results.get(f"{record._meta.model_name}:{record.pk}")
-            if fields:
+            verdict, fields = reading_of(record, results, len(batch))
+            if verdict == PLACED:
                 apply_classification(record, fields)
                 classified += 1
                 done.append(record)
-            elif record._meta.model_name == "call" and (results or len(batch) == 1):
-                # Reaching here at all means the reply parsed (a malformed
-                # one already sent the batch to `except ValueError` above,
-                # leaving it pending). A lone call in the batch has nobody
-                # else the empty reply could be about, so it is a genuine
-                # decline — marked now, not retried (and re-billed) every
-                # night. In a batch of more than one, `results` must be
-                # non-empty too: since this record isn't the match above, a
-                # non-empty `results` placed some OTHER record, proving the
-                # model engaged with the batch rather than one poisoned
-                # transcript emptying the whole reply — which proves
-                # nothing about any particular record, so nobody in a
-                # multi-record batch is marked off the back of it.
+            elif verdict == DECLINED:
                 mark_not_analysable(record)
                 done.append(record)
         # The people on these calls, emails and tickets sound different now.
