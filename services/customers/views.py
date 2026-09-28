@@ -827,7 +827,12 @@ class AccountListCreateView(generics.ListCreateAPIView):
         return get_visible_customer(self.request, self.kwargs["customer_id"])
 
     def get_queryset(self):
-        return with_pulse_inputs(self.get_customer().accounts.all())
+        # SOC2:AUTH-02 — the organisation's own account chips and its
+        # Details -> Accounts tab both read this list; an account the
+        # viewer isn't allowed to open must not appear here either, even
+        # though they may open the organisation itself.
+        customer = self.get_customer()
+        return with_pulse_inputs(visible_accounts(self.request.user).filter(customers=customer))
 
     def perform_create(self, serializer):
         # `customer_ids` (if the client sent it) already set whatever

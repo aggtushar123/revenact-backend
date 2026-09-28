@@ -949,6 +949,29 @@ class AccountListCreateTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_hides_an_account_the_viewer_cannot_open(self):
+        # SOC2:AUTH-02 — the organisation page's account chips and its
+        # Details -> Accounts tab both read this list; a viewer who
+        # cannot open one of the organisation's accounts must not even
+        # see its name here.
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = {row["name"] for row in response.data}
+        self.assertEqual(names, {"Seen"})
+
+    def test_admin_still_sees_every_account(self):
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        names = {row["name"] for row in response.data}
+        self.assertEqual(names, {"Seen", "Hidden"})
+
 
 class AccountDetailTests(APITestCase):
     def setUp(self):

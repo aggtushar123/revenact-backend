@@ -1106,13 +1106,18 @@ override and the fallback.
 
 ### `GET /api/v1/customers/<customer_id>/accounts/`, `POST /api/v1/customers/<customer_id>/accounts/`
 
-Auth: `IsAuthenticated`. GET: every `Account` under one `Customer`,
-scoped to the caller's own organisation. **`404`, not `403` or an empty
-list,** for a `customer_id` outside the caller's organisation or that
-doesn't exist — checked once via `get_object_or_404` on the parent
-`Customer` before touching its accounts, so a real customer in another
-org 404s the same way a nonexistent id does (a caller can't otherwise
-tell "no accounts" apart from "not your customer").
+Auth: `IsAuthenticated`. GET: every `Account` under one `Customer` that
+the caller may open (`visible_accounts`, SOC2:AUTH-02) — not every
+`Account` linked to it. Being able to open the organisation doesn't
+imply being able to open all of its accounts: an account the viewer
+can't see is left out of this list entirely (no chip, no row), same
+object-level rule `AccountDetailView` already applies. **`404`, not
+`403` or an empty list,** for a `customer_id` outside the caller's
+organisation or that doesn't exist — checked once via
+`get_object_or_404` on the parent `Customer` before touching its
+accounts, so a real customer in another org 404s the same way a
+nonexistent id does (a caller can't otherwise tell "no accounts" apart
+from "not your customer").
 
 **Response `200`** (GET) — a **plain array** (no pagination envelope; an
 individual customer's account list is expected to stay small), each
