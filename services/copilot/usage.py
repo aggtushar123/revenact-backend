@@ -17,6 +17,7 @@ PURPOSES = {
     "copilot": "Copilot chat",
     "dashboard": "Ask Revenact on the Dashboard",
     "organizations": "Ask Revenact on Organizations",
+    "contacts": "Ask Revenact on Contacts",
     "headlines": "Account headlines",
     "classification": "Interaction classifier",
     "brief": "Management brief",

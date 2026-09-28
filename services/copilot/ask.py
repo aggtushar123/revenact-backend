@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 from rest_framework import serializers
 
+from .contacts_context import ContactsContextSerializer
+from .contacts_grounding import build_contacts_grounding, contacts_system_prompt
 from .dashboard_context import DashboardContextSerializer
 from .dashboard_grounding import build_dashboard_grounding, dashboard_system_prompt
 from .organizations_context import OrganizationsContextSerializer
@@ -47,6 +49,12 @@ SURFACES = {
         ground=build_organizations_grounding,
         system_prompt=organizations_system_prompt,
         purpose="organizations",
+    ),
+    "contacts": Surface(
+        serializer=ContactsContextSerializer,
+        ground=build_contacts_grounding,
+        system_prompt=contacts_system_prompt,
+        purpose="contacts",
     ),
 }
 

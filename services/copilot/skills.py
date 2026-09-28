@@ -105,6 +105,31 @@ SKILLS = (
         "/organizations",
     ),
     Skill(
+        "contacts",
+        "Ask Revenact on Contacts",
+        "Answers a question about the people on the Contacts page, or one person, from the "
+        "same list or profile and the records behind it.",
+        (
+            "On the list: the asker's filtered contacts recomputed with the page's code, the "
+            "summary line and at most 50 people",
+            "On one person: their profile, their sentiment, and their calls, emails and tickets "
+            "(the newest 20 of each) under each record's own rule",
+            "Why a sentiment: only the records the asker may read, weighted by kind and recency",
+            "The conversation so far",
+        ),
+        ("Answer in prose",),
+        (
+            "Change a record",
+            "Send anything to a customer",
+            "See people or records outside the asker's visibility",
+            "Count or describe records the asker cannot open",
+            "Take figures from the client",
+        ),
+        "A person asks from the Contacts page's Ask rail",
+        "Any signed-in user, while the organisation's AI agent is enabled",
+        "/contacts",
+    ),
+    Skill(
         "headlines",
         "Account headlines",
         "Summarises one account's last three months of real activity into headlines.",
