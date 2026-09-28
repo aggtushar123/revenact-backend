@@ -414,15 +414,19 @@ def classify_records(records, *, organisation=None, user=None):
                 apply_classification(record, fields)
                 classified += 1
                 done.append(record)
-            elif results and record._meta.model_name == "call":
-                # `results` is non-empty and, since this record isn't the
-                # match above, it placed some OTHER record in the batch:
-                # proof the model engaged with the batch and specifically
-                # passed on this one, not just "this batch failed". An
-                # empty reply (one poisoned transcript can produce one for
-                # the whole batch) proves nothing about any record in it,
-                # so nobody in the batch is marked off the back of it —
-                # left pending for a retry instead.
+            elif record._meta.model_name == "call" and (results or len(batch) == 1):
+                # Reaching here at all means the reply parsed (a malformed
+                # one already sent the batch to `except ValueError` above,
+                # leaving it pending). A lone call in the batch has nobody
+                # else the empty reply could be about, so it is a genuine
+                # decline — marked now, not retried (and re-billed) every
+                # night. In a batch of more than one, `results` must be
+                # non-empty too: since this record isn't the match above, a
+                # non-empty `results` placed some OTHER record, proving the
+                # model engaged with the batch rather than one poisoned
+                # transcript emptying the whole reply — which proves
+                # nothing about any particular record, so nobody in a
+                # multi-record batch is marked off the back of it.
                 mark_not_analysable(record)
                 done.append(record)
         # The people on these calls, emails and tickets sound different now.

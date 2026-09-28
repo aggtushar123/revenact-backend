@@ -40,19 +40,21 @@ def _fake_response(text):
 
 
 class DeclinedTests(CallFixture):
-    """`classify_records` marks a call `not_analysable` only when the reply
-    proves the model engaged with the batch — it answered for at least one
-    other record in it. An empty or malformed reply says nothing about any
-    particular record, so every call in the batch is left pending for a
-    retry rather than marked off the back of a reply that might just mean
-    "this batch failed", not "this call has nothing to judge"."""
+    """A well-formed but empty reply for a lone call is a genuine decline —
+    there was nobody else in the batch it could be lying about — so it is
+    marked `not_analysable` rather than retried (and re-billed) every night.
+    In a batch of more than one, the same empty reply proves nothing about
+    any particular record (one poisoned transcript can produce it for the
+    whole batch), so nobody is marked unless the reply placed some other
+    record in the batch. A malformed reply, or a failed parse, always
+    leaves the batch pending: it says nothing at all."""
 
-    def test_an_empty_reply_leaves_a_lone_call_pending(self):
+    def test_a_lone_declined_call_is_not_analysable(self):
         call = self.call(summary="Hard to say.")
         with patch(BATCH, return_value={}):
             classify_records([call], organisation=self.org)
         call.refresh_from_db()
-        self.assertEqual(call.analysis, "pending")
+        self.assertEqual(call.analysis, "not_analysable")
 
     def test_a_malformed_reply_leaves_the_batch_pending(self):
         call = self.call(summary="Hard to say.")
