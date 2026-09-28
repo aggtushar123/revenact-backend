@@ -125,12 +125,37 @@ def has_something_to_read(call) -> bool:
     )
 
 
-def classify_call(call):
-    from .classification import classify_records
+def organisation_of_call(call):
+    if call.customer_id:
+        return call.customer.organisation
+    customer = call.account.customers.select_related("organisation").first()
+    return customer.organisation if customer is not None else None
 
-    organisation = (
-        call.customer.organisation
-        if call.customer_id
-        else call.account.customers.select_related("organisation").first().organisation
-    )
-    classify_records([call], organisation=organisation, user=call.logged_by)
+
+def classify_call(call, *, transcript_text=None, user=None):
+    """The one thing every path that creates a Call runs, once the call and
+    its participants are saved: read it now, so its sentiment is on the
+    record and on its participants before anyone looks.
+
+    A call with nothing to read is marked not analysable without a model
+    call. Anything that goes wrong is logged and swallowed, inside its own
+    savepoint: classifying is never a reason for a call not to be saved,
+    and `classify_interactions` picks up whatever was left pending."""
+    from django.db import transaction
+
+    from .classification import classify_records, mark_not_analysable
+    from .contact_sentiment import recompute_for_records
+
+    if transcript_text is not None:
+        call._transcript_text = transcript_text
+    try:
+        with transaction.atomic():
+            if not has_something_to_read(call):
+                mark_not_analysable(call)
+                recompute_for_records([call])
+                return
+            classify_records(
+                [call], organisation=organisation_of_call(call), user=user or call.logged_by
+            )
+    except Exception:  # noqa: BLE001 — the call is saved whatever happens here
+        logger.warning("classifying call %s failed", call.pk, exc_info=True)

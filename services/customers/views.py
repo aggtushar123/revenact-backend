@@ -3010,8 +3010,9 @@ class _CallListView(generics.ListCreateAPIView):
             },
         )
         # Sentiment now: the pulse counts only classified conversations, and
-        # the people on the call sound different once it is read.
-        classify_call(call)
+        # the people on the call sound different once it is read. The one
+        # helper every path that creates a call runs; it never raises.
+        classify_call(call, transcript_text=transcript_text, user=request.user)
         for contact in participants.values():
             recompute(contact)
 

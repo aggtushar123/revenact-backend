@@ -414,6 +414,10 @@ def classify_records(records, *, organisation=None, user=None):
                 apply_classification(record, fields)
                 classified += 1
                 done.append(record)
+            elif record._meta.model_name == "call":
+                # The model looked and could not place it: nothing to judge.
+                mark_not_analysable(record)
+                done.append(record)
         # The people on these calls, emails and tickets sound different now.
         from .contact_sentiment import recompute_for_records
 
