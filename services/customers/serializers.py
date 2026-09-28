@@ -945,6 +945,7 @@ class CallSerializer(serializers.ModelSerializer):
             "duration_minutes",
             "summary",
             "sentiment",
+            "analysis",
             "ai_area",
             "ai_category",
             "recording_url",
@@ -958,7 +959,14 @@ class CallSerializer(serializers.ModelSerializer):
             "links",
             "created_at",
         ]
-        read_only_fields = ["sentiment", "ai_area", "ai_category", "links", "created_at"]
+        read_only_fields = [
+            "sentiment",
+            "analysis",
+            "ai_area",
+            "ai_category",
+            "links",
+            "created_at",
+        ]
         extra_kwargs = {"summary": {"required": False, "allow_blank": True}}
 
     def get_participants(self, obj):

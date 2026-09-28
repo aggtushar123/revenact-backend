@@ -1098,6 +1098,17 @@ class AIClassified(models.Model):
     def is_classified(self):
         return self.ai_classified_at is not None
 
+    @property
+    def analysis(self):
+        """`pending` (nothing has read it yet), `not_analysable` (read, and
+        there was nothing to judge — only a call can be), or `analysed`.
+        `sentiment` means something only when this is `analysed`."""
+        if getattr(self, "not_analysable", False):
+            return "not_analysable"
+        if self.ai_classified_at is None:
+            return "pending"
+        return "analysed"
+
     def clean(self):
         super().clean()
         error = taxonomy.validate_classification(
@@ -1831,6 +1842,12 @@ class Call(AIClassified):
         Attachment, related_name="call", on_delete=models.SET_NULL, null=True, blank=True
     )
     recording_url = models.URLField(max_length=500, blank=True, default="")
+    not_analysable = models.BooleanField(
+        default=False,
+        help_text="Looked at, with nothing to judge: no transcript, no summary and a "
+        "generic title, or the model declined it. `ai_classified_at` is set so no "
+        "pass pays to retry it, and `sentiment` is not evidence of anything.",
+    )
     # Who from the customer's side was on the call. The call's sentiment
     # is theirs: it feeds each participant's own computed sentiment
     # (contact_sentiment.py).

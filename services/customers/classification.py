@@ -343,8 +343,37 @@ def apply_classification(record, fields):
     for field, value in fields.items():
         setattr(record, field, value)
     record.ai_classified_at = timezone.now()
-    record.save(update_fields=[*fields, "ai_classified_at"])
+    extra = []
+    if getattr(record, "not_analysable", False):
+        # Read now, so no longer "nothing to judge".
+        record.not_analysable = False
+        extra.append("not_analysable")
+    record.save(update_fields=[*fields, "ai_classified_at", *extra])
     interaction_classified.send(sender=type(record), record=record)
+
+
+def mark_not_analysable(call):
+    """A call with nothing to judge: its taxonomy blanked, its sentiment back
+    to the default (which `analysis` says is not a reading), and stamped, so
+    no scheduled pass pays to look at it again. Never guessed, and no
+    `interaction_classified` signal: nothing was learned."""
+
+    call.ai_area = ""
+    call.ai_category = ""
+    call.ai_subcategory = ""
+    call.sentiment = call.Sentiment.NEUTRAL
+    call.not_analysable = True
+    call.ai_classified_at = timezone.now()
+    call.save(
+        update_fields=[
+            "ai_area",
+            "ai_category",
+            "ai_subcategory",
+            "sentiment",
+            "not_analysable",
+            "ai_classified_at",
+        ]
+    )
 
 
 def classify_records(records, *, organisation=None, user=None):
