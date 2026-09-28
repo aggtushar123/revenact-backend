@@ -280,3 +280,134 @@ class ParticipantVisibilityTests(Fixture):
             self.pizza, None, "Sue Seen and Hal Hidden", viewer=self.viewer
         )
         self.assertEqual({c.id for c in matched}, {self.seen_contact.id})
+
+
+class EvidenceScopeTests(Fixture):
+    """What a contact's sentiment rests on: their own tenant's records, and
+    only calls that said something."""
+
+    def test_a_not_analysable_call_is_not_evidence(self):
+        from services.customers.classification import mark_not_analysable
+
+        call = self.call("negative", participants=[self.sam])
+        mark_not_analysable(call)
+        self.assertIsNone(contact_sentiment.recompute(self.sam))
+        self.sam.refresh_from_db()
+        # Being on it is still contact.
+        self.assertEqual(self.sam.last_contacted_at, call.occurred_at)
+
+    def test_another_tenants_mail_from_the_same_address_is_not_evidence(self):
+        other = Organisation.objects.create(name="Other")
+        theirs = Customer.objects.create(organisation=other, name="Theirs")
+        Email.objects.create(
+            customer=theirs,
+            subject="Furious",
+            sender_name="Sam",
+            recipient_name="Them",
+            body="angry",
+            sent_at=NOW,
+            from_address="sam@pizzahut.com",
+            sentiment="negative",
+            ai_classified_at=NOW,
+        )
+        Ticket.objects.create(
+            customer=theirs,
+            ticket_number="ZD-9",
+            title="Broken",
+            priority="high",
+            opened_at=date.today(),
+            requester_email="sam@pizzahut.com",
+            sentiment="negative",
+            ai_classified_at=NOW,
+        )
+        self.assertIsNone(contact_sentiment.recompute(self.sam))
+
+    def test_an_account_contacts_mail_on_their_own_tenant_counts(self):
+        Email.objects.create(
+            account=self.hut_uk,
+            subject="Thanks",
+            sender_name="Uma",
+            recipient_name="Carl",
+            body="great",
+            sent_at=NOW,
+            from_address="uma@pizzahut.co.uk",
+            sentiment="positive",
+            ai_classified_at=NOW,
+        )
+        self.assertEqual(contact_sentiment.recompute(self.uma), "positive")
+
+
+class ContactsForRecordsTests(Fixture):
+    """Who a batch of records bears on: found in a fixed number of queries,
+    and only inside each record's own tenant."""
+
+    def test_an_address_matches_only_inside_the_records_own_tenant(self):
+        other = Organisation.objects.create(name="Other")
+        theirs = Customer.objects.create(organisation=other, name="Theirs")
+        stranger = Contact.objects.create(customer=theirs, name="Uma", email="uma@pizzahut.co.uk")
+        email = Email.objects.create(
+            account=self.hut_uk,
+            subject="Thanks",
+            sender_name="Uma",
+            recipient_name="Carl",
+            body="great",
+            sent_at=NOW,
+            from_address="Uma@PizzaHut.co.uk",
+        )
+        ticket = Ticket.objects.create(
+            account=self.hut_uk,
+            ticket_number="ZD-1",
+            title="Broken",
+            priority="high",
+            opened_at=date.today(),
+            requester_email="uma@pizzahut.co.uk",
+        )
+        found = set(contact_sentiment.contacts_for_records([email, ticket]))
+        self.assertEqual(found, {self.uma})
+        self.assertNotIn(stranger, found)
+
+    def test_the_lookup_does_not_grow_with_the_records(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def queries(n):
+            records = [self.call("positive", participants=[self.sam]) for _ in range(n)]
+            records += [
+                Email.objects.create(
+                    customer=self.pizza,
+                    subject="Hi",
+                    sender_name="Sam",
+                    recipient_name="Carl",
+                    body="hi",
+                    sent_at=NOW,
+                    from_address="sam@pizzahut.com",
+                )
+                for _ in range(n)
+            ]
+            records = [type(r).objects.get(pk=r.pk) for r in records]
+            with CaptureQueriesContext(connection) as ctx:
+                found = list(contact_sentiment.contacts_for_records(records))
+                for contact in found:
+                    contact_sentiment.organisation_id_of(contact)
+            return len(ctx.captured_queries)
+
+        self.assertEqual(queries(1), queries(4))
+
+    def test_recompute_all_reads_each_contacts_tenant_without_a_query_each(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def queries():
+            with (
+                patch.object(contact_sentiment, "recompute", return_value=None) as recompute,
+                CaptureQueriesContext(connection) as ctx,
+            ):
+                contact_sentiment.recompute_all(self.org)
+                for call in recompute.call_args_list:
+                    contact_sentiment.organisation_id_of(call.args[0])
+            return len(ctx.captured_queries)
+
+        before = queries()
+        for n in range(3):
+            Contact.objects.create(account=self.hut_uk, name=f"More {n}", email=f"m{n}@hut.co.uk")
+        self.assertEqual(queries(), before)

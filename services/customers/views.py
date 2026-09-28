@@ -1404,7 +1404,23 @@ class AccountCalendarEventListView(generics.ListAPIView):
         return account.calendar_events.all()
 
 
-class CustomerContactListView(generics.ListCreateAPIView):
+class ContactCompanyVisibilityMixin:
+    """Passes `visible_customer_ids` into ContactSerializer's context, so
+    `companies`/`organisation` name only organisations the caller may
+    open. Needed even on the two views nested under one Customer/Account
+    below: an account-level Contact's own Account can be linked to more
+    than one organisation at once, and a colleague's organisation sharing
+    that Account is not this caller's to see named."""
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["visible_customer_ids"] = set(
+            visible_customers(self.request.user).values_list("pk", flat=True)
+        )
+        return context
+
+
+class CustomerContactListView(ContactCompanyVisibilityMixin, generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/contacts/ — GET returns
     every Contact under this Customer, rolled up from both levels a
     Contact can exist at: organization-level (directly on this
@@ -1442,7 +1458,7 @@ class CustomerContactListView(generics.ListCreateAPIView):
         serializer.save(customer=self.get_customer())
 
 
-class AccountContactListView(generics.ListCreateAPIView):
+class AccountContactListView(ContactCompanyVisibilityMixin, generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/
     — every account-level Contact for one Account (GET), or adds a new
     one to it (POST), scoped to both its customer_id and the caller's
@@ -1466,26 +1482,42 @@ class AccountContactListView(generics.ListCreateAPIView):
         serializer.save(account=self.get_account())
 
 
-class ContactListView(generics.ListAPIView):
-    """GET /api/v1/contacts/ — every Contact across every Customer/
-    Account the caller's own organisation owns, organization-level and
-    account-level alike. Powers the standalone Contacts page
-    (react-ts-app's /contacts/list) — the one place a Contact is
-    browsed independent of which Customer/Account it belongs to, so
-    this is the one Contact view that isn't nested under
-    /customers/<id>/... (mounted directly at /api/v1/contacts/ in the
-    project's root urls.py instead).
+#: The roles the Contacts page counts as decision makers, the same set the
+#: organisation page's People summary uses.
+DECISION_ROLES = (
+    Contact.Role.EXECUTIVE_SPONSOR,
+    Contact.Role.DECISION_MAKER,
+    Contact.Role.ECONOMIC_BUYER,
+)
 
-    Paginated with the shared DEFAULT_PAGINATION_CLASS/PAGE_SIZE —
-    unlike every other List view in this file, which turns pagination
-    off for what's normally a single entity's already-small nested
-    list — since this one can span every contact the tenant has, same
-    reasoning as CustomerListCreateView.
 
-    `?search=` matches name/email/role (substring, case-insensitive),
-    same convention as CustomerListCreateView's own search. `?company=
-    <customer_id>` filters to one company, matching a contact directly
-    on that Customer or on any of its Accounts."""
+def _int_param(raw):
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+class ContactListView(ContactCompanyVisibilityMixin, generics.ListAPIView):
+    """GET /api/v1/contacts/ — every Contact the caller may open, across
+    every Customer/Account, organisation-level and account-level alike.
+    Powers the Contacts page; the one Contact list not nested under
+    /customers/<id>/... (mounted in the project's root urls.py).
+
+    Paginated with the shared DEFAULT_PAGINATION_CLASS/PAGE_SIZE, since it
+    can span every contact the tenant has.
+
+    Filters (an unusable value is ignored, never a 400):
+    `?search=` name/email/role, case-insensitive contains;
+    `?customer=<id>` (or the older `?company=`) a contact on that
+    organisation or on any of its accounts; `?account=<id>`;
+    `?sentiment=positive|neutral|negative`; `?role=<Contact.Role>`.
+
+    Each row carries `organisation` and `account` as `{id, name}` refs (the
+    organisation is the first linked one the caller may open) beside
+    ContactSerializer's fields. `summary` covers the whole filtered set,
+    not the page: `{total, positive, neutral, negative, decision_makers,
+    active, growth_30d_pct}` (the last two as ContactStatsView defines them)."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
@@ -1496,31 +1528,72 @@ class ContactListView(generics.ListAPIView):
         # account-level Contact whose Account is linked to two+
         # Customers in this same organisation would otherwise appear
         # more than once.
+        # SOC2:AUTH-02 a contact follows its organisation's or account's visibility
         queryset = (
             Contact.objects.filter(visible_children_q(self.request.user))
             .select_related("customer", "account")
             .prefetch_related("account__customers")
             .distinct()
         )
+        params = self.request.query_params
 
-        search = self.request.query_params.get("search", "").strip()
+        search = params.get("search", "").strip()
         if search:
             queryset = queryset.filter(
                 Q(name__icontains=search) | Q(email__icontains=search) | Q(role__icontains=search)
             )
 
-        company = self.request.query_params.get("company")
-        if company:
-            try:
-                company_id = int(company)
-            except ValueError:
-                company_id = None
-            if company_id is not None:
-                queryset = queryset.filter(
-                    Q(customer_id=company_id) | Q(account__customers__id=company_id)
-                )
+        customer_id = _int_param(params.get("customer") or params.get("company"))
+        if customer_id is not None:
+            # SOC2:AUTH-02 an id the caller cannot open must not be confirmed to
+            # exist by matching contacts on accounts also linked to it.
+            if not visible_customers(self.request.user).filter(pk=customer_id).exists():
+                return queryset.none()
+            queryset = queryset.filter(
+                Q(customer_id=customer_id) | Q(account__customers__id=customer_id)
+            )
+
+        account_id = _int_param(params.get("account"))
+        if account_id is not None:
+            # SOC2:AUTH-02 same as the organisation filter above
+            if not visible_accounts(self.request.user).filter(pk=account_id).exists():
+                return queryset.none()
+            queryset = queryset.filter(account_id=account_id)
+
+        sentiment = params.get("sentiment")
+        if sentiment in Contact.Sentiment.values:
+            queryset = queryset.filter(sentiment=sentiment)
+
+        role = params.get("role")
+        if role in Contact.Role.values:
+            queryset = queryset.filter(role=role)
 
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = self.get_serializer(page, many=True).data
+        response = self.get_paginated_response(rows)
+        counted = Contact.objects.filter(pk__in=queryset.values("pk")).aggregate(
+            total=Count("pk"),
+            positive=Count("pk", filter=Q(sentiment=Contact.Sentiment.POSITIVE)),
+            neutral=Count("pk", filter=Q(sentiment=Contact.Sentiment.NEUTRAL)),
+            negative=Count("pk", filter=Q(sentiment=Contact.Sentiment.NEGATIVE)),
+            decision_makers=Count("pk", filter=Q(role__in=DECISION_ROLES)),
+            # The old stat cards' Active and Growth (30d), with
+            # ContactStatsView's own definitions, in the same one query.
+            active=Count("pk", filter=Q(status=Contact.Status.ACTIVE)),
+            total_30d_ago=Count(
+                "pk", filter=Q(created_at__lte=timezone.now() - timedelta(days=30))
+            ),
+        )
+        baseline = counted.pop("total_30d_ago")
+        counted["growth_30d_pct"] = (
+            round((counted["total"] - baseline) / baseline * 100, 1) if baseline else None
+        )
+        response.data["summary"] = counted
+        return response
 
 
 class ContactStatsView(views.APIView):
@@ -1576,7 +1649,7 @@ class ContactStatsView(views.APIView):
         )
 
 
-class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
+class ContactDetailView(ContactCompanyVisibilityMixin, generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/contacts/<id>/ — a single Contact,
     scoped to the caller's own organisation (via either its `customer`
     or its `account`'s own `customers`, same reasoning as ContactListView's
@@ -1603,24 +1676,63 @@ class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Contact.objects.filter(visible_children_q(self.request.user)).distinct()
 
 
-class ContactInteractionsView(views.APIView):
-    """GET /api/v1/contacts/<id>/interactions/ — what this person's
-    sentiment rests on: every classified call they were on, email from
-    their address and ticket they raised, newest first, each with its own
-    sentiment. Same scoping as ContactDetailView."""
+def _visible_contact(request, pk):
+    """A contact the caller may open, or 404 — the same scope as
+    ContactDetailView, whether or not the id exists."""
+    # SOC2:AUTH-02 a contact follows its organisation's or account's visibility
+    return get_object_or_404(
+        Contact.objects.filter(visible_children_q(request.user)).distinct(), pk=pk
+    )
+
+
+class ContactHistoryView(views.APIView):
+    """GET /api/v1/contacts/<id>/history/ — the person's calls, emails and
+    tickets, newest first, each under its own record rule for the caller,
+    with the sentiment breakdown (contact_history.py). A contact the caller
+    cannot open is a 404."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
+        from .contact_history import build_history
+
+        return Response(build_history(_visible_contact(request, pk), request.user))
+
+
+class ContactInteractionsView(views.APIView):
+    """GET /api/v1/contacts/<id>/interactions/ — what this person's
+    sentiment rests on: every classified call they were on, email from
+    their address and ticket they raised, newest first, each with its own
+    sentiment. Same scoping as ContactDetailView, and each row under its own
+    record rule, as in /history/, which replaces this endpoint once the
+    Contacts page no longer calls it."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from .contact_history import history_querysets
         from .contact_sentiment import interactions_for, score
 
-        contact = get_object_or_404(
-            Contact.objects.filter(visible_children_q(request.user)).distinct(), pk=pk
-        )
+        contact = _visible_contact(request, pk)
         rows = interactions_for(contact)
+        # Scored from every row here, unfiltered by `readable` below — this
+        # is the same `interactions_for`/`score` pair that computed
+        # `contact.sentiment`, so the two agree. Only the *listed* rows are
+        # trimmed to what the viewer may read.
         value, label = score(rows)
+        # Unbounded (no HISTORY_LIMIT) — acceptable only because this
+        # endpoint is being retired once the Contacts page moves to
+        # /history/, which does apply the limit.
+        readable = {
+            kind: set(queryset.values_list("pk", flat=True))
+            for kind, queryset in zip(
+                ("call", "email", "ticket"), history_querysets(contact, request.user)
+            )
+        }
         items = []
         for row in rows:
+            if row["record"].pk not in readable[row["kind"]]:
+                continue
             record = row["record"]
             kind = row["kind"]
             if kind == "call":
@@ -2987,7 +3099,7 @@ class _CallListView(generics.ListCreateAPIView):
         # Who was on it: the contacts chosen, plus anyone from this company
         # the transcript names. Only this company's own contacts count, and
         # only those the logger may see.
-        from .contact_sentiment import match_participants, recompute
+        from .contact_sentiment import match_participants
 
         matched = match_participants(customer, account, transcript_text, viewer=request.user)
         own = {
@@ -3010,10 +3122,10 @@ class _CallListView(generics.ListCreateAPIView):
             },
         )
         # Sentiment now: the pulse counts only classified conversations, and
-        # the people on the call sound different once it is read.
-        classify_call(call)
-        for contact in participants.values():
-            recompute(contact)
+        # the people on the call sound different once it is read. The one
+        # helper every path that creates a call runs; it never raises, and
+        # it recomputes the participants once, read or not.
+        classify_call(call, transcript_text=transcript_text, user=request.user)
 
 
 class CustomerCallListView(_CallListView):

@@ -945,6 +945,7 @@ class CallSerializer(serializers.ModelSerializer):
             "duration_minutes",
             "summary",
             "sentiment",
+            "analysis",
             "ai_area",
             "ai_category",
             "recording_url",
@@ -958,7 +959,14 @@ class CallSerializer(serializers.ModelSerializer):
             "links",
             "created_at",
         ]
-        read_only_fields = ["sentiment", "ai_area", "ai_category", "links", "created_at"]
+        read_only_fields = [
+            "sentiment",
+            "analysis",
+            "ai_area",
+            "ai_category",
+            "links",
+            "created_at",
+        ]
         extra_kwargs = {"summary": {"required": False, "allow_blank": True}}
 
     def get_participants(self, obj):
@@ -1069,6 +1077,8 @@ class ContactSerializer(serializers.ModelSerializer):
     role_display = serializers.CharField(source="get_role_display", read_only=True)
     companies = serializers.SerializerMethodField()
     account_name = serializers.SerializerMethodField()
+    organisation = serializers.SerializerMethodField()
+    account = serializers.SerializerMethodField()
 
     class Meta:
         model = Contact
@@ -1087,8 +1097,10 @@ class ContactSerializer(serializers.ModelSerializer):
             "sentiment_computed_at",
             "last_contacted_at",
             "companies",
+            "organisation",
             "account_id",
             "account_name",
+            "account",
         ]
         read_only_fields = ["sentiment_source", "sentiment_evidence", "sentiment_computed_at"]
 
@@ -1101,11 +1113,27 @@ class ContactSerializer(serializers.ModelSerializer):
             validated_data["sentiment_computed_at"] = None
         return super().update(instance, validated_data)
 
+    def _companies(self, obj):
+        """Every parent organisation — only those the caller may open when
+        the view passes `visible_customer_ids` (the Contacts page does)."""
+        companies = obj.companies
+        visible = self.context.get("visible_customer_ids")
+        if visible is not None:
+            companies = [c for c in companies if c.pk in visible]
+        return sorted(companies, key=lambda c: c.pk)
+
     def get_companies(self, obj):
-        return [{"id": c.id, "name": c.name} for c in obj.companies]
+        return [{"id": c.id, "name": c.name} for c in self._companies(obj)]
+
+    def get_organisation(self, obj):
+        companies = self._companies(obj)
+        return {"id": companies[0].id, "name": companies[0].name} if companies else None
 
     def get_account_name(self, obj):
         return obj.account.name if obj.account_id else None
+
+    def get_account(self, obj):
+        return {"id": obj.account_id, "name": obj.account.name} if obj.account_id else None
 
 
 class OpportunitySerializer(serializers.ModelSerializer):

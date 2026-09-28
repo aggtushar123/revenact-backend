@@ -130,7 +130,10 @@ def _text_for(record):
     if name == "email":
         return f"{record.subject}. {record.body}"
     if name == "call":
-        return f"{record.title}. {record.summary}" if record.summary else record.title
+        # The summary, else the transcript, after the title (calls.call_text).
+        from .calls import call_text
+
+        return call_text(record)
     # Ticket: the title is the whole description this model stores — see
     # Ticket's own docstring on the `description` the mock carried and no
     # component ever rendered. Priority and status give the model the
@@ -343,8 +346,63 @@ def apply_classification(record, fields):
     for field, value in fields.items():
         setattr(record, field, value)
     record.ai_classified_at = timezone.now()
-    record.save(update_fields=[*fields, "ai_classified_at"])
+    extra = []
+    if getattr(record, "not_analysable", False):
+        # Read now, so no longer "nothing to judge".
+        record.not_analysable = False
+        extra.append("not_analysable")
+    record.save(update_fields=[*fields, "ai_classified_at", *extra])
     interaction_classified.send(sender=type(record), record=record)
+
+
+def mark_not_analysable(call):
+    """A call with nothing to judge: its taxonomy blanked, its sentiment back
+    to the default (which `analysis` says is not a reading), and stamped, so
+    no scheduled pass pays to look at it again. Never guessed, and no
+    `interaction_classified` signal: nothing was learned."""
+
+    call.ai_area = ""
+    call.ai_category = ""
+    call.ai_subcategory = ""
+    call.sentiment = call.Sentiment.NEUTRAL
+    call.not_analysable = True
+    call.ai_classified_at = timezone.now()
+    call.save(
+        update_fields=[
+            "ai_area",
+            "ai_category",
+            "ai_subcategory",
+            "sentiment",
+            "not_analysable",
+            "ai_classified_at",
+        ]
+    )
+
+
+PLACED, DECLINED, UNPLACED = "placed", "declined", "unplaced"
+
+
+def reading_of(record, results, batch_size):
+    """What one batch's reply says about one record: `(PLACED, fields)`,
+    `(DECLINED, None)` or `(UNPLACED, None)`. The one rule both
+    `classify_records` and `classify_interactions` read a reply by.
+
+    A placement with no fields is no placement. An unplaced call is
+    declined only when the reply is about it: reaching here at all means
+    the reply parsed (a malformed one sends the batch to the caller's
+    `except ValueError`, leaving it pending). A lone call has nobody else
+    an empty reply could be about, so it is a genuine decline — marked, not
+    retried (and re-billed) every night. In a batch of more than one,
+    `results` must be non-empty: it placed some OTHER record, proving the
+    model engaged with the batch rather than one poisoned transcript
+    emptying the whole reply, which proves nothing about any particular
+    record. Emails and tickets are never declined, only left unplaced."""
+    fields = results.get(_ref_for(record))
+    if fields:
+        return PLACED, fields
+    if record._meta.model_name == "call" and (results or batch_size == 1):
+        return DECLINED, None
+    return UNPLACED, None
 
 
 def classify_records(records, *, organisation=None, user=None):
@@ -377,10 +435,13 @@ def classify_records(records, *, organisation=None, user=None):
             continue
         done = []
         for record in batch:
-            fields = results.get(f"{record._meta.model_name}:{record.pk}")
-            if fields:
+            verdict, fields = reading_of(record, results, len(batch))
+            if verdict == PLACED:
                 apply_classification(record, fields)
                 classified += 1
+                done.append(record)
+            elif verdict == DECLINED:
+                mark_not_analysable(record)
                 done.append(record)
         # The people on these calls, emails and tickets sound different now.
         from .contact_sentiment import recompute_for_records

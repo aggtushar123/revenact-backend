@@ -204,7 +204,7 @@ available in `taxonomy.py`.
 | `Note` | `title`, `author_name`, `author` (decides visibility), `body`, `logged_at`, `links` |
 | `Ticket` | `ticket_number`, `title`, `status`, `priority`, `connector`, `department` (decides visibility), `opened_at`, `resolved_at`, external id and url, `requester_*`, `synced_at`. Unique per connector and external id |
 | `Attachment` | `file` stored at `attachments/<org>/<uuid><ext>`, sanitised `name`, `content_type`, `size`, `source` (upload or transcript), `uploaded_by`. `delete()` removes the bytes |
-| `Call` | `title`, `host_name`, `occurred_at`, `duration_minutes`, `summary`, `connector`, `logged_by`, `transcript` (1:1 Attachment), `recording_url`, `participants` (M2M Contact) |
+| `Call` | `title`, `host_name`, `occurred_at`, `duration_minutes`, `summary`, `connector`, `logged_by`, `transcript` (1:1 Attachment), `recording_url`, `participants` (M2M Contact), `not_analysable` (read with nothing to judge; `ai_classified_at` set, `sentiment` not evidence). `analysis` (a property on every `AIClassified`) reads `pending`, `not_analysable` or `analysed`. The classifier reads the title, then the summary, else the transcript (`calls.call_text`) |
 | `CalendarEvent` | `title`, `description`, `type`, `event_date`, `start_time`, `end_time`, `attendee_count` |
 | `Contact` | `name`, `role` (8 kinds), `email`, `phone`, `status`, `sentiment`, `sentiment_source` (manual or computed), `sentiment_evidence` JSON (counts only, never text), `sentiment_computed_at`, `last_contacted_at` |
 | `Opportunity` | `title`, `mrr`, `stage` (discovery, qualification, solution_validation, proposal_price_review, negotiation, closed_won), `priority`, `department` |
@@ -384,6 +384,7 @@ call the matching helper.
 | Tasks | Creator, assignee and both chains; authorless seeded rows visible to all | same |
 | Tickets | Own department plus undeparted tickets; Leadership and `view_all_accounts` see all | same |
 | Synced emails | Mailbox owner and their chain; rows with no mailbox owner are visible to all | `services/mail/visibility.py` |
+| A contact's history (`/contacts/<id>/history/`) | The contact must be visible; then each call, email and ticket by its own company (`visible_children_q`) and its own rule (mail, tickets above), inside the contact's own tenant | `services/customers/contact_history.py` |
 | Opportunities and risks | Own department plus undeparted; Leadership and `view_all_accounts` see all | `scoping.pipeline_visible_q` |
 | Contributions and questions | Self, subtree, same function, ancestors, plus anything addressed to you | `services/knowledge/views.py` with `services/accounts/hierarchy.py` |
 | Conversations and sessions | Owner, or an accepted and active participant. The same function gates the WebSocket | `services/copilot/views.conversations_visible_to` |

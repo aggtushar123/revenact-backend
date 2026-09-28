@@ -118,6 +118,17 @@ def _when(record):
     return stamp
 
 
+def text_for(record) -> str:
+    """What detection embeds and files for one record. A call is its title
+    and summary, never its transcript: a transcript is a file read per call,
+    and its opening lines (small talk, names) would land in an evidence
+    snippet. Emails and tickets read as the classifier reads them."""
+    if record._meta.model_name == "call":
+        summary = (record.summary or "").strip()
+        return f"{record.title}. {summary}" if summary else record.title
+    return _text_for(record)
+
+
 def _window(model, field, scope, start, end=None):
     """One kind's rows in one window, newest first, capped.
 
@@ -132,6 +143,9 @@ def _window(model, field, scope, start, end=None):
     rows = model.objects.filter(scope, ai_classified_at__isnull=False).filter(
         **{f"{field}__gte": start.date() if by_date else start}
     )
+    if model is Call:
+        # Read and found to say nothing: not a report of anything.
+        rows = rows.exclude(not_analysable=True)
     if end is not None:
         rows = rows.filter(**{f"{field}__lt": end.date() if by_date else end})
     related = ["customer", "account"]
@@ -289,8 +303,8 @@ def detect(organisation, *, actor=None, request=None, now=None) -> dict:
     if not recent:
         return result
 
-    recent_texts = [_text_for(row) for _, row, _ in recent]
-    prior_texts = [_text_for(row) for _, row, _ in prior]
+    recent_texts = [text_for(row) for _, row, _ in recent]
+    prior_texts = [text_for(row) for _, row, _ in prior]
     vectors = embed(recent_texts + prior_texts)
     recent_vectors = vectors[: len(recent_texts)]
     prior_vectors = vectors[len(recent_texts) :]

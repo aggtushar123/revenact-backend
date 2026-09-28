@@ -29,6 +29,7 @@ from services.customers.views import (
     CanvasListView,
     CockpitSummaryView,
     ContactDetailView,
+    ContactHistoryView,
     ContactInteractionsView,
     ContactListView,
     ContactStatsView,
@@ -95,6 +96,11 @@ urlpatterns = [
     path("api/v1/files/<int:pk>/download/", FileDownloadView.as_view(), name="file-download"),
     path("api/v1/contacts/stats/", ContactStatsView.as_view(), name="contact-stats"),
     path("api/v1/contacts/<int:pk>/", ContactDetailView.as_view(), name="contact-detail"),
+    path(
+        "api/v1/contacts/<int:pk>/history/",
+        ContactHistoryView.as_view(),
+        name="contact-history",
+    ),
     path(
         "api/v1/contacts/<int:pk>/interactions/",
         ContactInteractionsView.as_view(),
