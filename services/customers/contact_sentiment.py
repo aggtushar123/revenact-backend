@@ -39,17 +39,43 @@ def _aware(value):
     return timezone.make_aware(timezone.datetime(value.year, value.month, value.day))
 
 
+def organisation_id_of(contact):
+    """The tenant a contact belongs to: its organisation's, or its
+    account's first linked organisation's (an account never spans two)."""
+    if contact.customer_id:
+        return contact.customer.organisation_id
+    return contact.account.customers.values_list("organisation_id", flat=True).first()
+
+
+def in_organisation_q(organisation_id):
+    """Emails and tickets under one tenant — an address is matched only
+    inside the contact's own organisation, never another tenant's mail."""
+    return Q(customer__organisation_id=organisation_id) | Q(
+        account__customers__organisation_id=organisation_id
+    )
+
+
 def interactions_for(contact):
     """Every classified interaction that is this person's, newest first,
-    as dicts {kind, record, when, sentiment}."""
+    as dicts {kind, record, when, sentiment}. A call marked not analysable
+    was read and said nothing, so it is not evidence."""
     rows = []
-    for call in contact.calls.exclude(ai_classified_at=None).select_related("connector"):
+    calls = (
+        contact.calls.exclude(ai_classified_at=None)
+        .exclude(not_analysable=True)
+        .select_related("connector")
+    )
+    for call in calls:
         rows.append(
             {"kind": "call", "record": call, "when": call.occurred_at, "sentiment": call.sentiment}
         )
-    if contact.email:
-        emails = Email.objects.filter(from_address__iexact=contact.email).exclude(
-            ai_classified_at=None
+    organisation_id = organisation_id_of(contact) if contact.email else None
+    if organisation_id is not None:
+        tenant = in_organisation_q(organisation_id)
+        emails = (
+            Email.objects.filter(tenant, from_address__iexact=contact.email)
+            .exclude(ai_classified_at=None)
+            .distinct()
         )
         for email in emails:
             rows.append(
@@ -60,8 +86,10 @@ def interactions_for(contact):
                     "sentiment": email.sentiment,
                 }
             )
-        tickets = Ticket.objects.filter(requester_email__iexact=contact.email).exclude(
-            ai_classified_at=None
+        tickets = (
+            Ticket.objects.filter(tenant, requester_email__iexact=contact.email)
+            .exclude(ai_classified_at=None)
+            .distinct()
         )
         for ticket in tickets:
             rows.append(
