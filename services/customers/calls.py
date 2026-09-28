@@ -94,8 +94,13 @@ def is_generic_title(title: str) -> bool:
 
 def transcript_text_of(call) -> str:
     """The call's transcript as text: what the creating request handed over
-    (a pasted transcript is never stored), else the stored transcript file.
-    A missing or unreadable file reads as no transcript."""
+    (a pasted transcript is never stored), else the stored transcript file,
+    read and decoded at most once — the result is cached back onto
+    `_transcript_text`, the same attribute a handed-over transcript uses, so
+    `has_something_to_read` and `call_text` (both call this) share one read
+    of the file instead of paying for it twice. A missing or unreadable file
+    reads as no transcript: any failure a storage backend can raise — not
+    just OSError/ValueError — must not fail a classification batch."""
     handed = getattr(call, "_transcript_text", None)
     if handed is not None:
         return handed.strip()
@@ -105,10 +110,12 @@ def transcript_text_of(call) -> str:
 
     try:
         with call.transcript.file.open("rb") as handle:
-            return read_transcript_text(handle).strip()
-    except (OSError, ValueError):
+            text = read_transcript_text(handle).strip()
+    except Exception:  # noqa: BLE001 — a storage error is no different from a missing file
         logger.warning("transcript of call %s could not be read", call.pk, exc_info=True)
-        return ""
+        text = ""
+    call._transcript_text = text
+    return text
 
 
 def call_text(call) -> str:
@@ -138,9 +145,19 @@ def classify_call(call, *, transcript_text=None, user=None):
     record and on its participants before anyone looks.
 
     A call with nothing to read is marked not analysable without a model
-    call. Anything that goes wrong is logged and swallowed, inside its own
-    savepoint: classifying is never a reason for a call not to be saved,
-    and `classify_interactions` picks up whatever was left pending."""
+    call. Anything that goes wrong is logged and swallowed: classifying is
+    never a reason for a call not to be saved, and `classify_interactions`
+    picks up whatever was left pending.
+
+    Not wrapped in one outer transaction: `classify_records` makes a real,
+    paid model call, and `credits.charge` holds a row lock on the
+    organisation's billing account for it — the same lock every other AI
+    call in the workspace needs, so it must not be held any longer than the
+    request itself takes. Worse, a failure in anything after the model call
+    (`recompute_for_records`, say) would roll back the credit charge and the
+    usage row along with it, so the organisation is never billed for a call
+    that really happened. Only the writes that never touch the network — the
+    "nothing to read" branch — get their own, small atomic block."""
     from django.db import transaction
 
     from .classification import classify_records, mark_not_analysable
@@ -149,13 +166,13 @@ def classify_call(call, *, transcript_text=None, user=None):
     if transcript_text is not None:
         call._transcript_text = transcript_text
     try:
-        with transaction.atomic():
-            if not has_something_to_read(call):
+        if not has_something_to_read(call):
+            with transaction.atomic():
                 mark_not_analysable(call)
                 recompute_for_records([call])
-                return
-            classify_records(
-                [call], organisation=organisation_of_call(call), user=user or call.logged_by
-            )
+            return
+        classify_records(
+            [call], organisation=organisation_of_call(call), user=user or call.logged_by
+        )
     except Exception:  # noqa: BLE001 — the call is saved whatever happens here
         logger.warning("classifying call %s failed", call.pk, exc_info=True)

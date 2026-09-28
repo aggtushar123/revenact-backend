@@ -48,6 +48,17 @@ class CallFixture(APITestCase):
             source=Attachment.Source.TRANSCRIPT,
         )
 
+    def binary_transcript(self, data: bytes, name="blob.bin"):
+        return Attachment.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            file=SimpleUploadedFile(name, data, content_type="application/octet-stream"),
+            name=name,
+            content_type="application/octet-stream",
+            size=len(data),
+            source=Attachment.Source.TRANSCRIPT,
+        )
+
 
 class NotAnalysableTests(CallFixture):
     def test_a_new_call_is_pending(self):

@@ -414,8 +414,15 @@ def classify_records(records, *, organisation=None, user=None):
                 apply_classification(record, fields)
                 classified += 1
                 done.append(record)
-            elif record._meta.model_name == "call":
-                # The model looked and could not place it: nothing to judge.
+            elif results and record._meta.model_name == "call":
+                # `results` is non-empty and, since this record isn't the
+                # match above, it placed some OTHER record in the batch:
+                # proof the model engaged with the batch and specifically
+                # passed on this one, not just "this batch failed". An
+                # empty reply (one poisoned transcript can produce one for
+                # the whole batch) proves nothing about any record in it,
+                # so nobody in the batch is marked off the back of it —
+                # left pending for a retry instead.
                 mark_not_analysable(record)
                 done.append(record)
         # The people on these calls, emails and tickets sound different now.

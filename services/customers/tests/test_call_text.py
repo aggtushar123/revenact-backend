@@ -1,10 +1,14 @@
 """What the classifier reads for a call: the title, then the transcript, else
 the summary. A title that only says a call happened is nothing to read."""
 
+from unittest.mock import patch
+
+from django.core.exceptions import SuspiciousFileOperation
 from django.test import SimpleTestCase
 
 from services.customers import calls
 from services.customers.classification import _text_for
+from services.customers.files import read_transcript_text
 from services.customers.models import Call
 from services.customers.tests.test_call_state import CallFixture
 
@@ -44,6 +48,37 @@ class CallTextTests(CallFixture):
         call.transcript.file.storage.delete(call.transcript.file.name)
         call = Call.objects.get(pk=call.pk)
         self.assertEqual(_text_for(call), "Renewal readiness. They want SSO.")
+
+    def test_a_storage_error_reads_as_no_transcript(self):
+        """Not every read failure is an `OSError`/`ValueError` — a storage
+        backend can raise its own exception (`SuspiciousFileOperation`,
+        say). None of them may fail a classification batch."""
+        call = self.call(summary="They want SSO.", transcript=self.transcript("stored words"))
+        call = Call.objects.get(pk=call.pk)
+        storage = call.transcript.file.storage
+        with patch.object(storage, "open", side_effect=SuspiciousFileOperation("nope")):
+            self.assertEqual(_text_for(call), "Renewal readiness. They want SSO.")
+
+    def test_a_binary_transcript_file_does_not_raise(self):
+        call = self.call(
+            summary="They want SSO.",
+            transcript=self.binary_transcript(b"\xff\xfe\x00\x01binary junk\x00"),
+        )
+        call = Call.objects.get(pk=call.pk)
+        text = _text_for(call)
+        self.assertTrue(text.startswith("Renewal readiness. "))
+
+    def test_the_transcript_file_is_read_only_once(self):
+        """`has_something_to_read` and `call_text` both ask for the
+        transcript; the file is opened and decoded at most once per call."""
+        call = self.call(transcript=self.transcript("We need SSO."))
+        call = Call.objects.get(pk=call.pk)
+        with patch(
+            "services.customers.files.read_transcript_text", wraps=read_transcript_text
+        ) as spy:
+            self.assertTrue(calls.has_something_to_read(call))
+            self.assertEqual(calls.call_text(call), "Renewal readiness. We need SSO.")
+        self.assertEqual(spy.call_count, 1)
 
     def test_something_to_read(self):
         self.assertFalse(calls.has_something_to_read(self.call(title="Weekly sync")))
