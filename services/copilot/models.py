@@ -139,6 +139,18 @@ class Message(models.Model):
         "Overview or Support reply, a support attention focus, an Organizations reply, or "
         "one fed an Ask reply).",
     )
+    grounded_records = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Assistant turns answering an Ask rail, or fed one as history, only: "
+        "references ({type, id, company_type, company_id}) to the records the digest quoted "
+        "or counted without citing them — an organisation page's story items, its focus "
+        "and the accounts it covered (Grounding.records) — fixed when the answer was "
+        "written; empty when it quoted none. A mentioned-only reader is checked against "
+        "each exactly as against sources (views._reply_readable_by). References only, "
+        "never text. Null on every other turn and on replies written before it existed; "
+        "an organisation page reply with none fails closed.",
+    )
     carries_anomaly_text = models.BooleanField(
         null=True,
         blank=True,
