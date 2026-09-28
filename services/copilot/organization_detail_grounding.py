@@ -19,8 +19,9 @@ First filter, always: `resolve_scope`, which 404s an organisation outside
 `visible_accounts(asker)`; the chip must be one of them. Every story source
 then applies its own record rule. Story text is record text — an inbound
 email's subject is written by whoever sent it — and is fenced like every Ask
-digest (`dashboard_system_prompt`). The anomaly entry never carries the stored,
-model-written title: only that one exists and when it was last seen.
+digest (`dashboard_system_prompt`). Needs attention states only the renewal
+and the urgent tickets: its overdue tasks, Knowledge questions and live anomaly
+depend on the asker's own rules, and the digest is shown to shared readers.
 
 What a shared reader is checked against (`views._reply_readable_by`): the
 organisation (`customer_ids`), the tickets the digest counted (`tickets`), and
@@ -172,17 +173,12 @@ def _attention_lines(attention):
             f"{_plural(tickets['count'], 'open High or Critical ticket')}, oldest opened "
             f"{_days(tickets['oldest_days'])} ago"
         )
-    # Overdue-task counts follow the asker's own personal task-visibility
-    # rule (creator/assignee chain), so the digest never states one: it is
-    # shown to shared readers whose own rule may differ.
-    if attention["questions"] is not None:
-        count = attention["questions"]["count"]
-        lines.append(f"{_plural(count, 'unanswered Knowledge question')} about the organisation")
-    if attention["anomaly"] is not None:
-        lines.append(
-            "A live anomaly: similar reports across companies include this organisation's "
-            f"records; last seen {attention['anomaly']['last_seen_at'][:10]}"
-        )
+    # Counts follow the viewer, and the digest is shown to shared readers
+    # whose rules may differ from the asker's, so it never states an entry
+    # that depends on the asker's own rules: overdue tasks (the personal
+    # task-visibility chain), unanswered Knowledge questions
+    # (`visible_questions`), or a live anomaly (shown only when the asker may
+    # read its evidence).
     if not lines:
         return ["Needs attention: nothing."]
     return ["Needs attention:", *(f"  - {line}" for line in lines)]

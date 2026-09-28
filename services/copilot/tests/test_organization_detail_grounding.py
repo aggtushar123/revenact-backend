@@ -36,6 +36,7 @@ from services.copilot.views import (
 )
 from services.customers.models import Customer, Ticket
 from services.customers.tests.test_views import blind_to_one_account
+from services.knowledge.models import Question
 from services.organizations.tests.story_fixtures import StoryFixture
 
 
@@ -91,7 +92,7 @@ class DetailDigestTests(DetailFixture):
         self.assertIn("NPS -20", summary)
         self.assertIn("Signal: Renewal overdue", summary)
 
-    def test_needs_attention_follows_the_story_without_the_anomaly_title(self):
+    def test_needs_attention_states_only_what_every_reader_would_see(self):
         Customer.objects.filter(pk=self.pizza.pk).update(
             renewal_date=self.today + timedelta(days=12)
         )
@@ -115,6 +116,13 @@ class DetailDigestTests(DetailFixture):
             occurred_at=now,
             customer=self.pizza,
         )
+        Question.objects.create(
+            organisation=self.org,
+            customer=self.pizza,
+            asked_by=self.admin,
+            assignee=self.csm,
+            text="Why is usage down?",
+        )
 
         for user in (self.csm, self.admin):
             with self.subTest(user=user.name):
@@ -125,12 +133,15 @@ class DetailDigestTests(DetailFixture):
                     f"Renewal due {self.today + timedelta(days=12)} (in 12 days)", summary
                 )
                 self.assertIn("1 open High or Critical ticket, oldest opened 3 days ago", summary)
-                self.assertIn("A live anomaly: similar reports across companies", summary)
+                # Counts follow the viewer: the questions count follows the
+                # asker's Knowledge rule, and whether a live anomaly shows
+                # depends on the asker reading its evidence, so the digest a
+                # shared reader may see states neither, nor overdue tasks.
+                self.assertNotIn("Knowledge question", summary)
+                self.assertNotIn("anomaly", summary)
                 self.assertNotIn("SSO outage", summary)
                 self.assertNotIn("login failures", summary)
-        # Overdue-task counts follow the asker's own personal task-visibility
-        # rule, so the digest a shared reader sees never states one.
-        self.assertNotIn("overdue task", self.ground().summary)
+                self.assertNotIn("overdue task", summary)
 
     def test_nothing_needs_attention_says_so(self):
         self.assertIn("Needs attention: nothing.", self.ground().summary)
