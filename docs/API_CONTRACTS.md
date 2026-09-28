@@ -4532,14 +4532,16 @@ One person:
 
 - `view`: `list | person`, required.
 - `filters` (list only): the page's own URL keys — `q`, `customer`, `account`, `sentiment`, `role`
-  — through the list's own parser (`contact_list.parse_contact_filters`); an unknown key or a value
-  the list would ignore is dropped, never rejected. A `customer` or `account` id the caller cannot
-  open is `400`, the same whether it exists or not: `{"context": {"filters": {"customer": ["Not an
-  organisation you can open."]}}}` or `{"context": {"filters": {"account": ["Not an account you can
-  open."]}}}`.
-- `contact` (person only): required, the person's id. One the caller cannot open — including a
-  non-positive id, which never names a row — is `400 {"context": {"contact": ["Not a person you can
-  open."]}}`, the same whether it exists or not.
+  — through the list's own parser (`contact_list.parse_contact_filters`), which reads `customer`/
+  `account` as plain ids from text, not schema-checked; an unknown key or a value the list would
+  ignore is dropped, never rejected. A `customer` or `account` id the caller cannot open — including
+  a non-positive one, which never names a row — is `400`, the same whether it exists or not:
+  `{"context": {"filters": {"customer": ["Not an organisation you can open."]}}}` or
+  `{"context": {"filters": {"account": ["Not an account you can open."]}}}`.
+- `contact` (person only): required, the person's id, `min_value=1` at the field itself. A
+  non-positive value never reaches the "can they open it" check: it is `400 {"context": {"contact":
+  ["Ensure this value is greater than or equal to 1."]}}`. A positive id the caller cannot open —
+  whether or not it exists — is `400 {"context": {"contact": ["Not a person you can open."]}}`.
 - `focus` (person only): `null`, or `"sentiment"` (from "Why this sentiment?"). Any other value is
   `400` under `focus`.
 
