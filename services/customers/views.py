@@ -1603,24 +1603,56 @@ class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Contact.objects.filter(visible_children_q(self.request.user)).distinct()
 
 
-class ContactInteractionsView(views.APIView):
-    """GET /api/v1/contacts/<id>/interactions/ — what this person's
-    sentiment rests on: every classified call they were on, email from
-    their address and ticket they raised, newest first, each with its own
-    sentiment. Same scoping as ContactDetailView."""
+def _visible_contact(request, pk):
+    """A contact the caller may open, or 404 — the same scope as
+    ContactDetailView, whether or not the id exists."""
+    # SOC2:AUTH-02 a contact follows its organisation's or account's visibility
+    return get_object_or_404(
+        Contact.objects.filter(visible_children_q(request.user)).distinct(), pk=pk
+    )
+
+
+class ContactHistoryView(views.APIView):
+    """GET /api/v1/contacts/<id>/history/ — the person's calls, emails and
+    tickets, newest first, each under its own record rule for the caller,
+    with the sentiment breakdown (contact_history.py). A contact the caller
+    cannot open is a 404."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
+        from .contact_history import build_history
+
+        return Response(build_history(_visible_contact(request, pk), request.user))
+
+
+class ContactInteractionsView(views.APIView):
+    """GET /api/v1/contacts/<id>/interactions/ — what this person's
+    sentiment rests on: every classified call they were on, email from
+    their address and ticket they raised, newest first, each with its own
+    sentiment. Same scoping as ContactDetailView, and each row under its own
+    record rule, as in /history/, which replaces this endpoint once the
+    Contacts page no longer calls it."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from .contact_history import history_querysets
         from .contact_sentiment import interactions_for, score
 
-        contact = get_object_or_404(
-            Contact.objects.filter(visible_children_q(request.user)).distinct(), pk=pk
-        )
+        contact = _visible_contact(request, pk)
         rows = interactions_for(contact)
         value, label = score(rows)
+        readable = {
+            kind: set(queryset.values_list("pk", flat=True))
+            for kind, queryset in zip(
+                ("call", "email", "ticket"), history_querysets(contact, request.user)
+            )
+        }
         items = []
         for row in rows:
+            if row["record"].pk not in readable[row["kind"]]:
+                continue
             record = row["record"]
             kind = row["kind"]
             if kind == "call":
