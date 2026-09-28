@@ -86,6 +86,9 @@ SKILLS = (
         (
             "The asker's list recomputed for its view and filters: the summary tiles, the "
             "sections, the ten riskiest accounts and the renewals due within 90 days",
+            "On one organisation's page: its portfolio row, what needs attention, its story "
+            "counts and its story items from the last 30 days (at most 25), narrowed by the "
+            "account chip, each under its own record rule",
             "The records retrieval finds for the companies asked about, under the asker's "
             "own visibility",
             "The conversation so far",

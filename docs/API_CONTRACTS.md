@@ -58,7 +58,7 @@ expects.
 | Auth (`authSlice.ts`, `Login.tsx`) | `accounts` | ✅ Built — signup, login, logout, token refresh |
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
-| Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`); the organisation page's Story is `GET /organizations/<id>/story/` |
+| Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`); the organisation page's Story is `GET /organizations/<id>/story/`, and Ask on that page is the same send with `view: "detail"` |
 | Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
@@ -4238,6 +4238,54 @@ The answer is grounded in the caller's filtered list, recomputed by the portfoli
 
 It is metered as the `organizations` purpose.
 
+**Asked from an organisation's page** (`services/copilot/organization_detail_context.py`,
+`organization_detail_grounding.py`).
+
+```json
+{
+  "content": "What does this mean for EMEA?",
+  "context": {
+    "surface": "organizations",
+    "view": "detail",
+    "organization": 12,
+    "account": 31,
+    "focus": {"kind": "note", "id": 88}
+  }
+}
+```
+
+- `organization`: required. It must be in the caller's `visible_customers`. Otherwise the response is
+  `400 {"context": {"organization": ["Not an organisation you can open."]}}`, the same whether the id
+  exists or not.
+- `account`: optional, `null` for every account. It must be one of the organisation's accounts in
+  the caller's `visible_accounts`. Otherwise the response is
+  `400 {"context": {"account": ["Not an account of this organisation you can open."]}}`.
+- `focus`: `null`, or one story item, `{"kind", "id"}`. `kind` is one of `activity`, `calendar_event`,
+  `call`, `email`, `note`, `survey`, `task`, `ticket` or `health`. Any other kind, or an `id` that is
+  not a positive whole number, gives a `400` under `focus`. The item is read again with the story's
+  own rules (`GET /organizations/<id>/story/`), inside the account chip. An item the caller may not
+  read is dropped silently and stored as `null`. A focus lasts one question.
+- The stored context gains `label`, which the server builds from those rows: "Pizza Hut", or
+  "Pizza Hut · EMEA" with an account. A label sent by the client is ignored. `origin` is the
+  context without `focus`, `{surface, view, organization, account, label}`. The history tag is
+  the `label`, and reopening opens `/organizations/<organization>?account=<account>`.
+
+The answer is grounded in the page, recomputed for the caller:
+
+- the organisation's portfolio row (`load_portfolio` with `ids` and `include_churned`): lifecycle,
+  owner, health and its trend, ARR, renewal, NPS, Triage risk, pulses, last touch and signal;
+- the story's Needs attention block. The anomaly entry says only that a live anomaly exists and when
+  it was last seen, never its stored title or summary;
+- the story's counts by group, over every record up to today;
+- the story items of the last 30 days, newest first, at most 25, narrowed by the account chip;
+- the focused item, even when it is older than 30 days;
+- the records retrieval finds for the question, on the organisation or on the chip's account, each
+  read under its own rule.
+
+Story titles and summaries are record text, so they sit inside the same `<dashboard_data>` fence,
+with the same neutralising of fence tags. It is metered as the `organizations` purpose. An
+organisation or account that stops being visible between the check and the grounding is a `404`.
+
 **Shared sessions.** Every Ask reply (Dashboard or Organizations) stores a snapshot when it is
 written: `grounded_customer_ids` — the ids of every customer its digest could have drawn on — and
 `carries_anomaly_text` — whether it could carry a stored, org-wide anomaly title or summary
@@ -4483,7 +4531,18 @@ who doesn't see every account needs each account in `visible_accounts`.
 Legacy replies with none fail closed on the Overview and Support areas, a
 support attention focus, an Organizations reply, and a context-less reply
 fed Ask history, except for a Leadership reader who sees every account. Follow-ups fold it like pipeline. A context-less (Communications/Copilot) reply keeps exactly
-the per-source checks for every viewer, the asker included.
+the per-source checks for every viewer, the asker included. **Story records too**
+(`Message.grounded_records`, migration `0018_message_grounded_records`): an organisation page reply
+quotes story items and counts records that it does not cite, so it stores a reference
+(`{type, id, company_type, company_id}`, never text) to every story item and focus it quoted and to
+every account it covered. A reader is checked against each reference exactly as against a cited
+source: the account must be in their `visible_accounts` (or the organisation in their
+`visible_customers`), and a note, email, ticket or task must pass its own rule (`RECORD_RULES`, which
+gains `task` → `visible_tasks`). So a reader who can open the organisation but not one of their
+accounts reads a reply about the whole organisation only when it was narrowed to accounts they see.
+Follow-ups fold the references in like the other snapshots. An organisation page reply without them,
+or with a malformed list, fails closed. Every other reply written before the field existed quoted no
+story, and reads as before.
 
 Demo: `seed_demo_hierarchy` — Alice at the top; Carl, Priya, Raj, Mei
 report to her; Dana to Carl.
