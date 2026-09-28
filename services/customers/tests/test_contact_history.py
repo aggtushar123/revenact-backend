@@ -10,7 +10,7 @@ from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
 from services.customers.classification import mark_not_analysable
-from services.customers.models import Call, Contact, Customer, Email, Ticket
+from services.customers.models import Account, Call, Contact, Customer, Email, Ticket
 from services.customers.tests.test_views import blind_to_one_account
 
 WHEN = datetime(2026, 9, 20, 10, 0, tzinfo=dt_timezone.utc)
@@ -116,6 +116,23 @@ class HistoryShapeTests(Fixture):
         )
         self.assertEqual(on_seen["id"], seen.id)
         self.assertEqual(body["counts"], {"calls": 3, "emails": 0, "tickets": 0})
+
+    def test_an_account_linked_to_a_hidden_organisation_names_only_the_visible_one(self):
+        # Joint is linked to two organisations: "Mine", the viewer's own,
+        # and "AAA Hidden", the colleague's — named so it sorts first,
+        # proving `_parents` picks by visibility, not by order.
+        mine = Customer.objects.create(organisation=self.org, name="Mine", owner=self.viewer)
+        secret = Customer.objects.create(
+            organisation=self.org, name="AAA Hidden", owner=self.colleague
+        )
+        joint = Account.objects.create(name="Joint", owner=self.colleague)
+        joint.customers.add(mine, secret)
+        self.call("On Joint", account=joint)
+
+        row = self.read()["calls"][0]
+
+        self.assertEqual(row["organisation"], {"id": mine.id, "name": "Mine"})
+        self.assertEqual(row["account"], {"id": joint.id, "name": "Joint"})
 
     def test_an_unread_call_is_pending_with_no_sentiment(self):
         Call.objects.create(
@@ -253,7 +270,35 @@ class HistoryQueryCountTests(Fixture):
                 self.call(f"Org {batch}-{i}")
                 self.call(f"Seen {batch}-{i}", account=self.seen)
                 self.email(f"Mail {batch}-{i}")
+                # Emails and tickets sit on an account too, not only a
+                # customer, so the `account__customers` prefetch they share
+                # with calls is exercised on every kind, not just calls.
+                Email.objects.create(
+                    account=self.seen,
+                    subject=f"Mail Acc {batch}-{i}",
+                    sender_name="Sam",
+                    recipient_name="Carl",
+                    body="Body text.",
+                    sent_at=WHEN,
+                    from_address="sam@pizzahut.com",
+                )
                 self.ticket(f"ZD-{batch}-{i}")
-            with self.assertNumQueries(10):
+                Ticket.objects.create(
+                    account=self.seen,
+                    ticket_number=f"ZDA-{batch}-{i}",
+                    title="Broken export",
+                    priority="high",
+                    opened_at=date(2026, 9, 19),
+                    requester_email="sam@pizzahut.com",
+                    external_url="https://acme.zendesk.com/t/1",
+                )
+            # 12, not 10: with emails and tickets now also on an account
+            # (not only a customer), their own `account__customers`
+            # prefetch actually has something to fetch — one more query
+            # each, over the 10 from calls-on-accounts alone. Flat still
+            # means this number holds at both fixture sizes below.
+            with self.assertNumQueries(12):
                 body = self.client.get(self.url).data
             self.assertEqual(len(body["calls"]), 6 * (batch + 1))
+            self.assertEqual(len(body["emails"]), 6 * (batch + 1))
+            self.assertEqual(len(body["tickets"]), 6 * (batch + 1))

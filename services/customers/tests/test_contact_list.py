@@ -47,6 +47,20 @@ class Fixture(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         return sorted(row["name"] for row in response.data["results"])
 
+    def joint(self):
+        """A contact on an Account linked to two organisations: `mine`,
+        which the viewer owns, and the colleague's `secret`, which the
+        viewer cannot open. The viewer sees the contact and the Account
+        through `mine`, but must never be shown `secret`."""
+        viewer, _seen, _hidden = blind_to_one_account(self.pizza)
+        colleague = self.pizza.owner
+        mine = Customer.objects.create(organisation=self.org, name="Mine", owner=viewer)
+        secret = Customer.objects.create(organisation=self.org, name="Secret Co", owner=colleague)
+        joint_account = Account.objects.create(name="Joint", owner=colleague)
+        joint_account.customers.add(mine, secret)
+        contact = self.person("Jo Joint", account=joint_account)
+        return viewer, mine, secret, joint_account, contact
+
 
 class FilterTests(Fixture):
     def test_the_organisation_filter_takes_its_accounts_contacts_too(self):
@@ -67,6 +81,18 @@ class FilterTests(Fixture):
     def test_unusable_values_are_ignored(self):
         everyone = ["Kim Kraft", "Sam Pizza", "Uma Hut"]
         self.assertEqual(self.names("?customer=x&account=&sentiment=furious&role=boss"), everyone)
+
+    def test_an_organisation_the_viewer_cannot_open_matches_nothing(self):
+        # Before the fix, filtering by `secret`'s id still matched Jo Joint
+        # through the Joint account's other link to `mine` — confirming an
+        # organisation exists that the viewer may not open.
+        viewer, _mine, secret, _joint, _jo = self.joint()
+        self.assertEqual(self.names(f"?customer={secret.id}", user=viewer), [])
+
+    def test_an_account_the_viewer_cannot_open_matches_nothing(self):
+        viewer, _seen, hidden = blind_to_one_account(self.pizza)
+        self.person("Hal Hidden", account=hidden)
+        self.assertEqual(self.names(f"?account={hidden.id}", user=viewer), [])
 
 
 class RowTests(Fixture):
@@ -94,18 +120,43 @@ class RowTests(Fixture):
         # Joint belongs to two organisations: the viewer's own, and the
         # colleague's Secret Co, which the viewer cannot open. The viewer sees
         # Joint through their own organisation.
-        viewer, _seen, _hidden = blind_to_one_account(self.pizza)
-        colleague = self.pizza.owner
-        mine = Customer.objects.create(organisation=self.org, name="Mine", owner=viewer)
-        secret = Customer.objects.create(organisation=self.org, name="Secret Co", owner=colleague)
-        joint = Account.objects.create(name="Joint", owner=colleague)
-        joint.customers.add(mine, secret)
-        self.person("Jo Joint", account=joint)
+        viewer, mine, _secret, joint, _jo = self.joint()
         self.client.force_authenticate(viewer)
         row = next(r for r in self.client.get(URL).data["results"] if r["name"] == "Jo Joint")
         self.assertEqual(row["companies"], [{"id": mine.id, "name": "Mine"}])
         self.assertEqual(row["organisation"], {"id": mine.id, "name": "Mine"})
         self.assertEqual(row["account"], {"id": joint.id, "name": "Joint"})
+
+
+class NestedVisibilityTests(Fixture):
+    """The same "only what the viewer may open" rule, carried onto the
+    other three places a Contact's `companies`/`organisation` are read."""
+
+    def test_the_detail_view_names_only_the_visible_organisation(self):
+        viewer, mine, _secret, _joint, contact = self.joint()
+        self.client.force_authenticate(viewer)
+        response = self.client.get(f"/api/v1/contacts/{contact.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["companies"], [{"id": mine.id, "name": "Mine"}])
+        self.assertEqual(response.data["organisation"], {"id": mine.id, "name": "Mine"})
+
+    def test_the_customer_contact_list_names_only_the_visible_organisation(self):
+        viewer, mine, _secret, _joint, _contact = self.joint()
+        self.client.force_authenticate(viewer)
+        response = self.client.get(f"/api/v1/customers/{mine.id}/contacts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        row = next(r for r in response.data if r["name"] == "Jo Joint")
+        self.assertEqual(row["companies"], [{"id": mine.id, "name": "Mine"}])
+        self.assertEqual(row["organisation"], {"id": mine.id, "name": "Mine"})
+
+    def test_the_account_contact_list_names_only_the_visible_organisation(self):
+        viewer, mine, _secret, joint, _contact = self.joint()
+        self.client.force_authenticate(viewer)
+        response = self.client.get(f"/api/v1/customers/{mine.id}/accounts/{joint.id}/contacts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        row = next(r for r in response.data if r["name"] == "Jo Joint")
+        self.assertEqual(row["companies"], [{"id": mine.id, "name": "Mine"}])
+        self.assertEqual(row["organisation"], {"id": mine.id, "name": "Mine"})
 
 
 class SummaryTests(Fixture):

@@ -1404,7 +1404,23 @@ class AccountCalendarEventListView(generics.ListAPIView):
         return account.calendar_events.all()
 
 
-class CustomerContactListView(generics.ListCreateAPIView):
+class ContactCompanyVisibilityMixin:
+    """Passes `visible_customer_ids` into ContactSerializer's context, so
+    `companies`/`organisation` name only organisations the caller may
+    open. Needed even on the two views nested under one Customer/Account
+    below: an account-level Contact's own Account can be linked to more
+    than one organisation at once, and a colleague's organisation sharing
+    that Account is not this caller's to see named."""
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["visible_customer_ids"] = set(
+            visible_customers(self.request.user).values_list("pk", flat=True)
+        )
+        return context
+
+
+class CustomerContactListView(ContactCompanyVisibilityMixin, generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/contacts/ — GET returns
     every Contact under this Customer, rolled up from both levels a
     Contact can exist at: organization-level (directly on this
@@ -1442,7 +1458,7 @@ class CustomerContactListView(generics.ListCreateAPIView):
         serializer.save(customer=self.get_customer())
 
 
-class AccountContactListView(generics.ListCreateAPIView):
+class AccountContactListView(ContactCompanyVisibilityMixin, generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/
     — every account-level Contact for one Account (GET), or adds a new
     one to it (POST), scoped to both its customer_id and the caller's
@@ -1482,7 +1498,7 @@ def _int_param(raw):
         return None
 
 
-class ContactListView(generics.ListAPIView):
+class ContactListView(ContactCompanyVisibilityMixin, generics.ListAPIView):
     """GET /api/v1/contacts/ — every Contact the caller may open, across
     every Customer/Account, organisation-level and account-level alike.
     Powers the Contacts page; the one Contact list not nested under
@@ -1528,12 +1544,19 @@ class ContactListView(generics.ListAPIView):
 
         customer_id = _int_param(params.get("customer") or params.get("company"))
         if customer_id is not None:
+            # SOC2:AUTH-02 an id the caller cannot open must not be confirmed to
+            # exist by matching contacts on accounts also linked to it.
+            if not visible_customers(self.request.user).filter(pk=customer_id).exists():
+                return queryset.none()
             queryset = queryset.filter(
                 Q(customer_id=customer_id) | Q(account__customers__id=customer_id)
             )
 
         account_id = _int_param(params.get("account"))
         if account_id is not None:
+            # SOC2:AUTH-02 same as the organisation filter above
+            if not visible_accounts(self.request.user).filter(pk=account_id).exists():
+                return queryset.none()
             queryset = queryset.filter(account_id=account_id)
 
         sentiment = params.get("sentiment")
@@ -1545,15 +1568,6 @@ class ContactListView(generics.ListAPIView):
             queryset = queryset.filter(role=role)
 
         return queryset
-
-    def get_serializer_context(self):
-        from .scoping import visible_customers
-
-        context = super().get_serializer_context()
-        context["visible_customer_ids"] = set(
-            visible_customers(self.request.user).values_list("pk", flat=True)
-        )
-        return context
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -1624,7 +1638,7 @@ class ContactStatsView(views.APIView):
         )
 
 
-class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
+class ContactDetailView(ContactCompanyVisibilityMixin, generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/contacts/<id>/ — a single Contact,
     scoped to the caller's own organisation (via either its `customer`
     or its `account`'s own `customers`, same reasoning as ContactListView's
@@ -1690,7 +1704,14 @@ class ContactInteractionsView(views.APIView):
 
         contact = _visible_contact(request, pk)
         rows = interactions_for(contact)
+        # Scored from every row here, unfiltered by `readable` below — this
+        # is the same `interactions_for`/`score` pair that computed
+        # `contact.sentiment`, so the two agree. Only the *listed* rows are
+        # trimmed to what the viewer may read.
         value, label = score(rows)
+        # Unbounded (no HISTORY_LIMIT) — acceptable only because this
+        # endpoint is being retired once the Contacts page moves to
+        # /history/, which does apply the limit.
         readable = {
             kind: set(queryset.values_list("pk", flat=True))
             for kind, queryset in zip(
