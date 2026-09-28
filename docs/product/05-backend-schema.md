@@ -379,6 +379,7 @@ call the matching helper.
 | Records | Rule | Defined in |
 |---|---|---|
 | Customers and accounts | Own organisation, then: `view_all_accounts` sees all; otherwise owned, owned by a report, account-owned, unowned, function-owned, a customer you were asked about or answered for, or one you wrote about | `services/customers/scoping.py` |
+| Organisation roll-ups (`/customers/<id>/…` contacts, opportunities, risks, surveys, canvases, files, calls; `/surveys/?customer=`) | The organisation's own records, plus those on its accounts in `visible_accounts`: being able to open the organisation is not enough for an account-level record | `scoping.customer_rollup_q` |
 | Notes | Author and their management chain; authorless seeded rows are visible to all | `services/customers/personal.py` |
 | Tasks | Creator, assignee and both chains; authorless seeded rows visible to all | same |
 | Tickets | Own department plus undeparted tickets; Leadership and `view_all_accounts` see all | same |

@@ -871,15 +871,22 @@ class NoteSerializer(serializers.ModelSerializer):
 
 class AttachmentSerializer(serializers.ModelSerializer):
     """A file on a customer or account. Never the storage path: the bytes
-    come from the download endpoint, which checks who is asking."""
+    come from the download endpoint, which checks who is asking.
+
+    `account_id`/`account_name` say which account a file hangs off (both
+    null for an organisation-level file): the organisation's Files list
+    rolls its accounts' files up and tags each one."""
 
     uploaded_by = serializers.SerializerMethodField()
     download_url = serializers.SerializerMethodField()
+    account_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Attachment
         fields = [
             "id",
+            "account_id",
+            "account_name",
             "name",
             "content_type",
             "size",
@@ -899,12 +906,18 @@ class AttachmentSerializer(serializers.ModelSerializer):
     def get_download_url(self, obj):
         return f"/api/v1/files/{obj.id}/download/"
 
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None
+
 
 class CallSerializer(serializers.ModelSerializer):
     """Read, and log a new call. On create, `transcript_text` (pasted) or
     `transcript` (an uploaded .txt/.vtt/.srt/.md file) may stand in for
     `summary`: the model writes the summary from it, and the transcript is
-    kept as an Attachment. `host_name` defaults to the caller."""
+    kept as an Attachment. `host_name` defaults to the caller. `account_id`/
+    `account_name` (null on an organisation-level call) tag the rows the
+    organisation's list rolls up from its accounts; `account_id` is
+    read-only, since a call's parent comes from the URL."""
 
     connector_name = serializers.CharField(source="connector.name", read_only=True, default=None)
     connector_provider = serializers.CharField(
@@ -918,11 +931,14 @@ class CallSerializer(serializers.ModelSerializer):
     participant_ids = serializers.PrimaryKeyRelatedField(
         queryset=Contact.objects.all(), many=True, write_only=True, required=False
     )
+    account_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Call
         fields = [
             "id",
+            "account_id",
+            "account_name",
             "title",
             "host_name",
             "occurred_at",
@@ -965,6 +981,9 @@ class CallSerializer(serializers.ModelSerializer):
         if obj.transcript_id is None:
             return None
         return AttachmentSerializer(obj.transcript).data
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None
 
 
 class TicketSerializer(serializers.ModelSerializer):
@@ -1039,9 +1058,10 @@ class ContactSerializer(serializers.ModelSerializer):
     Account-scoped list views below don't strictly need this (the page
     already knows its own scope) but get it for free since it's the
     same serializer; the standalone top-level ContactListView does need
-    it, since it spans every Customer. `account_name` is set only for
-    an account-level contact, so the standalone page can show which
-    account within the company it belongs to (a plain
+    it, since it spans every Customer. `account_id`/`account_name` are
+    set only for an account-level contact: the standalone page shows
+    which account within the company it belongs to, and the
+    organisation page's account chips filter on the id (a plain
     SerializerMethodField rather than `source="account.name"`, since a
     dotted source would raise on a null `account` rather than reliably
     falling back)."""
@@ -1067,6 +1087,7 @@ class ContactSerializer(serializers.ModelSerializer):
             "sentiment_computed_at",
             "last_contacted_at",
             "companies",
+            "account_id",
             "account_name",
         ]
         read_only_fields = ["sentiment_source", "sentiment_evidence", "sentiment_computed_at"]
@@ -1088,7 +1109,7 @@ class ContactSerializer(serializers.ModelSerializer):
 
 
 class OpportunitySerializer(serializers.ModelSerializer):
-    """See Opportunity model's docstring. `companies`/`account_name`
+    """See Opportunity model's docstring. `companies`/`account_id`/`account_name`
     mirror ContactSerializer's own fields exactly, same reasoning (the
     standalone Pipelines board spans every Customer, so it can't assume
     which parent FK is set the way a nested Customer/Account-scoped
@@ -1124,6 +1145,7 @@ class OpportunitySerializer(serializers.ModelSerializer):
             "department",
             "department_display",
             "companies",
+            "account_id",
             "account_name",
         ]
 
@@ -1167,6 +1189,7 @@ class RiskSerializer(serializers.ModelSerializer):
             "department",
             "department_display",
             "companies",
+            "account_id",
             "account_name",
         ]
 
@@ -1184,12 +1207,11 @@ class SurveySerializer(serializers.ModelSerializer):
     """See Survey model's docstring. `companies`/`account_name` mirror
     Opportunity/RiskSerializer's own fields exactly, same reasoning —
     the standalone Surveys page spans every Customer/Account the same
-    way the Pipelines board does. Unlike Opportunity/Risk, this also
-    exposes `account_id` (a plain passthrough of the FK, not a
-    SerializerMethodField) — Opportunity/Risk rows never navigate
-    anywhere on click, but the standalone Surveys page's own row-click
-    does (into that Account's own Details page), and `account_name`
-    alone isn't enough to build that link.
+    way the Pipelines board does. `account_id` is a plain passthrough of
+    the FK, not a SerializerMethodField: the standalone Surveys page's
+    row-click opens that Account's Details page, and `account_name` alone
+    isn't enough to build that link. Contact/Opportunity/RiskSerializer
+    carry it too, for the organisation page's account chips.
 
     `score` is required, and range-checked against `survey_type`, the
     moment `status` becomes RESPONDED — not enforced at any other time,

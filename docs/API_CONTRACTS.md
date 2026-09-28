@@ -1106,13 +1106,18 @@ override and the fallback.
 
 ### `GET /api/v1/customers/<customer_id>/accounts/`, `POST /api/v1/customers/<customer_id>/accounts/`
 
-Auth: `IsAuthenticated`. GET: every `Account` under one `Customer`,
-scoped to the caller's own organisation. **`404`, not `403` or an empty
-list,** for a `customer_id` outside the caller's organisation or that
-doesn't exist — checked once via `get_object_or_404` on the parent
-`Customer` before touching its accounts, so a real customer in another
-org 404s the same way a nonexistent id does (a caller can't otherwise
-tell "no accounts" apart from "not your customer").
+Auth: `IsAuthenticated`. GET: every `Account` under one `Customer` that
+the caller may open (`visible_accounts`, SOC2:AUTH-02) — not every
+`Account` linked to it. Being able to open the organisation doesn't
+imply being able to open all of its accounts: an account the viewer
+can't see is left out of this list entirely (no chip, no row), same
+object-level rule `AccountDetailView` already applies. **`404`, not
+`403` or an empty list,** for a `customer_id` outside the caller's
+organisation or that doesn't exist — checked once via
+`get_object_or_404` on the parent `Customer` before touching its
+accounts, so a real customer in another org 404s the same way a
+nonexistent id does (a caller can't otherwise tell "no accounts" apart
+from "not your customer").
 
 **Response `200`** (GET) — a **plain array** (no pagination envelope; an
 individual customer's account list is expected to stay small), each
@@ -2361,9 +2366,15 @@ See `seed_demo_calls` (run after `seed_demo_connectors`) for demo data.
 
 Auth: `IsAuthenticated`, same 404-not-empty-list scoping as the other
 nested lists. `GET` is the company's calls, newest first, each with
+`account_id`/`account_name` (both `null` for an organisation-level call),
 `sentiment`/`ai_area`/`ai_category`, `connector_name` (the recorder, or
 null), `logged_by {id, name}` (null for synced or seeded calls),
-`recording_url`, and `transcript` (an Attachment row, or null).
+`recording_url`, `participants`, and `transcript` (an Attachment row with
+the same `account_id`/`account_name`, or null). On an organisation, `GET`
+rolls up its own calls and those on its accounts the caller may open
+(`customer_rollup_q`, as for Files below). A call logged on the
+organisation path is always organisation-level; an `account_id` in the
+body is ignored. Log on the account path to put a call on an account.
 
 `POST` logs a call: `title`, `occurred_at` (datetime), optional
 `host_name` (defaults to the caller), `duration_minutes`, `summary`,
@@ -2675,7 +2686,15 @@ quotes is the figure `GET /organizations/portfolio/` returns.
 ### `GET/POST /api/v1/customers/<id>/files/`, `.../accounts/<id>/files/`
 
 Auth: `IsAuthenticated`; anyone who may open the company may list and
-add. `POST` is multipart: `file`, optional `description`. What is
+add. On an organisation, `GET` rolls up its own files and those on its
+accounts the caller may open (`customer_rollup_q`, the rule the contact,
+opportunity, risk, survey and canvas roll-ups use: an account a colleague
+owns keeps its files out even when the caller can open the organisation).
+Each row carries `account_id` and `account_name`, both `null` for an
+organisation-level file. A `POST` on the organisation path always creates
+an organisation-level file; an `account_id` in the body is ignored. Upload
+on the account path to attach a file to an account. `POST` is multipart:
+`file`, optional `description`. What is
 accepted (SOC2:API-10, `services/customers/files.py`): a closed list of
 document, image, transcript and audio types by extension *and* declared
 content type (never HTML, SVG, scripts or archives), magic bytes checked
@@ -2685,10 +2704,14 @@ VM, in the nightly backup) under a random name; the storage path is
 never exposed.
 
 ```json
-[{"id": 7, "name": "Signed MSA.pdf", "content_type": "application/pdf", "size": 183220,
-  "description": "Countersigned 12 Sep", "source": "upload",
-  "uploaded_by": {"id": 3, "name": "Carl"}, "download_url": "/api/v1/files/7/download/",
-  "created_at": "2026-09-16T09:00:00Z"}]
+[{"id": 7, "account_id": null, "account_name": null, "name": "Signed MSA.pdf",
+  "content_type": "application/pdf", "size": 183220, "description": "Countersigned 12 Sep",
+  "source": "upload", "uploaded_by": {"id": 3, "name": "Carl"},
+  "download_url": "/api/v1/files/7/download/", "created_at": "2026-09-16T09:00:00Z"},
+ {"id": 9, "account_id": 4, "account_name": "EMEA", "name": "qbr.vtt",
+  "content_type": "text/vtt", "size": 5120, "description": "", "source": "transcript",
+  "uploaded_by": {"id": 3, "name": "Carl"}, "download_url": "/api/v1/files/9/download/",
+  "created_at": "2026-09-15T14:00:00Z"}]
 ```
 
 ### `GET /api/v1/files/<id>/`, `DELETE`, `GET /api/v1/files/<id>/download/`
@@ -2700,7 +2723,8 @@ holder (403 otherwise) and removes the bytes too. The download is always
 `Content-Disposition: attachment` with `X-Content-Type-Options: nosniff`,
 a sandboxed CSP and `Cache-Control: private, no-store`, so user content
 is never rendered as part of the site. Audit events `file.upload`,
-`file.delete`.
+`file.delete`. The row has the same shape as the list's, `account_id`/
+`account_name` included.
 
 ### `GET /api/v1/interactions/stats/`
 
@@ -2919,10 +2943,12 @@ rather than a URL param, the standalone `/contacts/list` page's own
 "Add Contact".
 
 **Response `200`** (GET) — a plain array, each entry: `id`, `name`, `role`,
-`role_display`, `email`, `phone`, `status`, `sentiment`,
-`last_contacted_at`, `company_id`, `company_name`, `account_name`
-(`null` for an organisation-level row, that Account's name for an
-account-level one). **Response `201`** (POST) — one such entry.
+`role_display`, `email`, `phone`, `language`, `status`, `sentiment`,
+`sentiment_source`, `sentiment_evidence`, `sentiment_computed_at`,
+`last_contacted_at`, `companies` (every ultimate parent Customer),
+`account_id`/`account_name` (both `null` for an organisation-level row;
+the organisation page's account chips filter on `account_id`).
+**Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/`
 
@@ -2972,8 +2998,8 @@ Query params:
       "status": "active",
       "sentiment": "positive",
       "last_contacted_at": "2026-09-02T04:35:18.707403Z",
-      "company_id": 6,
-      "company_name": "Apple Inc",
+      "companies": [{ "id": 6, "name": "Apple Inc" }],
+      "account_id": null,
       "account_name": null
     }
   ]
@@ -3066,8 +3092,10 @@ adds an organisation-level Opportunity; `customer` taken from the URL.
 
 **Response `200`** (GET) — a plain array, each entry: `id`, `title`,
 `mrr`, `stage`, `stage_display`, `priority`, `priority_display`,
-`company_id`, `company_name`, `account_name` (`null` for an
-organisation-level row). **Response `201`** (POST) — one such entry.
+`department`, `department_display`, `companies`, `account_id`/
+`account_name` (both `null` for an organisation-level row; the
+organisation page's account chips filter on `account_id`).
+**Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/opportunities/`
 
@@ -3104,8 +3132,10 @@ that parent — exactly one of the two must be given (`400` otherwise).
     "stage_display": "Qualification",
     "priority": "high",
     "priority_display": "High",
-    "company_id": 6,
-    "company_name": "Apple Inc",
+    "department": "",
+    "department_display": "",
+    "companies": [{ "id": 6, "name": "Apple Inc" }],
+    "account_id": 12,
     "account_name": "Apple EMEA"
   }
 ]
@@ -3154,8 +3184,10 @@ adds an organisation-level Risk; `customer` taken from the URL.
 
 **Response `200`** (GET) — a plain array, each entry: `id`, `title`,
 `mrr`, `stage`, `stage_display`, `priority`, `priority_display`,
-`company_id`, `company_name`, `account_name` (`null` for an
-organisation-level row). **Response `201`** (POST) — one such entry.
+`department`, `department_display`, `companies`, `account_id`/
+`account_name` (both `null` for an organisation-level row; the
+organisation page's account chips filter on `account_id`).
+**Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/risks/`
 
@@ -3192,8 +3224,10 @@ parent — exactly one of the two must be given (`400` otherwise).
     "stage_display": "Open",
     "priority": "high",
     "priority_display": "High",
-    "company_id": 8,
-    "company_name": "WeWork",
+    "department": "",
+    "department_display": "",
+    "companies": [{ "id": 8, "name": "WeWork" }],
+    "account_id": null,
     "account_name": null
   }
 ]
@@ -3268,10 +3302,9 @@ Activity Feed's own Surveys filter.
 `score`, `sent_at`, `responded_at`, `companies` (every ultimate parent
 Customer, plural since an account-level Survey's own Account can belong
 to more than one), `account_id`/`account_name` (both `null` for an
-organisation-level row — unlike Opportunity/Risk, `account_id` is a
-real field here, not just `account_name`, since the standalone Surveys
-page's own row-click needs it to navigate to that Account's Details
-page), `created_at`. **Response `201`** (POST) — one such entry.
+organisation-level row; the standalone Surveys page's row-click uses
+`account_id` to open that Account's Details page), `created_at`.
+**Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/surveys/`
 
@@ -3294,6 +3327,15 @@ endpoint.
 
 **Pagination is off** here, same reasoning as `OpportunityListView` — a
 rollup page needs every record to total correctly, not one page of them.
+
+Query params:
+- `?customer=<id>` — one organisation's surveys: its own and those on its
+  accounts the caller may open (`customer_rollup_q`, the organisation
+  page's roll-up rule). An id the caller cannot open (another tenant's,
+  one they may not see, or not an id at all) returns `[]` with `200`,
+  never a `404` or `400` that would confirm it exists. A blank value is
+  no filter. Powers the Surveys page's organisation filter
+  (`/surveys?customer=<id>`).
 
 POST takes a `customer_id` or an `account_id` in the request body
 (neither is a real serializer field) and creates the Survey under that

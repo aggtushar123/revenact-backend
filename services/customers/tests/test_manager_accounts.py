@@ -46,6 +46,12 @@ class ManagerSeesReportsAccounts(APITestCase):
         self.assertEqual(response.status_code, 200)
         return {(item["kind"], item["id"]) for item in response.data["items"]}
 
+    def accounts(self, user):
+        self.client.force_authenticate(user)
+        response = self.client.get(f"/api/v1/customers/{self.customer.pk}/accounts/")
+        self.assertEqual(response.status_code, 200)
+        return {row["id"] for row in response.data}
+
     def test_a_manager_sees_their_reports_account(self):
         self.assertIn(self.account, visible_accounts(self.manager))
         self.assertIn(self.account, visible_accounts(self.lead))
@@ -58,6 +64,15 @@ class ManagerSeesReportsAccounts(APITestCase):
     def test_a_peer_still_does_not(self):
         self.assertEqual(self.contacts(self.peer), set())
         self.assertNotIn(("activity", self.activity.pk), self.story(self.peer))
+
+    def test_a_manager_sees_the_account_itself_in_the_organisations_account_list(self):
+        # SOC2:AUTH-02 — /api/v1/customers/<id>/accounts/ is the same
+        # roll-up the organisation page's account chips read.
+        self.assertEqual(self.accounts(self.manager), {self.account.pk})
+        self.assertEqual(self.accounts(self.lead), {self.account.pk})
+
+    def test_a_peer_does_not_see_it_in_the_account_list(self):
+        self.assertEqual(self.accounts(self.peer), set())
 
     def test_an_account_under_a_reports_organisation_is_seen_too(self):
         owned = Customer.objects.create(

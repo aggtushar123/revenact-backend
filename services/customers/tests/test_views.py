@@ -949,6 +949,29 @@ class AccountListCreateTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_hides_an_account_the_viewer_cannot_open(self):
+        # SOC2:AUTH-02 — the organisation page's account chips and its
+        # Details -> Accounts tab both read this list; a viewer who
+        # cannot open one of the organisation's accounts must not even
+        # see its name here.
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = {row["name"] for row in response.data}
+        self.assertEqual(names, {"Seen"})
+
+    def test_admin_still_sees_every_account(self):
+        viewer, seen, hidden = blind_to_one_account(self.customer)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        names = {row["name"] for row in response.data}
+        self.assertEqual(names, {"Seen", "Hidden"})
+
 
 class AccountDetailTests(APITestCase):
     def setUp(self):
@@ -2140,6 +2163,17 @@ class CustomerContactListTests(APITestCase):
         org_row = next(row for row in response.data if row["name"] == "Org-Level Contact")
         self.assertIsNone(org_row["account_name"])
 
+    def test_each_row_carries_its_account_id(self):
+        account = create_account(self.customer, name="North America")
+        Contact.objects.create(customer=self.customer, **self._contact_kwargs(name="Org-Level"))
+        Contact.objects.create(account=account, **self._contact_kwargs(name="Account-Level"))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        ids = {row["name"]: row["account_id"] for row in response.data}
+        self.assertEqual(ids, {"Org-Level": None, "Account-Level": account.id})
+
     def test_hides_contacts_on_accounts_the_viewer_cannot_see(self):
         viewer, seen, hidden = blind_to_one_account(self.customer)
         Contact.objects.create(customer=self.customer, **self._contact_kwargs(name="Org-Level"))
@@ -2640,6 +2674,17 @@ class ContactDetailTests(APITestCase):
         self.org_contact.refresh_from_db()
         self.assertEqual(self.org_contact.customer, self.customer)
 
+    def test_patching_account_id_does_not_move_the_contact(self):
+        self.client.force_authenticate(self.admin)
+        url = f"/api/v1/contacts/{self.org_contact.id}/"
+
+        response = self.client.patch(url, {"account_id": self.account.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["account_id"])
+        self.org_contact.refresh_from_db()
+        self.assertIsNone(self.org_contact.account_id)
+
     def test_can_delete_a_contact(self):
         self.client.force_authenticate(self.admin)
         response = self.client.delete(f"/api/v1/contacts/{self.org_contact.id}/")
@@ -2730,6 +2775,22 @@ class CustomerOpportunityListTests(APITestCase):
         self.assertEqual(titles, {"Org-Level Opp", "Account-Level Opp"})
         account_row = next(row for row in response.data if row["title"] == "Account-Level Opp")
         self.assertEqual(account_row["account_name"], "North America")
+
+    def test_each_row_carries_its_account_id(self):
+        account = create_account(self.customer, name="North America")
+        Opportunity.objects.create(
+            customer=self.customer, **self._opportunity_kwargs(title="Org-Level")
+        )
+        Opportunity.objects.create(
+            account=account,
+            **self._opportunity_kwargs(title="Account-Level"),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        ids = {row["title"]: row["account_id"] for row in response.data}
+        self.assertEqual(ids, {"Org-Level": None, "Account-Level": account.id})
 
     def test_hides_opportunities_on_accounts_the_viewer_cannot_see(self):
         viewer, seen, hidden = blind_to_one_account(self.customer)
@@ -3147,6 +3208,17 @@ class CustomerRiskListTests(APITestCase):
         self.assertEqual(titles, {"Org-Level Risk", "Account-Level Risk"})
         account_row = next(row for row in response.data if row["title"] == "Account-Level Risk")
         self.assertEqual(account_row["account_name"], "North America")
+
+    def test_each_row_carries_its_account_id(self):
+        account = create_account(self.customer, name="North America")
+        Risk.objects.create(customer=self.customer, **self._risk_kwargs(title="Org-Level"))
+        Risk.objects.create(account=account, **self._risk_kwargs(title="Account-Level"))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        ids = {row["title"]: row["account_id"] for row in response.data}
+        self.assertEqual(ids, {"Org-Level": None, "Account-Level": account.id})
 
     def test_hides_risks_on_accounts_the_viewer_cannot_see(self):
         viewer, seen, hidden = blind_to_one_account(self.customer)
@@ -3703,6 +3775,88 @@ class SurveyListTests(APITestCase):
             self.url, {"survey_type": "nps", "sent_at": "2026-09-01"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class SurveyListCustomerFilterTests(APITestCase):
+    """`GET /api/v1/surveys/?customer=<id>`: one organisation's surveys and
+    those of its accounts the viewer may open (customer_rollup_q). An id the
+    viewer cannot open reads as an empty list, never an error that would
+    confirm the organisation exists."""
+
+    url = "/api/v1/surveys/"
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.customer = Customer.objects.create(organisation=self.org, name="Globex")
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.customer)
+        self.other = Customer.objects.create(organisation=self.org, name="Initech")
+        self.client.force_authenticate(self.viewer)
+
+    def survey(self, **parent):
+        return Survey.objects.create(
+            survey_type=Survey.SurveyType.CSAT, sent_at="2026-09-01", **parent
+        )
+
+    def ids(self, query):
+        response = self.client.get(self.url, query)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {row["id"] for row in response.data}
+
+    def test_narrows_to_the_organisation_and_its_visible_accounts(self):
+        own = self.survey(customer=self.customer)
+        seen = self.survey(account=self.seen)
+        self.survey(account=self.hidden)
+        self.survey(customer=self.other)
+
+        self.assertEqual(self.ids({"customer": self.customer.id}), {own.id, seen.id})
+
+    def test_rows_carry_their_account(self):
+        self.survey(account=self.seen)
+
+        row = self.client.get(self.url, {"customer": self.customer.id}).data[0]
+
+        self.assertEqual((row["account_id"], row["account_name"]), (self.seen.id, "Seen"))
+
+    def test_without_the_filter_the_list_is_unchanged(self):
+        own = self.survey(customer=self.customer)
+        seen = self.survey(account=self.seen)
+        other = self.survey(customer=self.other)
+        self.survey(account=self.hidden)
+
+        self.assertEqual(self.ids({}), {own.id, seen.id, other.id})
+        self.assertEqual(self.ids({"customer": ""}), {own.id, seen.id, other.id})
+
+    def test_an_id_the_viewer_cannot_open_reads_as_empty(self):
+        secret = Customer.objects.create(
+            organisation=self.org, name="Secret", owner=self.customer.owner
+        )
+        self.survey(customer=secret)
+        foreign = Customer.objects.create(
+            organisation=Organisation.objects.create(name="Other Org"), name="Foreign"
+        )
+        self.survey(customer=foreign)
+        self.survey(customer=self.customer)
+
+        for value in (secret.id, foreign.id, 999999, "abc", "-1", "1.5"):
+            with self.subTest(customer=value):
+                response = self.client.get(self.url, {"customer": value})
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(response.data, [])
+
+    def test_the_query_count_does_not_grow_with_the_list(self):
+        query = {"customer": self.customer.id}
+        # The first read resolves the caller's membership and org chart, which
+        # are memoised on the user; what is pinned is every read after it.
+        self.client.get(self.url, query)
+        for batch in range(2):
+            for _ in range(3):
+                self.survey(customer=self.customer)
+                self.survey(account=self.seen)
+            # Three however long the list: the organisation, the surveys with
+            # their parents joined, and every account's organisations at once.
+            with self.assertNumQueries(3):
+                response = self.client.get(self.url, query)
+            self.assertEqual(len(response.data), 6 * (batch + 1))
 
 
 class SurveyDetailTests(APITestCase):
