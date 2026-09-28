@@ -169,7 +169,15 @@ class SummaryTests(Fixture):
             self.person(f"Guest{n} Pizza", customer=self.pizza, sentiment="positive")
         self.assertEqual(
             self.summary(f"?customer={self.pizza.id}"),
-            {"total": 32, "positive": 30, "neutral": 1, "negative": 1, "decision_makers": 1},
+            {
+                "total": 32,
+                "positive": 30,
+                "neutral": 1,
+                "negative": 1,
+                "decision_makers": 1,
+                "active": 32,
+                "growth_30d_pct": None,
+            },
         )
         self.assertEqual(self.summary()["decision_makers"], 2)
 
@@ -181,6 +189,60 @@ class SummaryTests(Fixture):
         # Seen's, and the unowned EMEA and Kraft Heinz.
         self.assertEqual(self.names(user=viewer), ["Kim Kraft", "Sam Pizza", "Sue Seen", "Uma Hut"])
         self.assertEqual(self.summary(user=viewer)["total"], 4)
+
+
+class ActiveAndGrowthTests(Fixture):
+    """The old stat cards' Active contacts and Growth (30d), kept on the
+    summary with ContactStatsView's own definitions, over the filtered set."""
+
+    def setUp(self):
+        super().setUp()
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        old = timezone.now() - timedelta(days=40)
+        Contact.objects.filter(pk__in=[self.sam.pk, self.kim.pk]).update(created_at=old)
+        Contact.objects.filter(pk=self.uma.pk).update(status=Contact.Status.INACTIVE)
+
+    def summary(self, query="", user=None):
+        self.client.force_authenticate(user or self.admin)
+        return self.client.get(URL + query).data["summary"]
+
+    def test_unfiltered(self):
+        summary = self.summary()
+        self.assertEqual((summary["active"], summary["growth_30d_pct"]), (2, 50.0))
+
+    def test_filtered(self):
+        summary = self.summary(f"?customer={self.pizza.id}")
+        self.assertEqual((summary["total"], summary["active"]), (2, 1))
+        self.assertEqual(summary["growth_30d_pct"], 100.0)
+        summary = self.summary(f"?account={self.emea.id}")
+        self.assertEqual((summary["active"], summary["growth_30d_pct"]), (0, None))
+
+    def test_the_same_as_the_stats_view_unfiltered(self):
+        self.client.force_authenticate(self.admin)
+        stats = self.client.get(f"{URL}stats/").data
+        summary = self.summary()
+        self.assertEqual(
+            (summary["active"], summary["growth_30d_pct"]),
+            (stats["active"], stats["growth_30d_pct"]),
+        )
+
+    def test_an_invisible_filter_gives_an_empty_summary(self):
+        viewer, _mine, secret, _joint, _jo = self.joint()
+        self.assertEqual(
+            self.summary(f"?customer={secret.id}", user=viewer),
+            {
+                "total": 0,
+                "positive": 0,
+                "neutral": 0,
+                "negative": 0,
+                "decision_makers": 0,
+                "active": 0,
+                "growth_30d_pct": None,
+            },
+        )
 
 
 class QueryCountTests(Fixture):

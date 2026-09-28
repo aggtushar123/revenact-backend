@@ -3113,7 +3113,12 @@ behind a computed sentiment (see "Contact sentiment is computed").
 `summary` covers the whole filtered set, not the page: `total`, the
 count per sentiment, and `decision_makers` (roles `executive_sponsor`,
 `decision_maker` and `economic_buyer`, the set the organisation page's
-People summary uses). Five queries whatever the page size.
+People summary uses). It also keeps the old stat cards' figures, with
+`/contacts/stats/`'s own definitions but over the filtered set: `active`
+(status `active`) and `growth_30d_pct` (today's filtered total against
+the filtered contacts created 30 or more days ago, to one decimal; `null`
+with no baseline). An organisation or account filter the caller cannot
+open gives an all-zero summary. Five queries whatever the page size.
 
 **Response `200`**
 ```json
@@ -3157,7 +3162,9 @@ People summary uses). Five queries whatever the page size.
     "positive": 7,
     "neutral": 6,
     "negative": 3,
-    "decision_makers": 5
+    "decision_makers": 5,
+    "active": 14,
+    "growth_30d_pct": 6.7
   }
 }
 ```

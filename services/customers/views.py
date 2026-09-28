@@ -1516,7 +1516,8 @@ class ContactListView(ContactCompanyVisibilityMixin, generics.ListAPIView):
     Each row carries `organisation` and `account` as `{id, name}` refs (the
     organisation is the first linked one the caller may open) beside
     ContactSerializer's fields. `summary` covers the whole filtered set,
-    not the page: `{total, positive, neutral, negative, decision_makers}`."""
+    not the page: `{total, positive, neutral, negative, decision_makers,
+    active, growth_30d_pct}` (the last two as ContactStatsView defines them)."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
@@ -1580,6 +1581,16 @@ class ContactListView(ContactCompanyVisibilityMixin, generics.ListAPIView):
             neutral=Count("pk", filter=Q(sentiment=Contact.Sentiment.NEUTRAL)),
             negative=Count("pk", filter=Q(sentiment=Contact.Sentiment.NEGATIVE)),
             decision_makers=Count("pk", filter=Q(role__in=DECISION_ROLES)),
+            # The old stat cards' Active and Growth (30d), with
+            # ContactStatsView's own definitions, in the same one query.
+            active=Count("pk", filter=Q(status=Contact.Status.ACTIVE)),
+            total_30d_ago=Count(
+                "pk", filter=Q(created_at__lte=timezone.now() - timedelta(days=30))
+            ),
+        )
+        baseline = counted.pop("total_30d_ago")
+        counted["growth_30d_pct"] = (
+            round((counted["total"] - baseline) / baseline * 100, 1) if baseline else None
         )
         response.data["summary"] = counted
         return response

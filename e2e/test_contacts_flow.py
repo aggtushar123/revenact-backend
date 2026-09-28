@@ -115,7 +115,16 @@ class ContactsFlowTests(LiveServerTestCase):
         self.assertEqual(rows["Sam Pizza"]["sentiment_evidence"]["calls"], 1)
         self.assertEqual(
             page["summary"],
-            {"total": 2, "positive": 0, "neutral": 1, "negative": 1, "decision_makers": 1},
+            {
+                "total": 2,
+                "positive": 0,
+                "neutral": 1,
+                "negative": 1,
+                "decision_makers": 1,
+                # Everyone here is new this month: no baseline to grow from.
+                "active": 2,
+                "growth_30d_pct": None,
+            },
         )
         negative_only = self.read("/contacts/?" + urlencode({"sentiment": "negative"}), carl)
         self.assertEqual([r["name"] for r in negative_only["results"]], ["Sam Pizza"])
