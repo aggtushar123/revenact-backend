@@ -13,7 +13,7 @@ from rest_framework.test import APITestCase
 from core.models import AuditEvent
 from services.accounts.models import Organisation, User
 from services.customers.files import safe_name, validate_upload
-from services.customers.models import Account, Attachment, Call, Customer
+from services.customers.models import Account, Attachment, Call, Contact, Customer
 from services.customers.tests.test_views import blind_to_one_account
 
 PDF = b"%PDF-1.4\n%fake\n"
@@ -377,3 +377,119 @@ class CallsTests(Fixture):
         self.assertEqual(
             self.client.get(f"/api/v1/customers/{self.pizza.id}/calls/").status_code, 404
         )
+
+
+class CallRollupTests(Fixture):
+    """The organisation's Calls list: its own calls and those of every account
+    the viewer may open, each tagged with its account (customer_rollup_q)."""
+
+    WHEN = datetime(2026, 9, 16, 10, 0, tzinfo=dt_timezone.utc)
+
+    def setUp(self):
+        super().setUp()
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.pizza)
+        self.url = f"/api/v1/customers/{self.pizza.id}/calls/"
+
+    def call(self, title, **parent):
+        return Call.objects.create(title=title, host_name="Sam", occurred_at=self.WHEN, **parent)
+
+    def test_rolls_up_the_accounts_the_viewer_may_open(self):
+        self.call("Org call", customer=self.pizza)
+        self.call("Seen call", account=self.seen)
+        self.call("Hidden call", account=self.hidden)
+        self.client.force_authenticate(self.viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = {r["title"]: (r["account_id"], r["account_name"]) for r in response.data}
+        self.assertEqual(rows, {"Org call": (None, None), "Seen call": (self.seen.id, "Seen")})
+
+    def test_someone_who_sees_everything_gets_every_account(self):
+        self.call("Org call", customer=self.pizza)
+        self.call("Seen call", account=self.seen)
+        self.call("Hidden call", account=self.hidden)
+        self.client.force_authenticate(self.admin)
+
+        titles = {r["title"] for r in self.client.get(self.url).data}
+
+        self.assertEqual(titles, {"Org call", "Seen call", "Hidden call"})
+
+    def test_logging_on_the_organisation_path_stays_organisation_level(self):
+        self.client.force_authenticate(self.viewer)
+
+        response = self.client.post(
+            self.url,
+            {
+                "title": "Check-in",
+                "occurred_at": self.WHEN.isoformat(),
+                "summary": "All fine.",
+                "account_id": self.seen.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual((response.data["account_id"], response.data["account_name"]), (None, None))
+        call = Call.objects.get()
+        self.assertEqual((call.customer, call.account), (self.pizza, None))
+
+    def test_an_accounts_call_and_its_transcript_carry_the_account(self):
+        self.client.force_authenticate(self.viewer)
+        with patch("services.customers.calls.get_completion", return_value="SSO by Q4."):
+            response = self.client.post(
+                f"/api/v1/customers/{self.pizza.id}/accounts/{self.seen.id}/calls/",
+                {
+                    "title": "QBR",
+                    "occurred_at": self.WHEN.isoformat(),
+                    "transcript": SimpleUploadedFile(
+                        "qbr.txt", b"We need SSO by Q4.", content_type="text/plain"
+                    ),
+                },
+                format="multipart",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(
+            (response.data["account_id"], response.data["account_name"]), (self.seen.id, "Seen")
+        )
+        transcript = response.data["transcript"]
+        self.assertEqual(
+            (transcript["account_id"], transcript["account_name"]), (self.seen.id, "Seen")
+        )
+        listed = self.client.get(self.url).data
+        self.assertEqual([(r["title"], r["account_id"]) for r in listed], [("QBR", self.seen.id)])
+
+    def test_the_query_count_does_not_grow_with_the_list(self):
+        self.client.force_authenticate(self.viewer)
+        # The first read resolves the caller's membership and org chart, which
+        # are memoised on the user; what is pinned is every read after it.
+        self.client.get(self.url)
+        for batch in range(2):
+            for i in range(3):
+                for parent in ({"customer": self.pizza}, {"account": self.seen}):
+                    transcript = self.attach(
+                        f"{batch}-{i}.txt", source=Attachment.Source.TRANSCRIPT, **parent
+                    )
+                    call = Call.objects.create(
+                        title=f"Call {batch}-{i}",
+                        host_name="Sam",
+                        occurred_at=self.WHEN,
+                        logged_by=self.carl,
+                        transcript=transcript,
+                        **parent,
+                    )
+                    call.participants.add(
+                        Contact.objects.create(
+                            name=f"Guest {call.id}",
+                            email=f"guest{call.id}@pizza.io",
+                            role=Contact.Role.OTHER,
+                            **parent,
+                        )
+                    )
+            # Three however long the list: the organisation, the calls with
+            # their account, recorder, logger and transcript joined, and every
+            # call's participants at once.
+            with self.assertNumQueries(3):
+                response = self.client.get(self.url)
+            self.assertEqual(len(response.data), 6 * (batch + 1))

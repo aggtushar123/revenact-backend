@@ -2361,9 +2361,15 @@ See `seed_demo_calls` (run after `seed_demo_connectors`) for demo data.
 
 Auth: `IsAuthenticated`, same 404-not-empty-list scoping as the other
 nested lists. `GET` is the company's calls, newest first, each with
+`account_id`/`account_name` (both `null` for an organisation-level call),
 `sentiment`/`ai_area`/`ai_category`, `connector_name` (the recorder, or
 null), `logged_by {id, name}` (null for synced or seeded calls),
-`recording_url`, and `transcript` (an Attachment row, or null).
+`recording_url`, `participants`, and `transcript` (an Attachment row with
+the same `account_id`/`account_name`, or null). On an organisation, `GET`
+rolls up its own calls and those on its accounts the caller may open
+(`customer_rollup_q`, as for Files below). A call logged on the
+organisation path is always organisation-level; an `account_id` in the
+body is ignored. Log on the account path to put a call on an account.
 
 `POST` logs a call: `title`, `occurred_at` (datetime), optional
 `host_name` (defaults to the caller), `duration_minutes`, `summary`,

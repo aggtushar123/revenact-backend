@@ -914,7 +914,10 @@ class CallSerializer(serializers.ModelSerializer):
     """Read, and log a new call. On create, `transcript_text` (pasted) or
     `transcript` (an uploaded .txt/.vtt/.srt/.md file) may stand in for
     `summary`: the model writes the summary from it, and the transcript is
-    kept as an Attachment. `host_name` defaults to the caller."""
+    kept as an Attachment. `host_name` defaults to the caller. `account_id`/
+    `account_name` (null on an organisation-level call) tag the rows the
+    organisation's list rolls up from its accounts; `account_id` is
+    read-only, since a call's parent comes from the URL."""
 
     connector_name = serializers.CharField(source="connector.name", read_only=True, default=None)
     connector_provider = serializers.CharField(
@@ -928,11 +931,14 @@ class CallSerializer(serializers.ModelSerializer):
     participant_ids = serializers.PrimaryKeyRelatedField(
         queryset=Contact.objects.all(), many=True, write_only=True, required=False
     )
+    account_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Call
         fields = [
             "id",
+            "account_id",
+            "account_name",
             "title",
             "host_name",
             "occurred_at",
@@ -975,6 +981,9 @@ class CallSerializer(serializers.ModelSerializer):
         if obj.transcript_id is None:
             return None
         return AttachmentSerializer(obj.transcript).data
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None
 
 
 class TicketSerializer(serializers.ModelSerializer):

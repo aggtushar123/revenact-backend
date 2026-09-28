@@ -29,6 +29,7 @@ from .interactions import _parse_int
 from .models import (
     Account,
     Attachment,
+    Call,
     Canvas,
     Contact,
     Customer,
@@ -2883,7 +2884,12 @@ class FileDownloadView(views.APIView):
 
 class _CallListView(generics.ListCreateAPIView):
     """List the calls on one company, and log one. JSON or multipart; a
-    multipart body may carry a `transcript` file (.txt/.vtt/.srt/.md)."""
+    multipart body may carry a `transcript` file (.txt/.vtt/.srt/.md).
+
+    On an organisation the list rolls up its accounts' calls too, under
+    customer_rollup_q (only accounts the caller may open), each tagged
+    with `account_id`/`account_name`. A call logged there is always
+    organisation-level: the parent comes from the URL, never the body."""
 
     serializer_class = CallSerializer
     permission_classes = [IsAuthenticated]
@@ -2895,8 +2901,14 @@ class _CallListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer, account = self._parent()
-        parent = customer if customer is not None else account
-        return parent.calls.select_related("connector", "logged_by", "transcript__uploaded_by")
+        if customer is not None:
+            # SOC2:AUTH-02 an account's call follows its own account's visibility
+            rows = Call.objects.filter(customer_rollup_q(self.request.user, customer))
+        else:
+            rows = account.calls.all()
+        return rows.select_related(
+            "account", "connector", "logged_by", "transcript__uploaded_by", "transcript__account"
+        ).prefetch_related("participants")
 
     def perform_create(self, serializer):
         from core import audit
