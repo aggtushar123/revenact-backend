@@ -224,6 +224,7 @@ class PersonDigestTests(PersonFixture):
 
         summary = self.person().summary
 
+        self.assertIn("Calls they were on: 1 (newest 1 below)", summary)
         self.assertIn("Seen call", summary)
         for hidden in ("Hidden call", "Colleague's mail", "ZD-9"):
             self.assertNotIn(hidden, summary)
@@ -323,7 +324,7 @@ class WhyTests(PersonFixture):
                 self.assertIn(
                     "The stored sentiment also rests on records the asker cannot open.", summary
                 )
-                for leak in ("Hidden call", "Colleague's", "3", "4 records"):
+                for leak in ("Hidden call", "Colleague's", "4 records"):
                     self.assertNotIn(leak, summary.split("Sentiment:", 1)[1].split("Calls")[0])
                 self.assertNotIn("Hidden call", summary)
 
@@ -342,3 +343,34 @@ class WhyTests(PersonFixture):
         summary = self.person(focus="sentiment").summary
         self.assertIn("Sentiment: negative, set by hand; no record decides it.", summary)
         self.assertNotIn("Why (", summary)
+
+    def test_the_why_block_names_at_most_person_limit_but_snapshots_every_record_it_weighed(self):
+        oldest = self.call("Oldest", account=self.seen, sentiment="negative", days_ago=999)
+        for n in range(PERSON_LIMIT):
+            self.call(f"Recent {n:02}", days_ago=n, sentiment="negative")
+        self.computed()
+
+        grounding = self.person(focus="sentiment")
+        summary = grounding.summary
+
+        self.assertNotIn("Oldest", summary)
+        self.assertIn("  (and 1 older readable records, weighed but not listed)", summary)
+        self.assertIn(
+            record_ref("call", oldest.pk, customer_id=None, account_id=self.seen.pk),
+            grounding.records,
+        )
+        self.assertIn(account_ref(self.seen.pk), grounding.records)
+
+    def test_without_focus_the_snapshot_only_covers_the_quoted_rows(self):
+        oldest = self.call("Oldest", account=self.seen, sentiment="negative", days_ago=999)
+        for n in range(PERSON_LIMIT):
+            self.call(f"Recent {n:02}", days_ago=n, sentiment="negative")
+        self.computed()
+
+        grounding = self.person()  # focus is None
+
+        self.assertNotIn(
+            record_ref("call", oldest.pk, customer_id=None, account_id=self.seen.pk),
+            grounding.records,
+        )
+        self.assertNotIn(account_ref(self.seen.pk), grounding.records)

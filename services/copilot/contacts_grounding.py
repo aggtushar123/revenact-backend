@@ -14,6 +14,13 @@ interaction, readable or not, so it is never quoted. The why block weighs only
 the records the asker may read and, when the stored reading also rests on
 others, says only that it does. Record text is fenced like every Ask digest.
 
+The why block *names* at most PERSON_LIMIT of the readable records (newest
+first), with an "and N older" line past that — but the weighted reading
+always covers every readable record it rests on, so every one of them,
+named or not, is in the reply's own snapshot (`records`): a reader who
+wasn't shown a record's title still must be able to open it to see a
+shared reply that was computed from it (owner, 2026-09-28, fix round 1).
+
 What a shared reader is checked against (`views._reply_readable_by`): every
 organisation named (`customer_ids`), every account a person or record sits on
 and every record quoted (`records`), and the departments of the tickets
@@ -210,15 +217,17 @@ def _record_ref(kind, record):
     return record_ref(kind, record.pk, customer_id=record.customer_id)
 
 
-def _why_lines(contact, readable, focus, now):
+def _why_lines(contact, mine, evidence_count, focus, now):
     """The sentiment and, strictly, why: only readable records are weighed or
-    named; hidden ones are acknowledged, never counted."""
+    named; hidden ones are acknowledged, never counted. `mine` is every
+    readable record the stored sentiment rests on (newest first) — the why
+    block *names* at most PERSON_LIMIT of them, but the weighted reading
+    always covers all of `mine` (the caller puts every one of them, named
+    or not, into the reply's snapshot)."""
     if contact.sentiment_source != "computed":
         return [f"Sentiment: {contact.sentiment}, set by hand; no record decides it."]
     lines = [f"Sentiment: {contact.sentiment}, computed from their calls, emails and tickets"]
-    evidence = interactions_for(contact)
-    mine = [row for row in evidence if (row["kind"], row["record"].pk) in readable]
-    if len(mine) < len(evidence):
+    if len(mine) < evidence_count:
         lines.append("The stored sentiment also rests on records the asker cannot open.")
     if focus != FOCUS_SENTIMENT:
         return lines
@@ -226,13 +235,16 @@ def _why_lines(contact, readable, focus, now):
     if not mine:
         lines.append("  None of the records behind it are ones the asker can read.")
         return lines
-    for row in mine:
+    named, older = mine[:PERSON_LIMIT], mine[PERSON_LIMIT:]
+    for row in named:
         weight = KIND_WEIGHT[row["kind"]] * recency_weight(row["when"], now)
         title = getattr(row["record"], "title", None) or getattr(row["record"], "subject", "")
         lines.append(
             f"  - {_day(row['when'])} · {KIND_NAMES[row['kind']]} · {title} · "
             f"{row['sentiment']} · weight {weight:.2f}"
         )
+    if older:
+        lines.append(f"  (and {len(older)} older readable records, weighed but not listed)")
     value, label = score(mine, now)
     lines.append(f"  Weighted reading of these: {value:.2f} ({label})")
     return lines
@@ -258,29 +270,45 @@ def build_person_grounding(user, context, question, *, today=None):
         | {("email", pk) for pk in emails.values_list("pk", flat=True)}
         | {("ticket", pk) for pk in tickets.values_list("pk", flat=True)}
     )
+    focus = context.get("focus")
+    # Every readable record the stored sentiment rests on — needed both for
+    # the "also rests on records the asker cannot open" line (any focus) and,
+    # when the why block is actually shown, for the weighted reading and the
+    # reply's own snapshot below. Computed once, never re-filtered.
+    evidence_count = 0
+    mine = []
+    if contact.sentiment_source == "computed":
+        evidence = interactions_for(contact)
+        evidence_count = len(evidence)
+        mine = [row for row in evidence if (row["kind"], row["record"].pk) in readable]
     place = place_label(contact, visible_ids)
     lines = [
         f"Screen: Contacts › {contact.name} · {place} (one person's profile)",
         f"Person: {contact.name} · {contact.get_role_display()} · {place} · "
         f"status {contact.get_status_display().lower()} · {_contacted(contact)}",
-        *_why_lines(contact, readable, context.get("focus"), now),
+        *_why_lines(contact, mine, evidence_count, focus, now),
         *_section("Calls they were on", call_rows, calls.count(), _call_line),
         *_section("Emails from them", email_rows, emails.count(), _email_line),
         *_section("Tickets they raised", ticket_rows, tickets.count(), _ticket_line),
     ]
     organisation = organisation_of(contact, visible_ids)
-    # Every account any quoted record sits on, plus the contact's own — a
-    # shared reader must be able to open each one (`_reply_readable_by`),
-    # not only infer it from a record ref's own `company_id`.
-    account_ids = {
-        row.account_id for row in (*call_rows, *email_rows, *ticket_rows) if row.account_id
-    }
+    # Every readable record the digest drew on: the newest-PERSON_LIMIT of
+    # each kind it quoted, and — when the why block weighed them — every
+    # record (named or not) the weighted reading rests on. A shared reader
+    # must be able to open each one, named or only weighed alike.
+    why_rows = mine if focus == FOCUS_SENTIMENT else []
+    all_rows = (*call_rows, *email_rows, *ticket_rows, *(row["record"] for row in why_rows))
+    # Every account any of those sits on, plus the contact's own — a shared
+    # reader must be able to open each one (`_reply_readable_by`), not only
+    # infer it from a record ref's own `company_id`.
+    account_ids = {r.account_id for r in all_rows if r.account_id}
     if contact.account_id:
         account_ids.add(contact.account_id)
     refs = [
         *(_record_ref("call", r) for r in call_rows),
         *(_record_ref("email", r) for r in email_rows),
         *(_record_ref("ticket", r) for r in ticket_rows),
+        *(_record_ref(row["kind"], row["record"]) for row in why_rows),
         *(account_ref(pk) for pk in account_ids),
     ]
     return Grounding(
