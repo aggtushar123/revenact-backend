@@ -146,17 +146,18 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Organisations (customers): list, board, detail, create, edit, churn, archive | Built | 34 selectable table columns, health and CSAT popovers show real breakdowns |
 | Organizations portfolio (list redesign) | Built (backend) | One endpoint for the page: rows with health trend, renewal runway, pulse, last touch and one signal computed by the dashboard's own code; the six detail panels; group, sort, filters and cursor pages; summary tiles over the filtered set; CSV export of all 34 fields; bulk owner, stage and archive under the single-edit rules |
 | Organisation page Story (detail redesign) | Built (backend) | One endpoint for the Story tab: every record on the organisation and its accounts (activities, CallSense calls, emails, meetings, tickets, tasks, notes, surveys, health and pulse changes), newest first under one cursor; group, source, account, search and thread filters; counts per group, kind and account; Needs attention (renewal, urgent tickets, overdue tasks, open questions, latest anomaly). Every record read under its own rule |
+| Organisation page lists (detail redesign, delivery 2) | Built (backend) | Files and calls on an organisation roll up its accounts' records the viewer may open, each tagged with its account; contacts, opportunities and risks carry `account_id` for the account chips; the survey list filters by organisation (`?customer=`), an id the viewer cannot open reading as empty |
 | Accounts: list, board, detail, create, edit | Built | Many-to-many with customers. No churn or archive by design |
 | Contacts: list, detail, CRUD, computed sentiment | Built | Sentiment read from that contact's own calls, tickets and emails |
 | Activity feed: activities, emails, tasks, notes, tickets, calendar events, surveys, sessions, headlines, files, CallSense | Built | Tasks and notes can be created in place; emails can be composed |
 | Activity feed: Slack | Partial | The only remaining inline mock in the app |
 | Activity feed: Pulse, Conversations, Revenact Support | Planned | Render "coming soon" |
 | Success Plans tab | Planned | Placeholder on both detail pages |
-| Files | Built | Closed type list, magic-byte check, 25 MB cap, authenticated download only |
-| CallSense | Built | Log a call, attach a transcript, model writes the summary, call is classified immediately |
+| Files | Built | Closed type list, magic-byte check, 25 MB cap, authenticated download only. An organisation's list includes its visible accounts' files, tagged |
+| CallSense | Built | Log a call, attach a transcript, model writes the summary, call is classified immediately. An organisation's list includes its visible accounts' calls, tagged |
 | Custom objects and fields | Built | Definitions, fields, records; records scoped to a customer or account |
 | Pipelines (opportunities and risks) | Built | Kanban with drag to stage; department and role scoped |
-| Surveys (NPS, CSAT, CES) | Partial | Logged and scored by hand; no email delivery, no multi-question surveys |
+| Surveys (NPS, CSAT, CES) | Partial | Logged and scored by hand; filter by organisation; no email delivery, no multi-question surveys |
 | CSV import of organisations | Built | Column mapping UI under Settings, Entity Uploads |
 | Canvas (stakeholder map) | Built | React Flow, contacts as nodes, labelled relationships |
 | Campaigns | Partial | Synchronous send only; no scheduling, templates or open tracking |
@@ -313,3 +314,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-25 | Organizations portfolio (backend): portfolio endpoint, export, bulk edit |
 | 2026-09-26 | Ask Revenact on Organizations (backend) |
 | 2026-09-26 | Organisation page Story (backend): `GET /organizations/<id>/story/` |
+| 2026-09-27 | Organisation page lists (backend): files and calls roll up visible accounts, `account_id` on contacts, opportunities and risks, survey organisation filter |
