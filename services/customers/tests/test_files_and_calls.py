@@ -493,3 +493,20 @@ class CallRollupTests(Fixture):
             with self.assertNumQueries(3):
                 response = self.client.get(self.url)
             self.assertEqual(len(response.data), 6 * (batch + 1))
+
+    def test_a_hidden_accounts_transcript_stays_unreachable_by_download(self):
+        transcript = self.attach(
+            "hidden.txt", source=Attachment.Source.TRANSCRIPT, account=self.hidden
+        )
+        Call.objects.create(
+            title="Hidden call",
+            host_name="Sam",
+            occurred_at=self.WHEN,
+            account=self.hidden,
+            transcript=transcript,
+        )
+        self.client.force_authenticate(self.viewer)
+
+        download = self.client.get(f"/api/v1/files/{transcript.id}/download/")
+
+        self.assertEqual(download.status_code, status.HTTP_404_NOT_FOUND)
