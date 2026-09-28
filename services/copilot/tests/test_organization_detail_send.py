@@ -34,7 +34,7 @@ class DetailSendTests(DetailFixture):
         self.assertEqual(kwargs["purpose"], "organizations")
         self.assertIn("Screen: Organizations › Pizza Hut · EMEA", kwargs["system"])
         self.assertIn("Terms pending", kwargs["system"])
-        self.assertIn("Organizations data:\n<dashboard_data>", kwargs["system"])
+        self.assertIn("Organisation page data:\n<dashboard_data>", kwargs["system"])
 
     def test_the_context_is_stored_with_the_servers_label_and_becomes_the_origin(self, completion):
         note = self.note(self.emea)

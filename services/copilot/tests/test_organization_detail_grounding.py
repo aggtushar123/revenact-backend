@@ -253,6 +253,16 @@ class DetailDigestTests(DetailFixture):
         self.assertIn("On one organisation's page, it is that organisation's row", prompt)
         self.assertIn("Answer only from that data", prompt)
 
+    def test_the_detail_digest_heading_names_the_organisation_page_not_dashboard(self):
+        prompt = organizations_system_prompt("Be concise.", self.ground().summary)
+
+        # The digest heading right before the fence — not the list/board's
+        # own "Organizations data", and not the Dashboard surface's own
+        # "Dashboard data" — names this page, not "dashboard data".
+        self.assertIn("\n\nOrganisation page data:\n<dashboard_data>\n", prompt)
+        self.assertNotIn("\n\nOrganizations data:\n<dashboard_data>\n", prompt)
+        self.assertNotIn("\n\nDashboard data:\n<dashboard_data>\n", prompt)
+
     def test_records_are_retrieved_for_the_question_on_the_organisation_or_the_chips_account(self):
         on_pizza = self.note(self.pizza, title="Renewal blockers", day=self.days_ago(60))
         on_emea = self.email(

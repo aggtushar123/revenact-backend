@@ -23,6 +23,12 @@ digest (`dashboard_system_prompt`). Needs attention states only the renewal
 and the urgent tickets: its overdue tasks, Knowledge questions and live anomaly
 depend on the asker's own rules, and the digest is shown to shared readers.
 
+`_header` below always writes this page's own "(one organisation's page)"
+marker as the digest's first line; `organizations_system_prompt` reads it to
+title the fenced digest "Organisation page data" rather than the list/board's
+"Organizations data" — so the model calls this page's row, attention and
+story the organisation page's own data, not "dashboard data".
+
 What a shared reader is checked against (`views._reply_readable_by`): the
 organisation (`customer_ids`), the tickets the digest counted (`tickets`), and
 every account it covered and every story item it quoted (`records`).

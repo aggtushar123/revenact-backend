@@ -66,9 +66,23 @@ ORGANIZATIONS_PERSONA = (
 )
 
 
+#: The detail digest's own first line (`_header` in
+#: organization_detail_grounding.py) always carries this suffix; the list/board
+#: digest's first line never does. Checked on the first line only — the one
+#: line every digest's own header code writes first, never record text a
+#: customer could have authored — so an emailed or ticketed "(one
+#: organisation's page)" can't retitle a list-view answer.
+DETAIL_SCREEN_MARKER = "(one organisation's page)"
+
+
 def organizations_system_prompt(tone_instruction, summary):
+    heading = (
+        "Organisation page data"
+        if DETAIL_SCREEN_MARKER in summary.split("\n", 1)[0]
+        else "Organizations data"
+    )
     return dashboard_system_prompt(
-        tone_instruction, summary, persona=ORGANIZATIONS_PERSONA, heading="Organizations data"
+        tone_instruction, summary, persona=ORGANIZATIONS_PERSONA, heading=heading
     )
 
 
