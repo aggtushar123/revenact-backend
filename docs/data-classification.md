@@ -66,6 +66,7 @@ customer records.
 | Flow | Data | Class | Control |
 |------|------|-------|---------|
 | Copilot / classification → Anthropic API or AWS Bedrock (`services/copilot`) | Email, Ticket, Note, Call, Contribution text; account names and metrics | confidential | TLS; provider under DPA when a customer is onboarded (Third-Party Management policy, deferred); `ModelCall` records every call without content |
+| Ask Revenact on Contacts → Anthropic API or AWS Bedrock (`services/copilot/contacts_grounding.py`) | contact names, roles, places and sentiment; for one person, quoted call/email/ticket text — the newest 20 of each the asker may read | confidential | visibility-scoped like every Ask surface (AUTH-02); a shared reply is checked against its own snapshot (`grounded_customer_ids`, `grounded_records`, `grounded_tickets`) before it is shown to a mentioned-only reader; TLS; `ModelCall` records the call without content |
 | Outbound webhooks (`services/webhooks/engine.py`) | event payloads the tenant subscribed to | internal / confidential | HTTPS only, no redirects, HMAC-SHA256 signature (SEC-07), SSRF guard |
 | Mailbox sync (`services/mail/sync.py`) ← Google / Microsoft / IMAP | the person's own mail, filed only when the counterpart is a customer/account contact or domain | confidential | TLS; per-person OAuth or app password; the rest of the mailbox is read but never stored |
 | Compose (`services/mail/views.py`) → the person's own provider | subject, body, recipients | confidential | sent as the person, copy filed as a sent Email with `mailbox_owner` |

@@ -4232,7 +4232,7 @@ stored anomaly title or summary.
 - `Message` — `conversation`, `role` (`user`/`assistant` — mirrors the
   Anthropic Messages API's own two-role shape exactly), `content`,
   `author`, `sources`, `ask_suggestions`, `context` (a user turn asked
-  from an Ask rail, Dashboard or Organizations; null otherwise), `reply_to`
+  from an Ask rail, Dashboard, Organizations or Contacts; null otherwise), `reply_to`
   (an assistant reply's own user turn, set on every new reply),
   `grounded_customer_ids`/`carries_anomaly_text` (an Ask reply's shared-
   session snapshot, fixed when it is written — the ids of every customer
@@ -4339,7 +4339,9 @@ invite card is gone.
 [
   { "id": 5, "title": "What's my churn risk?", "origin": null, "created_at": "2026-09-05T10:00:00Z", "updated_at": "2026-09-05T10:01:00Z" },
   { "id": 7, "title": "Why is at-risk ARR up?", "origin": { "surface": "dashboard", "area": "revenue", "view": "forecast", "filters": { "owner": "2", "lifecycle": "", "customer": "" } }, "created_at": "2026-09-24T10:00:00Z", "updated_at": "2026-09-24T10:01:00Z" },
-  { "id": 9, "title": "Which accounts need me first?", "origin": { "surface": "organizations", "view": "list", "filters": { "owner": "2", "health": "poor" }, "labels": ["Owner: Carl CSM", "Health: Poor"] }, "created_at": "2026-09-26T10:00:00Z", "updated_at": "2026-09-26T10:01:00Z" }
+  { "id": 9, "title": "Which accounts need me first?", "origin": { "surface": "organizations", "view": "list", "filters": { "owner": "2", "health": "poor" }, "labels": ["Owner: Carl CSM", "Health: Poor"] }, "created_at": "2026-09-26T10:00:00Z", "updated_at": "2026-09-26T10:01:00Z" },
+  { "id": 11, "title": "Why is Sam negative?", "origin": { "surface": "contacts", "view": "person", "contact": 41, "label": "Sam Pizza · Pizza Hut" }, "created_at": "2026-09-28T10:00:00Z", "updated_at": "2026-09-28T10:01:00Z" },
+  { "id": 12, "title": "Who is unhappy?", "origin": { "surface": "contacts", "view": "list", "filters": { "sentiment": "negative" }, "label": "Contacts · Negative" }, "created_at": "2026-09-28T10:05:00Z", "updated_at": "2026-09-28T10:06:00Z" }
 ]
 ```
 
@@ -4347,10 +4349,12 @@ invite card is gone.
 `context` without its `focus` — or `null`. Set once, never changed. The
 history shows it as a tag. For the Dashboard the tag is the area and view. For
 Organizations it is "Organizations" followed by the `labels`, joined with " · "
-("Organizations · Owner: Carl CSM"). Reopening it opens
-`/organizations/<view>?<filters>`, because `filters` are the page's own URL
-parameters in canonical form. The server builds `labels` when the question is
-asked, and the client never sends them.
+("Organizations · Owner: Carl CSM"). For Contacts the tag is the `label` itself
+("Sam Pizza · Pizza Hut", "Contacts · Negative"). Reopening it opens
+`/organizations/<view>?<filters>` for Organizations, or the person's profile or
+the filtered list for Contacts, because `filters` (list) or `contact` (person)
+are the page's own URL parameters/id. The server builds `labels`/`label` when
+the question is asked, and the client never sends them.
 
 `origin` follows the title. A viewer who does not see the whole conversation
 gets `origin: null` unless they may read both its first turn (the title's
@@ -4496,7 +4500,83 @@ Story titles and summaries are record text, so they sit inside the same `<dashbo
 with the same neutralising of fence tags. It is metered as the `organizations` purpose. An
 organisation or account that stops being visible between the check and the grounding is a `404`.
 
-**Shared sessions.** Every Ask reply (Dashboard or Organizations) stores a snapshot when it is
+**Asked from Contacts** (`services/customers/contact_list.py`,
+`services/copilot/contacts_context.py`, `contacts_grounding.py`). Two body shapes, one per view.
+
+The list:
+
+```json
+{
+  "content": "Who is unhappy?",
+  "context": {
+    "surface": "contacts",
+    "view": "list",
+    "filters": {"sentiment": "negative"}
+  }
+}
+```
+
+One person:
+
+```json
+{
+  "content": "Why is Sam negative?",
+  "context": {
+    "surface": "contacts",
+    "view": "person",
+    "contact": 41,
+    "focus": "sentiment"
+  }
+}
+```
+
+- `view`: `list | person`, required.
+- `filters` (list only): the page's own URL keys — `q`, `customer`, `account`, `sentiment`, `role`
+  — through the list's own parser (`contact_list.parse_contact_filters`); an unknown key or a value
+  the list would ignore is dropped, never rejected. A `customer` or `account` id the caller cannot
+  open is `400`, the same whether it exists or not: `{"context": {"filters": {"customer": ["Not an
+  organisation you can open."]}}}` or `{"context": {"filters": {"account": ["Not an account you can
+  open."]}}}`.
+- `contact` (person only): required, the person's id. One the caller cannot open — including a
+  non-positive id, which never names a row — is `400 {"context": {"contact": ["Not a person you can
+  open."]}}`, the same whether it exists or not.
+- `focus` (person only): `null`, or `"sentiment"` (from "Why this sentiment?"). Any other value is
+  `400` under `focus`.
+
+The stored context gains a server-built `label`, never the client's: for the list, "Contacts"
+followed by the active filters in list order ("Contacts · Negative · Decision Maker"); for a
+person, their name and place ("Sam Pizza · Pizza Hut", or "Sam Pizza · Pizza Hut › Seen" for an
+account-level contact). The history tag is the `label`.
+
+The list digest is the summary line and the caller's filtered people, in the list's own order, at
+most 50 (`contacts_grounding.LIST_LIMIT`) — the same rows and the same summary
+`GET /api/v1/contacts/` and `contacts_summary` compute, with per-person call counts left out
+(strict: a digest never carries a figure the model could misquote as evidence). The person digest
+is their profile, then their calls, emails and tickets exactly as the asker may read them
+(`contact_history.history_querysets`), newest 20 of each kind quoted
+(`contacts_grounding.PERSON_LIMIT`); a kind with none readable says so rather than omitting the
+section.
+
+**The "why" is strict.** `Contact.sentiment_evidence` counts every interaction behind a computed
+sentiment, readable or not, so it is never quoted. With `focus: "sentiment"`, the why block weighs
+only the records the asker may read (kind × recency), names at most the newest 20 of them, and —
+past that — "(and N older readable records, weighed but not listed)"; when the stored reading also
+rests on records the asker cannot open, the reply says only that, never a count or a name. Every
+readable record the weighted reading rests on, named or only counted, goes into the reply's own
+snapshot below, so a shared reader can open each one before the reply is shown to them. A hand-set
+sentiment says so and skips the why block entirely.
+
+Metered as the `contacts` purpose (`usage.PURPOSES["contacts"] = "Ask Revenact on Contacts"`).
+Grounded like every Ask surface: `Grounding.customer_ids` (the organisations named), `.records`
+(the calls, emails and tickets quoted, plus every account a person or record sits on) and
+`.tickets` (`{account_ids, departments}` of the tickets counted) are fixed on the reply when it is
+written and checked exactly as the Dashboard and Organizations surfaces are (see **Shared
+sessions** below) — a shared reader must be able to open every organisation, account, record and
+ticket department the reply drew on, and a reply written with no snapshot, or whose snapshot no
+longer parses, fails closed rather than being shown. A person who becomes unreadable between the
+check and the grounding is a `404`.
+
+**Shared sessions.** Every Ask reply (Dashboard, Organizations or Contacts) stores a snapshot when it is
 written: `grounded_customer_ids` — the ids of every customer its digest could have drawn on — and
 `carries_anomaly_text` — whether it could carry a stored, org-wide anomaly title or summary
 (`services/copilot/views.ask_snapshot`, migration `0013_message_grounded_customer_ids`). A
@@ -4524,18 +4604,19 @@ id check; for anyone else the ids of every reply in the conversation are checked
 read.
 
 `400` if `content` is blank or over 8000 characters, or `{"context": {<field>: [..]}}` for a
-wrong `surface`, `area`, `view` (Dashboard or Organizations), `focus.kind`, more than 200 `ids`, or
-an attention key not on the caller's list (`{"context": {"focus": {"key": ["Not an item on your
-list."]}}}` — the same for a malformed key and someone else's). `403` if
+wrong `surface`, `area`, `view` (Dashboard, Organizations or Contacts), `focus.kind`, a `contact`,
+`organization` or `account` (or a `filters.customer`/`filters.account`) the caller cannot open,
+more than 200 `ids`, or an attention key not on the caller's list (`{"context": {"focus": {"key":
+["Not an item on your list."]}}}` — the same for a malformed key and someone else's). `403` if
 `Organisation.ai_agent_enabled` is `false`. `429` if the organisation's monthly budget for the
-purpose (`copilot`; or `dashboard` / `organizations` for a `context` from that surface) is spent.
-`503` if the selected provider's credentials aren't configured. `502` if the API call itself
-fails.
+purpose (`copilot`; or `dashboard` / `organizations` / `contacts` for a `context` from that
+surface) is spent. `503` if the selected provider's credentials aren't configured. `502` if the
+API call itself fails.
 
 **Response `200`** — the (possibly newly created) Conversation, same nested shape as the detail
 endpoint's GET, including this turn's user message (with `context` echoed, after the focus
-intersection) and the model's reply. `origin` is set from the first Ask message of either surface
-(Dashboard or Organizations) and never overwritten.
+intersection) and the model's reply. `origin` is set from the first Ask message of any surface
+(Dashboard, Organizations or Contacts) and never overwritten.
 
 ---
 

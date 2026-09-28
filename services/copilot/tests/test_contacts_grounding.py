@@ -5,8 +5,10 @@ from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
 from unittest.mock import patch
 
+from django.db import connection
 from django.http import Http404
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from services.accounts.models import Organisation, User
 from services.copilot.contacts_grounding import (
@@ -374,3 +376,33 @@ class WhyTests(PersonFixture):
             grounding.records,
         )
         self.assertNotIn(account_ref(self.seen.pk), grounding.records)
+
+
+class QueryCostTests(PersonFixture):
+    def count(self, fn):
+        with CaptureQueriesContext(connection) as queries:
+            fn()
+        return len(queries)
+
+    def fresh(self):
+        # A fresh user each time: `subtree_ids` memoises the org chart walk
+        # on the user instance (services/accounts/hierarchy.py), the same
+        # precedent test_organizations_grounding.py's own QueryCostTests
+        # follows — reusing one instance across both measurements would
+        # read as fewer queries on the second one regardless of data size.
+        return User.objects.get(pk=self.viewer.pk)
+
+    def test_the_list_digest_costs_the_same_for_3_people_or_40(self):
+        few = self.count(lambda: self.ground_list(user=self.fresh()))
+        for n in range(37):
+            Contact.objects.create(account=self.seen, name=f"More {n:02}")
+        self.assertEqual(self.count(lambda: self.ground_list(user=self.fresh())), few)
+
+    def test_the_person_digest_costs_the_same_for_1_record_or_15_of_each(self):
+        self.call("One")
+        few = self.count(lambda: self.person(focus="sentiment", user=self.fresh()))
+        for n in range(14):
+            self.call(f"Call {n}", days_ago=n + 1)
+            self.email(f"Mail {n}")
+            self.ticket(f"ZD-{n}")
+        self.assertEqual(self.count(lambda: self.person(focus="sentiment", user=self.fresh())), few)
