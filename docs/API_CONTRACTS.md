@@ -2384,8 +2384,15 @@ body is ignored. Log on the account path to put a call on an account.
 Attachment (`source: "transcript"`) on the same company, and when
 `summary` is blank the model writes one from it (`purpose:
 "call_summary"`; no model configured means an empty summary, not an
-error). The new call is classified for sentiment straight away so the
-Account Pulse counts it. Audit event `call.log`.
+error). The new call is classified straight away by the one helper every
+path that creates a call runs (`calls.classify_call`): the classifier reads
+the title, then the transcript, else the summary. A call with no
+transcript, no summary and a generic title ("Weekly sync") is marked not
+analysable without a model call, and so is one the model declines. A
+classifier failure never blocks the call: it stays `pending` for the
+nightly `classify_interactions`. Every row carries `analysis`: `pending`,
+`not_analysable` or `analysed`; `sentiment` is a reading only when it is
+`analysed`. Audit event `call.log`.
 
 ### Opportunities and risks are read department-wise
 
@@ -2416,8 +2423,14 @@ value; a `PATCH` of `sentiment` marks it `manual` again until evidence
 returns. `last_contacted_at` moves forward with their newest interaction
 (a call counts as contact even before it is classified).
 
-Recomputed whenever records are classified (`classify_records`), when a
-call is logged, and for every contact in `run_health_maintenance`.
+Only the contact's own tenant counts: an email or ticket from their
+address under another organisation is never evidence. A call marked not
+analysable is not evidence either, though being on it still moves
+`last_contacted_at`.
+
+Recomputed whenever records are classified (`classify_records`, and each
+batch of the nightly `classify_interactions`), when a call is logged, and
+for every contact in `run_health_maintenance`.
 
 `Call.participants` (write `participant_ids`, read `participants
 [{id, name, role_display, sentiment}]`) says who from the customer's side
@@ -2427,11 +2440,107 @@ are accepted (organisation-level ones, and those on accounts in
 transcript that names such a contact (full name or email address) links
 them automatically.
 
-### `GET /api/v1/contacts/<id>/interactions/`
+### `GET /api/v1/contacts/<id>/history/`
+
+Auth: `IsAuthenticated`. The person's calls, emails and tickets, newest
+first, for the Contacts page's profile panel
+(`services/customers/contact_history.py`). A contact the caller cannot
+open is a `404`, the same scope as `GET /contacts/<id>/`.
+
+Every row is twice filtered: by its own company (a record on an account
+the caller cannot open is left out, `visible_children_q`), then by its
+own rule — mail by its mailbox owner and their chain (`visible_emails`),
+tickets by department (`visible_tickets`). Calls are the ones the person
+was on (`Call.participants`); emails are from their address and tickets
+raised by it, inside the contact's own tenant only. Each list holds the
+newest 100; `counts` is the whole visible total per kind.
+
+`analysis` is `pending` (not read yet), `not_analysable` (a call with
+nothing to judge: the UI says "Not enough to analyse") or `analysed`.
+`sentiment` is `null` unless `analysed`. `classification` holds the
+taxonomy labels, blank when unset. `organisation` and `account` are
+`{id, name}` or `null`; an account's organisation is the first linked
+one the caller may open. `link.url` is an `http(s)` recording or ticket
+URL, else `null`; `link.thread_id` is the email's thread.
+
+**Response `200`**
+```json
+{
+  "contact_id": 2,
+  "sentiment": "neutral",
+  "sentiment_source": "computed",
+  "sentiment_evidence": {
+    "score": 0.1,
+    "calls": 6,
+    "emails": 2,
+    "tickets": 0,
+    "positive": 3,
+    "neutral": 4,
+    "negative": 1,
+    "latest_at": "2026-09-12T10:00:00+00:00"
+  },
+  "counts": { "calls": 7, "emails": 2, "tickets": 1 },
+  "calls": [
+    {
+      "id": 41,
+      "title": "Renewal readiness",
+      "occurred_at": "2026-09-12T10:00:00+00:00",
+      "duration_minutes": 45,
+      "host_name": "Carl CSM",
+      "summary": "They want the enterprise tier.",
+      "analysis": "analysed",
+      "sentiment": "positive",
+      "classification": {
+        "area": "Customer Success",
+        "category": "Account Management",
+        "subcategory": ""
+      },
+      "organisation": { "id": 6, "name": "Apple Inc" },
+      "account": { "id": 31, "name": "Apple EMEA" },
+      "link": { "url": "https://zoom.us/rec/1" }
+    }
+  ],
+  "emails": [
+    {
+      "id": 88,
+      "subject": "Thanks for the call",
+      "sent_at": "2026-09-11T08:00:00+00:00",
+      "sender_name": "James Wilson",
+      "snippet": "Thanks for walking us through the plan…",
+      "analysis": "analysed",
+      "sentiment": "positive",
+      "classification": { "area": "", "category": "", "subcategory": "" },
+      "organisation": { "id": 6, "name": "Apple Inc" },
+      "account": null,
+      "link": { "thread_id": "t-19" }
+    }
+  ],
+  "tickets": [
+    {
+      "id": 7,
+      "ticket_number": "ZD-1042",
+      "title": "Export fails",
+      "status": "open",
+      "status_display": "Open",
+      "opened_at": "2026-09-10",
+      "analysis": "pending",
+      "sentiment": null,
+      "classification": { "area": "", "category": "", "subcategory": "" },
+      "organisation": { "id": 6, "name": "Apple Inc" },
+      "account": null,
+      "link": { "url": "https://apple.zendesk.com/t/1042" }
+    }
+  ]
+}
+```
+
+### `GET /api/v1/contacts/<id>/interactions/` (retiring)
 
 What the sentiment rests on: `{sentiment, score, source, evidence,
 interactions: [{kind: "call"|"email"|"ticket", id, title, snippet, when,
-sentiment, ai_category}]}`, newest first. Same scoping as the contact.
+sentiment, ai_category}]}`, newest first. Same scoping as the contact,
+and each row under its own record rule, as in `/history/`. Kept only
+until the Contacts page moves to `/history/`, then removed.
 
 ## `organizations` — Organizations portfolio (`/organizations`)
 
@@ -2975,11 +3084,25 @@ Paginated with the shared `DEFAULT_PAGINATION_CLASS`/`PAGE_SIZE`
 which turns pagination off for what's normally a single entity's
 already-small nested list) — same reasoning as `GET /api/v1/customers/`.
 
-Query params:
+Filters (an unusable value is ignored, never a `400`):
 - `?search=` — matches `name`/`email`/`role` (substring, case-
   insensitive), same convention as the Customer list's own search.
-- `?company=<customer_id>` — filters to one company, matching a
-  contact directly on that `Customer` or on any of its `Account`s.
+- `?customer=<customer_id>` — one organisation: a contact directly on
+  it or on any of its accounts. `?company=` is the older name and still
+  works.
+- `?account=<account_id>` — one account's contacts.
+- `?sentiment=positive|neutral|negative`.
+- `?role=` — one `Contact.Role` value.
+
+Every row adds `organisation` and `account`, each `{id, name}` or
+`null`: the organisation is the first linked one the caller may open,
+and `companies` lists only those. `sentiment_evidence` holds the counts
+behind a computed sentiment (see "Contact sentiment is computed").
+
+`summary` covers the whole filtered set, not the page: `total`, the
+count per sentiment, and `decision_makers` (roles `executive_sponsor`,
+`decision_maker` and `economic_buyer`, the set the organisation page's
+People summary uses). Five queries whatever the page size.
 
 **Response `200`**
 ```json
@@ -2995,14 +3118,36 @@ Query params:
       "role_display": "Champion",
       "email": "j.wilson@apple.com",
       "phone": "+1 (408) 555-0456",
+      "language": "",
       "status": "active",
-      "sentiment": "positive",
-      "last_contacted_at": "2026-09-02T04:35:18.707403Z",
+      "sentiment": "negative",
+      "sentiment_source": "computed",
+      "sentiment_evidence": {
+        "score": -0.4,
+        "calls": 2,
+        "emails": 1,
+        "tickets": 0,
+        "positive": 0,
+        "neutral": 1,
+        "negative": 2,
+        "latest_at": "2026-09-12T10:00:00+00:00"
+      },
+      "sentiment_computed_at": "2026-09-12T10:05:00Z",
+      "last_contacted_at": "2026-09-12T10:00:00Z",
       "companies": [{ "id": 6, "name": "Apple Inc" }],
-      "account_id": null,
-      "account_name": null
+      "organisation": { "id": 6, "name": "Apple Inc" },
+      "account_id": 31,
+      "account_name": "Apple EMEA",
+      "account": { "id": 31, "name": "Apple EMEA" }
     }
-  ]
+  ],
+  "summary": {
+    "total": 16,
+    "positive": 7,
+    "neutral": 6,
+    "negative": 3,
+    "decision_makers": 5
+  }
 }
 ```
 

@@ -148,13 +148,13 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Organisation page Story (detail redesign) | Built (backend) | One endpoint for the Story tab: every record on the organisation and its accounts (activities, CallSense calls, emails, meetings, tickets, tasks, notes, surveys, health and pulse changes), newest first under one cursor; group, source, account, search and thread filters; counts per group, kind and account; Needs attention (renewal, urgent tickets, overdue tasks, open questions, latest anomaly). Every record read under its own rule |
 | Organisation page lists (detail redesign, delivery 2) | Built (backend) | Files and calls on an organisation roll up its accounts' records the viewer may open, each tagged with its account; contacts, opportunities and risks carry `account_id` for the account chips; the survey list filters by organisation (`?customer=`), an id the viewer cannot open reading as empty |
 | Accounts: list, board, detail, create, edit | Built | Many-to-many with customers. No churn or archive by design |
-| Contacts: list, detail, CRUD, computed sentiment | Built | Sentiment read from that contact's own calls, tickets and emails |
+| Contacts: list, detail, CRUD, computed sentiment | Built | Sentiment read from that contact's own calls, tickets and emails, in their own tenant. The list filters by organisation, account, sentiment and role, names each person's organisation and account, and summarises the whole filtered set. `GET /contacts/<id>/history/` gives their calls, emails and tickets, each under its own record rule (backend) |
 | Activity feed: activities, emails, tasks, notes, tickets, calendar events, surveys, sessions, headlines, files, CallSense | Built | Tasks and notes can be created in place; emails can be composed |
 | Activity feed: Slack | Partial | The only remaining inline mock in the app |
 | Activity feed: Pulse, Conversations, Revenact Support | Planned | Render "coming soon" |
 | Success Plans tab | Planned | Placeholder on both detail pages |
 | Files | Built | Closed type list, magic-byte check, 25 MB cap, authenticated download only. An organisation's list includes its visible accounts' files, tagged |
-| CallSense | Built | Log a call, attach a transcript, model writes the summary, call is classified immediately. An organisation's list includes its visible accounts' calls, tagged |
+| CallSense | Built | Log a call, attach a transcript, model writes the summary, call is classified immediately from its transcript, else its summary, else its title. A call with nothing to read is "not analysable", never guessed. An organisation's list includes its visible accounts' calls, tagged |
 | Custom objects and fields | Built | Definitions, fields, records; records scoped to a customer or account |
 | Pipelines (opportunities and risks) | Built | Kanban with drag to stage; department and role scoped |
 | Surveys (NPS, CSAT, CES) | Partial | Logged and scored by hand; filter by organisation; no email delivery, no multi-question surveys |
@@ -169,7 +169,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Health rubric | Built | Five weighted components out of 10; largest-remainder apportionment so the parts sum to the headline |
 | Account and organisation pulse | Built | 1 to 5 from five signals, daily dot recorded |
 | Health history | Built | Monthly `HealthSnapshot`, month already recorded is skipped not overwritten |
-| Interaction classification | Built | Claude assigns sentiment plus a three-level taxonomy to emails, calls and tickets |
+| Interaction classification | Built | Claude assigns sentiment plus a three-level taxonomy to emails, calls and tickets. On create, and nightly on the server (`classify_interactions --limit 300`), one tenant at a time and metered to it |
 | Contact sentiment | Built | Weighted by interaction kind and recency |
 | Headlines (AI summaries per account) | Built | Explicit generate, evidence recorded |
 | Copilot chat with retrieval and citations | Built | Local embeddings for semantic company matching, snippets as sources |
@@ -317,3 +317,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-26 | Organisation page Story (backend): `GET /organizations/<id>/story/` |
 | 2026-09-27 | Organisation page lists (backend): files and calls roll up visible accounts, `account_id` on contacts, opportunities and risks, survey organisation filter |
 | 2026-09-28 | Ask Revenact on the organisation page (backend) |
+| 2026-09-28 | Contacts, delivery 1 (backend): every call analysed or marked not analysable, nightly classification, contact history, contacts list filters and summary |
