@@ -4,12 +4,13 @@ account chip), the item asked about, and the records behind the question —
 each read under its own rule, fenced as data. And what a shared reader is
 checked against."""
 
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.db import connection
 from django.http import Http404
+from django.test import SimpleTestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
@@ -17,7 +18,11 @@ from services.accounts.models import User
 from services.anomalies.models import Anomaly, AnomalyEvidence
 from services.copilot.grounded_records import account_ref, record_ref
 from services.copilot.models import Conversation, Message
-from services.copilot.organization_detail_grounding import STORY_ITEMS, build_detail_grounding
+from services.copilot.organization_detail_grounding import (
+    STORY_ITEMS,
+    build_detail_grounding,
+    recent_items,
+)
 from services.copilot.organizations_grounding import (
     build_organizations_grounding,
     organizations_system_prompt,
@@ -123,12 +128,20 @@ class DetailDigestTests(DetailFixture):
                 self.assertIn("A live anomaly: similar reports across companies", summary)
                 self.assertNotIn("SSO outage", summary)
                 self.assertNotIn("login failures", summary)
-        self.assertIn("1 overdue task, the oldest 2 days past due", self.ground().summary)
+        # Overdue-task counts follow the asker's own personal task-visibility
+        # rule, so the digest a shared reader sees never states one.
+        self.assertNotIn("overdue task", self.ground().summary)
 
     def test_nothing_needs_attention_says_so(self):
         self.assertIn("Needs attention: nothing.", self.ground().summary)
 
     def test_the_story_counts_and_its_last_thirty_days(self):
+        # Email, note and task counts follow the asker's own personal-record
+        # rule (author/mailbox chain), so they never appear in the all-time
+        # count line a shared reader could be shown; the ticket count is kept
+        # (covered separately by the ticket snapshot), as are the kinds open
+        # to the whole organisation (calls, meetings, activities, surveys,
+        # health). The items themselves still appear in the recent list.
         self.email(self.emea, subject="Renewal terms", at=timezone.now() - timedelta(days=2))
         self.note(self.pizza, title="Champion left", day=self.days_ago(29))
         self.note(self.pizza, title="Kickoff notes", day=self.days_ago(45))
@@ -136,10 +149,11 @@ class DetailDigestTests(DetailFixture):
         summary = self.ground().summary
 
         self.assertIn(
-            "Story records up to today (all time): 3 — Conversations 1; Tickets 0; "
-            "Tasks & notes 2; Feedback 0; Health & usage 0",
+            "Story records up to today (all time): 0 — Conversations 0; Tickets 0; "
+            "Feedback 0; Health & usage 0",
             summary,
         )
+        self.assertNotIn("Tasks & notes", summary)
         self.assertIn(
             "· Email · EMEA · Renewal terms: Can we talk about the renewal? (Pat Buyer)", summary
         )
@@ -254,6 +268,31 @@ class DetailDigestTests(DetailFixture):
         elsewhere = self.account("Hooli EU", customers=[hooli])
         with self.assertRaises(Http404):
             self.ground(account=elsewhere)
+
+
+class RecentItemsTests(SimpleTestCase):
+    """`recent_items` compares UTC instants, not calendar dates: a date carries
+    no timezone, so extracting one from an aware timestamp and comparing dates
+    is only correct when every timestamp already happens to be UTC. Near the
+    midnight boundary, a non-UTC offset would land on a different calendar day
+    than its true UTC instant."""
+
+    @staticmethod
+    def item(occurred_at):
+        return {"occurred_at": occurred_at}
+
+    def test_the_window_is_a_utc_instant_not_a_local_calendar_date(self):
+        today = date(2026, 9, 28)
+        # This is 2026-08-28T18:30:00Z: outside the 30-day window measured
+        # from UTC midnight of `today`. Its own (+05:30) calendar date is
+        # 2026-08-29 — the first day *inside* the window — so a comparison
+        # that reads `.date()` off the timestamp instead of its UTC instant
+        # would wrongly keep it.
+        just_outside = self.item("2026-08-29T00:00:00+05:30")
+        # Exactly the UTC cutoff instant: kept.
+        just_inside = self.item("2026-08-29T00:00:00+00:00")
+
+        self.assertEqual(recent_items([just_outside, just_inside], today), [just_inside])
 
 
 class DetailSnapshotTests(DetailFixture):

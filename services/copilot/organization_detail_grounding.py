@@ -27,7 +27,7 @@ organisation (`customer_ids`), the tickets the digest counted (`tickets`), and
 every account it covered and every story item it quoted (`records`).
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from django.http import Http404
 from django.utils import timezone
@@ -66,10 +66,22 @@ KIND_LABELS = {
     "task": "Task",
     "ticket": "Ticket",
 }
+#: Counted in the digest's all-time line: kinds open to the whole
+#: organisation (no personal author/mailbox rule), plus tickets, whose
+#: department-wise count is covered separately by the ticket snapshot a
+#: shared reader is checked against. Email, note and task counts follow the
+#: asker's own personal record rule and are never counted here — the digest
+#: is shown to shared readers too, and counts don't carry a per-record
+#: reference the way quoted items do.
+COUNTED_GROUP_KINDS = {
+    "conversations": ("activity", "call", "calendar_event"),
+    "tickets": ("ticket",),
+    "feedback": ("survey",),
+    "health": ("health",),
+}
 GROUP_LABELS = {
     "conversations": "Conversations",
     "tickets": "Tickets",
-    "tasks": "Tasks & notes",
     "feedback": "Feedback",
     "health": "Health & usage",
 }
@@ -160,12 +172,9 @@ def _attention_lines(attention):
             f"{_plural(tickets['count'], 'open High or Critical ticket')}, oldest opened "
             f"{_days(tickets['oldest_days'])} ago"
         )
-    if attention["overdue_tasks"] is not None:
-        tasks = attention["overdue_tasks"]
-        lines.append(
-            f"{_plural(tasks['count'], 'overdue task')}, the oldest "
-            f"{_days(tasks['oldest_days'])} past due"
-        )
+    # Overdue-task counts follow the asker's own personal task-visibility
+    # rule (creator/assignee chain), so the digest never states one: it is
+    # shown to shared readers whose own rule may differ.
     if attention["questions"] is not None:
         count = attention["questions"]["count"]
         lines.append(f"{_plural(count, 'unanswered Knowledge question')} about the organisation")
@@ -179,9 +188,12 @@ def _attention_lines(attention):
     return ["Needs attention:", *(f"  - {line}" for line in lines)]
 
 
-def _count_line(by_group):
+def _count_line(by_kind):
+    by_group = {
+        group: sum(by_kind[kind] for kind in kinds) for group, kinds in COUNTED_GROUP_KINDS.items()
+    }
     parts = "; ".join(f"{label} {by_group[group]}" for group, label in GROUP_LABELS.items())
-    return f"Story records up to today (all time): {by_group['all']} — {parts}"
+    return f"Story records up to today (all time): {sum(by_group.values())} — {parts}"
 
 
 def item_line(item):
@@ -197,9 +209,17 @@ def item_line(item):
 
 
 def recent_items(items, today):
-    """The items of the last STORY_DAYS days, in the story's order."""
-    since = today - timedelta(days=STORY_DAYS)
-    return [item for item in items if datetime.fromisoformat(item["occurred_at"]).date() >= since]
+    """The items of the last STORY_DAYS days, in the story's order.
+
+    Compared as UTC instants, not local calendar dates: extracting `.date()`
+    from an aware timestamp reads its own offset's calendar day, which can
+    land on a different day than the timestamp's true UTC instant near
+    midnight. `since` is always UTC midnight of the cutoff day, whatever
+    offset an item's own timestamp carries.
+    """
+    cutoff = today - timedelta(days=STORY_DAYS)
+    since = datetime(cutoff.year, cutoff.month, cutoff.day, tzinfo=UTC)
+    return [item for item in items if datetime.fromisoformat(item["occurred_at"]) >= since]
 
 
 def _item_ref(item, customer):
@@ -251,7 +271,7 @@ def build_detail_grounding(user, context, question, *, today=None):
     lines = _header(scope, account, organisation.currency)
     lines.extend(_organisation_lines(entry, organisation))
     lines.extend(_attention_lines(story["attention"]))
-    lines.append(_count_line(story["counts"]["by_group"]))
+    lines.append(_count_line(story["counts"]["by_kind"]))
     lines.extend(_story_lines(items))
     focus_lines, focused = _focus_lines(user, scope, context.get("focus"), account, today)
     lines.extend(focus_lines)
