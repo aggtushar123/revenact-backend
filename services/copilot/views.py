@@ -791,17 +791,19 @@ def _is_detail(context):
 
 def _records_of(turn, answered):
     """The records a reply's digest quoted without citing them: its stored
-    references, or for a reply with none, nothing when its own Ask turn's
-    digest quoted none — every surface but an organisation's page — and None,
-    failing closed, for an organisation page reply or a malformed list. A
-    context-less reply with none was written before the field existed, when no
-    digest quoted uncited records; every reply written since stores it."""
+    references, or for a reply written before snapshots existed, nothing when
+    its own Ask turn's digest quoted none — every surface but an
+    organisation's page — and None, failing closed, when it could have (an
+    organisation page reply, or a context-less reply fed Ask history, whose
+    sources are unknown)."""
     stored = _stored_records(turn)
     if stored is not None:
         return stored
     if turn.grounded_records is not None:
         return None  # malformed
     context = answered.context if answered is not None else None
+    if not isinstance(context, dict) or not context:
+        return None
     if _is_detail(context):
         return None
     return []

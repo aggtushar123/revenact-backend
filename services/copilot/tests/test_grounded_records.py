@@ -211,6 +211,30 @@ class RecordReadabilityTests(TestCase):
             records_snapshot({"surface": "organizations"}, Grounding("d"), [asked, reply])
         )
 
+    def test_a_context_less_fed_reply_with_no_records_of_its_own_fails_closed(self):
+        """An earlier reply asked with no context of its own (a plain
+        follow-up on an Ask exchange) that stores no records — written before
+        `grounded_records` existed — is unknown, not empty: folding it in
+        must not silently drop its unknown records and read as safe."""
+        asked, reply = self.ask([account_ref(self.hidden.pk)])
+        follow_up = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="Summarise the above",
+            author=self.admin,
+        )
+        plain_reply = Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content="In short…",
+            carries_anomaly_text=False,
+            reply_to=follow_up,
+        )
+
+        self.assertIsNone(
+            records_snapshot(None, Grounding(""), [asked, reply, follow_up, plain_reply])
+        )
+
     def test_a_context_less_follow_up_with_hidden_records_is_withheld_from_its_own_asker(self):
         _asked, _reply = self.ask([account_ref(self.hidden.pk)])
         follow_up = Message.objects.create(
