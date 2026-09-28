@@ -2753,7 +2753,12 @@ def _organisation_of(customer=None, account=None):
 class _FileListView(generics.ListCreateAPIView):
     """List the files on one company, and upload one (multipart: `file`,
     optional `description`). Anyone who may open the company may read and
-    add; the type list, size cap and name sanitising live in files.py."""
+    add; the type list, size cap and name sanitising live in files.py.
+
+    On an organisation the list rolls up its accounts' files too, under
+    customer_rollup_q (only accounts the caller may open), each tagged
+    with `account_id`/`account_name`. An upload there is always
+    organisation-level: the parent comes from the URL, never the body."""
 
     serializer_class = AttachmentSerializer
     permission_classes = [IsAuthenticated]
@@ -2765,8 +2770,12 @@ class _FileListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         customer, account = self._parent()
-        parent = customer if customer is not None else account
-        return parent.attachments.select_related("uploaded_by")
+        if customer is not None:
+            # SOC2:AUTH-02 an account's file follows its own account's visibility
+            rows = Attachment.objects.filter(customer_rollup_q(self.request.user, customer))
+        else:
+            rows = account.attachments.all()
+        return rows.select_related("uploaded_by", "account")
 
     def create(self, request, *args, **kwargs):
         from core import audit
@@ -2822,7 +2831,9 @@ class AccountFileListView(_FileListView):
 def _visible_attachment(request, pk):
     # SOC2:AUTH-02 a file is reachable only through a company the caller may open
     return get_object_or_404(
-        Attachment.objects.filter(visible_children_q(request.user)).select_related("uploaded_by"),
+        Attachment.objects.filter(visible_children_q(request.user)).select_related(
+            "uploaded_by", "account"
+        ),
         pk=pk,
     )
 

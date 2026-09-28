@@ -2675,7 +2675,15 @@ quotes is the figure `GET /organizations/portfolio/` returns.
 ### `GET/POST /api/v1/customers/<id>/files/`, `.../accounts/<id>/files/`
 
 Auth: `IsAuthenticated`; anyone who may open the company may list and
-add. `POST` is multipart: `file`, optional `description`. What is
+add. On an organisation, `GET` rolls up its own files and those on its
+accounts the caller may open (`customer_rollup_q`, the rule the contact,
+opportunity, risk, survey and canvas roll-ups use: an account a colleague
+owns keeps its files out even when the caller can open the organisation).
+Each row carries `account_id` and `account_name`, both `null` for an
+organisation-level file. A `POST` on the organisation path always creates
+an organisation-level file; an `account_id` in the body is ignored. Upload
+on the account path to attach a file to an account. `POST` is multipart:
+`file`, optional `description`. What is
 accepted (SOC2:API-10, `services/customers/files.py`): a closed list of
 document, image, transcript and audio types by extension *and* declared
 content type (never HTML, SVG, scripts or archives), magic bytes checked
@@ -2685,10 +2693,14 @@ VM, in the nightly backup) under a random name; the storage path is
 never exposed.
 
 ```json
-[{"id": 7, "name": "Signed MSA.pdf", "content_type": "application/pdf", "size": 183220,
-  "description": "Countersigned 12 Sep", "source": "upload",
-  "uploaded_by": {"id": 3, "name": "Carl"}, "download_url": "/api/v1/files/7/download/",
-  "created_at": "2026-09-16T09:00:00Z"}]
+[{"id": 7, "account_id": null, "account_name": null, "name": "Signed MSA.pdf",
+  "content_type": "application/pdf", "size": 183220, "description": "Countersigned 12 Sep",
+  "source": "upload", "uploaded_by": {"id": 3, "name": "Carl"},
+  "download_url": "/api/v1/files/7/download/", "created_at": "2026-09-16T09:00:00Z"},
+ {"id": 9, "account_id": 4, "account_name": "EMEA", "name": "qbr.vtt",
+  "content_type": "text/vtt", "size": 5120, "description": "", "source": "transcript",
+  "uploaded_by": {"id": 3, "name": "Carl"}, "download_url": "/api/v1/files/9/download/",
+  "created_at": "2026-09-15T14:00:00Z"}]
 ```
 
 ### `GET /api/v1/files/<id>/`, `DELETE`, `GET /api/v1/files/<id>/download/`
@@ -2700,7 +2712,8 @@ holder (403 otherwise) and removes the bytes too. The download is always
 `Content-Disposition: attachment` with `X-Content-Type-Options: nosniff`,
 a sandboxed CSP and `Cache-Control: private, no-store`, so user content
 is never rendered as part of the site. Audit events `file.upload`,
-`file.delete`.
+`file.delete`. The row has the same shape as the list's, `account_id`/
+`account_name` included.
 
 ### `GET /api/v1/interactions/stats/`
 

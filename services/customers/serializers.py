@@ -871,15 +871,22 @@ class NoteSerializer(serializers.ModelSerializer):
 
 class AttachmentSerializer(serializers.ModelSerializer):
     """A file on a customer or account. Never the storage path: the bytes
-    come from the download endpoint, which checks who is asking."""
+    come from the download endpoint, which checks who is asking.
+
+    `account_id`/`account_name` say which account a file hangs off (both
+    null for an organisation-level file): the organisation's Files list
+    rolls its accounts' files up and tags each one."""
 
     uploaded_by = serializers.SerializerMethodField()
     download_url = serializers.SerializerMethodField()
+    account_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Attachment
         fields = [
             "id",
+            "account_id",
+            "account_name",
             "name",
             "content_type",
             "size",
@@ -898,6 +905,9 @@ class AttachmentSerializer(serializers.ModelSerializer):
 
     def get_download_url(self, obj):
         return f"/api/v1/files/{obj.id}/download/"
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None
 
 
 class CallSerializer(serializers.ModelSerializer):

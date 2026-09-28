@@ -14,6 +14,7 @@ from core.models import AuditEvent
 from services.accounts.models import Organisation, User
 from services.customers.files import safe_name, validate_upload
 from services.customers.models import Account, Attachment, Call, Customer
+from services.customers.tests.test_views import blind_to_one_account
 
 PDF = b"%PDF-1.4\n%fake\n"
 
@@ -66,6 +67,18 @@ class Fixture(APITestCase):
             f"/api/v1/customers/{self.pizza.id}/files/",
             {"file": SimpleUploadedFile(name, content, content_type=content_type), **fields},
             format="multipart",
+        )
+
+    def attach(self, name, **fields):
+        """A stored file straight through the ORM, for the list tests."""
+        return Attachment.objects.create(
+            organisation=self.org,
+            file=SimpleUploadedFile(name, b"hello", content_type="text/plain"),
+            name=name,
+            content_type="text/plain",
+            size=5,
+            uploaded_by=self.carl,
+            **fields,
         )
 
 
@@ -166,7 +179,15 @@ class FilesTests(Fixture):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
         self.assertEqual(Attachment.objects.get().account, self.hut_uk)
-        self.assertEqual(len(self.client.get(f"/api/v1/customers/{self.pizza.id}/files/").data), 0)
+        self.assertEqual(
+            (response.data["account_id"], response.data["account_name"]),
+            (self.hut_uk.id, "Pizza Hut UK"),
+        )
+        # The organisation's own list rolls the account's file up, tagged.
+        listed = self.client.get(f"/api/v1/customers/{self.pizza.id}/files/").data
+        self.assertEqual(
+            [(r["name"], r["account_id"]) for r in listed], [("notes.txt", self.hut_uk.id)]
+        )
 
     def test_another_organisation_cannot_see_or_download(self):
         row = self.upload(self.carl).data
@@ -178,6 +199,86 @@ class FilesTests(Fixture):
         )
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get(row["download_url"]).status_code, 401)
+
+
+class FileRollupTests(Fixture):
+    """The organisation's Files list: its own files and those of every account
+    the viewer may open, each tagged with its account (customer_rollup_q)."""
+
+    def setUp(self):
+        super().setUp()
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.pizza)
+        self.url = f"/api/v1/customers/{self.pizza.id}/files/"
+
+    def test_rolls_up_the_accounts_the_viewer_may_open(self):
+        self.attach("org.txt", customer=self.pizza)
+        self.attach("seen.txt", account=self.seen)
+        self.attach("hidden.txt", account=self.hidden)
+        self.client.force_authenticate(self.viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = {r["name"]: (r["account_id"], r["account_name"]) for r in response.data}
+        self.assertEqual(rows, {"org.txt": (None, None), "seen.txt": (self.seen.id, "Seen")})
+
+    def test_a_hidden_accounts_file_stays_unreachable_by_id(self):
+        hidden = self.attach("hidden.txt", account=self.hidden)
+        self.client.force_authenticate(self.viewer)
+
+        self.assertEqual(self.client.get(f"/api/v1/files/{hidden.id}/").status_code, 404)
+        download = self.client.get(f"/api/v1/files/{hidden.id}/download/")
+        self.assertEqual(download.status_code, 404)
+
+    def test_someone_who_sees_everything_gets_every_account(self):
+        self.attach("org.txt", customer=self.pizza)
+        self.attach("seen.txt", account=self.seen)
+        self.attach("hidden.txt", account=self.hidden)
+        self.client.force_authenticate(self.admin)
+
+        names = {r["name"] for r in self.client.get(self.url).data}
+
+        self.assertEqual(names, {"org.txt", "seen.txt", "hidden.txt"})
+
+    def test_uploading_on_the_organisation_path_stays_organisation_level(self):
+        self.client.force_authenticate(self.viewer)
+
+        response = self.client.post(
+            self.url,
+            {
+                "file": SimpleUploadedFile("deck.txt", b"hello", content_type="text/plain"),
+                "account_id": self.seen.id,
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual((response.data["account_id"], response.data["account_name"]), (None, None))
+        attachment = Attachment.objects.get()
+        self.assertEqual((attachment.customer, attachment.account), (self.pizza, None))
+
+    def test_a_file_read_by_id_carries_its_account(self):
+        seen = self.attach("seen.txt", account=self.seen)
+        self.client.force_authenticate(self.viewer)
+
+        row = self.client.get(f"/api/v1/files/{seen.id}/").data
+
+        self.assertEqual((row["account_id"], row["account_name"]), (self.seen.id, "Seen"))
+
+    def test_the_query_count_does_not_grow_with_the_list(self):
+        self.client.force_authenticate(self.viewer)
+        # The first read resolves the caller's membership and org chart, which
+        # are memoised on the user; what is pinned is every read after it.
+        self.client.get(self.url)
+        for batch in range(2):
+            for i in range(3):
+                self.attach(f"org-{batch}-{i}.txt", customer=self.pizza)
+                self.attach(f"seen-{batch}-{i}.txt", account=self.seen)
+            # Two however long the list: the organisation, and the files with
+            # their uploader and account joined.
+            with self.assertNumQueries(2):
+                response = self.client.get(self.url)
+            self.assertEqual(len(response.data), 6 * (batch + 1))
 
 
 class CallsTests(Fixture):
