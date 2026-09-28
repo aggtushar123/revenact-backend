@@ -2938,10 +2938,12 @@ rather than a URL param, the standalone `/contacts/list` page's own
 "Add Contact".
 
 **Response `200`** (GET) — a plain array, each entry: `id`, `name`, `role`,
-`role_display`, `email`, `phone`, `status`, `sentiment`,
-`last_contacted_at`, `company_id`, `company_name`, `account_name`
-(`null` for an organisation-level row, that Account's name for an
-account-level one). **Response `201`** (POST) — one such entry.
+`role_display`, `email`, `phone`, `language`, `status`, `sentiment`,
+`sentiment_source`, `sentiment_evidence`, `sentiment_computed_at`,
+`last_contacted_at`, `companies` (every ultimate parent Customer),
+`account_id`/`account_name` (both `null` for an organisation-level row;
+the organisation page's account chips filter on `account_id`).
+**Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/`
 
@@ -2991,8 +2993,8 @@ Query params:
       "status": "active",
       "sentiment": "positive",
       "last_contacted_at": "2026-09-02T04:35:18.707403Z",
-      "company_id": 6,
-      "company_name": "Apple Inc",
+      "companies": [{ "id": 6, "name": "Apple Inc" }],
+      "account_id": null,
       "account_name": null
     }
   ]
@@ -3085,8 +3087,10 @@ adds an organisation-level Opportunity; `customer` taken from the URL.
 
 **Response `200`** (GET) — a plain array, each entry: `id`, `title`,
 `mrr`, `stage`, `stage_display`, `priority`, `priority_display`,
-`company_id`, `company_name`, `account_name` (`null` for an
-organisation-level row). **Response `201`** (POST) — one such entry.
+`department`, `department_display`, `companies`, `account_id`/
+`account_name` (both `null` for an organisation-level row; the
+organisation page's account chips filter on `account_id`).
+**Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/opportunities/`
 
@@ -3123,8 +3127,10 @@ that parent — exactly one of the two must be given (`400` otherwise).
     "stage_display": "Qualification",
     "priority": "high",
     "priority_display": "High",
-    "company_id": 6,
-    "company_name": "Apple Inc",
+    "department": "",
+    "department_display": "",
+    "companies": [{ "id": 6, "name": "Apple Inc" }],
+    "account_id": 12,
     "account_name": "Apple EMEA"
   }
 ]
@@ -3173,8 +3179,10 @@ adds an organisation-level Risk; `customer` taken from the URL.
 
 **Response `200`** (GET) — a plain array, each entry: `id`, `title`,
 `mrr`, `stage`, `stage_display`, `priority`, `priority_display`,
-`company_id`, `company_name`, `account_name` (`null` for an
-organisation-level row). **Response `201`** (POST) — one such entry.
+`department`, `department_display`, `companies`, `account_id`/
+`account_name` (both `null` for an organisation-level row; the
+organisation page's account chips filter on `account_id`).
+**Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/risks/`
 
@@ -3211,8 +3219,10 @@ parent — exactly one of the two must be given (`400` otherwise).
     "stage_display": "Open",
     "priority": "high",
     "priority_display": "High",
-    "company_id": 8,
-    "company_name": "WeWork",
+    "department": "",
+    "department_display": "",
+    "companies": [{ "id": 8, "name": "WeWork" }],
+    "account_id": null,
     "account_name": null
   }
 ]
@@ -3287,10 +3297,9 @@ Activity Feed's own Surveys filter.
 `score`, `sent_at`, `responded_at`, `companies` (every ultimate parent
 Customer, plural since an account-level Survey's own Account can belong
 to more than one), `account_id`/`account_name` (both `null` for an
-organisation-level row — unlike Opportunity/Risk, `account_id` is a
-real field here, not just `account_name`, since the standalone Surveys
-page's own row-click needs it to navigate to that Account's Details
-page), `created_at`. **Response `201`** (POST) — one such entry.
+organisation-level row; the standalone Surveys page's row-click uses
+`account_id` to open that Account's Details page), `created_at`.
+**Response `201`** (POST) — one such entry.
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/surveys/`
 

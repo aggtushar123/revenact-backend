@@ -1058,9 +1058,10 @@ class ContactSerializer(serializers.ModelSerializer):
     Account-scoped list views below don't strictly need this (the page
     already knows its own scope) but get it for free since it's the
     same serializer; the standalone top-level ContactListView does need
-    it, since it spans every Customer. `account_name` is set only for
-    an account-level contact, so the standalone page can show which
-    account within the company it belongs to (a plain
+    it, since it spans every Customer. `account_id`/`account_name` are
+    set only for an account-level contact: the standalone page shows
+    which account within the company it belongs to, and the
+    organisation page's account chips filter on the id (a plain
     SerializerMethodField rather than `source="account.name"`, since a
     dotted source would raise on a null `account` rather than reliably
     falling back)."""
@@ -1086,6 +1087,7 @@ class ContactSerializer(serializers.ModelSerializer):
             "sentiment_computed_at",
             "last_contacted_at",
             "companies",
+            "account_id",
             "account_name",
         ]
         read_only_fields = ["sentiment_source", "sentiment_evidence", "sentiment_computed_at"]
@@ -1107,7 +1109,7 @@ class ContactSerializer(serializers.ModelSerializer):
 
 
 class OpportunitySerializer(serializers.ModelSerializer):
-    """See Opportunity model's docstring. `companies`/`account_name`
+    """See Opportunity model's docstring. `companies`/`account_id`/`account_name`
     mirror ContactSerializer's own fields exactly, same reasoning (the
     standalone Pipelines board spans every Customer, so it can't assume
     which parent FK is set the way a nested Customer/Account-scoped
@@ -1143,6 +1145,7 @@ class OpportunitySerializer(serializers.ModelSerializer):
             "department",
             "department_display",
             "companies",
+            "account_id",
             "account_name",
         ]
 
@@ -1186,6 +1189,7 @@ class RiskSerializer(serializers.ModelSerializer):
             "department",
             "department_display",
             "companies",
+            "account_id",
             "account_name",
         ]
 
@@ -1203,12 +1207,11 @@ class SurveySerializer(serializers.ModelSerializer):
     """See Survey model's docstring. `companies`/`account_name` mirror
     Opportunity/RiskSerializer's own fields exactly, same reasoning —
     the standalone Surveys page spans every Customer/Account the same
-    way the Pipelines board does. Unlike Opportunity/Risk, this also
-    exposes `account_id` (a plain passthrough of the FK, not a
-    SerializerMethodField) — Opportunity/Risk rows never navigate
-    anywhere on click, but the standalone Surveys page's own row-click
-    does (into that Account's own Details page), and `account_name`
-    alone isn't enough to build that link.
+    way the Pipelines board does. `account_id` is a plain passthrough of
+    the FK, not a SerializerMethodField: the standalone Surveys page's
+    row-click opens that Account's Details page, and `account_name` alone
+    isn't enough to build that link. Contact/Opportunity/RiskSerializer
+    carry it too, for the organisation page's account chips.
 
     `score` is required, and range-checked against `survey_type`, the
     moment `status` becomes RESPONDED — not enforced at any other time,

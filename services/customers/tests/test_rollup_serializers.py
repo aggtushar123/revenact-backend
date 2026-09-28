@@ -3,8 +3,22 @@ tags read. No database: the models are built in memory."""
 
 from django.test import SimpleTestCase
 
-from services.customers.models import Account, Attachment, Call, Customer
-from services.customers.serializers import AttachmentSerializer, CallSerializer
+from services.customers.models import (
+    Account,
+    Attachment,
+    Call,
+    Contact,
+    Customer,
+    Opportunity,
+    Risk,
+)
+from services.customers.serializers import (
+    AttachmentSerializer,
+    CallSerializer,
+    ContactSerializer,
+    OpportunitySerializer,
+    RiskSerializer,
+)
 
 
 class AttachmentAccountFieldsTests(SimpleTestCase):
@@ -32,3 +46,20 @@ class CallAccountFieldsTests(SimpleTestCase):
     def test_the_account_id_cannot_be_written(self):
         # Logging a call takes its parent from the URL, never the body.
         self.assertTrue(CallSerializer().fields["account_id"].read_only)
+
+
+class ChipAccountIdTests(SimpleTestCase):
+    """The organisation page's account chips filter People and Deals & risks
+    client-side on `account_id`."""
+
+    def test_contacts_opportunities_and_risks_carry_a_read_only_account_id(self):
+        for serializer, model in (
+            (ContactSerializer, Contact),
+            (OpportunitySerializer, Opportunity),
+            (RiskSerializer, Risk),
+        ):
+            with self.subTest(serializer=serializer.__name__):
+                field = serializer().fields["account_id"]
+                self.assertTrue(field.read_only)
+                self.assertEqual(field.get_attribute(model(account_id=5)), 5)
+                self.assertIsNone(field.get_attribute(model(customer_id=1)))

@@ -1583,13 +1583,12 @@ class ContactDetailView(generics.RetrieveUpdateDestroyAPIView):
     Contacts UIs (standalone list, Organization Details, standalone
     Account page) only ever needs the Contact's own id, never its
     parent's, so there's no reason to make the caller thread a
-    customer_id/account_id it may not even have on hand (the
-    standalone /contacts/list page's own rows don't carry an
-    account_id, only companies/account_name for display).
+    customer_id/account_id it may not even have on hand.
 
     PATCH can't move a Contact between parents — `customer`/`account`
-    aren't in ContactSerializer's own `fields` list at all, so a PATCH
-    body naming either is silently ignored rather than erroring."""
+    aren't in ContactSerializer's own `fields` list and `account_id` is
+    read-only, so a PATCH body naming any of them is silently ignored
+    rather than erroring."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]

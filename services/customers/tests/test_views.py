@@ -2140,6 +2140,17 @@ class CustomerContactListTests(APITestCase):
         org_row = next(row for row in response.data if row["name"] == "Org-Level Contact")
         self.assertIsNone(org_row["account_name"])
 
+    def test_each_row_carries_its_account_id(self):
+        account = create_account(self.customer, name="North America")
+        Contact.objects.create(customer=self.customer, **self._contact_kwargs(name="Org-Level"))
+        Contact.objects.create(account=account, **self._contact_kwargs(name="Account-Level"))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        ids = {row["name"]: row["account_id"] for row in response.data}
+        self.assertEqual(ids, {"Org-Level": None, "Account-Level": account.id})
+
     def test_hides_contacts_on_accounts_the_viewer_cannot_see(self):
         viewer, seen, hidden = blind_to_one_account(self.customer)
         Contact.objects.create(customer=self.customer, **self._contact_kwargs(name="Org-Level"))
@@ -2640,6 +2651,17 @@ class ContactDetailTests(APITestCase):
         self.org_contact.refresh_from_db()
         self.assertEqual(self.org_contact.customer, self.customer)
 
+    def test_patching_account_id_does_not_move_the_contact(self):
+        self.client.force_authenticate(self.admin)
+        url = f"/api/v1/contacts/{self.org_contact.id}/"
+
+        response = self.client.patch(url, {"account_id": self.account.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["account_id"])
+        self.org_contact.refresh_from_db()
+        self.assertIsNone(self.org_contact.account_id)
+
     def test_can_delete_a_contact(self):
         self.client.force_authenticate(self.admin)
         response = self.client.delete(f"/api/v1/contacts/{self.org_contact.id}/")
@@ -2730,6 +2752,22 @@ class CustomerOpportunityListTests(APITestCase):
         self.assertEqual(titles, {"Org-Level Opp", "Account-Level Opp"})
         account_row = next(row for row in response.data if row["title"] == "Account-Level Opp")
         self.assertEqual(account_row["account_name"], "North America")
+
+    def test_each_row_carries_its_account_id(self):
+        account = create_account(self.customer, name="North America")
+        Opportunity.objects.create(
+            customer=self.customer, **self._opportunity_kwargs(title="Org-Level")
+        )
+        Opportunity.objects.create(
+            account=account,
+            **self._opportunity_kwargs(title="Account-Level"),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        ids = {row["title"]: row["account_id"] for row in response.data}
+        self.assertEqual(ids, {"Org-Level": None, "Account-Level": account.id})
 
     def test_hides_opportunities_on_accounts_the_viewer_cannot_see(self):
         viewer, seen, hidden = blind_to_one_account(self.customer)
@@ -3147,6 +3185,17 @@ class CustomerRiskListTests(APITestCase):
         self.assertEqual(titles, {"Org-Level Risk", "Account-Level Risk"})
         account_row = next(row for row in response.data if row["title"] == "Account-Level Risk")
         self.assertEqual(account_row["account_name"], "North America")
+
+    def test_each_row_carries_its_account_id(self):
+        account = create_account(self.customer, name="North America")
+        Risk.objects.create(customer=self.customer, **self._risk_kwargs(title="Org-Level"))
+        Risk.objects.create(account=account, **self._risk_kwargs(title="Account-Level"))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(self.url)
+
+        ids = {row["title"]: row["account_id"] for row in response.data}
+        self.assertEqual(ids, {"Org-Level": None, "Account-Level": account.id})
 
     def test_hides_risks_on_accounts_the_viewer_cannot_see(self):
         viewer, seen, hidden = blind_to_one_account(self.customer)
