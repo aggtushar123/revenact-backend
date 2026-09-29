@@ -85,7 +85,7 @@ def _tiebreak(entry):
 
 
 @total_ordering
-class _Desc:
+class Desc:
     """Wraps an orderable value so ascending comparison sees it in reverse —
     lets one tuple comparison serve both sort directions, for any orderable
     type (numbers, dates, names), without negating anything."""
@@ -102,8 +102,8 @@ class _Desc:
         return other.value < self.value
 
 
-def _wrap(value, descending):
-    return _Desc(value) if descending else value
+def wrap_desc(value, descending):
+    return Desc(value) if descending else value
 
 
 def _rank(entry, sort_key, descending, portfolio, group=""):
@@ -114,11 +114,11 @@ def _rank(entry, sort_key, descending, portfolio, group=""):
     ascending, so ties keep one order in either direction. One function for
     all three means the list order and the paging order can never drift
     apart."""
-    section = _group_rank(*group_key(entry, group), group) if group else ()
+    section = group_rank(*group_key(entry, group), group) if group else ()
     value = SORT_GETTERS[sort_key](entry, portfolio)
     if value is None:
         return (section, 1, None, _tiebreak(entry))
-    return (section, 0, _wrap(value, descending), _tiebreak(entry))
+    return (section, 0, wrap_desc(value, descending), _tiebreak(entry))
 
 
 def order_entries(portfolio, sort_key, descending, group=""):
@@ -157,7 +157,7 @@ def group_key(entry, group):
     return key, dict(RENEWAL_WINDOWS)[key]
 
 
-def _group_rank(key, label, group):
+def group_rank(key, label, group):
     if group == "health":
         return (HEALTH_GROUP_ORDER.index(key), "", "")
     if group == "lifecycle":
@@ -176,7 +176,7 @@ def build_groups(entries, group):
         bucket["count"] += 1
         if entry.arr is not None:
             bucket["arr"] += entry.arr
-    ordered = sorted(groups.values(), key=lambda g: _group_rank(g["key"], g["label"], group))
+    ordered = sorted(groups.values(), key=lambda g: group_rank(g["key"], g["label"], group))
     for bucket in ordered:
         bucket["arr"] = round(bucket["arr"], 2)
     return ordered
@@ -305,50 +305,58 @@ def decode_cursor(cursor):
     return section, bucket, value, name, entry_id, fingerprint
 
 
-def paginate(entries, *, params, portfolio):
-    """Keyset pagination over `select`'s order. The cursor names the last
-    served row's full rank — section, bucket, sort value, name, id, exactly
-    what `_rank` sorts by — plus the fingerprint of the list it was cut from.
-    The next page is every row that ranks strictly after it, found with a
-    scan over the already-ordered `entries`. Rows added or removed anywhere
-    else in the set, in any number, never cause a skip or a repeat: the cut is
-    by value, not by a row count. A malformed or tampered cursor, or one cut
-    from a list with other filters, sort, group or board column, is treated
+def keyset_page(entries, *, rank, cursor, limit, descending, fingerprint, grouped):
+    """Keyset pagination over an already-ordered list, for any kind of entry.
+    `rank(entry)` is the exact tuple the list was sorted by — `(section,
+    bucket, wrapped value, (name, id))`, as `_rank` builds it. The cursor
+    names the last served row's full rank, unwrapped, plus the fingerprint of
+    the list it was cut from. The next page is every entry that ranks
+    strictly after it, found with a scan over `entries`. Rows added or removed
+    anywhere else in the set, in any number, never cause a skip or a repeat:
+    the cut is by value, not by a row count. A malformed or tampered cursor,
+    or one cut from a list with another fingerprint or grouping, is treated
     as absent — the first page."""
-    sort_key, descending, group = params.sort_key, params.descending, params.group
-    fingerprint = filter_fingerprint(params)
     start = 0
-    decoded = decode_cursor(params.cursor)
-    if decoded is not None and decoded[5] == fingerprint and bool(decoded[0]) == bool(group):
+    decoded = decode_cursor(cursor)
+    if decoded is not None and decoded[5] == fingerprint and bool(decoded[0]) == grouped:
         section, bucket, value, name, entry_id, _fingerprint = decoded
-        # Missing values are never wrapped in `_rank` either — only a present
+        # Missing values are never wrapped in a rank either — only a present
         # value's direction is reversed.
-        wrapped = value if bucket == 1 else _wrap(value, descending)
+        wrapped = value if bucket == 1 else wrap_desc(value, descending)
         cursor_rank = (section, bucket, wrapped, (name, entry_id))
         try:
             start = next(
-                (
-                    index
-                    for index, entry in enumerate(entries)
-                    if _rank(entry, sort_key, descending, portfolio, group) > cursor_rank
-                ),
+                (index for index, entry in enumerate(entries) if rank(entry) > cursor_rank),
                 len(entries),
             )
         except TypeError:
             # A value of a type the sort cannot compare — the safest read is
             # the first page.
             start = 0
-    page = entries[start : start + params.limit]
+    page = entries[start : start + limit]
     next_cursor = None
     if page and start + len(page) < len(entries):
-        section, last_bucket, last_value, (last_name, last_id) = _rank(
-            page[-1], sort_key, descending, portfolio, group
-        )
-        raw_value = last_value.value if isinstance(last_value, _Desc) else last_value
+        section, last_bucket, last_value, (last_name, last_id) = rank(page[-1])
+        raw_value = last_value.value if isinstance(last_value, Desc) else last_value
         next_cursor = encode_cursor(
             section, last_bucket, raw_value, last_name, last_id, fingerprint
         )
     return page, next_cursor
+
+
+def paginate(entries, *, params, portfolio):
+    """`keyset_page` over `select`'s order: ranked by `_rank` with this list's
+    sort and group, cut against this list's `filter_fingerprint`."""
+    sort_key, descending, group = params.sort_key, params.descending, params.group
+    return keyset_page(
+        entries,
+        rank=lambda entry: _rank(entry, sort_key, descending, portfolio, group),
+        cursor=params.cursor,
+        limit=params.limit,
+        descending=descending,
+        fingerprint=filter_fingerprint(params),
+        grouped=bool(group),
+    )
 
 
 def build_summary(entries):

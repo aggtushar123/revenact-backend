@@ -34,7 +34,7 @@ NOT_UPDATED = "Could not be updated."
 logger = logging.getLogger(__name__)
 
 
-def _reason(errors):
+def first_reason(errors):
     for messages in errors.values():
         if isinstance(messages, (list, tuple)) and messages:
             return str(messages[0])
@@ -62,7 +62,7 @@ def _apply_one(request, customer_id, field, value):
             customer, data={field: value}, partial=True, context={"request": request}
         )
         if not serializer.is_valid():
-            return _reason(serializer.errors)
+            return first_reason(serializer.errors)
         saved = serializer.save()
         after_customer_update(saved, actor=request.user, previous_owner=previous_owner)
     return None

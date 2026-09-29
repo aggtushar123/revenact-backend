@@ -68,7 +68,7 @@ class PortfolioParams:
         return self.sort.startswith("-")
 
 
-def _int(raw):
+def int_or_none(raw):
     if raw is None:
         return None
     try:
@@ -77,17 +77,17 @@ def _int(raw):
         return None
 
 
-def _list(raw):
+def comma_list(raw):
     return [part.strip() for part in (raw or "").split(",") if part.strip()]
 
 
 def parse_params(query: Mapping) -> PortfolioParams:
     owner_raw = query.get("owner")
-    owner = "unassigned" if owner_raw == "unassigned" else _int(owner_raw)
+    owner = "unassigned" if owner_raw == "unassigned" else int_or_none(owner_raw)
 
     ids = None
     if "ids" in query:
-        parsed = (_int(part) for part in (query.get("ids") or "").split(",")[:MAX_IDS])
+        parsed = (int_or_none(part) for part in (query.get("ids") or "").split(",")[:MAX_IDS])
         ids = tuple(value for value in parsed if value is not None)
 
     sort = query.get("sort") or DEFAULT_SORT
@@ -95,20 +95,22 @@ def parse_params(query: Mapping) -> PortfolioParams:
         sort = DEFAULT_SORT
 
     group = query.get("group") if query.get("group") in GROUPS else ""
-    renews_within = _int(query.get("renews_within"))
-    limit = _int(query.get("limit"))
-    products = (_int(part) for part in _list(query.get("product")))
+    renews_within = int_or_none(query.get("renews_within"))
+    limit = int_or_none(query.get("limit"))
+    products = (int_or_none(part) for part in comma_list(query.get("product")))
 
     return PortfolioParams(
         search=(query.get("search") or "").strip(),
         owner=owner,
         lifecycles=tuple(
             value
-            for value in _list(query.get("lifecycle"))
+            for value in comma_list(query.get("lifecycle"))
             if value in Customer.LifecycleStage.values
         ),
         health=tuple(
-            value for value in _list(query.get("health")) if value in Customer.HealthCategory.values
+            value
+            for value in comma_list(query.get("health"))
+            if value in Customer.HealthCategory.values
         ),
         products=tuple(value for value in products if value is not None),
         renews_within=renews_within if renews_within in RENEWS_WITHIN_DAYS else None,

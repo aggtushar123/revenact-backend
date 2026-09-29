@@ -15,16 +15,33 @@ def initials(name):
     return letters.upper() or "?"
 
 
-def _iso(value):
+def iso(value):
     return None if value is None else value.isoformat()
 
 
-def _number(value):
+def number(value):
     return None if value is None else float(value)
 
 
-def _person(user):
+def person(user):
     return None if user is None else {"id": user.pk, "name": user.name}
+
+
+def pulse_payload(record):
+    """The row's pulse, for anything that carries the two pulses, the AI
+    reason and the stored history dots — a Customer or an Account."""
+    csm, ai = record.csm_pulse_score, record.ai_pulse_value
+    ai_category = record.ai_pulse_score
+    return {
+        "csm": csm,
+        "ai": ai,
+        "ai_category": ai_category,
+        "ai_label": Customer.AIPulseScore(ai_category).label if ai_category else "",
+        "reason": record.ai_pulse_reason,
+        # The old table's "Pulse" column: the stored history dots.
+        "history": list(record.pulse or []),
+        "disagree": csm is not None and ai is not None and abs(csm - ai) >= PULSE_DISAGREE_GAP,
+    }
 
 
 def details_payload(customer):
@@ -35,17 +52,17 @@ def details_payload(customer):
     return {
         "commercial": {
             "currency": customer.currency,
-            "arr_billed_at_account": _number(customer.arr_billed_at_account),
-            "arr_billed_at_hq": _number(customer.arr_billed_at_hq),
-            "total_contract_value": _number(customer.total_contract_value),
-            "total_forecasted_renewal_revenue": _number(customer.total_forecasted_renewal_revenue),
-            "implementation_fee": _number(customer.implementation_fee),
+            "arr_billed_at_account": number(customer.arr_billed_at_account),
+            "arr_billed_at_hq": number(customer.arr_billed_at_hq),
+            "total_contract_value": number(customer.total_contract_value),
+            "total_forecasted_renewal_revenue": number(customer.total_forecasted_renewal_revenue),
+            "implementation_fee": number(customer.implementation_fee),
         },
         "contract": {
-            "joined_date": _iso(customer.joined_date),
-            "contract_start_date": _iso(customer.contract_start_date),
-            "renewal_date": _iso(customer.renewal_date),
-            "contract_end_date": _iso(customer.contract_end_date),
+            "joined_date": iso(customer.joined_date),
+            "contract_start_date": iso(customer.contract_start_date),
+            "renewal_date": iso(customer.renewal_date),
+            "contract_end_date": iso(customer.contract_end_date),
         },
         "adoption": {
             "total_contracted_seats": customer.total_contracted_seats,
@@ -60,8 +77,8 @@ def details_payload(customer):
         },
         "voice": {
             "nps_score": customer.nps_score,
-            "csat_score": _number(customer.csat_score),
-            "ces_percentage": _number(customer.ces_percentage),
+            "csat_score": number(customer.csat_score),
+            "ces_percentage": number(customer.ces_percentage),
             "ai_pulse_reason": customer.ai_pulse_reason,
         },
         "profile": {
@@ -71,11 +88,11 @@ def details_payload(customer):
             "top_source_channel": customer.top_source_channel,
         },
         "history": {
-            "created_by": _person(customer.created_by),
-            "created_at": _iso(customer.created_at),
-            "modified_by": _person(customer.modified_by),
-            "updated_at": _iso(customer.updated_at),
-            "churn_date": _iso(customer.churn_date),
+            "created_by": person(customer.created_by),
+            "created_at": iso(customer.created_at),
+            "modified_by": person(customer.modified_by),
+            "updated_at": iso(customer.updated_at),
+            "churn_date": iso(customer.churn_date),
             "churn_reason": customer.churn_reason,
             "churn_reason_label": (
                 customer.get_churn_reason_display() if customer.churn_reason else ""
@@ -87,13 +104,11 @@ def details_payload(customer):
 
 def row_payload(entry):
     customer = entry.customer
-    csm, ai = customer.csm_pulse_score, customer.ai_pulse_value
-    ai_category = customer.ai_pulse_score
     return {
         "id": customer.pk,
         "name": customer.name,
         "initials": initials(customer.name),
-        "owner": _person(customer.owner),
+        "owner": person(customer.owner),
         "lifecycle": {
             "value": customer.lifecycle_stage,
             "label": customer.get_lifecycle_stage_display(),
@@ -103,19 +118,10 @@ def row_payload(entry):
             "category": customer.health_category,
             "trend": entry.trend,
         },
-        "renewal": {"date": _iso(customer.renewal_date), "days": entry.renewal_days},
+        "renewal": {"date": iso(customer.renewal_date), "days": entry.renewal_days},
         "arr": entry.arr,
         "risk": {"score": entry.triage.score, "direction": entry.triage.direction},
-        "pulse": {
-            "csm": csm,
-            "ai": ai,
-            "ai_category": ai_category,
-            "ai_label": Customer.AIPulseScore(ai_category).label if ai_category else "",
-            "reason": customer.ai_pulse_reason,
-            # The old table's "Pulse" column: the stored history dots.
-            "history": list(customer.pulse or []),
-            "disagree": csm is not None and ai is not None and abs(csm - ai) >= PULSE_DISAGREE_GAP,
-        },
+        "pulse": pulse_payload(customer),
         "last_touch_days": entry.last_touch_days,
         "urgent_tickets": entry.urgent_tickets,
         "signal": entry.signal,
