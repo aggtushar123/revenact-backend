@@ -2,11 +2,12 @@
 organisation and account on every row, a summary over the whole filtered
 set, and a query count that does not grow with the page."""
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Account, Contact, Customer
+from services.customers.models import Account, Call, Contact, Customer
 from services.customers.tests.test_views import blind_to_one_account
 
 URL = "/api/v1/contacts/"
@@ -118,10 +119,11 @@ class RowTests(Fixture):
         self.assertEqual(row["organisation"], {"id": self.pizza.id, "name": "Pizza Hut"})
         self.assertIsNone(row["account"])
 
-    def test_a_row_carries_its_sentiment_evidence_and_last_contact(self):
+    def test_a_row_carries_its_sentiment_and_last_contact(self):
         row = self.row("Sam Pizza")
-        for field in ("sentiment", "sentiment_source", "sentiment_evidence", "last_contacted_at"):
+        for field in ("sentiment", "sentiment_source", "calls", "last_contacted_at"):
             self.assertIn(field, row)
+        self.assertNotIn("sentiment_evidence", row)
 
     def test_an_organisation_the_viewer_cannot_open_is_not_named(self):
         # Joint belongs to two organisations: the viewer's own, and the
@@ -133,6 +135,47 @@ class RowTests(Fixture):
         self.assertEqual(row["companies"], [{"id": mine.id, "name": "Mine"}])
         self.assertEqual(row["organisation"], {"id": mine.id, "name": "Mine"})
         self.assertEqual(row["account"], {"id": joint.id, "name": "Joint"})
+
+
+class CallCountTests(Fixture):
+    """`calls`: every call this person was on that the viewer may open —
+    company rule only, calls have no record rule of their own."""
+
+    def call(self, contact, sentiment="neutral", **parent):
+        call = Call.objects.create(
+            title="A call",
+            host_name="Carl",
+            occurred_at=timezone.now(),
+            sentiment=sentiment,
+            **parent,
+        )
+        call.participants.add(contact)
+        return call
+
+    def row_for(self, name, user):
+        self.client.force_authenticate(user)
+        rows = self.client.get(URL).data["results"]
+        return next(r for r in rows if r["name"] == name)
+
+    def test_a_hidden_account_call_is_excluded(self):
+        viewer, seen, hidden = blind_to_one_account(self.pizza)
+        self.call(self.sam, customer=self.pizza)
+        self.call(self.sam, account=seen)
+        self.call(self.sam, account=hidden)
+
+        self.assertEqual(self.row_for("Sam Pizza", viewer)["calls"], 2)
+
+        colleague = self.pizza.owner
+        self.assertEqual(self.row_for("Sam Pizza", colleague)["calls"], 3)
+
+    def test_a_pinned_query_count_holds_the_annotation(self):
+        for _ in range(5):
+            self.call(self.sam, customer=self.pizza)
+        self.client.force_authenticate(self.admin)
+        self.client.get(URL)  # memoise the caller's org chart, as elsewhere
+        with self.assertNumQueries(5):
+            row = self.row_for("Sam Pizza", self.admin)
+        self.assertEqual(row["calls"], 5)
 
 
 class NestedVisibilityTests(Fixture):

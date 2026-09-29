@@ -1598,7 +1598,19 @@ class ContactDetailView(ContactCompanyVisibilityMixin, generics.RetrieveUpdateDe
 
     def get_queryset(self):
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
-        return Contact.objects.filter(visible_children_q(self.request.user)).distinct()
+        # SOC2:AUTH-02 a call is the caller's to count under its own company's
+        # visibility, same annotation as contact_list.filtered_contacts.
+        return (
+            Contact.objects.filter(visible_children_q(self.request.user))
+            .annotate(
+                readable_calls_count=Count(
+                    "calls",
+                    filter=visible_children_q(self.request.user, prefix="calls__"),
+                    distinct=True,
+                )
+            )
+            .distinct()
+        )
 
 
 def _visible_contact(request, pk):
@@ -1622,70 +1634,6 @@ class ContactHistoryView(views.APIView):
         from .contact_history import build_history
 
         return Response(build_history(_visible_contact(request, pk), request.user))
-
-
-class ContactInteractionsView(views.APIView):
-    """GET /api/v1/contacts/<id>/interactions/ — what this person's
-    sentiment rests on: every classified call they were on, email from
-    their address and ticket they raised, newest first, each with its own
-    sentiment. Same scoping as ContactDetailView, and each row under its own
-    record rule, as in /history/, which replaces this endpoint once the
-    Contacts page no longer calls it."""
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, pk):
-        from .contact_history import history_querysets
-        from .contact_sentiment import interactions_for, score
-
-        contact = _visible_contact(request, pk)
-        rows = interactions_for(contact)
-        # Scored from every row here, unfiltered by `readable` below — this
-        # is the same `interactions_for`/`score` pair that computed
-        # `contact.sentiment`, so the two agree. Only the *listed* rows are
-        # trimmed to what the viewer may read.
-        value, label = score(rows)
-        # Unbounded (no HISTORY_LIMIT) — acceptable only because this
-        # endpoint is being retired once the Contacts page moves to
-        # /history/, which does apply the limit.
-        readable = {
-            kind: set(queryset.values_list("pk", flat=True))
-            for kind, queryset in zip(
-                ("call", "email", "ticket"), history_querysets(contact, request.user)
-            )
-        }
-        items = []
-        for row in rows:
-            if row["record"].pk not in readable[row["kind"]]:
-                continue
-            record = row["record"]
-            kind = row["kind"]
-            if kind == "call":
-                title, snippet = record.title, record.summary
-            elif kind == "email":
-                title, snippet = record.subject, record.body
-            else:
-                title, snippet = f"{record.ticket_number} {record.title}", record.description
-            items.append(
-                {
-                    "kind": kind,
-                    "id": record.id,
-                    "title": title,
-                    "snippet": (snippet or "")[:240],
-                    "when": row["when"].isoformat(),
-                    "sentiment": row["sentiment"],
-                    "ai_category": record.ai_category,
-                }
-            )
-        return Response(
-            {
-                "sentiment": label,
-                "score": round(value, 3),
-                "source": contact.sentiment_source,
-                "evidence": contact.sentiment_evidence,
-                "interactions": items,
-            }
-        )
 
 
 def _pipeline_defaults(request, serializer):

@@ -1,6 +1,6 @@
 """GET /api/v1/contacts/<id>/history/ — a person's calls, emails and tickets,
 each under its own record rule, and a 404 for a contact the viewer cannot
-open. /interactions/ reads under the same rules until it is retired."""
+open. /interactions/ is retired: the endpoint no longer exists."""
 
 from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
@@ -177,7 +177,8 @@ class HistoryShapeTests(Fixture):
         recompute(self.sam)
         body = self.read()
         self.assertEqual((body["sentiment"], body["sentiment_source"]), ("positive", "computed"))
-        self.assertEqual(body["sentiment_evidence"]["calls"], 1)
+        self.assertEqual(body["sentiment_readable"]["calls"], 1)
+        self.assertNotIn("sentiment_evidence", body)
 
 
 class HistoryPrivacyTests(Fixture):
@@ -253,21 +254,76 @@ class HistoryPrivacyTests(Fixture):
         self.client.force_authenticate(outsider)
         self.assertEqual(self.client.get(self.url).status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_the_old_interactions_endpoint_reads_under_the_same_rules(self):
-        self.call("Seen call", account=self.seen)
-        self.call("Hidden call", account=self.hidden)
-        self.email("Colleague's", mailbox_owner=self.colleague, ai_classified_at=WHEN)
-        Ticket.objects.filter(pk=self.ticket("ZD-3", department="engineering").pk).update(
-            ai_classified_at=WHEN
-        )
+    def test_the_retired_interactions_endpoint_is_gone(self):
         self.client.force_authenticate(self.viewer)
-
         response = self.client.get(f"/api/v1/contacts/{self.sam.id}/interactions/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-        self.assertEqual(
-            [(i["kind"], i["title"]) for i in response.data["interactions"]],
-            [("call", "Seen call")],
+
+class SentimentReadableTests(Fixture):
+    """`sentiment_readable`: the same evidence a computed sentiment rests
+    on (contact_sentiment.interactions_for), counted only over what the
+    viewer may actually open — never `sentiment_evidence`, which is gone
+    from every response."""
+
+    def build(self):
+        from services.customers.contact_sentiment import recompute
+
+        self.call("Seen call", days_ago=1, account=self.seen, sentiment="positive")
+        self.call("Hidden call", days_ago=2, account=self.hidden, sentiment="negative")
+        self.email(
+            "Colleague's", mailbox_owner=self.colleague, sentiment="negative", ai_classified_at=WHEN
         )
+        Ticket.objects.create(
+            customer=self.pizza,
+            ticket_number="ZD-9",
+            title="Broken export",
+            priority="high",
+            opened_at=date(2026, 9, 18),
+            requester_email="sam@pizzahut.com",
+            department=User.Function.ENGINEERING,
+            ai_classified_at=WHEN,
+            sentiment="negative",
+        )
+        recompute(self.sam)
+
+    def test_counts_only_the_viewers_readable_evidence(self):
+        self.build()
+        body = self.read()
+        self.assertEqual(
+            body["sentiment_readable"],
+            {
+                "calls": 1,
+                "emails": 0,
+                "tickets": 0,
+                "positive": 1,
+                "neutral": 0,
+                "negative": 0,
+                "latest_at": (WHEN - timedelta(days=1)).isoformat(),
+                "others": True,
+            },
+        )
+
+    def test_the_colleague_sees_their_own_readable_counts(self):
+        self.build()
+        body = self.read(self.colleague)
+        readable = body["sentiment_readable"]
+        # The colleague owns the Hidden account and is the mailbox owner of
+        # "Colleague's" — a different readable set than the viewer's own,
+        # still missing the engineering ticket neither of them can open.
+        self.assertEqual((readable["calls"], readable["emails"], readable["tickets"]), (2, 1, 0))
+        self.assertTrue(readable["others"])
+
+    def test_a_manual_sentiment_gives_none(self):
+        body = self.read()
+        self.assertIsNone(body["sentiment_readable"])
+
+    def test_no_sentiment_evidence_key_anywhere(self):
+        import json
+
+        self.build()
+        body = self.read()
+        self.assertNotIn("sentiment_evidence", json.dumps(body))
 
 
 class HistoryQueryCountTests(Fixture):

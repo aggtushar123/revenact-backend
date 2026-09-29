@@ -30,14 +30,9 @@ counted (`tickets`).
 from django.http import Http404
 from django.utils import timezone
 
-from services.customers.contact_history import DEPARTMENTS, history_querysets
+from services.customers.contact_history import DEPARTMENTS, history_querysets, readable_rows
 from services.customers.contact_list import contacts_summary, filtered_contacts
-from services.customers.contact_sentiment import (
-    KIND_WEIGHT,
-    interactions_for,
-    recency_weight,
-    score,
-)
+from services.customers.contact_sentiment import KIND_WEIGHT, recency_weight, score
 from services.customers.personal import ticket_snapshot
 from services.customers.scoping import visible_customers
 from services.organizations.story.items import clip
@@ -232,7 +227,7 @@ def _record_ref(kind, record):
     return record_ref(kind, record.pk, customer_id=record.customer_id)
 
 
-def _why_lines(contact, mine, evidence_count, focus, now):
+def _why_lines(contact, mine, others, focus, now):
     """The sentiment and, strictly, why: only readable records are weighed or
     named; hidden ones are acknowledged, never counted. `mine` is every
     readable record the stored sentiment rests on (newest first) — the why
@@ -242,7 +237,7 @@ def _why_lines(contact, mine, evidence_count, focus, now):
     if contact.sentiment_source != "computed":
         return [f"Sentiment: {contact.sentiment}, set by hand; no record decides it."]
     lines = [f"Sentiment: {contact.sentiment}, computed from their calls, emails and tickets"]
-    if len(mine) < evidence_count:
+    if others:
         lines.append("The stored sentiment also rests on records the asker cannot open.")
     if focus != FOCUS_SENTIMENT:
         return lines
@@ -277,28 +272,18 @@ def build_person_grounding(user, context, question, *, today=None):
     call_rows = list(calls.order_by("-occurred_at", "-pk")[:PERSON_LIMIT])
     email_rows = list(emails.order_by("-sent_at", "-pk")[:PERSON_LIMIT])
     ticket_rows = list(tickets.order_by("-opened_at", "-pk")[:PERSON_LIMIT])
-    readable = (
-        {("call", pk) for pk in calls.values_list("pk", flat=True)}
-        | {("email", pk) for pk in emails.values_list("pk", flat=True)}
-        | {("ticket", pk) for pk in tickets.values_list("pk", flat=True)}
-    )
     focus = context.get("focus")
     # Every readable record the stored sentiment rests on — needed both for
     # the "also rests on records the asker cannot open" line (any focus) and,
     # when the why block is actually shown, for the weighted reading and the
     # reply's own snapshot below. Computed once, never re-filtered.
-    evidence_count = 0
-    mine = []
-    if contact.sentiment_source == "computed":
-        evidence = interactions_for(contact)
-        evidence_count = len(evidence)
-        mine = [row for row in evidence if (row["kind"], row["record"].pk) in readable]
+    mine, others = readable_rows(contact, user)
     place = place_label(contact, visible_ids)
     lines = [
         f"Screen: Contacts › {contact.name} · {place} (one person's profile)",
         f"Person: {contact.name} · {contact.get_role_display()} · {place} · "
         f"status {contact.get_status_display().lower()} · {_contacted(contact)}",
-        *_why_lines(contact, mine, evidence_count, focus, now),
+        *_why_lines(contact, mine, others, focus, now),
         *_section("Calls they were on", call_rows, calls.count(), _call_line),
         *_section("Emails from them", email_rows, emails.count(), _email_line),
         *_section("Tickets they raised", ticket_rows, tickets.count(), _ticket_line),

@@ -30,7 +30,6 @@ from services.customers.views import (
     CockpitSummaryView,
     ContactDetailView,
     ContactHistoryView,
-    ContactInteractionsView,
     ContactListView,
     ContactStatsView,
     FileDetailView,
@@ -100,11 +99,6 @@ urlpatterns = [
         "api/v1/contacts/<int:pk>/history/",
         ContactHistoryView.as_view(),
         name="contact-history",
-    ),
-    path(
-        "api/v1/contacts/<int:pk>/interactions/",
-        ContactInteractionsView.as_view(),
-        name="contact-interactions",
     ),
     path("api/v1/contacts/", ContactListView.as_view(), name="contact-list"),
     # Opportunity, same reasoning as Contact above — mounted at its own
