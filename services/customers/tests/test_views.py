@@ -738,6 +738,25 @@ class CustomerDetailTests(APITestCase):
         self.customer.refresh_from_db()
         self.assertIsNone(self.customer.owner)
 
+    def test_an_unchanged_owner_is_accepted_even_if_deactivated(self):
+        # Deactivating a user doesn't reassign their records, and the
+        # shared edit modal always sends `owner_id` — so a re-sent,
+        # unchanged owner must not 400 just because they went inactive.
+        self.customer.owner = self.csm
+        self.customer.save(update_fields=["owner"])
+        self.csm.is_active = False
+        self.csm.save(update_fields=["is_active"])
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            self.url, {"owner_id": self.csm.id, "name": "Globex Renamed"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.name, "Globex Renamed")
+        self.assertEqual(self.customer.owner, self.csm)
+
     def test_the_assignment_push_waits_for_the_commit(self):
         self.client.force_authenticate(self.admin)
         with patch("services.notifications.realtime._broadcast") as broadcast:
@@ -930,6 +949,25 @@ class AccountListCreateTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(Account.objects.filter(name="North America").exists())
 
+    def test_create_rejects_an_inactive_owner(self):
+        inactive = User.objects.create_user(
+            email="inactive@acme.io",
+            password="supersecret1",
+            name="Inactive",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        inactive.is_active = False
+        inactive.save(update_fields=["is_active"])
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            self.url, {"name": "North America", "owner_id": inactive.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Account.objects.filter(name="North America").exists())
+
     def test_created_account_is_assigned_to_the_url_customer_not_a_supplied_one(self):
         other_customer = Customer.objects.create(organisation=self.org, name="Initech")
         self.client.force_authenticate(self.admin)
@@ -1020,6 +1058,50 @@ class AccountDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.account.refresh_from_db()
         self.assertEqual(list(self.account.customers.all()), [self.customer])
+
+    def test_an_unchanged_owner_is_accepted_even_if_deactivated(self):
+        # Deactivating a user doesn't reassign their records, and the
+        # shared edit modal always sends `owner_id` — so a re-sent,
+        # unchanged owner must not 400 just because they went inactive.
+        self.account.owner = self.admin
+        self.account.save(update_fields=["owner"])
+        self.admin.is_active = False
+        self.admin.save(update_fields=["is_active"])
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            self.url,
+            {"owner_id": self.admin.id, "name": "North America Enterprise"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.name, "North America Enterprise")
+        self.assertEqual(self.account.owner, self.admin)
+
+    def test_assigning_a_different_inactive_owner_is_still_refused(self):
+        self.account.owner = self.admin
+        self.account.save(update_fields=["owner"])
+        other = User.objects.create_user(
+            email="other@acme.io",
+            password="supersecret1",
+            name="Other",
+            organisation=self.org,
+            role=User.Role.ADMIN,
+        )
+        other.is_active = False
+        other.save(update_fields=["is_active"])
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(self.url, {"owner_id": other.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["owner_id"], ["Owner must be an active member of your organisation."]
+        )
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.owner, self.admin)
 
     def test_an_accounts_owner_is_gated_and_handed_over_on_the_record_like_an_organisations(self):
         from services.accounts.capabilities import Capability
