@@ -1,0 +1,150 @@
+from datetime import timedelta
+from decimal import Decimal
+
+from services.accounts.models import User
+from services.accounts_portfolio import book
+from services.accounts_portfolio.params import parse_params
+from services.accounts_portfolio.tests.fixtures import AccountPortfolioFixture
+
+
+class FilteredQuerysetTests(AccountPortfolioFixture):
+    def names(self, user=None, **query):
+        queryset = book.filtered_queryset(user or self.csm, parse_params(query), today=self.today)
+        # Instances, not `values_list`: a duplicate row must show as one.
+        return sorted(account.name for account in queryset)
+
+    def test_visibility_comes_first(self):
+        self.account("Mine")
+        self.account("Dana's under Pizza", owner=self.other)
+        self.account("Pool under Taco", customers=[self.taco], owner=None)
+        self.account("Dana's under Taco", customers=[self.taco], owner=self.other)
+        self.account("Globex's", customers=[self.globex], owner=None)
+        self.assertEqual(self.names(), ["Dana's under Pizza", "Mine", "Pool under Taco"])
+        self.assertEqual(
+            self.names(user=self.admin),
+            ["Dana's under Pizza", "Dana's under Taco", "Mine", "Pool under Taco"],
+        )
+
+    def test_ids_only_narrow(self):
+        mine = self.account("Mine")
+        hidden = self.account("Hidden", customers=[self.taco], owner=self.other)
+        self.assertEqual(self.names(ids=f"{mine.pk},{hidden.pk}"), ["Mine"])
+        self.assertEqual(self.names(ids="x,"), [])
+
+    def test_an_account_on_two_organisations_is_one_row(self):
+        self.account("Shared", customers=[self.pizza, self.taco])
+        self.assertEqual(self.names(user=self.admin), ["Shared"])
+
+    def test_search_matches_name_or_id(self):
+        east = self.account("Pizza East")
+        self.account("Other")
+        self.assertEqual(self.names(search="east"), ["Pizza East"])
+        self.assertIn("Pizza East", self.names(search=str(east.pk)))
+
+    def test_organisation_filter_reads_only_openable_organisations(self):
+        self.account("Pizza one")
+        self.account("Pool", customers=[self.taco], owner=None)
+        self.assertEqual(self.names(organisation=str(self.pizza.pk)), ["Pizza one"])
+        # Carl may open Pool but not Taco Bell: naming Taco Bell finds nothing,
+        # so the filter cannot reveal what Taco Bell holds.
+        self.assertEqual(self.names(organisation=str(self.taco.pk)), [])
+        self.assertEqual(self.names(organisation=f"{self.pizza.pk},{self.taco.pk}"), ["Pizza one"])
+        self.assertEqual(self.names(user=self.admin, organisation=str(self.taco.pk)), ["Pool"])
+
+    def test_owner_filter(self):
+        self.account("Carl's")
+        self.account("Dana's", owner=self.other)
+        self.account("Nobody's", owner=None)
+        self.assertEqual(self.names(owner=str(self.other.pk)), ["Dana's"])
+        self.assertEqual(self.names(owner="unassigned"), ["Nobody's"])
+
+    def test_lifecycle_filter_churn_is_an_ordinary_stage(self):
+        self.account("Live", lifecycle_stage="live")
+        self.account("Renewal", lifecycle_stage="renewal")
+        self.account("Churn stage", lifecycle_stage="churn")
+        self.account("Onboarding")
+        self.assertEqual(self.names(lifecycle="live,renewal"), ["Live", "Renewal"])
+        self.assertEqual(self.names(lifecycle="churn"), ["Churn stage"])
+        self.assertEqual(len(self.names()), 4)
+
+    def test_health_bands_share_the_ring_thresholds(self):
+        for name, score in (
+            ("seven", "7.0"),
+            ("six-nine", "6.9"),
+            ("four", "4.0"),
+            ("three-nine", "3.9"),
+        ):
+            self.account(name, health_score=Decimal(score))
+        self.assertEqual(self.names(health="good"), ["seven"])
+        self.assertEqual(self.names(health="average"), ["four", "six-nine"])
+        self.assertEqual(self.names(health="poor,good"), ["seven", "three-nine"])
+
+    def test_renews_within_includes_overdue_and_the_churn_stage(self):
+        self.account("Overdue", renewal_date=self.today - timedelta(days=5))
+        self.account("Ninety", renewal_date=self.today + timedelta(days=90))
+        self.account("Ninety-one", renewal_date=self.today + timedelta(days=91))
+        self.account(
+            "Churn stage", lifecycle_stage="churn", renewal_date=self.today + timedelta(days=1)
+        )
+        self.account("Never")
+        self.assertEqual(self.names(renews_within="90"), ["Churn stage", "Ninety", "Overdue"])
+
+    def test_nps_bands_by_sign(self):
+        self.account("Promoter", nps_score=50)
+        self.account("Passive", nps_score=0)
+        self.account("Detractor", nps_score=-10)
+        self.account("Unscored")
+        self.assertEqual(self.names(nps="promoter"), ["Promoter"])
+        self.assertEqual(self.names(nps="passive"), ["Passive"])
+        self.assertEqual(self.names(nps="detractor"), ["Detractor"])
+
+
+class AccountRenewingQTests(AccountPortfolioFixture):
+    def test_the_rule(self):
+        self.account("Due", renewal_date=self.today + timedelta(days=30))
+        self.account("Later", renewal_date=self.today + timedelta(days=31))
+        queryset = book.filtered_queryset(self.csm, parse_params({}), today=self.today)
+        names = [a.name for a in queryset.filter(book.account_renewing_q(30, today=self.today))]
+        self.assertEqual(names, ["Due"])
+
+
+class FilterOptionsTests(AccountPortfolioFixture):
+    def test_options_are_scoped_like_the_rows(self):
+        self.account("Mine", lifecycle_stage="live")
+        self.account("Dana's under Pizza", owner=self.other, lifecycle_stage="renewal")
+        self.account("Pool", customers=[self.taco], owner=None, lifecycle_stage="live")
+        self.account("Hidden", customers=[self.taco], owner=self.other, lifecycle_stage="expansion")
+        options = book.filter_options(self.csm)
+        self.assertEqual(set(options), {"organisations", "owners", "lifecycles"})
+        # Pool is Carl's to see, but Taco Bell is not his to open.
+        self.assertEqual(
+            options["organisations"], [{"value": str(self.pizza.pk), "name": "Pizza Hut"}]
+        )
+        self.assertEqual(
+            options["owners"],
+            [
+                {"value": str(self.csm.pk), "name": "Carl CSM"},
+                {"value": str(self.other.pk), "name": "Dana CSM"},
+                {"value": "unassigned", "name": "Unassigned"},
+            ],
+        )
+        self.assertEqual(
+            options["lifecycles"],
+            [{"value": "live", "name": "Live"}, {"value": "renewal", "name": "Renewal"}],
+        )
+        admin = book.filter_options(self.admin)
+        self.assertEqual(
+            [row["name"] for row in admin["organisations"]], ["Pizza Hut", "Taco Bell"]
+        )
+
+    def test_owners_are_only_from_the_viewers_own_organisation(self):
+        outsider = User.objects.create_user(
+            email="olga@globex.io",
+            password="supersecret1",
+            name="Olga",
+            organisation=self.other_org,
+            role=User.Role.CSM,
+        )
+        self.account("Bad import", owner=outsider)
+        names = [row["name"] for row in book.filter_options(self.admin)["owners"]]
+        self.assertNotIn("Olga", names)
