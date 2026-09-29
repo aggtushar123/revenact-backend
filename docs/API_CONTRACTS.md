@@ -3083,11 +3083,13 @@ rather than a URL param, the standalone `/contacts/list` page's own
 read or not; see "Contacts list/detail" below), `companies` (every
 ultimate parent Customer), `account_id`/`account_name` (both `null` for
 an organisation-level row; the organisation page's account chips filter
-on `account_id`). Not annotated on this queryset, so `calls` is counted
-directly per row rather than in the query — small nested lists, unlike
-the standalone list below.
+on `account_id`). This queryset carries the same `readable_calls_count`
+annotation as the standalone list below — no pagination here, so a
+per-row query would otherwise run once per contact on the whole page.
 **Response `201`** (POST) — one such entry, `calls` always `0` (a call
-can't reference a contact that doesn't exist yet).
+can't reference a contact that doesn't exist yet, so the serializer's
+un-annotated fallback is used, same as any instance outside a
+`get_queryset` this app doesn't control).
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/`
 

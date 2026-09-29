@@ -1453,7 +1453,24 @@ class CustomerContactListView(ContactCompanyVisibilityMixin, generics.ListCreate
 
     def get_queryset(self):
         customer = self.get_customer()
-        return Contact.objects.filter(customer_rollup_q(self.request.user, customer))
+        # SOC2:AUTH-02 a call is the caller's to count under its own company's
+        # visibility, same annotation as contact_list.filtered_contacts —
+        # this list has no pagination, so without it `get_calls` would run
+        # one query per row instead of one for the page. `select_related`/
+        # `prefetch_related` for the same reason, on the company fields
+        # ContactSerializer.get_organisation/_companies already reads.
+        return (
+            Contact.objects.filter(customer_rollup_q(self.request.user, customer))
+            .select_related("customer", "account")
+            .prefetch_related("account__customers")
+            .annotate(
+                readable_calls_count=Count(
+                    "calls",
+                    filter=visible_children_q(self.request.user, prefix="calls__"),
+                    distinct=True,
+                )
+            )
+        )
 
     def perform_create(self, serializer):
         serializer.save(customer=self.get_customer())
@@ -1477,7 +1494,20 @@ class AccountContactListView(ContactCompanyVisibilityMixin, generics.ListCreateA
         )
 
     def get_queryset(self):
-        return self.get_account().contacts.all()
+        # SOC2:AUTH-02 a call is the caller's to count under its own company's
+        # visibility, same annotation as contact_list.filtered_contacts.
+        return (
+            self.get_account()
+            .contacts.select_related("customer", "account")
+            .prefetch_related("account__customers")
+            .annotate(
+                readable_calls_count=Count(
+                    "calls",
+                    filter=visible_children_q(self.request.user, prefix="calls__"),
+                    distinct=True,
+                )
+            )
+        )
 
     def perform_create(self, serializer):
         serializer.save(account=self.get_account())

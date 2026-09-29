@@ -124,6 +124,20 @@ def score(rows, now=None):
     return value, Contact.Sentiment.NEUTRAL
 
 
+def tally(rows):
+    """Per-kind and per-sentiment counts over `rows`: `{calls, emails,
+    tickets, positive, neutral, negative}` — a non-positive/neutral/negative
+    sentiment counts as neutral. The one counting rule, shared by
+    `recompute` (the stored evidence, every row) and
+    `contact_history.readable_evidence` (the same evidence, but only the
+    rows the viewer may read), so the two can never drift apart."""
+    counts = {"calls": 0, "emails": 0, "tickets": 0, "positive": 0, "neutral": 0, "negative": 0}
+    for row in rows:
+        counts[row["kind"] + "s"] += 1
+        counts[row["sentiment"] if row["sentiment"] in counts else "neutral"] += 1
+    return counts
+
+
 def recompute(contact, now=None):
     """Recompute one contact's sentiment from their interactions. Returns
     the label, or None when there is no evidence (the hand-set value stays)."""
@@ -151,10 +165,7 @@ def recompute(contact, now=None):
         if update:
             contact.save(update_fields=update)
         return None
-    counts = {"calls": 0, "emails": 0, "tickets": 0, "positive": 0, "neutral": 0, "negative": 0}
-    for row in rows:
-        counts[row["kind"] + "s"] += 1
-        counts[row["sentiment"] if row["sentiment"] in counts else "neutral"] += 1
+    counts = tally(rows)
     contact.sentiment = label
     contact.sentiment_source = Contact.SentimentSource.COMPUTED
     contact.sentiment_evidence = {

@@ -277,7 +277,7 @@ def build_person_grounding(user, context, question, *, today=None):
     # the "also rests on records the asker cannot open" line (any focus) and,
     # when the why block is actually shown, for the weighted reading and the
     # reply's own snapshot below. Computed once, never re-filtered.
-    mine, others = readable_rows(contact, user)
+    mine, others = readable_rows(contact, user, (calls, emails, tickets))
     place = place_label(contact, visible_ids)
     lines = [
         f"Screen: Contacts › {contact.name} · {place} (one person's profile)",

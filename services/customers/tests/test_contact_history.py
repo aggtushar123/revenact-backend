@@ -370,6 +370,27 @@ class HistoryQueryCountTests(Fixture):
             self.assertEqual(len(body["emails"]), 6 * (batch + 1))
             self.assertEqual(len(body["tickets"]), 6 * (batch + 1))
 
+    def test_the_query_count_does_not_grow_with_a_computed_sentiment(self):
+        """`sentiment_readable` adds `readable_rows`'s own fixed cost
+        (`interactions_for`, reusing the same querysets rather than
+        re-running `history_querysets`) — still flat as records grow."""
+        from services.customers.contact_sentiment import recompute
+
+        self.client.force_authenticate(self.viewer)
+        self.call("Seed", account=self.seen)
+        recompute(self.sam)
+        self.client.get(self.url)  # memoise, as above
+        for batch in range(2):
+            for i in range(3):
+                self.call(f"Org {batch}-{i}")
+                self.call(f"Seen {batch}-{i}", account=self.seen)
+            recompute(self.sam)
+            with self.assertNumQueries(16):
+                body = self.client.get(self.url).data
+            self.assertEqual(body["sentiment_source"], "computed")
+            self.assertEqual(body["sentiment_readable"]["calls"], 1 + 6 * (batch + 1))
+            self.assertFalse(body["sentiment_readable"]["others"])
+
 
 class HandCorrectionTests(Fixture):
     """A person reading a call the model could not: their correction is a
