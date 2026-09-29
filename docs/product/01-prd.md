@@ -319,8 +319,6 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-26 | Organisation page Story (backend): `GET /organizations/<id>/story/` |
 | 2026-09-27 | Organisation page lists (backend): files and calls roll up visible accounts, `account_id` on contacts, opportunities and risks, survey organisation filter |
 | 2026-09-28 | Ask Revenact on the organisation page (backend) |
-| 2026-09-29 | Accounts portfolio (backend): `GET /accounts/portfolio/` |
 | 2026-09-28 | Contacts, delivery 1 (backend): every call analysed or marked not analysable, nightly classification, contact history, contacts list filters and summary |
 | 2026-09-28 | Ask Revenact on Contacts (backend) |
-| 2026-09-29 | Accounts portfolio CSV export (backend): `GET /accounts/portfolio/export.csv`, audited `accounts.exported` |
-| 2026-09-29 | Accounts portfolio bulk edit (backend): `POST /accounts/bulk/`, audited `accounts.bulk_updated`; `AccountSerializer` refuses an inactive owner, shared `after_account_update` |
+| 2026-09-29 | Accounts portfolio (backend): portfolio endpoint, export, bulk edit |
