@@ -12,6 +12,8 @@ import hashlib
 import json
 
 from services.customers.models import Customer
+from services.organizations.book import RENEWING_WINDOWS
+from services.organizations.params import NPS_BANDS
 from services.organizations.shape import (
     RENEWAL_WINDOWS,
     group_rank,
@@ -19,6 +21,8 @@ from services.organizations.shape import (
     renewal_window,
     wrap_desc,
 )
+
+from .rows import row_payload
 
 SORT_GETTERS = {
     "risk": lambda entry: entry.triage.score,
@@ -122,3 +126,95 @@ def paginate(entries, *, params):
         fingerprint=filter_fingerprint(params),
         grouped=bool(group),
     )
+
+
+def nps_band(score):
+    """`NPS_Q`'s rule in Python, by sign (`/accounts/stats/`' buckets), so the
+    NPS tile and the `nps` filter can never disagree."""
+    if score is None:
+        return None
+    if score > 0:
+        return "promoter"
+    if score == 0:
+        return "passive"
+    return "detractor"
+
+
+def build_summary(entries):
+    """The five tiles, over every filtered row, in the Organizations summary's
+    shape. Health, NPS and lifecycle are `AccountStatsView`'s arithmetic (ARR
+    as stored, MRR = ARR / 12, NPS by sign); renewals are
+    `book.account_renewing_q`'s rule over `renewal_days` (overdue in), so a
+    clicked tile lists exactly its N. Account ARR is always in the
+    workspace's currency, so `unconverted_count` is always 0 — kept so both
+    lists' tiles read one shape."""
+    categories = Customer.HealthCategory.values
+    health = dict.fromkeys(categories, 0)
+    health_arr = dict.fromkeys(categories, 0.0)
+    health_mrr = dict.fromkeys(categories, 0.0)
+    stages = {stage: {"count": 0, "arr": 0.0} for stage in Customer.LifecycleStage.values}
+    bands = dict.fromkeys(NPS_BANDS, 0)
+    renewing = {str(days): 0 for days in RENEWING_WINDOWS}
+    total = 0.0
+
+    for entry in entries:
+        account = entry.account
+        category = account.health_category
+        health[category] += 1
+        health_arr[category] += entry.arr
+        health_mrr[category] += entry.arr / 12
+        stages[account.lifecycle_stage]["count"] += 1
+        stages[account.lifecycle_stage]["arr"] += entry.arr
+        total += entry.arr
+        band = nps_band(account.nps_score)
+        if band is not None:
+            bands[band] += 1
+        for days in RENEWING_WINDOWS:
+            if entry.renewal_days is not None and entry.renewal_days <= days:
+                renewing[str(days)] += 1
+
+    promoters, detractors = bands["promoter"], bands["detractor"]
+    scored = sum(bands.values())
+    return {
+        "health": {
+            **health,
+            "arr": {category: round(value, 2) for category, value in health_arr.items()},
+            "mrr": {category: round(value, 2) for category, value in health_mrr.items()},
+        },
+        "nps": {
+            "promoters": promoters,
+            "passives": bands["passive"],
+            "detractors": detractors,
+            "score": round((promoters - detractors) / scored * 100) if scored else 0,
+        },
+        "lifecycle": [
+            {
+                "value": value,
+                "label": label,
+                "count": stages[value]["count"],
+                "arr": round(stages[value]["arr"], 2),
+            }
+            for value, label in Customer.LifecycleStage.choices
+        ],
+        "accounts": len(entries),
+        "arr": round(total, 2),
+        "unconverted_count": 0,
+        "renewing": renewing,
+    }
+
+
+def build_listing(portfolio, params, *, filters):
+    """The endpoint's body. `count` is the rows this query pages through
+    (after `group_value`); `groups` and `summary` are over the whole filtered
+    set, so a Board column's header and the tiles never shrink to a page."""
+    entries, groups = select(portfolio, params)
+    page, next_cursor = paginate(entries, params=params)
+    return {
+        "results": [row_payload(entry) for entry in page],
+        "next_cursor": next_cursor,
+        "count": len(entries),
+        "groups": groups,
+        "summary": build_summary(portfolio.entries),
+        "filters": filters,
+        "currency": portfolio.organisation.currency,
+    }
