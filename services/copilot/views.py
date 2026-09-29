@@ -817,6 +817,8 @@ def _records_of(turn, answered):
         return None
     if _is_detail(context):
         return None
+    if context.get("surface") == "contacts":
+        return None  # it quotes records; with none stored it fails closed
     return []
 
 
@@ -855,7 +857,7 @@ def _tickets_of(turn, answered):
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
         return None
-    if context.get("surface") == "organizations":
+    if context.get("surface") in ("organizations", "contacts"):
         return None
     if context.get("surface") == "dashboard" and (
         context.get("area") in TICKET_AREAS or is_support_focus(context.get("focus"))
@@ -985,13 +987,15 @@ class SendMessageView(APIView):
     SessionEvent tagging the real new Message, not re-storing its text.
 
     Ask rails: an optional `context` says where the question was asked — on
-    the Dashboard ({surface: "dashboard", area, view, filters, focus}) or on
-    Organizations ({surface: "organizations", view, filters, focus}). It is
-    validated by AskContextSerializer, which hands it to the surface's own
-    serializer (a 400 `{"context": {...}}` otherwise); the answer is grounded
-    by that surface's grounding in the recomputed screen and its records,
-    metered under the surface's purpose (`dashboard`, `organizations`), and
-    the validated context is stored on the user turn; the conversation's
+    the Dashboard ({surface: "dashboard", area, view, filters, focus}), on
+    Organizations ({surface: "organizations", view, filters, focus}), or on
+    Contacts ({surface: "contacts", view: "list", filters} or {surface:
+    "contacts", view: "person", contact, focus}). It is validated by
+    AskContextSerializer, which hands it to the surface's own serializer (a
+    400 `{"context": {...}}` otherwise); the answer is grounded by that
+    surface's grounding in the recomputed screen and its records, metered
+    under the surface's purpose (`dashboard`, `organizations`, `contacts`),
+    and the validated context is stored on the user turn; the conversation's
     `origin` is set from the first one and never changed. See
     services/copilot/ask.py."""
 

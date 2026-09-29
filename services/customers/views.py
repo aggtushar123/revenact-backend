@@ -24,6 +24,7 @@ from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
 from . import activity_tracking, drill, forecast, interactions, portfolio, product_usage, usage
+from .contact_list import contacts_summary, filtered_contacts, parse_contact_filters
 from .headline_generation import NothingToSummarise, generate_headlines
 from .interactions import _parse_int
 from .models import (
@@ -1482,22 +1483,6 @@ class AccountContactListView(ContactCompanyVisibilityMixin, generics.ListCreateA
         serializer.save(account=self.get_account())
 
 
-#: The roles the Contacts page counts as decision makers, the same set the
-#: organisation page's People summary uses.
-DECISION_ROLES = (
-    Contact.Role.EXECUTIVE_SPONSOR,
-    Contact.Role.DECISION_MAKER,
-    Contact.Role.ECONOMIC_BUYER,
-)
-
-
-def _int_param(raw):
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
 class ContactListView(ContactCompanyVisibilityMixin, generics.ListAPIView):
     """GET /api/v1/contacts/ — every Contact the caller may open, across
     every Customer/Account, organisation-level and account-level alike.
@@ -1523,76 +1508,16 @@ class ContactListView(ContactCompanyVisibilityMixin, generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        # `.distinct()` because `account__customers__organisation=` fans
-        # out one row per matching linked Customer on the account — an
-        # account-level Contact whose Account is linked to two+
-        # Customers in this same organisation would otherwise appear
-        # more than once.
-        # SOC2:AUTH-02 a contact follows its organisation's or account's visibility
-        queryset = (
-            Contact.objects.filter(visible_children_q(self.request.user))
-            .select_related("customer", "account")
-            .prefetch_related("account__customers")
-            .distinct()
+        return filtered_contacts(
+            self.request.user, parse_contact_filters(self.request.query_params)
         )
-        params = self.request.query_params
-
-        search = params.get("search", "").strip()
-        if search:
-            queryset = queryset.filter(
-                Q(name__icontains=search) | Q(email__icontains=search) | Q(role__icontains=search)
-            )
-
-        customer_id = _int_param(params.get("customer") or params.get("company"))
-        if customer_id is not None:
-            # SOC2:AUTH-02 an id the caller cannot open must not be confirmed to
-            # exist by matching contacts on accounts also linked to it.
-            if not visible_customers(self.request.user).filter(pk=customer_id).exists():
-                return queryset.none()
-            queryset = queryset.filter(
-                Q(customer_id=customer_id) | Q(account__customers__id=customer_id)
-            )
-
-        account_id = _int_param(params.get("account"))
-        if account_id is not None:
-            # SOC2:AUTH-02 same as the organisation filter above
-            if not visible_accounts(self.request.user).filter(pk=account_id).exists():
-                return queryset.none()
-            queryset = queryset.filter(account_id=account_id)
-
-        sentiment = params.get("sentiment")
-        if sentiment in Contact.Sentiment.values:
-            queryset = queryset.filter(sentiment=sentiment)
-
-        role = params.get("role")
-        if role in Contact.Role.values:
-            queryset = queryset.filter(role=role)
-
-        return queryset
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
         rows = self.get_serializer(page, many=True).data
         response = self.get_paginated_response(rows)
-        counted = Contact.objects.filter(pk__in=queryset.values("pk")).aggregate(
-            total=Count("pk"),
-            positive=Count("pk", filter=Q(sentiment=Contact.Sentiment.POSITIVE)),
-            neutral=Count("pk", filter=Q(sentiment=Contact.Sentiment.NEUTRAL)),
-            negative=Count("pk", filter=Q(sentiment=Contact.Sentiment.NEGATIVE)),
-            decision_makers=Count("pk", filter=Q(role__in=DECISION_ROLES)),
-            # The old stat cards' Active and Growth (30d), with
-            # ContactStatsView's own definitions, in the same one query.
-            active=Count("pk", filter=Q(status=Contact.Status.ACTIVE)),
-            total_30d_ago=Count(
-                "pk", filter=Q(created_at__lte=timezone.now() - timedelta(days=30))
-            ),
-        )
-        baseline = counted.pop("total_30d_ago")
-        counted["growth_30d_pct"] = (
-            round((counted["total"] - baseline) / baseline * 100, 1) if baseline else None
-        )
-        response.data["summary"] = counted
+        response.data["summary"] = contacts_summary(queryset)
         return response
 
 

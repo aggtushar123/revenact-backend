@@ -196,6 +196,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Ask Revenact on the Dashboard | Built (backend) | Questions asked on the Dashboard carry where they were asked; the server recomputes that area's figures for the asker's own filtered book with the same code as the screen, adds the records behind the companies asked about under their own rules, and answers only from those. Metered as its own purpose; one history across Communications, Copilot and Dashboard, tagged with where each conversation started |
 | Ask Revenact on Organizations | Built (backend) | The Ask rail on Organizations sends the list's view and filters. The server recomputes the asker's own filtered list with the portfolio's code (tiles, sections, the ten riskiest accounts, renewals inside 90 days), adds the records behind the account opened, and answers only from those. It is metered as its own purpose. History is tagged "Organizations · <filters>", and reopening a conversation restores the list |
 | Ask Revenact on the organisation page | Built (backend) | Asked on one organisation's page, optionally narrowed to an account or about one story item. The server re-checks both ids and the item for the asker, and answers from the organisation's row, what needs attention and the last 30 days of its story, plus the records behind the question. History is tagged "Pizza Hut" or "Pizza Hut · EMEA". A shared reply is checked against every story record it quoted |
+| Ask Revenact on Contacts | Built (backend) | Asked on the Contacts list (the asker's filtered list: summary and at most 50 people) or on one person (their profile and the newest 20 calls, emails and tickets the asker can read). "Why this sentiment?" weighs only readable records and says when the stored reading also rests on others. History is tagged "Sam Pizza · Pizza Hut" or "Contacts · Negative". A shared reply is checked against every organisation, account and record it drew on |
 
 ### 5.4 Multiplayer Copilot (the centerpiece)
 
@@ -318,3 +319,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-27 | Organisation page lists (backend): files and calls roll up visible accounts, `account_id` on contacts, opportunities and risks, survey organisation filter |
 | 2026-09-28 | Ask Revenact on the organisation page (backend) |
 | 2026-09-28 | Contacts, delivery 1 (backend): every call analysed or marked not analysable, nightly classification, contact history, contacts list filters and summary |
+| 2026-09-28 | Ask Revenact on Contacts (backend) |
