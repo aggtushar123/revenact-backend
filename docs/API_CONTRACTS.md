@@ -60,7 +60,7 @@ expects.
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
 | Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`); the organisation page's Story is `GET /organizations/<id>/story/`, and Ask on that page is the same send with `view: "detail"` |
 | Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. |
-| Accounts portfolio (`/accounts` list redesign) | `accounts_portfolio` | 🟡 `GET /accounts/portfolio/` built (rows, details, groups, summary, filters, cursor pages) — see below. `.../portfolio/export.csv` and `POST /accounts/bulk/` not built yet. |
+| Accounts portfolio (`/accounts` list redesign) | `accounts_portfolio` | 🟡 `GET /accounts/portfolio/` and `GET /accounts/portfolio/export.csv` built (rows, details, groups, summary, filters, cursor pages; the export is the same filtered set, every field, audited) — see below. `POST /accounts/bulk/` not built yet. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
 | Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
@@ -2824,8 +2824,7 @@ Built for the redesigned Accounts list (spec: react-ts-app
 mounts at the same `api/v1/accounts/` prefix but adds only `portfolio/`, so neither existing exact path is
 shadowed. No model: `services/accounts_portfolio/book.py` reuses Organizations' generic helpers (`health_q`,
 `NPS_Q`, `signal_for`, `snapshot_history`, `health_trend`) and the dashboard's own `triage`, so a row's numbers
-always agree with Health Overview and the Board. Export (`.../portfolio/export.csv`) and bulk edit
-(`POST /accounts/bulk/`) are not built yet.
+always agree with Health Overview and the Board. Bulk edit (`POST /accounts/bulk/`) is not built yet.
 
 ### `GET /api/v1/accounts/portfolio/`
 
@@ -2919,6 +2918,16 @@ it are silently absent. Unknown parameter values are ignored, never a 400.
 - **Filters** are the viewer's visible accounts' linked (openable) organisations, owners (only people in the
   viewer's own organisation) and lifecycle stages present.
 - 10 constant queries per request, whatever the book's size (pinned by `PortfolioQueryCountTests`).
+
+### `GET /api/v1/accounts/portfolio/export.csv`
+
+Auth: `IsAuthenticated`. Same parameters (`cursor`/`limit` ignored); every row in list order, the same filtered,
+visible set the list endpoint returns. `text/csv`, `Content-Disposition: attachment;
+filename="accounts-<date>.csv"`. Columns: the 24 Account fields (`fields.FIELDS`) plus `Currency`
+(`Organisation.currency`, the currency `arr` is already in). Text cells beginning with `= + - @`, tab or CR are
+prefixed with `'`. An error response (401/403) renders as a two-row, one-column CSV (`detail` header, then the
+message) rather than switching format mid-download. Audited as `accounts.exported`, with `count` (rows
+exported) and `params` (the query-parameter names used, never their values).
 
 ## Files — the Files tab on organisations and accounts
 

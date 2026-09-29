@@ -82,6 +82,7 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `attention.unsnoozed` | `services.attention.views.AttentionSnoozeDetailView` | user | — (already deleted) | key |
 | `organizations.exported` | `services.organizations.views.PortfolioExportView` | user | — | `count` of rows exported, `params`: the query-parameter names used (never their values — a search term is the user's own words) |
 | `organizations.bulk_updated` | `services.organizations.views.BulkUpdateView` | user | — | `action`, `value` (owner id, stage, or true for archive), `ids` updated, `failed_ids`; written in a `finally`, outcome `failure` when nothing was updated or the batch did not finish |
+| `accounts.exported` | `services.accounts_portfolio.views.AccountPortfolioExportView` | user | — | `count` of rows exported, `params`: the query-parameter names used (never their values — a search term is the user's own words) |
 
 Adding a new one: call `audit.record` at the point the change is committed, annotate the
 line `# SOC2:LOG-01`, and add a row here.
