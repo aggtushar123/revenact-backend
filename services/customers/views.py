@@ -1470,6 +1470,12 @@ class CustomerContactListView(ContactCompanyVisibilityMixin, generics.ListCreate
                     distinct=True,
                 )
             )
+            # The annotation above turns this into a GROUP BY query, which
+            # Django doesn't carry `Meta.ordering` onto — order explicitly
+            # so the rows stay in name order (contact_list.filtered_contacts
+            # has the same annotation and the same order_by, for the same
+            # reason).
+            .order_by("name", "pk")
         )
 
     def perform_create(self, serializer):
@@ -1507,6 +1513,8 @@ class AccountContactListView(ContactCompanyVisibilityMixin, generics.ListCreateA
                     distinct=True,
                 )
             )
+            # Same reasoning as CustomerContactListView's own order_by above.
+            .order_by("name", "pk")
         )
 
     def perform_create(self, serializer):
@@ -1630,6 +1638,9 @@ class ContactDetailView(ContactCompanyVisibilityMixin, generics.RetrieveUpdateDe
         # `.distinct()` — same fan-out reasoning as ContactListView's own.
         # SOC2:AUTH-02 a call is the caller's to count under its own company's
         # visibility, same annotation as contact_list.filtered_contacts.
+        # `order_by` doesn't change what a single `get_object()` retrieves
+        # by pk, but keeps this queryset's shape consistent with the other
+        # annotated ones (and harmless if this view is ever listed from).
         return (
             Contact.objects.filter(visible_children_q(self.request.user))
             .annotate(
@@ -1639,6 +1650,7 @@ class ContactDetailView(ContactCompanyVisibilityMixin, generics.RetrieveUpdateDe
                     distinct=True,
                 )
             )
+            .order_by("name", "pk")
             .distinct()
         )
 

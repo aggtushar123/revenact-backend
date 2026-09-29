@@ -7,6 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
+from services.customers.contact_list import ContactFilters, filtered_contacts
 from services.customers.models import Account, Call, Contact, Customer
 from services.customers.tests.test_views import blind_to_one_account
 
@@ -369,3 +370,35 @@ class QueryCountTests(Fixture):
             with self.assertNumQueries(5):
                 response = self.client.get(URL)
             self.assertEqual(response.data["count"], 3 + 12 * (batch + 1))
+
+
+class OrderingTests(Fixture):
+    """The `readable_calls_count` annotation turns this queryset into a
+    GROUP BY query, which Django does not carry `Meta.ordering` onto — an
+    explicit `.order_by("name", "pk")` is what keeps a page from repeating
+    or skipping a row (UnorderedObjectListWarning)."""
+
+    def test_the_list_stays_in_name_order_across_pages_and_never_warns(self):
+        import warnings
+
+        self.client.force_authenticate(self.admin)
+        for i in range(30):
+            self.person(f"Extra{i:02d} Pizza", customer=self.pizza)
+        # Ground truth: the same production queryset (annotation, order_by
+        # and all), not a Python-side re-sort that could disagree with the
+        # database's own collation.
+        expected = list(
+            filtered_contacts(self.admin, ContactFilters()).values_list("id", flat=True)
+        )
+        self.assertEqual(len(expected), 33)  # Sam, Uma, Kim + the 30 Extras
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            first = self.client.get(URL)
+            second = self.client.get(URL, {"page": 2})
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK, first.data)
+        self.assertEqual(second.status_code, status.HTTP_200_OK, second.data)
+        seen = [r["id"] for r in first.data["results"]] + [r["id"] for r in second.data["results"]]
+        self.assertEqual(seen, expected)  # no repeat, no skip, in name order
+        self.assertEqual(len(set(seen)), len(expected))  # belt-and-braces: no duplicate row

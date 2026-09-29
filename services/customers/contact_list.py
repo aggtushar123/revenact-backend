@@ -73,6 +73,12 @@ def filtered_contacts(user, filters: ContactFilters):
                 "calls", filter=visible_children_q(user, prefix="calls__"), distinct=True
             )
         )
+        # Django doesn't carry `Meta.ordering` onto a GROUP BY query (which
+        # the annotation above turns this into), so paginating this list
+        # without an explicit order can repeat or skip a row across pages
+        # (UnorderedObjectListWarning). `pk` breaks ties between same-named
+        # contacts, keeping the order stable page to page.
+        .order_by("name", "pk")
         .distinct()
     )
     if filters.search:
