@@ -185,22 +185,15 @@ class ParticipantTests(Fixture):
 
 
 class ContactApiTests(Fixture):
-    def test_the_contact_carries_its_source_and_evidence(self):
+    def test_the_contact_carries_its_source_and_call_count(self):
         self.call("positive", participants=[self.sam], title="Renewal chat")
         contact_sentiment.recompute(self.sam)
         self.client.force_authenticate(self.carl)
         row = self.client.get(f"/api/v1/contacts/{self.sam.id}/").data
         self.assertEqual((row["sentiment"], row["sentiment_source"]), ("positive", "computed"))
-        self.assertEqual(row["sentiment_evidence"]["calls"], 1)
+        self.assertEqual(row["calls"], 1)
+        self.assertNotIn("sentiment_evidence", row)
         self.assertIsNotNone(row["sentiment_computed_at"])
-
-        interactions = self.client.get(f"/api/v1/contacts/{self.sam.id}/interactions/")
-        self.assertEqual(interactions.status_code, status.HTTP_200_OK)
-        self.assertEqual(interactions.data["sentiment"], "positive")
-        self.assertEqual(
-            [(i["kind"], i["title"], i["sentiment"]) for i in interactions.data["interactions"]],
-            [("call", "Renewal chat", "positive")],
-        )
 
     def test_a_hand_edit_marks_the_sentiment_manual_until_evidence_returns(self):
         self.call("positive", participants=[self.sam])
@@ -215,14 +208,8 @@ class ContactApiTests(Fixture):
         )
         self.assertEqual(contact_sentiment.recompute(self.sam), "positive")
 
-    def test_interactions_are_scoped(self):
-        other = User.objects.create_user(
-            email="o@other.io",
-            password="x",
-            name="O",
-            organisation=Organisation.objects.create(name="O"),
-        )
-        self.client.force_authenticate(other)
+    def test_the_retired_interactions_endpoint_is_gone(self):
+        self.client.force_authenticate(self.carl)
         self.assertEqual(
             self.client.get(f"/api/v1/contacts/{self.sam.id}/interactions/").status_code, 404
         )

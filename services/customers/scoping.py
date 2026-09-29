@@ -196,16 +196,23 @@ def pipeline_visible_q(user) -> Q:
     return Q(department="") | Q(department=user.function)
 
 
-def visible_children_q(user) -> Q:
+def visible_children_q(user, prefix: str = "") -> Q:
     """For the models that hang off a Customer *or* an Account — Task,
     Note, Email, Ticket, Contact, Opportunity, Risk, Survey, Canvas,
     Headline, CustomObjectRecord.
 
     Drops straight into the place those views currently write
     `Q(customer__organisation=org) | Q(account__customers__organisation=org)`,
-    and means the same thing when the caller holds the capability."""
+    and means the same thing when the caller holds the capability.
 
-    return Q(customer__in=visible_customers(user)) | Q(account__in=visible_accounts(user))
+    `prefix` reaches the same rule through another model's relation —
+    e.g. `visible_children_q(user, prefix="calls__")` on a `Contact`
+    queryset counts only the calls the viewer may open, for an
+    `annotate(Count(..., filter=...))` rather than a query per row."""
+
+    return Q(**{f"{prefix}customer__in": visible_customers(user)}) | Q(
+        **{f"{prefix}account__in": visible_accounts(user)}
+    )
 
 
 def customer_rollup_q(user, customer) -> Q:

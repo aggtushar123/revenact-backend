@@ -65,6 +65,20 @@ def filtered_contacts(user, filters: ContactFilters):
         Contact.objects.filter(visible_children_q(user))
         .select_related("customer", "account")
         .prefetch_related("account__customers")
+        # SOC2:AUTH-02 a call is the caller's to count under its own company's
+        # visibility, same rule as the contact's own — done here, once per
+        # row in the same query, rather than a query per row in the serializer.
+        .annotate(
+            readable_calls_count=Count(
+                "calls", filter=visible_children_q(user, prefix="calls__"), distinct=True
+            )
+        )
+        # Django doesn't carry `Meta.ordering` onto a GROUP BY query (which
+        # the annotation above turns this into), so paginating this list
+        # without an explicit order can repeat or skip a row across pages
+        # (UnorderedObjectListWarning). `pk` breaks ties between same-named
+        # contacts, keeping the order stable page to page.
+        .order_by("name", "pk")
         .distinct()
     )
     if filters.search:

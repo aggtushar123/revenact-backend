@@ -1,5 +1,7 @@
 """A person's history: their calls, emails and tickets, newest first, each
-under its own record rule for the viewer.
+under its own record rule for the viewer, and `sentiment_readable`
+(`readable_rows`/`readable_evidence`) — the same evidence a computed
+sentiment rests on, counted only over what the viewer may actually open.
 
 Twice filtered, like every read of record text here. First by company: a
 record on an account the viewer may not open is not theirs, whichever
@@ -17,8 +19,8 @@ from services.accounts.models import User
 from services.mail.visibility import visible_emails
 from services.organizations.story.items import clip, safe_url
 
-from .contact_sentiment import in_organisation_q, organisation_id_of
-from .models import Email, Ticket
+from .contact_sentiment import in_organisation_q, interactions_for, organisation_id_of, tally
+from .models import Contact, Email, Ticket
 from .personal import visible_tickets
 from .scoping import visible_children_q, visible_customers
 
@@ -133,8 +135,52 @@ def history_querysets(contact, viewer):
     return calls, emails, tickets
 
 
+def readable_rows(contact, viewer, querysets=None):
+    """(rows, others) — the stored computed sentiment's own evidence rows
+    (`contact_sentiment.interactions_for`, newest first), kept only where
+    the viewer may actually open the record (`history_querysets`'s own pk
+    sets); `others` is whether some evidence was dropped. A manual
+    sentiment has no evidence to weigh, so this returns `([], False)`
+    without even querying `interactions_for`.
+
+    `querysets`, when given, is the caller's own `(calls, emails, tickets)`
+    from `history_querysets` — passed straight through rather than run a
+    second time, for a caller (`build_history`, `contacts_grounding.
+    build_person_grounding`) that already has them."""
+    if contact.sentiment_source != Contact.SentimentSource.COMPUTED:
+        return [], False
+    evidence = interactions_for(contact)
+    if querysets is None:
+        querysets = history_querysets(contact, viewer)
+    calls, emails, tickets = querysets
+    readable_pks = (
+        {("call", pk) for pk in calls.values_list("pk", flat=True)}
+        | {("email", pk) for pk in emails.values_list("pk", flat=True)}
+        | {("ticket", pk) for pk in tickets.values_list("pk", flat=True)}
+    )
+    rows = [row for row in evidence if (row["kind"], row["record"].pk) in readable_pks]
+    return rows, len(rows) < len(evidence)
+
+
+def readable_evidence(rows, others):
+    """`{calls, emails, tickets, positive, neutral, negative, latest_at,
+    others}` over `rows` only — `tally` is the same per-kind/per-sentiment
+    counting `contact_sentiment.recompute` does for the stored evidence, so
+    the two can never drift apart. Never the whole evidence behind the
+    stored sentiment."""
+    return {
+        **tally(rows),
+        "latest_at": rows[0]["when"].isoformat() if rows else None,
+        "others": others,
+    }
+
+
 def build_history(contact, viewer):
     calls, emails, tickets = history_querysets(contact, viewer)
+    sentiment_readable = None
+    if contact.sentiment_source == Contact.SentimentSource.COMPUTED:
+        rows, others = readable_rows(contact, viewer, (calls, emails, tickets))
+        sentiment_readable = readable_evidence(rows, others)
     visible_customer_ids = set(visible_customers(viewer).values_list("pk", flat=True))
     parents = ("customer", "account")
     call_rows = (
@@ -156,7 +202,7 @@ def build_history(contact, viewer):
         "contact_id": contact.pk,
         "sentiment": contact.sentiment,
         "sentiment_source": contact.sentiment_source,
-        "sentiment_evidence": contact.sentiment_evidence,
+        "sentiment_readable": sentiment_readable,
         "counts": {
             "calls": calls.count(),
             "emails": emails.count(),

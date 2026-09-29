@@ -28,6 +28,7 @@ from .models import (
     Ticket,
     ai_pulse_category,
 )
+from .scoping import visible_children_q
 
 # Reverse of Customer.AI_PULSE_THRESHOLDS: the value a category is written as
 # when a client sends the category instead of the number. Each one round-trips
@@ -1079,6 +1080,7 @@ class ContactSerializer(serializers.ModelSerializer):
     account_name = serializers.SerializerMethodField()
     organisation = serializers.SerializerMethodField()
     account = serializers.SerializerMethodField()
+    calls = serializers.SerializerMethodField()
 
     class Meta:
         model = Contact
@@ -1093,16 +1095,16 @@ class ContactSerializer(serializers.ModelSerializer):
             "status",
             "sentiment",
             "sentiment_source",
-            "sentiment_evidence",
             "sentiment_computed_at",
             "last_contacted_at",
+            "calls",
             "companies",
             "organisation",
             "account_id",
             "account_name",
             "account",
         ]
-        read_only_fields = ["sentiment_source", "sentiment_evidence", "sentiment_computed_at"]
+        read_only_fields = ["sentiment_source", "sentiment_computed_at"]
 
     def update(self, instance, validated_data):
         # A hand-set sentiment is the fallback for a contact with no evidence;
@@ -1134,6 +1136,24 @@ class ContactSerializer(serializers.ModelSerializer):
 
     def get_account(self, obj):
         return {"id": obj.account_id, "name": obj.account.name} if obj.account_id else None
+
+    def get_calls(self, obj):
+        """How many of this person's calls the viewer may open — every
+        visible one, whether read or not (calls have no record rule of
+        their own, only the company one `visible_children_q` gives every
+        record here). The view annotates `readable_calls_count` on its
+        queryset so this costs no extra query per row (contact_list.
+        filtered_contacts, ContactDetailView); without it — a POST's
+        created instance, the nested per-Customer/Account list views —
+        this counts directly instead."""
+        annotated = getattr(obj, "readable_calls_count", None)
+        if annotated is not None:
+            return annotated
+        request = self.context.get("request")
+        if request is None:
+            return 0
+        # SOC2:AUTH-02 a call is the caller's to count under its own company's visibility
+        return obj.calls.filter(visible_children_q(request.user)).distinct().count()
 
 
 class OpportunitySerializer(serializers.ModelSerializer):

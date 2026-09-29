@@ -6,10 +6,11 @@ checks the rule itself is right, so a failure here means the policy is
 wrong and a failure there means an endpoint forgot to apply it.
 """
 
+from django.db.models import Count
 from django.test import TestCase
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Account, Customer, Note
+from services.customers.models import Account, Call, Contact, Customer, Note
 from services.customers.scoping import (
     visible_accounts,
     visible_children_q,
@@ -192,3 +193,55 @@ class VisibilityRuleTests(TestCase):
         note = self._note(customer=outsider)
 
         self.assertNotIn(note, Note.objects.filter(visible_children_q(self.admin)))
+
+
+class ChildrenQPrefixTests(TestCase):
+    """`prefix` reaches the same rule through another model's own relation —
+    the case ContactSerializer's `calls` count needs: counting, in one query,
+    only the calls (reached from Contact via `calls__`) the viewer may open,
+    rather than a query per row."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.csm = User.objects.create_user(
+            email="carl@acme.io",
+            password="supersecret1",
+            name="Carl",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.other = User.objects.create_user(
+            email="dana@acme.io",
+            password="supersecret1",
+            name="Dana",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+
+    def _note(self, **parent):
+        return Note.objects.create(
+            title="T", author_name="A", body="B", logged_at="2026-03-04", **parent
+        )
+
+    def test_a_prefixed_relation_counts_only_the_visible_ones(self):
+        mine = Customer.objects.create(organisation=self.org, name="Mine", owner=self.csm)
+        theirs = Customer.objects.create(organisation=self.org, name="Theirs", owner=self.other)
+        contact = Contact.objects.create(customer=mine, name="Sam", email="sam@mine.com")
+        Call.objects.create(
+            customer=mine, title="Mine call", host_name="H", occurred_at="2026-03-04T00:00:00Z"
+        ).participants.add(contact)
+        Call.objects.create(
+            customer=theirs, title="Theirs call", host_name="H", occurred_at="2026-03-04T00:00:00Z"
+        ).participants.add(contact)
+
+        annotated = Contact.objects.filter(pk=contact.pk).annotate(
+            n=Count("calls", filter=visible_children_q(self.csm, prefix="calls__"), distinct=True)
+        )
+
+        self.assertEqual(annotated.get().n, 1)
+
+    def test_an_explicit_empty_prefix_is_the_same_as_no_prefix(self):
+        mine = Customer.objects.create(organisation=self.org, name="Mine", owner=self.csm)
+        note = self._note(customer=mine)
+
+        self.assertIn(note, Note.objects.filter(visible_children_q(self.csm, prefix="")))

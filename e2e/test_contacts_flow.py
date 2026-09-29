@@ -112,7 +112,9 @@ class ContactsFlowTests(LiveServerTestCase):
         self.assertEqual(rows["Uma Hut"]["account"], {"id": emea, "name": "EMEA"})
         self.assertEqual(rows["Sam Pizza"]["organisation"], {"id": pizza, "name": "Pizza Hut"})
         self.assertEqual(rows["Sam Pizza"]["sentiment"], "negative")
-        self.assertEqual(rows["Sam Pizza"]["sentiment_evidence"]["calls"], 1)
+        # Both calls he was on are visible, whether or not each is evidence
+        # (the not-analysable "Weekly sync" is visible but not evidence).
+        self.assertEqual(rows["Sam Pizza"]["calls"], 2)
         self.assertEqual(
             page["summary"],
             {
@@ -136,7 +138,7 @@ class ContactsFlowTests(LiveServerTestCase):
             [("Weekly sync", "not_analysable", None), ("Escalation", "analysed", "negative")],
         )
         self.assertEqual(history["calls"][0]["account"], {"id": emea, "name": "EMEA"})
-        self.assertEqual(history["sentiment_evidence"]["calls"], 1)
+        self.assertEqual(history["sentiment_readable"]["calls"], 1)
 
         # 7. Dana cannot open Carl's organisation, so not its people either.
         for person in (sam, uma):

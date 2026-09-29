@@ -2416,13 +2416,17 @@ email from their address, a ticket they raised — it is recomputed from
 those: each is +1 / 0 / −1 by its sentiment, weighted by kind (call 1.0,
 ticket 0.8, email 0.6) and by recency (≤30 d 1.0, ≤90 d 0.6, ≤365 d 0.3,
 older 0.1); the weighted average above 0.25 is positive, below −0.25
-negative, else neutral. `ContactSerializer` carries `sentiment_source`
-(`manual` | `computed`), `sentiment_evidence` (`{score, calls, emails,
-tickets, positive, neutral, negative, latest_at}`) and
-`sentiment_computed_at`. A contact with no evidence keeps the hand-set
-value; a `PATCH` of `sentiment` marks it `manual` again until evidence
-returns. `last_contacted_at` moves forward with their newest interaction
-(a call counts as contact even before it is classified).
+negative, else neutral. `Contact.sentiment_evidence` (`{score, calls,
+emails, tickets, positive, neutral, negative, latest_at}`) holds the
+whole computation's own evidence, readable or not — a viewer never sees
+it: `ContactSerializer` carries only `sentiment_source` (`manual` |
+`computed`) and `sentiment_computed_at`, plus a `calls` count (see
+"Contacts list/detail" below) and, on `/history/`,
+`sentiment_readable` — the same evidence counted only over what the
+viewer may open. A contact with no evidence keeps the hand-set value; a
+`PATCH` of `sentiment` marks it `manual` again until evidence returns.
+`last_contacted_at` moves forward with their newest interaction (a call
+counts as contact even before it is classified).
 
 Only the contact's own tenant counts: an email or ticket from their
 address under another organisation is never evidence. A call marked not
@@ -2456,10 +2460,18 @@ was on (`Call.participants`); emails are from their address and tickets
 raised by it, inside the contact's own tenant only. Each list holds the
 newest 100; `counts` is the whole visible total per kind.
 
-`sentiment_evidence` summarises all of the person's evidence in their
-tenant, as `contact.sentiment` does (counts only, never text), while
-`counts` and the rows are what the caller may read, so the two can differ.
-The page shows the evidence breakdown only, never one against the other.
+`sentiment_readable` is the same evidence the stored `sentiment` rests on
+(counts only, never text), but counted only over the rows the caller may
+read: `{calls, emails, tickets, positive, neutral, negative, latest_at,
+others}` for a `computed` sentiment, `null` for a `manual` one.
+`others` is `true` when the stored sentiment also rests on evidence the
+caller cannot open — the strict rule (owner, 2026-09-27) is that a viewer
+never sees a count, date or content of a record they cannot read, so the
+full, unfiltered evidence (the model's own `sentiment_evidence`) is never
+served. `latest_at` is the newest *readable* row's own timestamp, which
+can differ from `counts`/the rows below (those follow each record's own
+rule too, but independently — a row can be in `counts` without being
+evidence, e.g. a call nobody has read yet).
 
 `analysis` is `pending` (not read yet), `not_analysable` (a call with
 nothing to judge: the UI says "Not enough to analyse") or `analysed`.
@@ -2478,15 +2490,15 @@ carries its `department` (`User.Function` or blank) and
   "contact_id": 2,
   "sentiment": "neutral",
   "sentiment_source": "computed",
-  "sentiment_evidence": {
-    "score": 0.1,
-    "calls": 6,
+  "sentiment_readable": {
+    "calls": 5,
     "emails": 2,
     "tickets": 0,
     "positive": 3,
-    "neutral": 4,
+    "neutral": 3,
     "negative": 1,
-    "latest_at": "2026-09-12T10:00:00+00:00"
+    "latest_at": "2026-09-12T10:00:00+00:00",
+    "others": true
   },
   "counts": { "calls": 7, "emails": 2, "tickets": 1 },
   "calls": [
@@ -2545,13 +2557,15 @@ carries its `department` (`User.Function` or blank) and
 }
 ```
 
-### `GET /api/v1/contacts/<id>/interactions/` (retiring)
+### `GET /api/v1/contacts/<id>/interactions/` — removed
 
-What the sentiment rests on: `{sentiment, score, source, evidence,
-interactions: [{kind: "call"|"email"|"ticket", id, title, snippet, when,
-sentiment, ai_category}]}`, newest first. Same scoping as the contact,
-and each row under its own record rule, as in `/history/`. Kept only
-until the Contacts page moves to `/history/`, then removed.
+Served an unfiltered `evidence` (the model's whole `sentiment_evidence`)
+and an unfiltered `score`, both across every interaction whether or not
+the caller could open it — the strict "never see a count you can't open"
+rule this endpoint predated. Removed once the Contacts page moved to
+`/history/`, which reads under the caller's own visibility throughout.
+The route and view no longer exist; `GET`/any method now `404`s like any
+unknown path.
 
 ## `organizations` — Organizations portfolio (`/organizations`)
 
@@ -3064,11 +3078,18 @@ rather than a URL param, the standalone `/contacts/list` page's own
 
 **Response `200`** (GET) — a plain array, each entry: `id`, `name`, `role`,
 `role_display`, `email`, `phone`, `language`, `status`, `sentiment`,
-`sentiment_source`, `sentiment_evidence`, `sentiment_computed_at`,
-`last_contacted_at`, `companies` (every ultimate parent Customer),
-`account_id`/`account_name` (both `null` for an organisation-level row;
-the organisation page's account chips filter on `account_id`).
-**Response `201`** (POST) — one such entry.
+`sentiment_source`, `sentiment_computed_at`, `last_contacted_at`, `calls`
+(how many of this person's calls the caller may open — every visible one,
+read or not; see "Contacts list/detail" below), `companies` (every
+ultimate parent Customer), `account_id`/`account_name` (both `null` for
+an organisation-level row; the organisation page's account chips filter
+on `account_id`). This queryset carries the same `readable_calls_count`
+annotation as the standalone list below — no pagination here, so a
+per-row query would otherwise run once per contact on the whole page.
+**Response `201`** (POST) — one such entry, `calls` always `0` (a call
+can't reference a contact that doesn't exist yet, so the serializer's
+un-annotated fallback is used, same as any instance outside a
+`get_queryset` this app doesn't control).
 
 ### `GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/contacts/`
 
@@ -3107,8 +3128,15 @@ Filters (an unusable value is ignored, never a `400`):
 
 Every row adds `organisation` and `account`, each `{id, name}` or
 `null`: the organisation is the first linked one the caller may open,
-and `companies` lists only those. `sentiment_evidence` holds the counts
-behind a computed sentiment (see "Contact sentiment is computed").
+and `companies` lists only those. `calls` is how many of this person's
+calls the caller may open — every visible one, whether read or not
+(calls have no record rule of their own, only the company one); the
+queryset is annotated (`readable_calls_count`, via `scoping.
+visible_children_q(user, prefix="calls__")`) so this costs no extra
+query per row. `sentiment_evidence` (the model's own field, the whole
+computation behind a computed sentiment, readable or not) is never
+served — only `/history/`'s `sentiment_readable` is (see "Contact
+sentiment is computed").
 
 `summary` covers the whole filtered set, not the page: `total`, the
 count per sentiment, and `decision_makers` (roles `executive_sponsor`,
@@ -3138,18 +3166,9 @@ open gives an all-zero summary. Five queries whatever the page size.
       "status": "active",
       "sentiment": "negative",
       "sentiment_source": "computed",
-      "sentiment_evidence": {
-        "score": -0.4,
-        "calls": 2,
-        "emails": 1,
-        "tickets": 0,
-        "positive": 0,
-        "neutral": 1,
-        "negative": 2,
-        "latest_at": "2026-09-12T10:00:00+00:00"
-      },
       "sentiment_computed_at": "2026-09-12T10:05:00Z",
       "last_contacted_at": "2026-09-12T10:00:00Z",
+      "calls": 2,
       "companies": [{ "id": 6, "name": "Apple Inc" }],
       "organisation": { "id": 6, "name": "Apple Inc" },
       "account_id": 31,

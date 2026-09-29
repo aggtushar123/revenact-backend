@@ -2,11 +2,13 @@
 organisation and account on every row, a summary over the whole filtered
 set, and a query count that does not grow with the page."""
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
-from services.customers.models import Account, Contact, Customer
+from services.customers.contact_list import ContactFilters, filtered_contacts
+from services.customers.models import Account, Call, Contact, Customer
 from services.customers.tests.test_views import blind_to_one_account
 
 URL = "/api/v1/contacts/"
@@ -118,10 +120,11 @@ class RowTests(Fixture):
         self.assertEqual(row["organisation"], {"id": self.pizza.id, "name": "Pizza Hut"})
         self.assertIsNone(row["account"])
 
-    def test_a_row_carries_its_sentiment_evidence_and_last_contact(self):
+    def test_a_row_carries_its_sentiment_and_last_contact(self):
         row = self.row("Sam Pizza")
-        for field in ("sentiment", "sentiment_source", "sentiment_evidence", "last_contacted_at"):
+        for field in ("sentiment", "sentiment_source", "calls", "last_contacted_at"):
             self.assertIn(field, row)
+        self.assertNotIn("sentiment_evidence", row)
 
     def test_an_organisation_the_viewer_cannot_open_is_not_named(self):
         # Joint belongs to two organisations: the viewer's own, and the
@@ -133,6 +136,108 @@ class RowTests(Fixture):
         self.assertEqual(row["companies"], [{"id": mine.id, "name": "Mine"}])
         self.assertEqual(row["organisation"], {"id": mine.id, "name": "Mine"})
         self.assertEqual(row["account"], {"id": joint.id, "name": "Joint"})
+
+
+class CallCountTests(Fixture):
+    """`calls`: every call this person was on that the viewer may open —
+    company rule only, calls have no record rule of their own."""
+
+    def call(self, contact, sentiment="neutral", **parent):
+        call = Call.objects.create(
+            title="A call",
+            host_name="Carl",
+            occurred_at=timezone.now(),
+            sentiment=sentiment,
+            **parent,
+        )
+        call.participants.add(contact)
+        return call
+
+    def row_for(self, name, user):
+        self.client.force_authenticate(user)
+        rows = self.client.get(URL).data["results"]
+        return next(r for r in rows if r["name"] == name)
+
+    def test_a_hidden_account_call_is_excluded(self):
+        viewer, seen, hidden = blind_to_one_account(self.pizza)
+        self.call(self.sam, customer=self.pizza)
+        self.call(self.sam, account=seen)
+        self.call(self.sam, account=hidden)
+
+        self.assertEqual(self.row_for("Sam Pizza", viewer)["calls"], 2)
+
+        colleague = self.pizza.owner
+        self.assertEqual(self.row_for("Sam Pizza", colleague)["calls"], 3)
+
+    def test_a_pinned_query_count_holds_the_annotation(self):
+        for _ in range(5):
+            self.call(self.sam, customer=self.pizza)
+        self.client.force_authenticate(self.admin)
+        self.client.get(URL)  # memoise the caller's org chart, as elsewhere
+        with self.assertNumQueries(5):
+            row = self.row_for("Sam Pizza", self.admin)
+        self.assertEqual(row["calls"], 5)
+
+
+class NestedCallCountQueryTests(Fixture):
+    """CustomerContactListView/AccountContactListView have no pagination,
+    so `readable_calls_count` matters even more there — one annotated
+    query for the whole page, flat as the page grows, same as the
+    standalone list's own CallCountTests."""
+
+    def call(self, contact, **parent):
+        call = Call.objects.create(
+            title="A call", host_name="Carl", occurred_at=timezone.now(), **parent
+        )
+        call.participants.add(contact)
+        return call
+
+    def test_the_customer_contact_list_query_count_holds_from_1_to_5_contacts(self):
+        url = f"/api/v1/customers/{self.pizza.id}/contacts/"
+        self.client.force_authenticate(self.admin)
+        self.call(self.sam, customer=self.pizza)
+        self.client.get(url)  # memoise the caller's org chart, as elsewhere
+        with self.assertNumQueries(4):
+            few = self.client.get(url).data
+        for n in range(4):
+            contact = self.person(f"Extra{n} Pizza", customer=self.pizza)
+            self.call(contact, customer=self.pizza)
+        with self.assertNumQueries(4):
+            many = self.client.get(url).data
+        self.assertEqual(len(few), 2)  # Sam (org-level) + Uma (via EMEA)
+        self.assertEqual(len(many), 6)
+        self.assertEqual(next(r for r in many if r["name"] == "Sam Pizza")["calls"], 1)
+
+    def test_the_account_contact_list_query_count_holds_from_1_to_5_contacts(self):
+        url = f"/api/v1/customers/{self.pizza.id}/accounts/{self.emea.id}/contacts/"
+        self.client.force_authenticate(self.admin)
+        self.call(self.uma, account=self.emea)
+        self.client.get(url)
+        with self.assertNumQueries(4):
+            few = self.client.get(url).data
+        for n in range(4):
+            contact = self.person(f"Extra{n} Emea", account=self.emea)
+            self.call(contact, account=self.emea)
+        with self.assertNumQueries(4):
+            many = self.client.get(url).data
+        self.assertEqual(len(few), 1)
+        self.assertEqual(len(many), 5)
+        self.assertEqual(next(r for r in many if r["name"] == "Uma Hut")["calls"], 1)
+
+    def test_no_row_is_duplicated_when_an_account_spans_two_organisations(self):
+        # The same fan-out shape blind_to_one_account/joint() exercises
+        # elsewhere: an Account (here EMEA) linked to two Customers must not
+        # duplicate a Contact row once the Count annotation joins in.
+        self.kraft_emea_link = self.emea.customers.add(self.kraft)
+        self.call(self.uma, account=self.emea)
+        self.call(self.uma, account=self.emea)
+        self.client.force_authenticate(self.admin)
+        url = f"/api/v1/customers/{self.pizza.id}/accounts/{self.emea.id}/contacts/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        rows = [r for r in response.data if r["name"] == "Uma Hut"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["calls"], 2)
 
 
 class NestedVisibilityTests(Fixture):
@@ -265,3 +370,35 @@ class QueryCountTests(Fixture):
             with self.assertNumQueries(5):
                 response = self.client.get(URL)
             self.assertEqual(response.data["count"], 3 + 12 * (batch + 1))
+
+
+class OrderingTests(Fixture):
+    """The `readable_calls_count` annotation turns this queryset into a
+    GROUP BY query, which Django does not carry `Meta.ordering` onto — an
+    explicit `.order_by("name", "pk")` is what keeps a page from repeating
+    or skipping a row (UnorderedObjectListWarning)."""
+
+    def test_the_list_stays_in_name_order_across_pages_and_never_warns(self):
+        import warnings
+
+        self.client.force_authenticate(self.admin)
+        for i in range(30):
+            self.person(f"Extra{i:02d} Pizza", customer=self.pizza)
+        # Ground truth: the same production queryset (annotation, order_by
+        # and all), not a Python-side re-sort that could disagree with the
+        # database's own collation.
+        expected = list(
+            filtered_contacts(self.admin, ContactFilters()).values_list("id", flat=True)
+        )
+        self.assertEqual(len(expected), 33)  # Sam, Uma, Kim + the 30 Extras
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            first = self.client.get(URL)
+            second = self.client.get(URL, {"page": 2})
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK, first.data)
+        self.assertEqual(second.status_code, status.HTTP_200_OK, second.data)
+        seen = [r["id"] for r in first.data["results"]] + [r["id"] for r in second.data["results"]]
+        self.assertEqual(seen, expected)  # no repeat, no skip, in name order
+        self.assertEqual(len(set(seen)), len(expected))  # belt-and-braces: no duplicate row
