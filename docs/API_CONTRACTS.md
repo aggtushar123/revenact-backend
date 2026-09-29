@@ -60,7 +60,7 @@ expects.
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
 | Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`); the organisation page's Story is `GET /organizations/<id>/story/`, and Ask on that page is the same send with `view: "detail"` |
 | Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. |
-| Accounts portfolio (`/accounts` list redesign) | `accounts_portfolio` | 🟡 `GET /accounts/portfolio/` and `GET /accounts/portfolio/export.csv` built (rows, details, groups, summary, filters, cursor pages; the export is the same filtered set, every field, audited) — see below. `POST /accounts/bulk/` not built yet. |
+| Accounts portfolio (`/accounts` list redesign) | `accounts_portfolio` | 🟢 `GET /accounts/portfolio/`, `GET /accounts/portfolio/export.csv` and `POST /accounts/bulk/` built (rows, details, groups, summary, filters, cursor pages; the export is the same filtered set, every field, audited; bulk owner/lifecycle changes, gated and audited) — see below. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
 | Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
@@ -1140,7 +1140,14 @@ caller's organisation/customer. PATCH accepts any subset of the POST
 fields (partial update); `customer` in the body is ignored (read-only —
 there's no way to move an account to a different customer via this
 endpoint). `owner_id` follows the same same-organisation validation as
-create.
+create, plus: an inactive owner is refused (`400`,
+`"Owner must be an active member of your organisation."`, same rule as
+`CustomerSerializer`), and reassigning an already-owned account is gated to
+the current owner, their management chain or an organisation-settings
+manager. An owner change is handed over (a contribution) and the new owner
+notified through `after_account_update` — the same after-save rule the
+Accounts bulk edit (`POST /accounts/bulk/`) uses, so a reassign means the
+same thing from either.
 
 **Response `200`** (both) — the (possibly updated) account.
 
@@ -2824,7 +2831,7 @@ Built for the redesigned Accounts list (spec: react-ts-app
 mounts at the same `api/v1/accounts/` prefix but adds only `portfolio/`, so neither existing exact path is
 shadowed. No model: `services/accounts_portfolio/book.py` reuses Organizations' generic helpers (`health_q`,
 `NPS_Q`, `signal_for`, `snapshot_history`, `health_trend`) and the dashboard's own `triage`, so a row's numbers
-always agree with Health Overview and the Board. Bulk edit (`POST /accounts/bulk/`) is not built yet.
+always agree with Health Overview and the Board.
 
 ### `GET /api/v1/accounts/portfolio/`
 
@@ -2928,6 +2935,32 @@ filename="accounts-<date>.csv"`. Columns: the 24 Account fields (`fields.FIELDS`
 prefixed with `'`. An error response (401/403) renders as a two-row, one-column CSV (`detail` header, then the
 message) rather than switching format mid-download. Audited as `accounts.exported`, with `count` (rows
 exported) and `params` (the query-parameter names used, never their values).
+
+### `POST /api/v1/accounts/bulk/`
+
+Auth: `IsAuthenticated`. Body `{"ids": [1, 2], "action": "set_owner" | "set_lifecycle", "value": …}`: `set_owner`
+takes a user id, or `null` to unassign — the `value` key must be present; omitting it entirely is a 400, so a
+forgotten key can never strip every selected account's owner. `set_lifecycle` takes any `Customer.LifecycleStage`
+value, Churn included — an account has no churn flow of its own, so Churn there is only a stage. No `archive`
+action: Accounts have neither archive nor churn as their own field. 1–500 ids, duplicates applied once.
+
+Each id is locked and re-read (`select_for_update`) before it changes, then runs the ordinary account update
+(`AccountSerializer`, partial) in its own transaction: the record must be visible to the caller
+(`visible_accounts`), an owner must be an active member of the caller's organisation (an inactive owner is
+rejected, exactly as on `PATCH /customers/<cid>/accounts/<id>/`), and only the current owner, their management
+chain or an organisation-settings manager may reassign; an owner change is handed over (a contribution on every
+organisation the account is linked to) and the new owner notified via `after_account_update` — the same
+after-save rule the single-account PATCH now uses, so a reassign means the same thing from either. The
+"assigned you" push fires on commit, since a bulk edit saves each account in its own transaction. `200`:
+
+```json
+{"updated": [1], "failed": [{"id": 2, "reason": "Not found."}]}
+```
+
+An id the caller cannot see reads `"Not found."`, like one that does not exist. A database error on one id puts
+it in `failed` with the reason `"Could not be updated."` and the batch continues with the rest. Audited as
+`accounts.bulk_updated`, written in a `finally` so a batch that raised still records what was saved; outcome
+`failure` when nothing was updated or the batch did not finish.
 
 ## Files — the Files tab on organisations and accounts
 

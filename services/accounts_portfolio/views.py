@@ -4,12 +4,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core import audit
+from core.models import AuditEvent
 from services.organizations.export import CSVRenderer
 
+from . import bulk
 from .book import filter_options, load_portfolio
 from .export import table
 from .params import parse_params
 from .rows import row_payload
+from .serializers import BulkRequestSerializer
 from .shape import build_listing, select
 
 
@@ -63,3 +66,47 @@ class AccountPortfolioExportView(APIView):
         )
         response["Content-Disposition"] = f'attachment; filename="accounts-{today.isoformat()}.csv"'
         return response
+
+
+class AccountBulkUpdateView(APIView):
+    """POST /api/v1/accounts/bulk/ — `{ids, action, value}` from the
+    selection bar: `set_owner` or `set_lifecycle`. Applied per id under the
+    single-edit rules; returns `{updated, failed: [{id, reason}]}` with a 200
+    even when some failed."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = BulkRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        result = {"updated": [], "failed": []}
+        finished = False
+        try:
+            bulk.apply(
+                request,
+                ids=data["ids"],
+                action=data["action"],
+                value=data["value"],
+                result=result,
+            )
+            finished = True
+        finally:
+            # Recorded even if something escaped mid-batch: the ids already
+            # saved stay saved (each is its own transaction).
+            audit.record(  # SOC2:LOG-01
+                "accounts.bulk_updated",
+                request=request,
+                outcome=(
+                    AuditEvent.Outcome.SUCCESS
+                    if finished and result["updated"]
+                    else AuditEvent.Outcome.FAILURE
+                ),
+                metadata={
+                    "action": data["action"],
+                    "value": data["value"],
+                    "ids": result["updated"],
+                    "failed_ids": [row["id"] for row in result["failed"]],
+                },
+            )
+        return Response(result)
