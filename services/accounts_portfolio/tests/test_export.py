@@ -52,6 +52,19 @@ class ExportEndpointTests(AccountPortfolioFixture):
         _response, table = self.download(viewer)
         self.assertEqual([row[0] for row in table[1:]], ["Seen"])
 
+    def test_ids_narrows_the_export_to_exactly_those_visible(self):
+        # "Export selected" on the list: `ids=` must narrow to precisely
+        # the checked, visible rows -- no more, no fewer.
+        viewer, seen, _hidden = blind_to_one_account(self.pizza)
+        other_visible = self.account("Other visible", owner=viewer)
+        _response, table = self.download(viewer, ids=f"{seen.pk},{other_visible.pk}")
+        self.assertEqual(sorted(row[0] for row in table[1:]), ["Other visible", "Seen"])
+
+    def test_a_hidden_id_in_ids_does_not_appear(self):
+        viewer, seen, hidden = blind_to_one_account(self.pizza)
+        _response, table = self.download(viewer, ids=f"{seen.pk},{hidden.pk}")
+        self.assertEqual([row[0] for row in table[1:]], ["Seen"])
+
     def test_values_and_formula_injection(self):
         evil = Customer.objects.create(organisation=self.org, name="+SUM(A1)", owner=self.csm)
         self.account(

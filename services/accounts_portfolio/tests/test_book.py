@@ -5,6 +5,7 @@ from services.accounts.models import User
 from services.accounts_portfolio import book
 from services.accounts_portfolio.params import parse_params
 from services.accounts_portfolio.tests.fixtures import AccountPortfolioFixture
+from services.customers.models import Customer
 
 
 class FilteredQuerysetTests(AccountPortfolioFixture):
@@ -50,6 +51,21 @@ class FilteredQuerysetTests(AccountPortfolioFixture):
         self.assertEqual(self.names(organisation=str(self.taco.pk)), [])
         self.assertEqual(self.names(organisation=f"{self.pizza.pk},{self.taco.pk}"), ["Pizza one"])
         self.assertEqual(self.names(user=self.admin, organisation=str(self.taco.pk)), ["Pool"])
+
+    def test_organisation_filter_on_an_account_spanning_open_and_hidden(self):
+        # One account linked to an organisation Carl may open (Pizza Hut,
+        # through the account's own owner having nothing to do with it) and
+        # one he can't (owned by Dana, with none of Carl's accounts under
+        # it): the openable one's id finds the account, the hidden one's
+        # id finds nothing — it cannot reveal what it holds.
+        hidden = Customer.objects.create(organisation=self.org, name="Hidden Org", owner=self.other)
+        self.account("Cross", customers=[self.pizza, hidden], owner=self.other)
+        self.assertEqual(self.names(organisation=str(self.pizza.pk)), ["Cross"])
+        self.assertEqual(self.names(organisation=str(hidden.pk)), [])
+
+    def test_organisation_filter_with_another_tenants_customer_id_finds_nothing(self):
+        self.account("Pizza one")
+        self.assertEqual(self.names(organisation=str(self.globex.pk)), [])
 
     def test_owner_filter(self):
         self.account("Carl's")
@@ -148,3 +164,19 @@ class FilterOptionsTests(AccountPortfolioFixture):
         self.account("Bad import", owner=outsider)
         names = [row["name"] for row in book.filter_options(self.admin)["owners"]]
         self.assertNotIn("Olga", names)
+
+    def test_a_hidden_accounts_owner_is_not_offered_as_a_filter(self):
+        # Ghost owns only this one account, and it's under Taco Bell (Dana's,
+        # not Carl's) with no account of Carl's under it -- so Carl can't
+        # see the account, and Ghost must not appear as something to filter
+        # by, as if Carl had something of Ghost's to find.
+        ghost = User.objects.create_user(
+            email="ghost@acme.io",
+            password="supersecret1",
+            name="Ghost",
+            organisation=self.org,
+            role=User.Role.CSM,
+        )
+        self.account("Hidden", customers=[self.taco], owner=ghost)
+        names = [row["name"] for row in book.filter_options(self.csm)["owners"]]
+        self.assertNotIn("Ghost", names)
