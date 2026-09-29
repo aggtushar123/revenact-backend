@@ -74,6 +74,8 @@ class AccountBulkUpdateView(APIView):
     single-edit rules; returns `{updated, failed: [{id, reason}]}` with a 200
     even when some failed."""
 
+    # SOC2:AUTH-02 authentication only; the real per-id visibility and
+    # ownership checks are in `bulk.apply` (services/accounts_portfolio/bulk.py).
     permission_classes = [IsAuthenticated]
 
     def post(self, request):

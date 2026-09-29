@@ -268,7 +268,7 @@ def encode_cursor(section, bucket, value, name, entry_id, fingerprint):
 
 
 def _load_section(raw):
-    """`_group_rank`'s (position, name, key) triple, or `()` ungrouped."""
+    """`group_rank`'s (position, name, key) triple, or `()` ungrouped."""
     if raw == []:
         return ()
     if (
