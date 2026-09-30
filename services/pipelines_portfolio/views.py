@@ -5,12 +5,15 @@ from rest_framework.views import APIView
 
 from core import audit
 from services.organizations.export import CSVRenderer
+from services.portfolio_core.bulk import audited_batch
 
+from . import bulk
 from .book import filter_options, load_book
 from .export import table
 from .kinds import KINDS
 from .params import parse_params
 from .rows import row_payload
+from .serializers import BulkRequestSerializer
 from .shape import build_listing, select
 
 
@@ -71,3 +74,41 @@ class PipelineExportView(APIView):
             f'attachment; filename="{kind.key}-{today.isoformat()}.csv"'
         )
         return response
+
+
+class PipelineBulkUpdateView(APIView):
+    """POST /api/v1/pipelines/<kind>/bulk/ — `{ids, action, value}` from the
+    selection bar: `set_stage`, `set_priority`, `set_department` or
+    `set_date`. Applied per id under the single-edit rules; returns
+    `{updated, failed: [{id, reason}]}` with a 200 even when some failed."""
+
+    # SOC2:AUTH-02 authentication only; the per-id visibility checks are in
+    # `bulk.apply` (services/pipelines_portfolio/bulk.py).
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, kind_key):
+        kind = KINDS[kind_key]
+        serializer = BulkRequestSerializer(data=request.data, context={"kind": kind})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        # SOC2:LOG-01 one `pipelines.bulk_updated` event, recorded even if
+        # something escapes mid-batch (`audited_batch`). Ids and the field
+        # only, never the value (spec §2).
+        result = audited_batch(
+            request,
+            "pipelines.bulk_updated",
+            lambda result: bulk.apply(
+                request,
+                kind,
+                ids=data["ids"],
+                action=data["action"],
+                value=data["value"],
+                result=result,
+            ),
+            metadata={
+                "kind": kind.key,
+                "action": data["action"],
+                "field": bulk.field_for(kind, data["action"]),
+            },
+        )
+        return Response(result)

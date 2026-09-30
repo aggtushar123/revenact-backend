@@ -16,6 +16,12 @@ urlpatterns = [
             {"kind_key": key},
             name=f"pipelines-{key}-export",
         ),
+        path(
+            f"{key}/bulk/",
+            views.PipelineBulkUpdateView.as_view(),
+            {"kind_key": key},
+            name=f"pipelines-{key}-bulk",
+        ),
         path(f"{key}/", views.PipelineView.as_view(), {"kind_key": key}, name=f"pipelines-{key}"),
     )
 ]
