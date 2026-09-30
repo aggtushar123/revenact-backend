@@ -6,6 +6,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import OuterRef, Subquery, Value
 from django.db.models.functions import Coalesce, Lower
+from django.utils import timezone
 
 from services.accounts.models import Organisation
 
@@ -2111,7 +2112,51 @@ class Contact(models.Model):
         return list(self.account.customers.all())
 
 
-class Opportunity(models.Model):
+class StageClockMixin:
+    """Keeps `stage_changed_at` true on Opportunity and Risk. The field's
+    default stamps creation; `save()` stamps every later stage change,
+    whichever path saves it (a form, a Board drag, a bulk edit, the admin,
+    a seed). The Pipelines "won / mitigated this quarter" tiles read it.
+
+    The stage a row was loaded with is remembered in `from_db`, and again
+    after each save or refresh, so setting the same stage again is not a
+    change. A row loaded without its stage (`.only()`) cannot tell, so its
+    clock is left alone. `QuerySet.update(stage=…)` bypasses `save()`:
+    nothing may move a stage that way."""
+
+    _STAGE_UNKNOWN = object()
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._loaded_stage = instance.__dict__.get("stage", cls._STAGE_UNKNOWN)
+        return instance
+
+    def refresh_from_db(self, using=None, fields=None, **kwargs):
+        super().refresh_from_db(using=using, fields=fields, **kwargs)
+        if fields is None or "stage" in fields:
+            self._loaded_stage = self.stage
+
+    def save(self, *args, **kwargs):
+        update_fields = kwargs.get("update_fields")
+        saves_stage = update_fields is None or "stage" in update_fields
+        loaded = getattr(self, "_loaded_stage", self._STAGE_UNKNOWN)
+        moved = (
+            saves_stage
+            and not self._state.adding
+            and loaded is not self._STAGE_UNKNOWN
+            and self.stage != loaded
+        )
+        if moved:
+            self.stage_changed_at = timezone.now()
+            if update_fields is not None:
+                kwargs["update_fields"] = {*update_fields, "stage_changed_at"}
+        super().save(*args, **kwargs)
+        if saves_stage:
+            self._loaded_stage = self.stage
+
+
+class Opportunity(StageClockMixin, models.Model):
     """A sales opportunity moving through the pipeline board's
     "Opportunities" tab (react-ts-app's src/pages/pipelines/
     PipelinesPage.tsx) — same "belongs to exactly one of Customer or
@@ -2122,7 +2167,8 @@ class Opportunity(models.Model):
     alongside "Apple EMEA" — before this model existed).
 
     Mirrors the frontend's mock `PipelineCard`/`Column` shape: `stage`
-    is the closed set of 6 columns the board already has (Kanban
+    is the closed set of 7 columns (Closed Lost joined Closed Won on
+    2026-09-30, the Pipelines redesign) (Kanban
     columns, not a separate model — there's no per-tenant pipeline
     customisation asked for, so a fixed enum is enough, same reasoning
     as Task/Ticket's own status enums). `priority` is a real field —
@@ -2145,11 +2191,22 @@ class Opportunity(models.Model):
         PROPOSAL_PRICE_REVIEW = "proposal_price_review", "Proposal / Price Review"
         NEGOTIATION = "negotiation", "Negotiation"
         CLOSED_WON = "closed_won", "Closed Won"
+        CLOSED_LOST = "closed_lost", "Closed Lost"
 
     class Priority(models.TextChoices):
         HIGH = "high", "High"
         MEDIUM = "medium", "Medium"
         LOW = "low", "Low"
+
+    #: *Open* is anything not closed (spec: "not Closed Won or Closed Lost").
+    OPEN_STAGES = (
+        Stage.DISCOVERY,
+        Stage.QUALIFICATION,
+        Stage.SOLUTION_VALIDATION,
+        Stage.PROPOSAL_PRICE_REVIEW,
+        Stage.NEGOTIATION,
+    )
+    CLOSED_STAGES = (Stage.CLOSED_WON, Stage.CLOSED_LOST)
 
     customer = models.ForeignKey(
         Customer,
@@ -2178,6 +2235,18 @@ class Opportunity(models.Model):
     # CS's; blank is everyone's, and a role that may view all accounts
     # (or Leadership) sees every department. See scoping.pipeline_visible_q.
     department = models.CharField(max_length=16, blank=True, default="")
+    expected_close = models.DateField(
+        null=True,
+        blank=True,
+        help_text="When the deal is expected to close. Optional: an empty date "
+        "reads 'No date' on the Pipelines page.",
+    )
+    stage_changed_at = models.DateTimeField(
+        default=timezone.now,
+        editable=False,
+        help_text="When `stage` last changed, creation included. Kept by "
+        "StageClockMixin; the Pipelines 'this quarter' tiles read it.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2206,7 +2275,7 @@ class Opportunity(models.Model):
         return list(self.account.customers.all())
 
 
-class Risk(models.Model):
+class Risk(StageClockMixin, models.Model):
     """A customer-health risk tracked on the pipeline board's "Risks"
     tab (react-ts-app's src/pages/pipelines/PipelinesPage.tsx) — same
     "belongs to exactly one of Customer or Account" shape as
@@ -2240,6 +2309,9 @@ class Risk(models.Model):
         MEDIUM = "medium", "Medium"
         LOW = "low", "Low"
 
+    #: Mitigated, realised and abandoned are closed (the forecast's rule).
+    OPEN_STAGES = (Stage.OPEN,)
+
     customer = models.ForeignKey(
         Customer,
         related_name="risks",
@@ -2267,6 +2339,18 @@ class Risk(models.Model):
     # CS's; blank is everyone's, and a role that may view all accounts
     # (or Leadership) sees every department. See scoping.pipeline_visible_q.
     department = models.CharField(max_length=16, blank=True, default="")
+    due_by = models.DateField(
+        null=True,
+        blank=True,
+        help_text="When the risk must be dealt with by. Optional: an empty date "
+        "reads 'No date' on the Pipelines page.",
+    )
+    stage_changed_at = models.DateTimeField(
+        default=timezone.now,
+        editable=False,
+        help_text="When `stage` last changed, creation included. Kept by "
+        "StageClockMixin; the Pipelines 'this quarter' tiles read it.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
