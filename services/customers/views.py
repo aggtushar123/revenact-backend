@@ -2150,18 +2150,16 @@ class CustomerCanvasListView(generics.ListCreateAPIView):
 
 class AccountCanvasListView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/canvases/
-    — every account-level Canvas for one Account (GET), or adds a new
-    one to it (POST); `account` taken from the URL. Powers the "Canvas
-    List" tab on the standalone Account page."""
+    and /api/v1/accounts/<account_id>/canvases/ — every account-level Canvas
+    for one Account (GET), or adds a new one to it (POST); `account` taken
+    from the URL. Powers the account page's Canvases tab."""
 
     serializer_class = CanvasSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
     def get_account(self):
-        return get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        return get_url_account(self.request, self.kwargs)
 
     def get_queryset(self):
         return self.get_account().canvases.all()

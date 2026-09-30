@@ -54,4 +54,9 @@ urlpatterns = [
         customers.AccountNoteListView.as_view(),
         name="account-page-notes",
     ),
+    path(
+        "<int:account_id>/canvases/",
+        customers.AccountCanvasListView.as_view(),
+        name="account-page-canvases",
+    ),
 ]

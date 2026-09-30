@@ -14,6 +14,7 @@ from services.accounts.models import Organisation, User
 from services.customers.models import (
     Attachment,
     Call,
+    Canvas,
     Contact,
     Customer,
     Note,
@@ -24,7 +25,17 @@ from services.customers.models import (
 )
 from services.customers.tests.test_views import blind_to_one_account, create_account
 
-TABS = ("contacts", "opportunities", "risks", "files", "calls", "surveys", "tasks", "notes")
+TABS = (
+    "contacts",
+    "opportunities",
+    "risks",
+    "files",
+    "calls",
+    "surveys",
+    "tasks",
+    "notes",
+    "canvases",
+)
 
 #: A valid JSON create body per tab (files are multipart, tested on their own).
 BODIES = {
@@ -35,6 +46,7 @@ BODIES = {
     "surveys": {"survey_type": "nps", "sent_at": "2026-09-01"},
     "tasks": {"title": "Send the deck", "due_date": "2026-10-01", "priority": "high"},
     "notes": {"title": "Kickoff", "body": "Went well."},
+    "canvases": {"name": "Renewal plan"},
 }
 MODELS = {
     "contacts": Contact,
@@ -44,6 +56,7 @@ MODELS = {
     "surveys": Survey,
     "tasks": Task,
     "notes": Note,
+    "canvases": Canvas,
 }
 
 
@@ -115,6 +128,7 @@ class AccountRouteFixture(APITestCase):
             body="Went well.",
             logged_at=self.today,
         )
+        Canvas.objects.create(account=account, name="Renewal plan")
 
     def get(self, user, path):
         self.client.force_authenticate(user)

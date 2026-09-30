@@ -61,7 +61,7 @@ expects.
 | Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`); the organisation page's Story is `GET /organizations/<id>/story/`, and Ask on that page is the same send with `view: "detail"` |
 | Accounts portfolio (`/accounts` list and Board redesign) | `accounts_portfolio` | ✅ Built — `GET /accounts/portfolio/` (rows, details, groups, summary, filters, cursor pages, `group_value` for a Board column), `GET /accounts/portfolio/export.csv`, `POST /accounts/bulk/` (owner, lifecycle). `/accounts/` and `/accounts/stats/` are unchanged — see below. |
 | Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, many-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. The `/accounts/list` and `/accounts/board` UI above is what the Accounts portfolio row replaces once its frontend ships; `AccountListView`/`AccountStatsView` are unaffected either way and keep backing the Details page's Accounts tab and any other caller. |
-| Account page (`/accounts/:id` redesign) | `account_story` | ✅ Built — the account's Story is `GET /accounts/<id>/story/`; its tabs and creates are `GET/POST /accounts/<id>/{contacts,opportunities,risks,files,calls,surveys,tasks,notes}/` and `GET/PATCH /accounts/<id>/` (the nested account endpoints, keyed by the account alone) |
+| Account page (`/accounts/:id` redesign) | `account_story` | ✅ Built — the account's Story is `GET /accounts/<id>/story/`; its tabs and creates are `GET/POST /accounts/<id>/{contacts,opportunities,risks,files,calls,surveys,tasks,notes,canvases}/` and `GET/PATCH /accounts/<id>/` (the nested account endpoints, keyed by the account alone) |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
 | Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
@@ -3021,7 +3021,7 @@ it in `failed` with the reason `"Could not be updated."` and the batch continues
 
 The account page's own endpoints, in `services/account_story/`. No model.
 
-### `GET/PATCH /api/v1/accounts/<id>/`, `GET/POST /api/v1/accounts/<id>/{contacts,opportunities,risks,files,calls,surveys,tasks,notes}/`
+### `GET/PATCH /api/v1/accounts/<id>/`, `GET/POST /api/v1/accounts/<id>/{contacts,opportunities,risks,files,calls,surveys,tasks,notes,canvases}/`
 
 The account page's tabs and create flows, keyed by the account alone. Each is the nested
 `/customers/<cid>/accounts/<id>/…` endpoint of the same name (same view class, same request and response
@@ -3031,7 +3031,7 @@ organisation id to put in the nested path.
 
 Auth: `IsAuthenticated` — `401` unauthenticated. The account must be in `visible_accounts(user)`, otherwise `404`
 (another tenant's account, one the viewer cannot open and an id that does not exist read the same). Then each list
-applies its record's own rule: contacts and files by the account; opportunities and risks by department
+applies its record's own rule: contacts, files and canvases by the account; opportunities and risks by department
 (`pipeline_visible_q`); tasks by creator, assignee and their chains; notes by author and chain. A create is always
 on this account (`account_id` set, `customer_id` null); the parent never comes from the body. A CES survey is a
 `400`, as on the nested route. `PATCH /accounts/<id>/` is the nested `AccountDetailView` PATCH (the owner-change
