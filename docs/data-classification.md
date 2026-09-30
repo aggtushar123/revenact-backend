@@ -74,6 +74,7 @@ customer records.
 | Container stdout → log store (`config/settings.py: LOGGING`) | request ids, actions, outcomes | internal | `core.logging.RedactFilter` (LOG-03); no bodies or headers logged |
 | Nightly `pg_dump` → Azure Blob (`revenact-infra/deploy/backup.sh`) | everything above | confidential | private account, identity auth, versioning, 35-day expiry (DATA-07) |
 | Organizations CSV export (`services/organizations`, `GET /organizations/portfolio/export.csv`) → the requester's device | the 34 organisation fields (commercial terms, owners, churn reasons) for the requester's own visible, filtered book | confidential | visibility-scoped exactly like the list (AUTH-02); audited `organizations.exported` (LOG-01); formula cells neutralised against CSV injection |
+| Accounts CSV export (`services/accounts_portfolio`, `GET /accounts/portfolio/export.csv`) → the requester's device | every account field (ARR, renewal, NPS/CSAT, pulses and the AI pulse reason, owner, contact details, the linked organisations the requester may open) for the requester's own visible, filtered accounts | confidential | visibility-scoped exactly like the list (AUTH-02); audited `accounts.exported` (LOG-01); formula cells neutralised against CSV injection |
 
 ## Retention
 

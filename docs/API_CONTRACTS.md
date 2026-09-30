@@ -59,7 +59,8 @@ expects.
 | User Profile / User Management | `accounts` | ✅ Built — own profile (`/me/`), change password, admin list/add/edit/deactivate CSMs (`/csms/`) |
 | Organizations (list/board/detail) | `customers` | 🟢 Full `tableData.ts` schema built, API-complete — see below. List view, MetricsPanel, Add/Edit/Churn/Archive, and the Details page's General tab all fetch real data. Board, nested Contacts not started. |
 | Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`); the organisation page's Story is `GET /organizations/<id>/story/`, and Ask on that page is the same send with `view: "detail"` |
-| Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, one-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. |
+| Accounts portfolio (`/accounts` list and Board redesign) | `accounts_portfolio` | ✅ Built — `GET /accounts/portfolio/` (rows, details, groups, summary, filters, cursor pages, `group_value` for a Board column), `GET /accounts/portfolio/export.csv`, `POST /accounts/bulk/` (owner, lifecycle). `/accounts/` and `/accounts/stats/` are unchanged — see below. |
+| Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, many-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. The `/accounts/list` and `/accounts/board` UI above is what the Accounts portfolio row replaces once its frontend ships; `AccountListView`/`AccountStatsView` are unaffected either way and keep backing the Details page's Accounts tab and any other caller. |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
 | Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
@@ -1139,7 +1140,15 @@ caller's organisation/customer. PATCH accepts any subset of the POST
 fields (partial update); `customer` in the body is ignored (read-only —
 there's no way to move an account to a different customer via this
 endpoint). `owner_id` follows the same same-organisation validation as
-create.
+create, plus: a newly assigned owner must be active; an unchanged owner is
+accepted as is (`400`, `"Owner must be an active member of your
+organisation."` for a newly assigned inactive owner — same rule as
+`CustomerSerializer`), and reassigning an already-owned account is gated to
+the current owner, their management chain or an organisation-settings
+manager. An owner change is handed over (a contribution) and the new owner
+notified through `after_account_update` — the same after-save rule the
+Accounts bulk edit (`POST /accounts/bulk/`) uses, so a reassign means the
+same thing from either.
 
 **Response `200`** (both) — the (possibly updated) account.
 
@@ -2814,6 +2823,150 @@ Not an endpoint of this app: the page's Ask rail sends `POST /api/v1/copilot/mes
 `context.surface = "organizations"` (see the `copilot` section). The answer is grounded in
 `load_portfolio`, `select` and `build_summary` for the asker and the same filters, so every figure it
 quotes is the figure `GET /organizations/portfolio/` returns.
+
+## `accounts_portfolio` — Accounts portfolio (`/accounts` list and Board redesign)
+
+Built for the redesigned Accounts list (spec: react-ts-app
+`docs/superpowers/specs/2026-09-29-accounts-redesign-design.md`). `/api/v1/accounts/` and
+`/api/v1/accounts/stats/` (`services.customers`) are unchanged and still serve their other consumers — this app
+mounts at the same `api/v1/accounts/` prefix but adds only `portfolio/` and `bulk/`, so neither existing exact
+path is shadowed. No model: `services/accounts_portfolio/book.py` reuses Organizations' generic helpers (`health_q`,
+`NPS_Q`, `signal_for`, `snapshot_history`, `health_trend`) and the dashboard's own `triage`, so a row's numbers
+always agree with Health Overview and the Board.
+
+### `GET /api/v1/accounts/portfolio/`
+
+Auth: `IsAuthenticated`. Scope: `visible_accounts(user)`. **No archive, no churn**: unlike
+`/organizations/portfolio/`, nothing is hidden by default and there is no `include_churned` — Account has
+neither field, so Churn is an ordinary lifecycle stage. `ids` narrows visibility, never widens it; ids outside
+it are silently absent. Unknown parameter values are ignored, never a 400.
+
+| Param | Meaning |
+|---|---|
+| `search` | name or Revenact ID (the row id as text), case-insensitive contains |
+| `organisation` | comma list of linked `Customer` ids the viewer may open; an account on any of them matches |
+| `owner` | user id or `unassigned` |
+| `lifecycle` | comma list of `Customer.LifecycleStage` values (Churn included — accounts have no churn field, so it behaves like any other stage) |
+| `health` | comma list of `good,average,poor` — the same bands as Organizations |
+| `renews_within` | `30`, `90` or `180`: renewal on or before today + N, overdue included — the Renewing tile's own rule |
+| `nps` | `promoter` (> 0), `passive` (= 0) or `detractor` (< 0) |
+| `ids` | comma list, first 500 read; present with no usable id → no rows |
+| `sort` | `risk`, `arr`, `renewal`, `health`, `name`; `-` prefix descending; default `-arr`. Missing values sort last either way; ties by name |
+| `group` | `health` (List default), `lifecycle` (Board), `owner`, `renewal` (`overdue`, `30`, `90`, `180`, `later`, `none`), or empty |
+| `group_value` | with `group` only: restrict `results` and `count` to that group key (a Board column). `groups` and `summary` stay whole |
+| `cursor` | opaque, from `next_cursor`; valid only for the same filters, search, `ids`, sort, `group` and `group_value` |
+| `limit` | default 50, max 100 |
+
+```json
+{
+  "results": [{
+    "id": 12, "name": "Pizza EMEA", "initials": "PE",
+    "owner": {"id": 2, "name": "Carl CSM"},
+    "lifecycle": {"value": "live", "label": "Live"},
+    "health": {"score": 8.0, "category": "good", "trend": [8.1, 8.0, 8.0]},
+    "renewal": {"date": "2026-11-02", "days": 34},
+    "arr": 12000.0,
+    "risk": {"score": 12, "direction": "flat"},
+    "pulse": {"csm": null, "ai": null, "ai_category": null, "ai_label": "",
+              "reason": "", "history": [], "disagree": false},
+    "last_touch_days": null,
+    "urgent_tickets": 0,
+    "signal": null,
+    "organisation": {"id": 7, "name": "Pizza Hut"},
+    "extra_organisations": 0,
+    "details": {
+      "commercial": {"arr": 12000.0, "renewal_date": "2026-11-02"},
+      "voice": {"nps_score": null, "csat_score": null, "ai_pulse_reason": ""},
+      "profile": {"revenact_id": 12, "domain": "", "industry": "", "email": "", "phone": "",
+                  "address": "", "organisations": [{"id": 7, "name": "Pizza Hut"}]},
+      "history": {"created_at": "2026-09-29T10:00:00+00:00", "updated_at": "2026-09-29T10:00:00+00:00",
+                  "pulse_recorded_on": null, "csm_pulse_modified_at": null}
+    }
+  }],
+  "next_cursor": "<opaque string; pass back as ?cursor=>",
+  "count": 1,
+  "groups": [{"key": "good", "label": "Good", "count": 1, "arr": 12000.0}],
+  "summary": {
+    "health": {"good": 1, "average": 0, "poor": 0,
+               "arr": {"good": 12000.0, "average": 0.0, "poor": 0.0},
+               "mrr": {"good": 1000.0, "average": 0.0, "poor": 0.0}},
+    "nps": {"score": 0, "promoters": 0, "passives": 0, "detractors": 0},
+    "lifecycle": [{"value": "onboarding", "label": "Onboarding", "count": 0, "arr": 0.0}],
+    "accounts": 1, "arr": 12000.0, "unconverted_count": 0,
+    "renewing": {"30": 0, "90": 0}
+  },
+  "filters": {"organisations": [{"value": "7", "name": "Pizza Hut"}],
+              "owners": [{"value": "2", "name": "Carl CSM"}],
+              "lifecycles": [{"value": "live", "name": "Live"}]},
+  "currency": "USD"
+}
+```
+
+- **Money.** `arr`, `groups[].arr`, `details.commercial.arr` and the summary's money are `Account.arr` as
+  stored — already in the workspace's currency (`Organisation.currency`), unlike a Customer's own contract
+  currency, so `unconverted_count` is always `0`, kept only so both lists' tiles share one shape.
+- **Row name line.** `organisation` is the first linked `Customer` the viewer may open, lowest id first;
+  `extra_organisations` counts the rest. One linked to two or more organisations, only some openable, shows
+  only the ones the viewer may open — never discloses a hidden one by name or count.
+- **Signals** come from the dashboard's code, over the account's own history: `health.trend` is a 6-month
+  sparkline from `HealthSnapshot`; `risk` is the Triage score/direction; `last_touch_days` is Activity
+  Tracking's last-contact rule on the account (`null` = never); `urgent_tickets` counts the account's own open
+  High/Critical tickets under `visible_tickets` (not a company's fan-out — an account's ticket counts once,
+  for itself). `signal` (`services.organizations.book.signal_for`) is `null`, or an object
+  `{"kind": "renewal_overdue" | "risk" | "tickets", "label": "…"}` — at most one, in that priority
+  (`renewal_overdue` when the renewal date is past, `risk` when the Triage score is ≥ the action threshold
+  with label `"Risk NN"`, `tickets` for open High/Critical tickets with label `"N open ticket(s)"`); an account
+  has no churn, so nothing mutes it. The example row above is healthy (`"signal": null`); a row with an
+  overdue renewal reads `"signal": {"kind": "renewal_overdue", "label": "Renewal overdue"}`.
+  `pulse.disagree` is `|csm − ai| ≥ 2`.
+- **Totals.** `groups` and `summary` cover every filtered row, not the page. The summary is
+  `AccountStatsView`'s arithmetic (health counts and ARR/MRR, NPS by sign, lifecycle); `summary.renewing`
+  uses the `renews_within` filter's own rule (overdue included), so clicking the Renewing tile lists exactly
+  its N.
+- **Pages.** `next_cursor` is `null` on the last page. Following it serves rows in list order — sections first
+  when grouped, the sort within each — every row once. The cursor carries a short hash of the list it was cut
+  from (search, `organisation`, `owner`, `lifecycle`, `health`, `renews_within`, `nps`, `ids`, `sort`, `group`,
+  `group_value`); a cursor from a list with any of those changed, or a malformed one, returns the first page.
+- **Filters** are the viewer's visible accounts' linked (openable) organisations, owners (only people in the
+  viewer's own organisation) and lifecycle stages present.
+- 10 for an admin; flat (constant as the book grows) for everyone, whatever the book's size (pinned by
+  `PortfolioQueryCountTests`).
+
+### `GET /api/v1/accounts/portfolio/export.csv`
+
+Auth: `IsAuthenticated`. Same parameters (`cursor`/`limit` ignored); every row in list order, the same filtered,
+visible set the list endpoint returns. `text/csv`, `Content-Disposition: attachment;
+filename="accounts-<date>.csv"`. Columns: the 24 Account fields (`fields.FIELDS`) plus `Currency`
+(`Organisation.currency`, the currency `arr` is already in). Text cells beginning with `= + - @`, tab or CR are
+prefixed with `'`. An error response (401/403) renders as a two-row, one-column CSV (`detail` header, then the
+message) rather than switching format mid-download. Audited as `accounts.exported`, with `count` (rows
+exported) and `params` (the query-parameter names used, never their values).
+
+### `POST /api/v1/accounts/bulk/`
+
+Auth: `IsAuthenticated`. Body `{"ids": [1, 2], "action": "set_owner" | "set_lifecycle", "value": …}`: `set_owner`
+takes a user id, or `null` to unassign — the `value` key must be present; omitting it entirely is a 400, so a
+forgotten key can never strip every selected account's owner. `set_lifecycle` takes any `Customer.LifecycleStage`
+value, Churn included — an account has no churn flow of its own, so Churn there is only a stage. No `archive`
+action: Accounts have neither archive nor churn as their own field. 1–500 ids, duplicates applied once.
+
+Each id is locked and re-read (`select_for_update`) before it changes, then runs the ordinary account update
+(`AccountSerializer`, partial) in its own transaction: the record must be visible to the caller
+(`visible_accounts`), an owner must be an active member of the caller's organisation (an inactive owner is
+rejected, exactly as on `PATCH /customers/<cid>/accounts/<id>/`), and only the current owner, their management
+chain or an organisation-settings manager may reassign; an owner change is handed over (a contribution on every
+organisation the account is linked to) and the new owner notified via `after_account_update` — the same
+after-save rule the single-account PATCH now uses, so a reassign means the same thing from either. The
+"assigned you" push fires on commit, since a bulk edit saves each account in its own transaction. `200`:
+
+```json
+{"updated": [1], "failed": [{"id": 2, "reason": "Not found."}]}
+```
+
+An id the caller cannot see reads `"Not found."`, like one that does not exist. A database error on one id puts
+it in `failed` with the reason `"Could not be updated."` and the batch continues with the rest. Audited as
+`accounts.bulk_updated`, written in a `finally` so a batch that raised still records what was saved; outcome
+`failure` when nothing was updated or the batch did not finish.
 
 ## Files — the Files tab on organisations and accounts
 

@@ -353,6 +353,13 @@ The organisation page's Story (`services.organizations.story`) has no model eith
 visible accounts, each under its own record rule, plus `Question` and `AnomalyEvidence` for the Needs attention
 block.
 
+### `accounts_portfolio`
+
+No model. `services.accounts_portfolio.book.load_portfolio` reads `Account` (with the account last-touch
+annotation), `HealthSnapshot` (account-level), `Ticket` and the `Account.customers` link table for the viewer's
+visible, filtered accounts on every request, and `shape.py` orders, groups and totals it in Python. Bulk edits write
+`Account` through `AccountSerializer`.
+
 ---
 
 ### `metrics` (brief delivery)

@@ -342,9 +342,15 @@ class CustomerSerializer(HealthRecalculationMixin, PulseWritesMixin, serializers
         request = self.context["request"]
         if owner is not None and owner.organisation_id != request.user.organisation_id:
             raise serializers.ValidationError("Owner must be a member of your own organisation.")
-        # A deactivated user can't sign in to act on the account, so it would
-        # sit with nobody while looking owned.
-        if owner is not None and not owner.is_active:
+        # A deactivated user can't sign in to act on the account, so a NEW
+        # owner must be active. An unchanged owner is accepted as is:
+        # deactivating a user doesn't reassign their records, and the edit
+        # modal always resends `owner_id`.
+        if (
+            owner is not None
+            and not owner.is_active
+            and (self.instance is None or owner != self.instance.owner)
+        ):
             raise serializers.ValidationError(
                 "Owner must be an active member of your organisation."
             )
@@ -677,6 +683,18 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
         request = self.context["request"]
         if owner is not None and owner.organisation_id != request.user.organisation_id:
             raise serializers.ValidationError("Owner must be a member of your own organisation.")
+        # A deactivated user can't sign in to act on the account, so a NEW
+        # owner must be active — CustomerSerializer's rule. An unchanged
+        # owner is accepted as is: deactivating a user doesn't reassign
+        # their records, and the edit modal always resends `owner_id`.
+        if (
+            owner is not None
+            and not owner.is_active
+            and (self.instance is None or owner != self.instance.owner)
+        ):
+            raise serializers.ValidationError(
+                "Owner must be an active member of your organisation."
+            )
         # Same rule as an organisation's owner: the current owner, someone
         # above them, or an org-settings manager (services.knowledge.ownership).
         if self.instance is not None and owner != self.instance.owner:

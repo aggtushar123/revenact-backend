@@ -198,6 +198,11 @@ urlpatterns = [
     # only; there's no matching flat detail/create endpoint since "Add"/
     # "Edit" already have somewhere to go (the nested endpoints under
     # services.customers.urls) — see AccountListView's own docstring.
+    # The Accounts page's own endpoints (portfolio, export, bulk). /accounts/
+    # and /accounts/stats/ stay as they are for their other consumers — see
+    # services/accounts_portfolio. None of its routes is "" or "stats/", so
+    # both exact paths still resolve.
+    path("api/v1/accounts/", include("services.accounts_portfolio.urls")),
     path("api/v1/accounts/stats/", AccountStatsView.as_view(), name="account-stats"),
     path("api/v1/accounts/", AccountListView.as_view(), name="account-list"),
     # Task, same top-level-prefix reasoning as Contact/Opportunity/Risk

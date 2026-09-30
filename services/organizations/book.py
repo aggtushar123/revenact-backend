@@ -131,11 +131,6 @@ def filtered_queryset(user, params: PortfolioParams, *, today):
     return customers
 
 
-#: How far back the row's sparkline reads. Snapshots are month-end, so six
-#: months is five of them plus today's score.
-TREND_MONTHS = 6
-
-
 @dataclass
 class Entry:
     customer: Customer
@@ -192,22 +187,44 @@ def urgent_ticket_counts(user, ids):
     return counts
 
 
-def snapshot_history(ids, *, since):
-    """Each customer's health snapshots since `since`, oldest first, as
+#: How far back the row's sparkline reads. Snapshots are month-end, so six
+#: months is five of them plus today's score.
+TREND_MONTHS = 6
+
+#: The parents a health snapshot can belong to (exactly one per row).
+SNAPSHOT_PARENTS = ("customer", "account")
+
+
+def snapshot_history(ids, *, since, parent="customer"):
+    """Each parent's health snapshots since `since`, oldest first, as
     `(captured_on, health_score)` pairs — plain tuples in one query, not model
     instances: at a few thousand customers with a year of month-ends each,
-    building the instances was most of a request's Python time."""
+    building the instances was most of a request's Python time. `parent` is
+    `"customer"` (Organizations) or `"account"` (the Accounts portfolio)."""
+    if parent not in SNAPSHOT_PARENTS:
+        raise ValueError(parent)
     history = defaultdict(list)
     if not ids:
         return history
+    key = f"{parent}_id"
     rows = (
-        HealthSnapshot.objects.filter(customer_id__in=ids, captured_on__gte=since)
+        HealthSnapshot.objects.filter(**{f"{key}__in": ids, "captured_on__gte": since})
         .order_by("captured_on")
-        .values_list("customer_id", "captured_on", "health_score")
+        .values_list(key, "captured_on", "health_score")
     )
-    for customer_id, captured_on, score in rows:
-        history[customer_id].append((captured_on, score))
+    for parent_id, captured_on, score in rows:
+        history[parent_id].append((captured_on, score))
     return history
+
+
+def health_trend(snapshots, current, *, today):
+    """The row's sparkline: the scores of the snapshots inside the last
+    `TREND_MONTHS` (oldest first), the last five kept, then `current` — six
+    points that end at the ring's own number. `snapshots` are
+    `snapshot_history` pairs."""
+    since = today - timedelta(days=31 * TREND_MONTHS)
+    recent = [float(score) for captured_on, score in snapshots if captured_on >= since]
+    return recent[-(TREND_MONTHS - 1) :] + [float(current)]
 
 
 def _entry(customer, *, today, organisation, rates, urgent, snapshots):
@@ -223,9 +240,7 @@ def _entry(customer, *, today, organisation, rates, urgent, snapshots):
         history=[health_category_for(score) for _captured_on, score in snapshots],
         today=today,
     )
-    since = today - timedelta(days=31 * TREND_MONTHS)
-    recent = [float(score) for captured_on, score in snapshots if captured_on >= since]
-    trend = recent[-(TREND_MONTHS - 1) :] + [float(customer.health_score)]
+    trend = health_trend(snapshots, customer.health_score, today=today)
     last_touch = customer._last_touch_on
     renewal_days = None if customer.renewal_date is None else (customer.renewal_date - today).days
     churned = customer.is_churned

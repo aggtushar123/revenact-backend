@@ -125,6 +125,27 @@ def after_customer_update(customer, *, actor, previous_owner, handover_note=""):
     )
 
 
+def after_account_update(account, *, actor, previous_owner, handover_note=""):
+    """What a saved Account edit sets off when its owner changed: the handover
+    written down on every organisation the account belongs to, and the new
+    owner told. Shared by the detail view's PATCH and the Accounts bulk edit,
+    so a reassign means the same thing from either. The live push waits for
+    the commit (a bulk edit saves each account in its own transaction)."""
+    if account.owner_id == (previous_owner.id if previous_owner else None):
+        return
+    from services.knowledge.ownership import record_account_handover
+
+    record_account_handover(account, actor, previous_owner, handover_note)
+    _notify_owner_assigned(
+        instance=account,
+        actor=actor,
+        kind=Notification.Kind.ACCOUNT_ASSIGNED,
+        noun="the account",
+        link=f"/accounts/{account.id}",
+        push_on_commit=True,
+    )
+
+
 class CustomerListCreateView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/ — scoped to the caller's own
     organisation (tenant). Any authenticated user (admin or CSM) can list
@@ -881,22 +902,12 @@ class AccountDetailView(generics.RetrieveUpdateAPIView):
     def perform_update(self, serializer):
         previous_owner = serializer.instance.owner
         account = serializer.save()
-        if account.owner_id != (previous_owner.id if previous_owner else None):
-            from services.knowledge.ownership import record_account_handover
-
-            record_account_handover(
-                account,
-                self.request.user,
-                previous_owner,
-                serializer.context.get("handover_note", ""),
-            )
-            _notify_owner_assigned(
-                instance=account,
-                actor=self.request.user,
-                kind=Notification.Kind.ACCOUNT_ASSIGNED,
-                noun="the account",
-                link=f"/accounts/{account.id}",
-            )
+        after_account_update(
+            account,
+            actor=self.request.user,
+            previous_owner=previous_owner,
+            handover_note=serializer.context.get("handover_note", ""),
+        )
 
 
 class AccountListView(generics.ListAPIView):
