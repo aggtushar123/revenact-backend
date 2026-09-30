@@ -162,17 +162,20 @@ class CompaniesTrimTests(Fixture):
         )
 
     def test_companies_are_ordered_by_id(self):
-        # Linked newest-first, so the link order and the id order disagree.
-        zed = Customer.objects.create(organisation=self.org, name="Zed", owner=self.other)
+        # Created later than Taco Bell (so its id sorts after it), but named
+        # to sort first alphabetically — proving the serializer orders by
+        # id, not by Customer.Meta's own name ordering. Also linked
+        # newest-first, so the link order and the id order disagree too.
+        aardvark = Customer.objects.create(organisation=self.org, name="Aardvark", owner=self.other)
         account = Account.objects.create(name="Backwards", owner=self.other)
-        account.customers.add(zed)
+        account.customers.add(aardvark)
         account.customers.add(self.taco)
         item = Risk.objects.create(account=account, title="Ordered", mrr=1)
         self.client.force_authenticate(self.other)
         for url in (f"/api/v1/risks/{item.pk}/", "/api/v1/risks/"):
             data = self.client.get(url).data
             row = data if isinstance(data, dict) else next(r for r in data if r["id"] == item.pk)
-            self.assertEqual([c["id"] for c in row["companies"]], [self.taco.pk, zed.pk])
+            self.assertEqual([c["id"] for c in row["companies"]], [self.taco.pk, aardvark.pk])
 
     def test_with_no_request_nothing_is_named(self):
         item = Opportunity.objects.create(account=self.shared, title="On shared", mrr=10)

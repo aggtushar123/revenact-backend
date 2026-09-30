@@ -10,6 +10,9 @@ user. Never pass credentials in `metadata` — the obvious keys are dropped.
 
 Action names are `<area>.<verb>`; the catalogue lives in
 docs/audit-events.md and grows as views start emitting new ones.
+
+`target_repr` overrides `str(target)` when the record's own string quotes
+content that must not reach the log (an opportunity's title).
 """
 
 import logging
@@ -56,6 +59,7 @@ def record(
     actor=None,
     organisation=None,
     target=None,
+    target_repr=None,
     outcome=AuditEvent.Outcome.SUCCESS,
     metadata=None,
 ):
@@ -79,7 +83,11 @@ def record(
         action=action,
         target_type=target._meta.label_lower if target is not None else "",
         target_id=str(target.pk) if target is not None and target.pk is not None else "",
-        target_repr=str(target)[:255] if target is not None else "",
+        target_repr=(
+            (str(target) if target_repr is None else target_repr)[:255]
+            if target is not None
+            else ""
+        ),
         outcome=outcome,
         ip=client_ip(request),
         user_agent=(request.META.get("HTTP_USER_AGENT", "") if request is not None else "")[:255],
