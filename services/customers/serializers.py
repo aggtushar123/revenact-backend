@@ -587,7 +587,39 @@ class CustomerHealthRowSerializer(serializers.ModelSerializer):
         ]
 
 
-class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
+DEPARTMENT_LABELS = dict(User.Function.choices)
+
+
+def department_label(value):
+    """The human label of a department (User.Function) — "" for none or an
+    unknown key. The one place opportunities, risks, tickets and the
+    Pipelines portfolio turn a department key into its label."""
+    return DEPARTMENT_LABELS.get(value, "") if value else ""
+
+
+class VisibleCustomersMixin:
+    """`_visible_customer_ids()`: the ids of the organisations the request's
+    user may open. Read once per response and memoised on the serializer's
+    context — DRF shares one context across a list's rows, so a page costs
+    one query, not one per row. The key is the one
+    `ContactCompanyVisibilityMixin` fills, so a view that already read it is
+    not read twice. Fails closed: with no request in context nothing is
+    provably visible, so nothing is."""
+
+    def _visible_customer_ids(self):
+        cache = self.context
+        if "visible_customer_ids" not in cache:
+            request = cache.get("request")
+            # SOC2:AUTH-02 only organisations the caller may open are named
+            cache["visible_customer_ids"] = (
+                set(visible_customers(request.user).values_list("id", flat=True))
+                if request is not None
+                else set()
+            )
+        return cache["visible_customer_ids"]
+
+
+class AccountSerializer(VisibleCustomersMixin, PulseWritesMixin, serializers.ModelSerializer):
     """Shaped to mirror CustomerSerializer's own conventions (nested
     owner, derived health_category, an `owner_id` write field validated
     same-organisation-only) since an account's health/lifecycle mean the
@@ -701,26 +733,6 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
         # SOC2:AUTH-02
         visible_ids = self._visible_customer_ids()
         return [{"id": c.id, "name": c.name} for c in obj.customers.all() if c.id in visible_ids]
-
-    def _visible_customer_ids(self):
-        # Memoised on the serializer's own context: DRF reuses one child
-        # instance (and its context dict) across every row of a list
-        # response, so this is one query for the whole page rather than
-        # one per Account — `obj.customers.all()` above then reads from
-        # AccountListView's/AccountListCreateView's own
-        # `.prefetch_related("customers")` instead of issuing a query of
-        # its own.
-        cache = self.context
-        if "visible_customer_ids" not in cache:
-            request = cache.get("request")
-            # Fail closed: no request in context means nothing is provably
-            # visible, not that everything is.
-            cache["visible_customer_ids"] = (
-                set(visible_customers(request.user).values_list("id", flat=True))
-                if request is not None
-                else set()
-            )
-        return cache["visible_customer_ids"]
 
     def get_account_pulse(self, obj):
         return obj.account_pulse().as_payload()
@@ -1125,9 +1137,7 @@ class TicketSerializer(serializers.ModelSerializer):
         ]
 
     def get_department_display(self, obj):
-        from services.accounts.models import User
-
-        return dict(User.Function.choices).get(obj.department, "") if obj.department else ""
+        return department_label(obj.department)
 
 
 class CalendarEventSerializer(serializers.ModelSerializer):
@@ -1246,19 +1256,32 @@ class ContactSerializer(serializers.ModelSerializer):
         return obj.calls.filter(visible_children_q(request.user)).distinct().count()
 
 
-class OpportunitySerializer(serializers.ModelSerializer):
-    """See Opportunity model's docstring. `companies`/`account_id`/`account_name`
-    mirror ContactSerializer's own fields exactly, same reasoning (the
-    standalone Pipelines board spans every Customer, so it can't assume
-    which parent FK is set the way a nested Customer/Account-scoped
-    view can). Plural `companies` (not the old singular `company_id`/
-    `company_name`) for the same reason as ContactSerializer's own —
-    an account-level Opportunity's own Account can now belong to more
-    than one Customer at once. `stage_display`/`priority_display` are
-    the human labels ("Solution Validation", not "solution_validation")
-    the board's own column headers/priority pills render; `stage`/
-    `priority` themselves are included too since the frontend keys
-    drag-and-drop and filtering off the raw value."""
+class PipelineItemSerializer(VisibleCustomersMixin, serializers.ModelSerializer):
+    """What OpportunitySerializer and RiskSerializer share, field for field.
+    `companies`/`account_id`/`account_name` mirror ContactSerializer's own
+    fields (the standalone Pipelines board spans every Customer, so it can't
+    assume which parent FK is set). `companies` is every parent organisation
+    the caller may open, ordered by id — an account-level item's account can
+    belong to organisations the caller cannot see, and those are never named
+    (the twice-filter). `stage_display`/`priority_display` are the human
+    labels; the raw `stage`/`priority` key drag-and-drop and filtering.
+    `stage_changed_at` is read-only (`StageClockMixin` keeps it)."""
+
+    COMMON_FIELDS = [
+        "id",
+        "title",
+        "mrr",
+        "stage",
+        "stage_display",
+        "priority",
+        "priority_display",
+        "department",
+        "department_display",
+        "companies",
+        "account_id",
+        "account_name",
+        "stage_changed_at",
+    ]
 
     stage_display = serializers.CharField(source="get_stage_display", read_only=True)
     priority_display = serializers.CharField(source="get_priority_display", read_only=True)
@@ -1269,76 +1292,39 @@ class OpportunitySerializer(serializers.ModelSerializer):
         choices=User.Function.choices, required=False, allow_blank=True
     )
     department_display = serializers.SerializerMethodField()
+
+    def get_department_display(self, obj):
+        return department_label(obj.department)
+
+    def get_companies(self, obj):
+        # SOC2:AUTH-02 a parent organisation is named only if the caller may open it
+        visible = self._visible_customer_ids()
+        return [
+            {"id": c.id, "name": c.name}
+            for c in sorted(obj.companies, key=lambda c: c.pk)
+            if c.id in visible
+        ]
+
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account_id else None
+
+
+class OpportunitySerializer(PipelineItemSerializer):
+    """See Opportunity model's docstring and PipelineItemSerializer.
+    `expected_close` is optional; null reads "No date"."""
 
     class Meta:
         model = Opportunity
-        fields = [
-            "id",
-            "title",
-            "mrr",
-            "stage",
-            "stage_display",
-            "priority",
-            "priority_display",
-            "department",
-            "department_display",
-            "companies",
-            "account_id",
-            "account_name",
-        ]
-
-    def get_department_display(self, obj):
-        return dict(User.Function.choices).get(obj.department, "") if obj.department else ""
-
-    def get_companies(self, obj):
-        return [{"id": c.id, "name": c.name} for c in obj.companies]
-
-    def get_account_name(self, obj):
-        return obj.account.name if obj.account_id else None
+        fields = [*PipelineItemSerializer.COMMON_FIELDS, "expected_close"]
 
 
-class RiskSerializer(serializers.ModelSerializer):
-    """See Risk model's docstring. Field-for-field identical shape to
-    OpportunitySerializer, same reasoning — the standalone Pipelines
-    board's "Risks" tab spans every Customer/Account the same way its
-    "Opportunities" tab does. Plural `companies` for the same reason as
-    OpportunitySerializer's own."""
-
-    stage_display = serializers.CharField(source="get_stage_display", read_only=True)
-    priority_display = serializers.CharField(source="get_priority_display", read_only=True)
-    companies = serializers.SerializerMethodField()
-    account_name = serializers.SerializerMethodField()
-
-    department = serializers.ChoiceField(
-        choices=User.Function.choices, required=False, allow_blank=True
-    )
-    department_display = serializers.SerializerMethodField()
+class RiskSerializer(PipelineItemSerializer):
+    """See Risk model's docstring and PipelineItemSerializer. `due_by` is
+    optional; null reads "No date"."""
 
     class Meta:
         model = Risk
-        fields = [
-            "id",
-            "title",
-            "mrr",
-            "stage",
-            "stage_display",
-            "priority",
-            "priority_display",
-            "department",
-            "department_display",
-            "companies",
-            "account_id",
-            "account_name",
-        ]
-
-    def get_department_display(self, obj):
-        return dict(User.Function.choices).get(obj.department, "") if obj.department else ""
-
-    def get_companies(self, obj):
-        return [{"id": c.id, "name": c.name} for c in obj.companies]
-
-    def get_account_name(self, obj):
-        return obj.account.name if obj.account_id else None
+        fields = [*PipelineItemSerializer.COMMON_FIELDS, "due_by"]
 
 
 class SurveySerializer(serializers.ModelSerializer):
