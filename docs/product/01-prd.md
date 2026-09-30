@@ -199,6 +199,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Ask Revenact on Organizations | Built (backend) | The Ask rail on Organizations sends the list's view and filters. The server recomputes the asker's own filtered list with the portfolio's code (tiles, sections, the ten riskiest accounts, renewals inside 90 days), adds the records behind the account opened, and answers only from those. It is metered as its own purpose. History is tagged "Organizations · <filters>", and reopening a conversation restores the list |
 | Ask Revenact on the organisation page | Built (backend) | Asked on one organisation's page, optionally narrowed to an account or about one story item. The server re-checks both ids and the item for the asker, and answers from the organisation's row, what needs attention and the last 30 days of its story, plus the records behind the question. History is tagged "Pizza Hut" or "Pizza Hut · EMEA". A shared reply is checked against every story record it quoted |
 | Ask Revenact on Contacts | Built (backend) | Asked on the Contacts list (the asker's filtered list: summary and at most 50 people) or on one person (their profile and the newest 20 calls, emails and tickets the asker can read). "Why this sentiment?" weighs only readable records and says when the stored reading also rests on others. History is tagged "Sam Pizza · Pizza Hut" or "Contacts · Negative". A shared reply is checked against every organisation, account and record it drew on |
+| Ask Revenact on Accounts | Built (backend) | Asked on the Accounts list or Board (the asker's filtered accounts: tiles, sections, ten riskiest, renewals within 90 days, equal to the portfolio's) or on one account's page (its row, what needs attention, the last 30 days of its story and the item asked about, each under its own rule). History is tagged "Accounts · Owner: Carl CSM" or the account's name. An account or story item the asker cannot open is refused the same whether it exists or not. A shared reply is checked against every organisation, account, record and ticket department it drew on |
 
 ### 5.4 Multiplayer Copilot (the centerpiece)
 
@@ -324,3 +325,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-28 | Ask Revenact on Contacts (backend) |
 | 2026-09-29 | Accounts portfolio (backend): portfolio endpoint, export, bulk edit |
 | 2026-09-30 | Account page (backend): `GET /accounts/<id>/story/` and the account-keyed tab routes |
+| 2026-09-30 | Ask Revenact on Accounts (backend) |
