@@ -20,6 +20,7 @@ from services.customers.models import Customer
 from services.customers.scoping import visible_customers
 from services.customers.serializers import CustomerSerializer
 from services.customers.views import after_customer_update
+from services.portfolio_core.bulk import NOT_FOUND, NOT_UPDATED, first_reason
 
 #: Each action is one writable field of the ordinary customer update.
 FIELD_FOR_ACTION = {
@@ -28,18 +29,7 @@ FIELD_FOR_ACTION = {
     "archive": "is_archived",
 }
 
-NOT_FOUND = "Not found."
-NOT_UPDATED = "Could not be updated."
-
 logger = logging.getLogger(__name__)
-
-
-def first_reason(errors):
-    for messages in errors.values():
-        if isinstance(messages, (list, tuple)) and messages:
-            return str(messages[0])
-        return str(messages)
-    return NOT_UPDATED
 
 
 def _locked(user, customer_id):
