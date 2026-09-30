@@ -92,6 +92,7 @@ INSTALLED_APPS = [
     "services.mcp",
     "services.organizations",
     "services.accounts_portfolio",
+    "services.account_story",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app

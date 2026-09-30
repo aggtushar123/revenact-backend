@@ -4,6 +4,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -1225,6 +1227,169 @@ class AccountDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.account.refresh_from_db()
         self.assertEqual(self.account.name, "North America")
+
+    def test_customers_field_lists_only_organisations_the_viewer_may_open(self):
+        # The account is shared by two organisations; the viewer owns one
+        # (Globex) but not the other (Initech, owned by a colleague with no
+        # org-chart relationship to the viewer) — so AccountSerializer.
+        # get_customers must hide the one they can't open. The viewer owns
+        # Globex itself, not the account (owning the account would make
+        # every one of its parent organisations visible too — see
+        # scoping.visible_customers' own "reach in both directions" rule —
+        # which is not what this test means to exercise).
+        colleague = User.objects.create_user(
+            email="colleague@acme.io",
+            password="supersecret1",
+            name="Colleague",
+            organisation=self.org,
+        )
+        initech = Customer.objects.create(organisation=self.org, name="Initech", owner=colleague)
+        self.account.customers.add(initech)
+        viewer = User.objects.create_user(
+            email="viewer@acme.io",
+            password="supersecret1",
+            name="Viewer",
+            organisation=self.org,
+        )
+        self.customer.owner = viewer
+        self.customer.save(update_fields=["owner"])
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["customers"], [{"id": self.customer.id, "name": "Globex"}])
+
+
+class AccountCustomerIdsVisibilityTests(APITestCase):
+    """A PATCH of `customer_ids` must never let a viewer unlink an
+    organisation they cannot see (a full-replace write against a
+    now-filtered read would otherwise silently drop it), nor link one they
+    cannot see either. Exercised on both the nested and the flat route,
+    since both go through the same `AccountSerializer`."""
+
+    def setUp(self):
+        self.org = Organisation.objects.create(name="Acme Inc")
+        self.colleague = User.objects.create_user(
+            email="colleague@acme.io",
+            password="supersecret1",
+            name="Colleague",
+            organisation=self.org,
+        )
+        self.viewer = User.objects.create_user(
+            email="viewer@acme.io",
+            password="supersecret1",
+            name="Viewer",
+            organisation=self.org,
+        )
+        # The viewer owns Globex (so both it and the shared Account are
+        # visible to them) but not Initech, owned by an unrelated colleague.
+        self.globex = Customer.objects.create(
+            organisation=self.org, name="Globex", owner=self.viewer
+        )
+        self.initech = Customer.objects.create(
+            organisation=self.org, name="Initech", owner=self.colleague
+        )
+        self.account = create_account(self.globex, name="Shared")
+        self.account.customers.add(self.initech)
+        self.nested_url = f"/api/v1/customers/{self.globex.id}/accounts/{self.account.id}/"
+        self.flat_url = f"/api/v1/accounts/{self.account.id}/"
+        self.client.force_authenticate(self.viewer)
+
+    def test_a_patch_omitting_a_hidden_organisation_keeps_it_nested(self):
+        response = self.client.patch(
+            self.nested_url, {"customer_ids": [self.globex.id]}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.account.refresh_from_db()
+        self.assertEqual(set(self.account.customers.all()), {self.globex, self.initech})
+
+    def test_a_patch_omitting_a_hidden_organisation_keeps_it_flat(self):
+        response = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id]}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.account.refresh_from_db()
+        self.assertEqual(set(self.account.customers.all()), {self.globex, self.initech})
+
+    def test_a_patch_adding_an_invisible_organisation_is_refused(self):
+        other = Customer.objects.create(
+            organisation=self.org, name="Other Co", owner=self.colleague
+        )
+        for url in (self.nested_url, self.flat_url):
+            with self.subTest(url=url):
+                response = self.client.patch(
+                    url, {"customer_ids": [self.globex.id, other.id]}, format="json"
+                )
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.account.refresh_from_db()
+                self.assertEqual(set(self.account.customers.all()), {self.globex, self.initech})
+
+    def test_a_normal_patch_of_visible_ids_still_works(self):
+        taco = Customer.objects.create(organisation=self.org, name="Taco Co", owner=self.viewer)
+
+        response = self.client.patch(
+            self.nested_url, {"customer_ids": [self.globex.id, taco.id]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.account.refresh_from_db()
+        # The submitted visible set, plus the hidden link the PATCH never mentioned.
+        self.assertEqual(set(self.account.customers.all()), {self.globex, taco, self.initech})
+
+    def test_a_normal_patch_of_visible_ids_still_works_flat(self):
+        taco = Customer.objects.create(organisation=self.org, name="Taco Co", owner=self.viewer)
+
+        response = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id, taco.id]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.account.refresh_from_db()
+        # The submitted visible set, plus the hidden link the PATCH never mentioned.
+        self.assertEqual(set(self.account.customers.all()), {self.globex, taco, self.initech})
+
+    def test_a_nonexistent_id_another_tenants_org_and_a_hidden_org_are_indistinguishable(self):
+        # Same literal id reused across all three cases — the id itself is
+        # never secret (the caller chose it), so the only thing that could
+        # leak whether it "exists" is the shape of the 400 it gets back.
+        # Before the fix, a hidden/other-tenant id passed the field-level
+        # PrimaryKeyRelatedField lookup (unrestricted queryset) and only
+        # then failed validate_customer_ids with a different message than
+        # a truly nonexistent id's "Invalid pk ... does not exist."
+        probe_id = 999_001
+
+        nonexistent = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id, probe_id]}, format="json"
+        )
+        self.account.refresh_from_db()
+        unaffected = {self.globex, self.initech}
+        self.assertEqual(set(self.account.customers.all()), unaffected)
+
+        other_org = Organisation.objects.create(name="Other Org")
+        other_tenant = Customer.objects.create(
+            id=probe_id, organisation=other_org, name="Other Tenant Co"
+        )
+        other_tenant_response = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id, probe_id]}, format="json"
+        )
+        other_tenant.delete()
+        self.account.refresh_from_db()
+        self.assertEqual(set(self.account.customers.all()), unaffected)
+
+        Customer.objects.create(
+            id=probe_id, organisation=self.org, name="Hidden Co", owner=self.colleague
+        )
+        hidden_response = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id, probe_id]}, format="json"
+        )
+        self.account.refresh_from_db()
+        self.assertEqual(set(self.account.customers.all()), unaffected)
+
+        for response in (nonexistent, other_tenant_response, hidden_response):
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(nonexistent.data, other_tenant_response.data)
+        self.assertEqual(other_tenant_response.data, hidden_response.data)
 
 
 class CustomerActivityListTests(APITestCase):
@@ -4458,6 +4623,49 @@ class AccountListTests(APITestCase):
 
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["name"], "Someone Else's Account")
+
+    def test_customers_field_hides_an_organisation_the_viewer_may_not_open(self):
+        colleague = User.objects.create_user(
+            email="colleague@acme.io",
+            password="supersecret1",
+            name="Colleague",
+            organisation=self.org,
+        )
+        viewer = User.objects.create_user(
+            email="viewer@acme.io",
+            password="supersecret1",
+            name="Viewer",
+            organisation=self.org,
+        )
+        self.customer.owner = viewer
+        self.customer.save(update_fields=["owner"])
+        hidden = Customer.objects.create(organisation=self.org, name="Initech", owner=colleague)
+        account = create_account(self.customer, name="Shared")
+        account.customers.add(hidden)
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        row = next(r for r in response.data["results"] if r["name"] == "Shared")
+        self.assertEqual(row["customers"], [{"id": self.customer.id, "name": "Globex"}])
+
+    def test_query_count_stays_flat_as_accounts_grow(self):
+        # AccountSerializer.get_customers' visibility filter must read
+        # AccountListView's own `.prefetch_related("customers")` from cache
+        # rather than issuing a query per row — otherwise this list's query
+        # count would grow with the number of accounts on the page.
+        self.client.force_authenticate(self.admin)
+        for i in range(3):
+            create_account(self.customer, name=f"Account {i}")
+        self.client.get(self.url)  # warm any memoised per-request lookups
+        with CaptureQueriesContext(connection) as baseline:
+            self.client.get(self.url)
+        for i in range(2):
+            create_account(self.customer, name=f"Extra {i}")
+        with CaptureQueriesContext(connection) as grown:
+            self.client.get(self.url)
+        self.assertEqual(len(grown), len(baseline))
 
 
 class AccountStatsTests(APITestCase):

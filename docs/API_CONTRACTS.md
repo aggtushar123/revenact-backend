@@ -61,6 +61,7 @@ expects.
 | Organizations portfolio (`/organizations` list redesign) | `organizations` | ✅ Built — `GET /organizations/portfolio/` (rows, details, groups, summary, filters, cursor pages), `GET /organizations/portfolio/export.csv`, `POST /organizations/bulk/`; Ask Revenact on the page is `POST /copilot/messages/` with `context.surface = "organizations"` (see `copilot`); the organisation page's Story is `GET /organizations/<id>/story/`, and Ask on that page is the same send with `view: "detail"` |
 | Accounts portfolio (`/accounts` list and Board redesign) | `accounts_portfolio` | ✅ Built — `GET /accounts/portfolio/` (rows, details, groups, summary, filters, cursor pages, `group_value` for a Board column), `GET /accounts/portfolio/export.csv`, `POST /accounts/bulk/` (owner, lifecycle). `/accounts/` and `/accounts/stats/` are unchanged — see below. |
 | Accounts (standalone `/accounts/list` page, Details page's Accounts tab) | `customers` (`Account` model) | 🟢 Model + full CRUD built, many-to-many under `Customer` — see below. A global paginated+searchable list (`AccountListView`, GET-only — Add/Edit reuse the nested endpoints below, see that view's own docstring), an aggregate `AccountStatsView` (Health/NPS/Lifecycle rollups, same shape as `CustomerStatsView`) backing the standalone page's own MetricsPanel, plus the nested per-Customer list-create/detail endpoints. Both the standalone list page and the Details page's own Accounts tab fetch/display real accounts and have Add/Edit wired (`createAccount`/`updateAccount`/`fetchAllAccounts`/`fetchAccountStats` in `features/customers/customersSlice.ts`, `AccountFormModal.tsx`). Churn/Archive for Account don't exist yet — not asked for, and Account has no `churn_date`/`is_archived` fields to back them. No Delete either — not asked for, matching the nested `AccountDetailView`'s own PATCH-only scope. The `/accounts/list` and `/accounts/board` UI above is what the Accounts portfolio row replaces once its frontend ships; `AccountListView`/`AccountStatsView` are unaffected either way and keep backing the Details page's Accounts tab and any other caller. |
+| Account page (`/accounts/:id` redesign) | `account_story` | ✅ Built — the account's Story is `GET /accounts/<id>/story/`; its tabs and creates are `GET/POST /accounts/<id>/{contacts,opportunities,risks,files,calls,surveys,tasks,notes,canvases}/` and `GET/PATCH /accounts/<id>/` (the nested account endpoints, keyed by the account alone) |
 | Activities (`ActivityFeed`'s "Activities" filter) | `customers` (`Activity` model) | 🟢 Read-only, API-complete — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist, are seeded, and `ActivitiesTab.tsx` fetches real data through `fetchActivitiesForCustomer`/`fetchActivitiesForAccount`. No create/update endpoint yet. |
 | Emails (`ActivityFeed`'s "Emails" filter) | `customers` (`Email` model) | 🟢 Read-only, API-complete — see below. `EmailsTab.tsx` fetches real data through `fetchEmailsForCustomer`/`fetchEmailsForAccount`. No create/update endpoint yet. |
 | Tasks (`ActivityFeed`'s "Tasks" filter) | `customers` (`Task` model) | 🟢 Read-only, API-complete — see below. `TasksTab.tsx` fetches real data through `fetchTasksForCustomer`/`fetchTasksForAccount`; the Overdue/This Week/Next Week/Later bucket is computed client-side from `due_date`. No create/update endpoint yet. |
@@ -829,11 +830,33 @@ their own rule.
    is a many-to-many; an Account linked to two Customers with different
    owners is reachable by both, and its children appear in both
    Customers' rollups. That is the data model saying they share it.
-2. **Parent names surface through rows you are allowed to see.** An
-   Account you own returns every linked Customer's `{id, name}`, and
-   Contact/Opportunity/Risk/Survey/Canvas rows carry a `companies`
-   list. A name and an id, with no ARR/health/notes attached; filtering
-   them would blank the account page header for account-only owners.
+2. **Parent names surface through rows you are allowed to see — and only
+   those, on Account.** An Account's own `customers` field lists only
+   the linked organisations the requesting viewer may open
+   (`AccountSerializer.get_customers`, filtered through
+   `visible_customers(user)`). This is the twice-filter (see "Privacy"
+   above), applied one level down: being allowed to open the Account —
+   the view's own check, true on the nested route as much as the flat
+   one, neither ever required every linked organisation to be visible
+   too — is the first filter, not the only one; each linked organisation
+   named here is its own record with its own visibility, so a sibling
+   organisation the viewer owns nothing in and has no other reach into
+   doesn't surface even a name and an id here, same as any other record
+   this Account's page shows. Contact/Opportunity/Risk/Survey/Canvas rows
+   still carry their own `companies` list unfiltered by default
+   (Contact's can be narrowed the same way via
+   `ContactCompanyVisibilityMixin`'s `visible_customer_ids` context key
+   when the view passes it, e.g. the Contacts page) — a known follow-up
+   is giving Opportunity/Risk/Survey/Canvas's serializers the same
+   `visible_customer_ids`-context-key treatment as Contact's, rather than
+   a reason those four are left as they are. The write side matches: a
+   `customer_ids` PATCH's own field is scoped to `visible_customers(user)`
+   (not just same-tenant), so an id outside it is `400`, byte-identical
+   whether it belongs to another tenant, is a same-tenant organisation
+   this viewer can't open, or doesn't exist at all — and never removes a
+   link the caller can't see, even when it isn't in the submitted list —
+   otherwise a filtered read plus a full-replace write would let a
+   viewer blind to one shared organisation silently unlink it.
 3. **Still organisation-wide:** Copilot session invites disclose an
    account name before acceptance — deliberate, since being invited to
    collaborate on an account is itself a decision to share it, and an
@@ -1089,6 +1112,24 @@ same both-names-write rule as Customer), `ai_pulse_reason`,
 `renewal_date`, `arr` (MRR is derived, `arr / 12`, not stored — same
 convention as Customer).
 
+`Account.customers` is actually a many-to-many (an account can belong to
+more than one Customer — see "Known consequences" #1 above), surfaced on
+`AccountSerializer` as read-only `customers` (`[{id, name}]`) and
+write-only `customer_ids` (a full-replace id list, optional on write).
+Both are visibility-aware: `customers` lists only the linked
+organisations the requesting viewer may open (`visible_customers`), and
+a `customer_ids` write accepts only organisations the viewer may open —
+its field itself is scoped to `visible_customers(user)` (not just "same
+tenant"), so an id outside it is `400 "Invalid pk … - object does not
+exist."`, byte-identical whether that id belongs to another tenant, is a
+same-tenant organisation this viewer can't open, or never existed at
+all; `validate_customer_ids` still rejects the same set as
+defence-in-depth, should a future caller ever reach it some other way —
+and never removes a link to an organisation the viewer can't see, even
+when the submitted list omits it — a full-replace write against a
+now-filtered read would otherwise silently unlink it. See the PATCH
+endpoint below.
+
 **Add/Edit Account** covers identity, ownership, lifecycle stage, and
 renewal date — same product decision as Customer's own Add/Edit form.
 `health_score`/`pulse`/`ai_pulse_value`/`ai_pulse_score`/
@@ -1148,9 +1189,17 @@ the current owner, their management chain or an organisation-settings
 manager. An owner change is handed over (a contribution) and the new owner
 notified through `after_account_update` — the same after-save rule the
 Accounts bulk edit (`POST /accounts/bulk/`) uses, so a reassign means the
-same thing from either.
+same thing from either. `customer_ids` (plural — see Models above) can add or drop
+*other* linked organisations: every submitted id must be one the caller
+may open, else `400 "Invalid pk … - object does not exist."` — byte-
+identical whether it's another tenant's, a same-tenant organisation the
+caller can't open, or doesn't exist at all (see "Known consequences"
+#2) — and any currently-linked organisation the caller can't open is
+kept regardless of whether the submitted list mentions it.
 
-**Response `200`** (both) — the (possibly updated) account.
+**Response `200`** (both) — the (possibly updated) account, `customers`
+filtered the same visibility-aware way as every other read of this
+serializer.
 
 ### `GET /api/v1/accounts/`
 
@@ -2967,6 +3016,86 @@ An id the caller cannot see reads `"Not found."`, like one that does not exist. 
 it in `failed` with the reason `"Could not be updated."` and the batch continues with the rest. Audited as
 `accounts.bulk_updated`, written in a `finally` so a batch that raised still records what was saved; outcome
 `failure` when nothing was updated or the batch did not finish.
+
+## `account_story` — the account page (`/accounts/:id`)
+
+The account page's own endpoints, in `services/account_story/`. No model.
+
+### `GET/PATCH /api/v1/accounts/<id>/`, `GET/POST /api/v1/accounts/<id>/{contacts,opportunities,risks,files,calls,surveys,tasks,notes,canvases}/`
+
+The account page's tabs and create flows, keyed by the account alone. Each is the nested
+`/customers/<cid>/accounts/<id>/…` endpoint of the same name (same view class, same request and response
+shapes, same record rules, same audit records), documented in its own section; only the path differs. They exist
+because an account can be open to a viewer while none of its organisations is, so the page may have no
+organisation id to put in the nested path.
+
+Auth: `IsAuthenticated` — `401` unauthenticated. The account must be in `visible_accounts(user)`, otherwise `404`
+(another tenant's account, one the viewer cannot open and an id that does not exist read the same). Then each list
+applies its record's own rule: contacts, files and canvases by the account; opportunities and risks by department
+(`pipeline_visible_q`); tasks by creator, assignee and their chains; notes by author and chain. A create is always
+on this account (`account_id` set, `customer_id` null); the parent never comes from the body. A CES survey is a
+`400`, as on the nested route. `PATCH /accounts/<id>/` is the nested `AccountDetailView` PATCH (the owner-change
+rule and handover included). The nested routes are unchanged. Activities, emails, tickets and calendar events
+have no flat route: the page reads them through `GET /accounts/<id>/story/`.
+
+### `GET /api/v1/accounts/<id>/story/`
+
+The account page's Story tab (spec: react-ts-app `docs/superpowers/specs/2026-09-29-accounts-redesign-design.md`
+§2.5): every record filed on this account, newest first under one cursor across all sources, with counts and the
+Needs attention block. The organisation story's engine (`GET /organizations/<id>/story/`, `services/organizations/story/`)
+over one account (`services/account_story/scope.py`); items, counts, params, order, horizon, cursor rules and the
+record rules are exactly that endpoint's, except as listed here.
+
+Auth: `IsAuthenticated` — `401` unauthenticated. GET only. The account must be in `visible_accounts(user)`,
+otherwise `404`, whether or not it exists (another tenant's, one the viewer cannot open, an unknown id). Unknown
+parameter values are ignored, never a 400.
+
+Params: `group`, `source`, `q`, `thread`, `cursor`, `limit`, as on the organisation story. `account` is ignored
+(one account has no account chips); any value reads the whole account.
+
+```json
+{
+  "items": [{
+    "id": 41, "kind": "call", "source": "zoom",
+    "occurred_at": "2026-09-29T14:05:00+00:00", "all_day": false,
+    "account": {"id": 9, "name": "EMEA"},
+    "title": "Quarterly review", "summary": "They want SSO before the renewal.",
+    "actor": {"id": null, "name": "Carl CSM"},
+    "link": {"thread_id": null, "url": "https://zoom.us/rec/1"}
+  }],
+  "next_cursor": null,
+  "counts": {
+    "by_group": {"all": 7, "conversations": 3, "tickets": 2, "tasks": 1, "feedback": 1, "health": 0},
+    "by_kind": {"activity": 0, "calendar_event": 1, "call": 1, "email": 1, "health": 0, "note": 1,
+                "survey": 1, "task": 0, "ticket": 2},
+    "by_account": {"all": 7, "none": 0, "9": 7}
+  },
+  "attention": {
+    "renewal": {"date": "2026-10-12", "days": 12, "overdue": false},
+    "tickets": {"count": 2, "oldest_days": 9},
+    "overdue_tasks": null,
+    "questions": null,
+    "anomaly": null
+  }
+}
+```
+
+- **Scope.** Only records with `account_id` = this account: never its organisations' own records nor another
+  account's. A shared account's records are the same on each of its organisations' stories and here. Every item's
+  `account` is this account. Health items are this account's own month-end `HealthSnapshot` changes.
+- **Privacy (twice filtered).** After the account, each record is read under its own rule: mail by its mailbox
+  owner and their chain (`visible_emails`), notes by author and chain (`visible_notes`), tasks by creator, assignee
+  and the chains above them (`visible_tasks`), tickets by department (`visible_tickets`); activities, calls,
+  meetings, surveys and health readings by the account's rule alone. Items, counts, attention and search all read
+  the same filtered rows.
+- **Counts.** As on the organisation story; `by_account` is always `all`, `none` (`0`) and this account's id.
+- **Cursor.** Keyed by the account (`account:<id>`) and the filters: a cursor from an organisation's story, from
+  another account, or cut under other filters reads the first page.
+- **Attention** follows no filter. `renewal`: the account's `renewal_date` overdue or within 30 days (accounts have
+  no churn). `tickets`: open High/Critical on this account the viewer may read, count and oldest age in days.
+  `overdue_tasks`: not completed, due before today, readable. `questions` and `anomaly` are always `null`: company
+  knowledge is per organisation. Each entry is `null` when nothing needs attention.
+- 24 constant queries per request, whatever the account's size (pinned by `AccountStoryQueryCountTests`).
 
 ## Files — the Files tab on organisations and accounts
 

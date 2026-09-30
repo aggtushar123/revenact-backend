@@ -41,7 +41,7 @@ def matches_account(account_id, account) -> bool:
 
 
 def build_page(bases, health, params, scope):
-    fp = fingerprint(params, scope.customer.pk)
+    fp = fingerprint(params, scope.cursor_key)
     cut = decode_cursor(params.cursor, fp)
     candidates = []
     for kind in params.page_kinds:
@@ -114,7 +114,11 @@ def build_counts(counts, params, scope):
     return {"by_group": by_group, "by_kind": by_kind, "by_account": by_account}
 
 
-def build_story(user, scope, params, *, today):
+def build_story(user, scope, params, *, today, attention=build_attention):
+    """`scope` is any `StoryScope`. `attention(user, scope, bases, account,
+    *, today)` builds the Needs attention block from the same base
+    querysets: the organisation's by default, the account page's
+    (`services.account_story.attention.build_account_attention`) there."""
     horizon = horizon_for(today)
     bases = {kind: source.base(user, scope, horizon=horizon) for kind, source in SOURCES.items()}
     health = health_entries(scope, horizon=horizon)
@@ -123,5 +127,5 @@ def build_story(user, scope, params, *, today):
         "items": items,
         "next_cursor": next_cursor,
         "counts": build_counts(tally(bases, health, params.q), params, scope),
-        "attention": build_attention(user, scope, bases, params.account, today=today),
+        "attention": attention(user, scope, bases, params.account, today=today),
     }

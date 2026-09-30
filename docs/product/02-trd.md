@@ -121,6 +121,7 @@ worth knowing:
 | `services/copilot/retrieval.py`, `embeddings.py`, `context.py` | Grounding, retrieval and citations |
 | `services/copilot/dashboard_grounding.py`, `organizations_grounding.py`, `contacts_grounding.py` | The Ask rails: each recomputes the asker's own screen server-side and fences it as data, never instructions, for the model. Dashboard is asked per area/view; Organizations is asked from the portfolio (`list`/`board`) or one organisation's page (`detail`); Contacts is asked from the filtered list (`list`, at most 50 people) or one person's profile (`person`, their newest 20 calls/emails/tickets the asker may read) |
 | `services/organizations/`, `services/accounts_portfolio/` | The two portfolios (Organizations, Accounts): each loads the viewer's visible book in a fixed number of queries and computes row signals with the dashboard's code; the account one imports the organisation one's generic helpers (filters, signal, snapshots, sparkline, keyset cursor, CSV cell) and keeps the account rules its own |
+| `services/account_story/` | The account page: `AccountScope` (one account, `visible_accounts`) and its Needs attention over the organisation story's engine (`services/organizations/story/`), and the flat `/accounts/<id>/…` routes that mount the nested account views (`scoping.get_url_account`) |
 
 ### 2.5 API conventions
 

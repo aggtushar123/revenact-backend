@@ -247,3 +247,16 @@ def get_visible_account(request, customer_id, account_id):
     meaning what it says — visibility is necessary but not sufficient."""
 
     return get_object_or_404(visible_accounts(request.user), pk=account_id, customers=customer_id)
+
+
+def get_url_account(request, kwargs):
+    """The account a per-account view reads, from either of its routes:
+    nested (`/customers/<customer_id>/accounts/<account_id>/…`, pinned under
+    that organisation by `get_visible_account`) or flat
+    (`/accounts/<account_id>/…`, the account page's, which may have no
+    organisation the viewer can open). Both 404 alike for an account the
+    viewer cannot open, whether or not it exists."""
+    if "customer_id" in kwargs:
+        return get_visible_account(request, kwargs["customer_id"], kwargs["account_id"])
+    # SOC2:AUTH-02 the flat route: the account must be one the viewer may open, else 404
+    return get_object_or_404(visible_accounts(request.user), pk=kwargs["account_id"])

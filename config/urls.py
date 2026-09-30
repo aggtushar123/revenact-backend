@@ -195,14 +195,17 @@ urlpatterns = [
     path("api/v1/connectors/", include("services.connectors.urls")),
     # Account, same top-level-prefix reasoning as Contact/Opportunity/Risk
     # above — the one Account view spanning every Customer at once. GET
-    # only; there's no matching flat detail/create endpoint since "Add"/
-    # "Edit" already have somewhere to go (the nested endpoints under
-    # services.customers.urls) — see AccountListView's own docstring.
+    # only; creating an account stays nested under its organisation, and
+    # the flat per-account detail and tabs live in services.account_story.
     # The Accounts page's own endpoints (portfolio, export, bulk). /accounts/
     # and /accounts/stats/ stay as they are for their other consumers — see
     # services/accounts_portfolio. None of its routes is "" or "stats/", so
     # both exact paths still resolve.
     path("api/v1/accounts/", include("services.accounts_portfolio.urls")),
+    # The account page's own routes (/accounts/:id): its story and its tabs,
+    # keyed by the account alone — see services/account_story/urls.py. None
+    # of its routes is "" or "stats/", so both exact paths below still resolve.
+    path("api/v1/accounts/", include("services.account_story.urls")),
     path("api/v1/accounts/stats/", AccountStatsView.as_view(), name="account-stats"),
     path("api/v1/accounts/", AccountListView.as_view(), name="account-list"),
     # Task, same top-level-prefix reasoning as Contact/Opportunity/Risk
