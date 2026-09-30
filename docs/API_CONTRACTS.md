@@ -829,11 +829,22 @@ their own rule.
    is a many-to-many; an Account linked to two Customers with different
    owners is reachable by both, and its children appear in both
    Customers' rollups. That is the data model saying they share it.
-2. **Parent names surface through rows you are allowed to see.** An
-   Account you own returns every linked Customer's `{id, name}`, and
-   Contact/Opportunity/Risk/Survey/Canvas rows carry a `companies`
-   list. A name and an id, with no ARR/health/notes attached; filtering
-   them would blank the account page header for account-only owners.
+2. **Parent names surface through rows you are allowed to see — and only
+   those, on Account.** An Account's own `customers` field lists only
+   the linked organisations the requesting viewer may open
+   (`AccountSerializer.get_customers`, filtered through
+   `visible_customers(user)`) — added when the flat `/accounts/<id>/…`
+   routes widened who can read this beyond someone who already opened
+   the account through one of its organisations; a name and an id, with
+   no ARR/health/notes attached, so a sibling organisation the viewer
+   owns nothing in and has no other reach into no longer surfaces even
+   that much. Contact/Opportunity/Risk/Survey/Canvas rows still carry
+   their own `companies` list unfiltered by default (Contact's can be
+   narrowed the same way via `ContactCompanyVisibilityMixin`'s
+   `visible_customer_ids` context key when the view passes it, e.g. the
+   Contacts page; the other four never are — filtering those would
+   blank the account page header for an account-only owner, which is
+   still the accepted trade-off there).
 3. **Still organisation-wide:** Copilot session invites disclose an
    account name before acceptance — deliberate, since being invited to
    collaborate on an account is itself a decision to share it, and an
@@ -2967,6 +2978,27 @@ An id the caller cannot see reads `"Not found."`, like one that does not exist. 
 it in `failed` with the reason `"Could not be updated."` and the batch continues with the rest. Audited as
 `accounts.bulk_updated`, written in a `finally` so a batch that raised still records what was saved; outcome
 `failure` when nothing was updated or the batch did not finish.
+
+## `account_story` — the account page (`/accounts/:id`)
+
+The account page's own endpoints, in `services/account_story/`. No model.
+
+### `GET/PATCH /api/v1/accounts/<id>/`, `GET/POST /api/v1/accounts/<id>/{contacts,opportunities,risks,files,calls,surveys,tasks,notes}/`
+
+The account page's tabs and create flows, keyed by the account alone. Each is the nested
+`/customers/<cid>/accounts/<id>/…` endpoint of the same name (same view class, same request and response
+shapes, same record rules, same audit records), documented in its own section; only the path differs. They exist
+because an account can be open to a viewer while none of its organisations is, so the page may have no
+organisation id to put in the nested path.
+
+Auth: `IsAuthenticated` — `401` unauthenticated. The account must be in `visible_accounts(user)`, otherwise `404`
+(another tenant's account, one the viewer cannot open and an id that does not exist read the same). Then each list
+applies its record's own rule: contacts and files by the account; opportunities and risks by department
+(`pipeline_visible_q`); tasks by creator, assignee and their chains; notes by author and chain. A create is always
+on this account (`account_id` set, `customer_id` null); the parent never comes from the body. A CES survey is a
+`400`, as on the nested route. `PATCH /accounts/<id>/` is the nested `AccountDetailView` PATCH (the owner-change
+rule and handover included). The nested routes are unchanged. Activities, emails, tickets and calendar events
+have no flat route: the page reads them through `GET /accounts/<id>/story/`.
 
 ## Files — the Files tab on organisations and accounts
 

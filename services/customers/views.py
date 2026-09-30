@@ -48,6 +48,7 @@ from .models import (
 )
 from .scoping import (
     customer_rollup_q,
+    get_url_account,
     get_visible_account,
     get_visible_customer,
     live_customers,
@@ -889,15 +890,21 @@ class AccountDetailView(generics.RetrieveUpdateAPIView):
     what's actually editable — including AccountSerializer's own
     `customer_ids`, which a PATCH through this URL can use to add/remove
     *any* linked organisation, this one included (down to the
-    "at least one" floor validate_customer_ids enforces)."""
+    "at least one" floor validate_customer_ids enforces).
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     serializer_class = AccountSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return with_pulse_inputs(
-            visible_accounts(self.request.user).filter(customers=self.kwargs["customer_id"])
-        )
+        accounts = visible_accounts(self.request.user)
+        # Nested: pinned under the URL's organisation. Flat (the account
+        # page's /accounts/<id>/): the account's own visibility is the rule.
+        if "customer_id" in self.kwargs:
+            accounts = accounts.filter(customers=self.kwargs["customer_id"])
+        # SOC2:AUTH-02 either route reads only an account the viewer may open
+        return with_pulse_inputs(accounts)
 
     def perform_update(self, serializer):
         previous_owner = serializer.instance.owner
@@ -1161,7 +1168,9 @@ class AccountTaskListView(generics.ListCreateAPIView):
     — every account-level Task for one Account, scoped to both its
     customer_id and the caller's own organisation. Same reasoning as
     AccountActivityListView. Powers ActivityFeed's "Tasks" filter on
-    the standalone Account page."""
+    the standalone Account page.
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]
@@ -1170,18 +1179,14 @@ class AccountTaskListView(generics.ListCreateAPIView):
     def get_queryset(self):
         from .personal import visible_tasks
 
-        account = get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        account = get_url_account(self.request, self.kwargs)
         # SOC2:AUTH-02 a task is its creator's, its assignee's and their chains'
         return visible_tasks(
             self.request.user, account.tasks.select_related("assignee", "created_by")
         )
 
     def perform_create(self, serializer):
-        account = get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        account = get_url_account(self.request, self.kwargs)
         _create_task(serializer, self.request.user, account=account)
 
 
@@ -1311,7 +1316,9 @@ class AccountNoteListView(generics.ListCreateAPIView):
     — every account-level Note for one Account, scoped to both its
     customer_id and the caller's own organisation. Same reasoning as
     AccountActivityListView. Powers ActivityFeed's "Notes" filter on
-    the standalone Account page."""
+    the standalone Account page.
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     serializer_class = NoteSerializer
     permission_classes = [IsAuthenticated]
@@ -1320,16 +1327,12 @@ class AccountNoteListView(generics.ListCreateAPIView):
     def get_queryset(self):
         from .personal import visible_notes
 
-        account = get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        account = get_url_account(self.request, self.kwargs)
         # SOC2:AUTH-02 a note is its author's and their chain's
         return visible_notes(self.request.user, account.notes.select_related("author"))
 
     def perform_create(self, serializer):
-        account = get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        account = get_url_account(self.request, self.kwargs)
         _create_note(serializer, self.request.user, account=account)
 
 
@@ -1499,16 +1502,16 @@ class AccountContactListView(ContactCompanyVisibilityMixin, generics.ListCreateA
     one to it (POST), scoped to both its customer_id and the caller's
     own organisation. Same reasoning as AccountActivityListView/
     AccountListCreateView. Powers the standalone Account page's own
-    Contacts tab."""
+    Contacts tab.
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     serializer_class = ContactSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
     def get_account(self):
-        return get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        return get_url_account(self.request, self.kwargs)
 
     def get_queryset(self):
         # SOC2:AUTH-02 a call is the caller's to count under its own company's
@@ -1729,16 +1732,16 @@ class AccountOpportunityListView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/opportunities/
     — every account-level Opportunity for one Account (GET), or adds a
     new one to it (POST); `account` taken from the URL. Same reasoning
-    as AccountContactListView."""
+    as AccountContactListView.
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     serializer_class = OpportunitySerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
     def get_account(self):
-        return get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        return get_url_account(self.request, self.kwargs)
 
     def get_queryset(self):
         return self.get_account().opportunities.filter(pipeline_visible_q(self.request.user))
@@ -1853,16 +1856,16 @@ class AccountRiskListView(generics.ListCreateAPIView):
     """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/risks/
     — every account-level Risk for one Account (GET), or adds a new one
     to it (POST); `account` taken from the URL. Same reasoning as
-    AccountOpportunityListView."""
+    AccountOpportunityListView.
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     serializer_class = RiskSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
     def get_account(self):
-        return get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        return get_url_account(self.request, self.kwargs)
 
     def get_queryset(self):
         return self.get_account().risks.filter(pipeline_visible_q(self.request.user))
@@ -1993,16 +1996,16 @@ class AccountSurveyListView(generics.ListCreateAPIView):
     — every account-level Survey for one Account (GET), or adds a new
     one to it (POST); `account` taken from the URL. Same reasoning as
     AccountOpportunityListView. Rejects survey_type=CES — see
-    _reject_ces_for_account's own docstring."""
+    _reject_ces_for_account's own docstring.
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     serializer_class = SurveySerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
     def get_account(self):
-        return get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        return get_url_account(self.request, self.kwargs)
 
     def get_queryset(self):
         return self.get_account().surveys.all()
@@ -2882,12 +2885,12 @@ class CustomerFileListView(_FileListView):
 
 
 class AccountFileListView(_FileListView):
-    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/files/."""
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/files/.
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     def _parent(self):
-        return None, get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        return None, get_url_account(self.request, self.kwargs)
 
 
 def _visible_attachment(request, pk):
@@ -3062,9 +3065,9 @@ class CustomerCallListView(_CallListView):
 
 
 class AccountCallListView(_CallListView):
-    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/calls/."""
+    """GET/POST /api/v1/customers/<customer_id>/accounts/<account_id>/calls/.
+    Also mounted flat at `/api/v1/accounts/<id>/…` for the account page
+    (`get_url_account`)."""
 
     def _parent(self):
-        return None, get_visible_account(
-            self.request, self.kwargs["customer_id"], self.kwargs["account_id"]
-        )
+        return None, get_url_account(self.request, self.kwargs)

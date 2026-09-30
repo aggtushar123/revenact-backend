@@ -1226,6 +1226,38 @@ class AccountDetailTests(APITestCase):
         self.account.refresh_from_db()
         self.assertEqual(self.account.name, "North America")
 
+    def test_customers_field_lists_only_organisations_the_viewer_may_open(self):
+        # The account is shared by two organisations; the viewer owns one
+        # (Globex) but not the other (Initech, owned by a colleague with no
+        # org-chart relationship to the viewer) — so AccountSerializer.
+        # get_customers must hide the one they can't open. The viewer owns
+        # Globex itself, not the account (owning the account would make
+        # every one of its parent organisations visible too — see
+        # scoping.visible_customers' own "reach in both directions" rule —
+        # which is not what this test means to exercise).
+        colleague = User.objects.create_user(
+            email="colleague@acme.io",
+            password="supersecret1",
+            name="Colleague",
+            organisation=self.org,
+        )
+        initech = Customer.objects.create(organisation=self.org, name="Initech", owner=colleague)
+        self.account.customers.add(initech)
+        viewer = User.objects.create_user(
+            email="viewer@acme.io",
+            password="supersecret1",
+            name="Viewer",
+            organisation=self.org,
+        )
+        self.customer.owner = viewer
+        self.customer.save(update_fields=["owner"])
+        self.client.force_authenticate(viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["customers"], [{"id": self.customer.id, "name": "Globex"}])
+
 
 class CustomerActivityListTests(APITestCase):
     def setUp(self):

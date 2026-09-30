@@ -28,7 +28,7 @@ from .models import (
     Ticket,
     ai_pulse_category,
 )
-from .scoping import visible_children_q
+from .scoping import visible_children_q, visible_customers
 
 # Reverse of Customer.AI_PULSE_THRESHOLDS: the value a category is written as
 # when a client sends the category instead of the number. Each one round-trips
@@ -674,7 +674,27 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
         read_only_fields = ["created_at", "updated_at", "csm_pulse_modified_at"]
 
     def get_customers(self, obj):
-        return [{"id": c.id, "name": c.name} for c in obj.customers.all()]
+        # The flat account-page route (services/account_story/urls.py) widens
+        # who can read this beyond a viewer who already opened one of these
+        # Customers via the nested route, so an organisation the viewer may
+        # not open must not leak here either.
+        # SOC2:AUTH-02
+        visible_ids = self._visible_customer_ids()
+        return [{"id": c.id, "name": c.name} for c in obj.customers.all() if c.id in visible_ids]
+
+    def _visible_customer_ids(self):
+        # Memoised on the serializer's own context: DRF reuses one child
+        # instance (and its context dict) across every row of a list
+        # response, so this is one query for the whole page rather than
+        # one per Account — `obj.customers.all()` above then reads from
+        # AccountListView's own `.prefetch_related("customers")` instead
+        # of issuing a query of its own.
+        cache = self.context
+        if "visible_customer_ids" not in cache:
+            cache["visible_customer_ids"] = set(
+                visible_customers(cache["request"].user).values_list("id", flat=True)
+            )
+        return cache["visible_customer_ids"]
 
     def get_account_pulse(self, obj):
         return obj.account_pulse().as_payload()

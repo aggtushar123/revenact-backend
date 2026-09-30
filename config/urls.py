@@ -203,6 +203,10 @@ urlpatterns = [
     # services/accounts_portfolio. None of its routes is "" or "stats/", so
     # both exact paths still resolve.
     path("api/v1/accounts/", include("services.accounts_portfolio.urls")),
+    # The account page's own routes (/accounts/:id): its story and its tabs,
+    # keyed by the account alone — see services/account_story/urls.py. None
+    # of its routes is "" or "stats/", so both exact paths below still resolve.
+    path("api/v1/accounts/", include("services.account_story.urls")),
     path("api/v1/accounts/stats/", AccountStatsView.as_view(), name="account-stats"),
     path("api/v1/accounts/", AccountListView.as_view(), name="account-list"),
     # Task, same top-level-prefix reasoning as Contact/Opportunity/Risk
