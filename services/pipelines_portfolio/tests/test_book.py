@@ -316,6 +316,34 @@ class FilterOptionTests(PipelineFixture):
         owners = filter_options(self.admin, OPPORTUNITIES)["owners"]
         self.assertNotIn("Gus Globex", [owner["name"] for owner in owners])
 
+    def test_rows_owned_outside_the_tenant_are_offered_as_not_in_your_book_with_a_count(self):
+        stranger = User.objects.create_user(
+            email="gus@globex.io",
+            password="supersecret1",
+            name="Gus Globex",
+            organisation=self.other_org,
+            role=User.Role.CSM,
+        )
+        odd = self.account("Odd import", owner=stranger)
+        unowned = self.account("Unowned", owner=None)
+        self.opportunity("On Pizza Hut")
+        self.opportunity("On odd", account=odd)
+        self.opportunity("Also on odd", account=odd, department="")
+        self.opportunity("On unowned", account=unowned)
+        self.assertEqual(
+            filter_options(self.admin, OPPORTUNITIES)["owners"],
+            [
+                {"value": str(self.csm.pk), "name": "Carl CSM"},
+                {"value": "outside", "name": "Not in your book", "count": 2},
+                {"value": "unassigned", "name": "Unassigned"},
+            ],
+        )
+
+    def test_no_outside_option_when_every_owner_is_in_the_tenant(self):
+        self.opportunity("On Pizza Hut")
+        owners = filter_options(self.admin, OPPORTUNITIES)["owners"]
+        self.assertNotIn("outside", [owner["value"] for owner in owners])
+
 
 class QueryCountTests(PipelineFixture):
     """The book and its options cost the same number of queries at any size.
