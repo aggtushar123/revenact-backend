@@ -9,7 +9,9 @@ Adding a surface means one row here, a purpose in `usage.PURPOSES` and a
 `Skill` in `skills.py` (tests fail otherwise), and a grounding that fills
 `Grounding.customer_ids`, the snapshot a shared reader is checked against
 (`views._reply_readable_by`); without it the surface's replies are withheld
-from mentioned-only readers.
+from mentioned-only readers. For the `accounts` surface `customer_ids` holds
+the organisations the digest names (and the organisation filter), while every
+account it covers is recorded in `Grounding.records`.
 """
 
 from collections.abc import Callable
@@ -17,6 +19,8 @@ from dataclasses import dataclass
 
 from rest_framework import serializers
 
+from .accounts_context import AccountsContextSerializer
+from .accounts_grounding import accounts_system_prompt, build_accounts_grounding
 from .contacts_context import ContactsContextSerializer
 from .contacts_grounding import build_contacts_grounding, contacts_system_prompt
 from .dashboard_context import DashboardContextSerializer
@@ -55,6 +59,12 @@ SURFACES = {
         ground=build_contacts_grounding,
         system_prompt=contacts_system_prompt,
         purpose="contacts",
+    ),
+    "accounts": Surface(
+        serializer=AccountsContextSerializer,
+        ground=build_accounts_grounding,
+        system_prompt=accounts_system_prompt,
+        purpose="accounts",
     ),
 }
 

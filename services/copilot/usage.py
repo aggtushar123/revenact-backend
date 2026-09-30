@@ -18,6 +18,7 @@ PURPOSES = {
     "dashboard": "Ask Revenact on the Dashboard",
     "organizations": "Ask Revenact on Organizations",
     "contacts": "Ask Revenact on Contacts",
+    "accounts": "Ask Revenact on Accounts",
     "headlines": "Account headlines",
     "classification": "Interaction classifier",
     "brief": "Management brief",
