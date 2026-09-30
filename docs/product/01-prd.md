@@ -158,7 +158,7 @@ Legend: **Built** end to end; **Partial** works but a named piece is missing;
 | Files | Built | Closed type list, magic-byte check, 25 MB cap, authenticated download only. An organisation's list includes its visible accounts' files, tagged |
 | CallSense | Built | Log a call, attach a transcript, model writes the summary, call is classified immediately from its summary (a digest of the whole transcript), else its transcript, else its title. A call with nothing to read is "not analysable", never guessed. An organisation's list includes its visible accounts' calls, tagged |
 | Custom objects and fields | Built | Definitions, fields, records; records scoped to a customer or account |
-| Pipelines (opportunities and risks) | Built | Kanban with drag to stage; department and role scoped |
+| Pipelines (opportunities and risks) | Built | Kanban with drag to stage; department and role scoped. One book of opportunities or risks across organisations and accounts (backend, 2026-09-30): tiles (open, closing or due in 30/90 days, overdue, won or mitigated this quarter, a stage strip), group (stage, close month, organisation or account, owner, department, priority), five sorts, filters and cursor pages with Board columns; CSV export and bulk stage, priority, department and date, all twice filtered (openable parent, readable department). Expected close / due by dates, a Closed Lost stage, audited writes; `companies` names only organisations the viewer may open |
 | Surveys (NPS, CSAT, CES) | Partial | Logged and scored by hand; filter by organisation; no email delivery, no multi-question surveys |
 | CSV import of organisations | Built | Column mapping UI under Settings, Entity Uploads |
 | Canvas (stakeholder map) | Built | React Flow, contacts as nodes, labelled relationships |
@@ -326,3 +326,4 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-29 | Accounts portfolio (backend): portfolio endpoint, export, bulk edit |
 | 2026-09-30 | Account page (backend): `GET /accounts/<id>/story/` and the account-keyed tab routes |
 | 2026-09-30 | Ask Revenact on Accounts (backend) |
+| 2026-09-30 | Pipelines, delivery 1 (backend): dates, Closed Lost, stage clock, the pipelines book, export, bulk edit, audited writes, `companies` trimmed |

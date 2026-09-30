@@ -207,8 +207,8 @@ available in `taxonomy.py`.
 | `Call` | `title`, `host_name`, `occurred_at`, `duration_minutes`, `summary`, `connector`, `logged_by`, `transcript` (1:1 Attachment), `recording_url`, `participants` (M2M Contact), `not_analysable` (read with nothing to judge; `ai_classified_at` set, `sentiment` not evidence). `analysis` (a property on every `AIClassified`) reads `pending`, `not_analysable` or `analysed`. The classifier reads the title, then the summary, else the transcript (`calls.call_text`) |
 | `CalendarEvent` | `title`, `description`, `type`, `event_date`, `start_time`, `end_time`, `attendee_count` |
 | `Contact` | `name`, `role` (8 kinds), `email`, `phone`, `status`, `sentiment`, `sentiment_source` (manual or computed), `sentiment_evidence` JSON (counts only, never text), `sentiment_computed_at`, `last_contacted_at` |
-| `Opportunity` | `title`, `mrr`, `stage` (discovery, qualification, solution_validation, proposal_price_review, negotiation, closed_won), `priority`, `department` |
-| `Risk` | Same shape; `stage` is open, mitigated, realised, abandoned |
+| `Opportunity` | `title`, `mrr` (workspace currency), `stage` (discovery, qualification, solution_validation, proposal_price_review, negotiation, closed_won, closed_lost), `priority`, `department`, `expected_close` (optional), `stage_changed_at` (kept by `StageClockMixin`, backfilled to `created_at`) |
+| `Risk` | Same shape; `stage` is open, mitigated, realised, abandoned; `due_by` instead of `expected_close` |
 | `Survey` | `survey_type` (nps, csat, ces), `status`, `score`, `sent_at`, `responded_at`. CES is customer-only, enforced in views |
 | `Canvas` | `name`, `nodes`, `edges` JSON, for the React Flow stakeholder map |
 | `Headline` | `kind` (summary or headline), `title`, `content`, `status`, period bounds, `data_sources`, `generated_at`. A check constraint forbids a status on a summary |
@@ -360,6 +360,12 @@ annotation), `HealthSnapshot` (account-level), `Ticket` and the `Account.custome
 visible, filtered accounts on every request, and `shape.py` orders, groups and totals it in Python. Bulk edits write
 `Account` through `AccountSerializer`.
 
+### `pipelines_portfolio`
+
+No model. `services.pipelines_portfolio.book.load_book` reads `Opportunity` or `Risk` (both parents and their owners
+joined) and the `Account.customers` link table for the viewer's readable, filtered items on every request, and
+`shape.py` orders, groups and totals them in Python. Bulk edits write through `OpportunitySerializer`/`RiskSerializer`.
+
 ### `account_story`
 
 No model. The account page's Story reads the organisation story's sources (`Activity`, `Call`, `Email`,
@@ -399,7 +405,7 @@ call the matching helper.
 | Tickets | Own department plus undeparted tickets; Leadership and `view_all_accounts` see all | same |
 | Synced emails | Mailbox owner and their chain; rows with no mailbox owner are visible to all | `services/mail/visibility.py` |
 | A contact's history (`/contacts/<id>/history/`) | The contact must be visible; then each call, email and ticket by its own company (`visible_children_q`) and its own rule (mail, tickets above), inside the contact's own tenant | `services/customers/contact_history.py` |
-| Opportunities and risks | Own department plus undeparted; Leadership and `view_all_accounts` see all | `scoping.pipeline_visible_q` |
+| Opportunities and risks | The parent organisation or account must be openable (`visible_children_q`), then own department plus undeparted; Leadership and `view_all_accounts` see every department. The Pipelines book applies both once (`pipelines_portfolio.book.scope`); `companies` names only openable organisations | `scoping.pipeline_visible_q` |
 | Contributions and questions | Self, subtree, same function, ancestors, plus anything addressed to you | `services/knowledge/views.py` with `services/accounts/hierarchy.py` |
 | Conversations and sessions | Owner, or an accepted and active participant. The same function gates the WebSocket | `services/copilot/views.conversations_visible_to` |
 | Copilot replies | A reply that cites records outside the viewer's scope is withheld entirely, not trimmed | `copilot.views._reply_readable_by` |

@@ -120,14 +120,14 @@ worth knowing:
 | `services/copilot/anthropic_client.py` | The one place a model is called |
 | `services/copilot/retrieval.py`, `embeddings.py`, `context.py` | Grounding, retrieval and citations |
 | `services/copilot/dashboard_grounding.py`, `organizations_grounding.py`, `contacts_grounding.py`, `accounts_grounding.py`, `account_detail_grounding.py` | The Ask rails: each recomputes the asker's own screen server-side and fences it as data, never instructions, for the model. Dashboard is asked per area/view; Organizations is asked from the portfolio (`list`/`board`) or one organisation's page (`detail`); Contacts is asked from the filtered list (`list`, at most 50 people) or one person's profile (`person`, their newest 20 calls/emails/tickets the asker may read). Accounts is asked from the portfolio (`list`/`board`, over `services/accounts_portfolio`) or one account's page (`detail`, the organisation story engine over `AccountScope`) |
-| `services/organizations/`, `services/accounts_portfolio/` | The two portfolios (Organizations, Accounts): each loads the viewer's visible book in a fixed number of queries and computes row signals with the dashboard's code; the account one imports the organisation one's generic helpers (filters, signal, snapshots, sparkline, keyset cursor, CSV cell) and keeps the account rules its own |
+| `services/organizations/`, `services/accounts_portfolio/`, `services/pipelines_portfolio/` | The three portfolios (Organizations, Accounts, Pipelines): each loads the viewer's visible book in a fixed number of queries and computes row signals in Python; the account and pipeline ones import the organisation one's generic helpers (keyset cursor, section order, CSV cell, bulk reasons) and keep their own rules. The pipeline one serves both kinds through one `Kind` object and applies the twice-filter (openable parent, readable department) once, in `book.scope` |
 | `services/account_story/` | The account page: `AccountScope` (one account, `visible_accounts`) and its Needs attention over the organisation story's engine (`services/organizations/story/`), and the flat `/accounts/<id>/…` routes that mount the nested account views (`scoping.get_url_account`) |
 
 ### 2.5 API conventions
 
 - Base path `/api/v1/`, JSON only, no form-encoded bodies.
 - Pagination: DRF `PageNumberPagination`, 25 per page, `{count, next, previous, results}`.
-  Board-style endpoints (opportunities, risks, health) are deliberately unpaginated.
+  Board-style endpoints (opportunities, risks, health) are deliberately unpaginated; the Pipelines page itself reads the cursor-paged `/pipelines/{kind}/` book, and the unpaginated lists remain for the Deals & risks tabs.
 - Errors: DRF shape, `{"detail": "..."}` or `{"field": ["..."]}`.
 - Identifiers: `BigAutoField` integers.
 - Timestamps: ISO 8601 UTC, `USE_TZ = True`.
