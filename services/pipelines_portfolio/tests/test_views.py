@@ -32,6 +32,14 @@ class PipelineEndpointTests(PipelineFixture):
         for kind in ("opportunities", "risks"):
             self.assertEqual(APIClient().get(URL.format(kind)).status_code, 401)
 
+    def test_only_get_is_allowed(self):
+        api = APIClient()
+        api.force_authenticate(self.csm)
+        url = URL.format("opportunities")
+        self.assertEqual(api.post(url, {}).status_code, 405)
+        self.assertEqual(api.patch(url, {}).status_code, 405)
+        self.assertEqual(api.delete(url).status_code, 405)
+
     def test_routes(self):
         self.assertIs(resolve(URL.format("opportunities")).func.view_class, PipelineView)
         self.assertIs(resolve(URL.format("risks")).func.view_class, PipelineView)
@@ -113,6 +121,11 @@ class PipelineEndpointTests(PipelineFixture):
         theirs = self.opportunity("Sales'", department=User.Function.SALES)
         body = self.get(ids=str(theirs.pk), department="sales")
         self.assertEqual((body["count"], body["summary"]["items"]), (0, 0))
+        # Positive control: Leadership reads every department, so the same
+        # query under the same ids filter is not narrowing to nothing by
+        # some other mistake — it finds the item.
+        admin_body = self.get(self.admin, ids=str(theirs.pk), department="sales")
+        self.assertEqual((admin_body["count"], admin_body["summary"]["items"]), (1, 1))
 
     def test_an_organisation_filter_the_viewer_cannot_open_names_nothing(self):
         self.opportunity("On Taco Bell", customer=self.taco)
@@ -229,11 +242,14 @@ class PipelineQueryCountTests(PipelineFixture):
       4. the items, both parents and their owners joined
       5. the openable organisations of the account-level items (skipped when
          the filtered set has none — every book below has some)
-      6-8. the filter options: organisations, accounts, owners and departments
+      6. `filter_options`' parents: the items' owners and departments, one
+         query (`items.values_list(..., "department").distinct()`)
+      7. `filter_options`' organisations
+      8. `filter_options`' accounts
     Nine for a CSM (measured): the same, plus one step of the org-chart walk
-    (`accounts_user WHERE reports_to_id IN (…)`) — one query per level of
-    reports under the viewer, so it grows with the org chart's depth, never
-    with the book. Carl has no reports: one level, one query.
+    (`accounts_user WHERE reports_to_id IN (…)`) between 3 and 4 — one query
+    per level of reports under the viewer, so it grows with the org chart's
+    depth, never with the book. Carl has no reports: one level, one query.
     If the pinned number is ever wrong, print `[q["sql"] for q in
     ctx.captured_queries]`: every query must be one of these kinds. Only a
     miscount of the fixed identity lookups (1-3) may change `EXPECTED`; any

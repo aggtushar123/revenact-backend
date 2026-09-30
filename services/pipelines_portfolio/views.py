@@ -3,10 +3,15 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core import audit
+from services.organizations.export import CSVRenderer
+
 from .book import filter_options, load_book
+from .export import table
 from .kinds import KINDS
 from .params import parse_params
-from .shape import build_listing
+from .rows import row_payload
+from .shape import build_listing, select
 
 
 class PipelineView(APIView):
@@ -30,3 +35,39 @@ class PipelineView(APIView):
         book = load_book(request.user, kind, params, today=today)
         filters = filter_options(request.user, kind)
         return Response(build_listing(book, params, filters=filters, today=today))
+
+
+class PipelineExportView(APIView):
+    """GET /api/v1/pipelines/<kind>/export.csv — the same query as the list,
+    every row (no pagination; the chosen stages and `group_value` apply), in
+    list order, with every field. Audited: this is confidential data leaving
+    the app."""
+
+    # SOC2:AUTH-02 authentication only; `load_book` (book.py) does the
+    # record-visibility checks — the export is the same twice-filtered set
+    # the list endpoint returns.
+    permission_classes = [IsAuthenticated]
+    renderer_classes = [CSVRenderer]
+
+    def get(self, request, kind_key):
+        kind = KINDS[kind_key]
+        params = parse_params(request.query_params, kind)
+        today = timezone.localdate()
+        book = load_book(request.user, kind, params, today=today)
+        entries, _groups = select(book, params)
+        audit.record(  # SOC2:LOG-01
+            "pipelines.exported",
+            request=request,
+            # Parameter names only: a search term is the user's own words.
+            metadata={
+                "kind": kind.key,
+                "count": len(entries),
+                "params": sorted(request.query_params.keys()),
+            },
+        )
+        rows = [row_payload(entry, kind) for entry in entries]
+        response = Response(table(rows, kind=kind, currency=book.organisation.currency))
+        response["Content-Disposition"] = (
+            f'attachment; filename="{kind.key}-{today.isoformat()}.csv"'
+        )
+        return response

@@ -7,6 +7,15 @@ from . import views
 from .kinds import KINDS
 
 urlpatterns = [
-    path(f"{key}/", views.PipelineView.as_view(), {"kind_key": key}, name=f"pipelines-{key}")
+    route
     for key in KINDS
+    for route in (
+        path(
+            f"{key}/export.csv",
+            views.PipelineExportView.as_view(),
+            {"kind_key": key},
+            name=f"pipelines-{key}-export",
+        ),
+        path(f"{key}/", views.PipelineView.as_view(), {"kind_key": key}, name=f"pipelines-{key}"),
+    )
 ]
