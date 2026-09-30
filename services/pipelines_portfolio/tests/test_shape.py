@@ -5,9 +5,9 @@ from django.http import QueryDict
 
 from services.accounts.models import User
 from services.pipelines_portfolio.book import load_book
-from services.pipelines_portfolio.kinds import OPPORTUNITIES
+from services.pipelines_portfolio.kinds import OPPORTUNITIES, RISKS
 from services.pipelines_portfolio.params import parse_params
-from services.pipelines_portfolio.shape import paginate, select
+from services.pipelines_portfolio.shape import filter_fingerprint, paginate, select
 from services.pipelines_portfolio.tests.fixtures import PipelineFixture
 
 EVERY_STAGE = "stage=" + ",".join(OPPORTUNITIES.stages)
@@ -164,6 +164,14 @@ class ShapeTests(PipelineFixture):
         other = parse_params(QueryDict(f"limit=2&priority=medium&cursor={cursor}"), OPPORTUNITIES)
         page, _next = paginate(select(book, other)[0], params=other, kind=OPPORTUNITIES)
         self.assertEqual([entry.item.title for entry in page], ["Deal 3", "Deal 2"])
+
+    def test_the_same_params_on_the_other_kind_fingerprint_differently(self):
+        # One params object for both kinds, so only the kind can tell them
+        # apart: a cursor cut on Opportunities never reads on Risks.
+        params = parse_params(QueryDict("limit=2&sort=title&group=stage"), OPPORTUNITIES)
+        self.assertNotEqual(
+            filter_fingerprint(params, OPPORTUNITIES), filter_fingerprint(params, RISKS)
+        )
 
     def test_a_malformed_cursor_reads_the_first_page(self):
         for i in range(3):

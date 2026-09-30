@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from types import SimpleNamespace
 
-from django.db.models import Count, Q
+from django.db.models import Q
 
 from services.accounts.models import User
 from services.accounts_portfolio.book import linked_organisations
@@ -245,12 +245,12 @@ def load_book(user, kind: Kind, params: PipelineParams, *, today):
 
 def filter_options(user, kind: Kind):
     """The filter sheet's choices, scoped exactly as the rows are: the
-        organisations and accounts the viewer may open that hold one of their
-        readable items (an organisation also through its accounts' items), the
-        owners of those items' parents, and the departments present. Stages and
-        priorities are the kind's fixed lists. Rows whose parent's owner is outside
-    the viewer's organisation are offered as one "Not in your book" option with
-    how many there are (every stage), never by name. Three queries."""
+    organisations and accounts the viewer may open that hold one of their
+    readable items (an organisation also through its accounts' items), the
+    owners of those items' parents, and the departments present. Stages and
+    priorities are the kind's fixed lists. Items whose parent's owner is
+    outside the viewer's organisation are offered as one "Not in your book"
+    option, never by name. Three queries."""
     items = scope(user, kind).order_by()
     # SOC2:AUTH-02 an organisation is offered only if the viewer may open it
     organisations = (
@@ -267,7 +267,7 @@ def filter_options(user, kind: Kind):
         .order_by("name", "id")
         .values_list("id", "name")
     )
-    columns = (
+    parents = items.values_list(
         "customer_id",
         "customer__owner_id",
         "customer__owner__name",
@@ -276,10 +276,9 @@ def filter_options(user, kind: Kind):
         "account__owner__name",
         "account__owner__organisation_id",
         "department",
-    )
-    parents = items.values(*columns).annotate(items=Count("pk")).values_list(*columns, "items")
-    owners, unassigned, outside, departments = {}, False, 0, set()
-    for customer_id, *owner_columns, department, count in parents:
+    ).distinct()
+    owners, unassigned, outside, departments = {}, False, False, set()
+    for customer_id, *owner_columns, department in parents:
         departments.add(department)
         on_account = customer_id is None
         pk, name, organisation_id = owner_columns[3:] if on_account else owner_columns[:3]
@@ -290,14 +289,14 @@ def filter_options(user, kind: Kind):
         else:
             # SOC2:AUTH-02 owners only from the viewer's own organisation: a
             # bad import never puts another tenant's name in this menu, only
-            # how many rows read "Not in your book"
-            outside += count
+            # the "Not in your book" bucket
+            outside = True
     named = sorted(owners.items(), key=lambda row: (row[1] or "").casefold())
     return {
         "organisations": [{"value": str(pk), "name": name} for pk, name in organisations],
         "accounts": [{"value": str(pk), "name": name} for pk, name in accounts],
         "owners": [{"value": str(pk), "name": name} for pk, name in named]
-        + ([{"value": OUTSIDE, "name": OUTSIDE_OWNER.name, "count": outside}] if outside else [])
+        + ([{"value": OUTSIDE, "name": OUTSIDE_OWNER.name}] if outside else [])
         + ([{"value": UNASSIGNED, "name": "Unassigned"}] if unassigned else []),
         "stages": [{"value": value, "name": label} for value, label in kind.model.Stage.choices],
         "priorities": [

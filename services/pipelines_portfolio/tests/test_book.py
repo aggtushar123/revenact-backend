@@ -316,7 +316,7 @@ class FilterOptionTests(PipelineFixture):
         owners = filter_options(self.admin, OPPORTUNITIES)["owners"]
         self.assertNotIn("Gus Globex", [owner["name"] for owner in owners])
 
-    def test_rows_owned_outside_the_tenant_are_offered_as_not_in_your_book_with_a_count(self):
+    def test_rows_owned_outside_the_tenant_are_offered_as_not_in_your_book(self):
         stranger = User.objects.create_user(
             email="gus@globex.io",
             password="supersecret1",
@@ -334,7 +334,7 @@ class FilterOptionTests(PipelineFixture):
             filter_options(self.admin, OPPORTUNITIES)["owners"],
             [
                 {"value": str(self.csm.pk), "name": "Carl CSM"},
-                {"value": "outside", "name": "Not in your book", "count": 2},
+                {"value": "outside", "name": "Not in your book"},
                 {"value": "unassigned", "name": "Unassigned"},
             ],
         )
