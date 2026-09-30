@@ -322,8 +322,5 @@ set the figure itself counts and the viewer's own book.
 | 2026-09-28 | Ask Revenact on the organisation page (backend) |
 | 2026-09-28 | Contacts, delivery 1 (backend): every call analysed or marked not analysable, nightly classification, contact history, contacts list filters and summary |
 | 2026-09-28 | Ask Revenact on Contacts (backend) |
-<<<<<<< HEAD
 | 2026-09-29 | Accounts portfolio (backend): portfolio endpoint, export, bulk edit |
-=======
 | 2026-09-30 | Account page (backend): `GET /accounts/<id>/story/` and the account-keyed tab routes |
->>>>>>> 9fbebfc (feat(accounts): GET /accounts/<id>/story/, the account page's story)

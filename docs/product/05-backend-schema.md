@@ -353,20 +353,18 @@ The organisation page's Story (`services.organizations.story`) has no model eith
 visible accounts, each under its own record rule, plus `Question` and `AnomalyEvidence` for the Needs attention
 block.
 
-<<<<<<< HEAD
 ### `accounts_portfolio`
 
 No model. `services.accounts_portfolio.book.load_portfolio` reads `Account` (with the account last-touch
 annotation), `HealthSnapshot` (account-level), `Ticket` and the `Account.customers` link table for the viewer's
 visible, filtered accounts on every request, and `shape.py` orders, groups and totals it in Python. Bulk edits write
 `Account` through `AccountSerializer`.
-=======
+
 ### `account_story`
 
 No model. The account page's Story reads the organisation story's sources (`Activity`, `Call`, `Email`,
 `CalendarEvent`, `Ticket`, `Task`, `Note`, `Survey`, `HealthSnapshot`) filed on one visible account, each under
 its own record rule, and `Account.renewal_date` for Needs attention.
->>>>>>> 9fbebfc (feat(accounts): GET /accounts/<id>/story/, the account page's story)
 
 ---
 
