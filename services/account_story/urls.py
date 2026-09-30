@@ -9,8 +9,11 @@ from django.urls import path
 
 from services.customers import views as customers
 
+from . import views
+
 urlpatterns = [
     path("<int:pk>/", customers.AccountDetailView.as_view(), name="account-page-detail"),
+    path("<int:pk>/story/", views.AccountStoryView.as_view(), name="account-page-story"),
     path(
         "<int:account_id>/contacts/",
         customers.AccountContactListView.as_view(),

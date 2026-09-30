@@ -353,12 +353,20 @@ The organisation page's Story (`services.organizations.story`) has no model eith
 visible accounts, each under its own record rule, plus `Question` and `AnomalyEvidence` for the Needs attention
 block.
 
+<<<<<<< HEAD
 ### `accounts_portfolio`
 
 No model. `services.accounts_portfolio.book.load_portfolio` reads `Account` (with the account last-touch
 annotation), `HealthSnapshot` (account-level), `Ticket` and the `Account.customers` link table for the viewer's
 visible, filtered accounts on every request, and `shape.py` orders, groups and totals it in Python. Bulk edits write
 `Account` through `AccountSerializer`.
+=======
+### `account_story`
+
+No model. The account page's Story reads the organisation story's sources (`Activity`, `Call`, `Email`,
+`CalendarEvent`, `Ticket`, `Task`, `Note`, `Survey`, `HealthSnapshot`) filed on one visible account, each under
+its own record rule, and `Account.renewal_date` for Needs attention.
+>>>>>>> 9fbebfc (feat(accounts): GET /accounts/<id>/story/, the account page's story)
 
 ---
 
@@ -387,6 +395,7 @@ call the matching helper.
 |---|---|---|
 | Customers and accounts | Own organisation, then: `view_all_accounts` sees all; otherwise owned, owned by a report, account-owned, unowned, function-owned, a customer you were asked about or answered for, or one you wrote about | `services/customers/scoping.py` |
 | Organisation roll-ups (`/customers/<id>/…` contacts, opportunities, risks, surveys, canvases, files, calls; `/surveys/?customer=`) | The organisation's own records, plus those on its accounts in `visible_accounts`: being able to open the organisation is not enough for an account-level record | `scoping.customer_rollup_q` |
+| The account page (`/accounts/<id>/story/` and `/accounts/<id>/…`) | The account in `visible_accounts`, else 404 whether or not it exists; then each record's own rule (rows below) | `services/account_story/scope.py`, `scoping.get_url_account` |
 | Notes | Author and their management chain; authorless seeded rows are visible to all | `services/customers/personal.py` |
 | Tasks | Creator, assignee and both chains; authorless seeded rows visible to all | same |
 | Tickets | Own department plus undeparted tickets; Leadership and `view_all_accounts` see all | same |
