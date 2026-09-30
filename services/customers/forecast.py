@@ -66,6 +66,7 @@ DEFAULT_HORIZON_DAYS = 365
 #: Probability an open opportunity closes, by sales stage. The ordinary ladder
 #: — see the module docstring on why these are an assumption rather than a
 #: measurement. Closed Won is certain by definition and carries no weighting.
+#: Closed Lost is not here: `counted_opportunities` leaves it out entirely.
 STAGE_PROBABILITY = {
     Opportunity.Stage.DISCOVERY: 0.1,
     Opportunity.Stage.QUALIFICATION: 0.2,
@@ -154,9 +155,12 @@ def readable_pipeline_q(viewer) -> Q:
 def counted_opportunities(ids, viewer):
     """Every opportunity the forecast counts for these customer ids — the one
     queryset its expansion, its stage breakdown and a Copilot reply's
-    pipeline snapshot all read, so they cannot disagree."""
+    pipeline snapshot all read, so they cannot disagree. A Closed Lost
+    opportunity is not counted anywhere: it is neither expansion nor
+    pipeline."""
     return (
         Opportunity.objects.filter(Q(customer_id__in=ids) | Q(account__customers__id__in=ids))
+        .exclude(stage=Opportunity.Stage.CLOSED_LOST)
         .filter(readable_pipeline_q(viewer))
         .distinct()
     )
@@ -502,6 +506,7 @@ def pipeline_by_stage(customers, organisation, *, viewer):
     totals = {
         stage: {"key": stage, "name": label, "open": 0.0, "weighted": 0.0, "count": 0}
         for stage, label in Opportunity.Stage.choices
+        if stage in STAGE_PROBABILITY
     }
 
     opportunities = counted_opportunities(ids, viewer).prefetch_related("account__customers")
@@ -532,7 +537,7 @@ def pipeline_by_stage(customers, organisation, *, viewer):
             "open": round(totals[stage]["open"], 2),
             "weighted": round(totals[stage]["weighted"], 2),
         }
-        for stage, _label in Opportunity.Stage.choices
+        for stage in totals
     ]
 
 
