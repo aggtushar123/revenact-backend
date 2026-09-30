@@ -115,8 +115,9 @@ def _header(scope, account, currency):
     ]
 
 
-def _renewal(entry):
-    date, days = entry.customer.renewal_date, entry.renewal_days
+def renewal_phrase(date, days):
+    """A renewal as a portfolio row reads it, on either page: `date` is the
+    row's `renewal_date`, `days` its `entry.renewal_days`."""
     if date is None:
         return "no renewal date"
     if days < 0:
@@ -126,10 +127,16 @@ def _renewal(entry):
     return f"renews {date.isoformat()} (in {_days(days)})"
 
 
-def _organisation_lines(entry, organisation):
-    if entry is None:
-        return ["Organisation: not in the asker's portfolio (archived rows included)."]
-    customer = entry.customer
+def nps_text(record):
+    return "NPS " + ("not set" if record.nps_score is None else str(record.nps_score))
+
+
+def row_lines(record, entry, organisation, *, heading, scores):
+    """A portfolio row as a page digest reads it, shared by the organisation
+    and the account page. `record` is the row's Customer or Account and
+    `entry` its portfolio entry; `heading` opens the first line
+    ("Organisation: Pizza Hut") and `scores` follows the renewal ("NPS -20").
+    The owner is named only from the asker's organisation (`owner_name`)."""
     arr = (
         "ARR unknown (no exchange rate)"
         if entry.arr is None
@@ -143,24 +150,34 @@ def _organisation_lines(entry, organisation):
         else f"last touched {_days(entry.last_touch_days)} ago"
     )
     pulse = (
-        f"AI pulse {customer.ai_pulse_value if customer.ai_pulse_value is not None else '—'}, "
-        f"CSM pulse {customer.csm_pulse_score if customer.csm_pulse_score is not None else '—'}"
+        f"AI pulse {record.ai_pulse_value if record.ai_pulse_value is not None else '—'}, "
+        f"CSM pulse {record.csm_pulse_score if record.csm_pulse_score is not None else '—'}"
     )
     lines = [
-        f"Organisation: {customer.name}"
-        + (" (churned)" if entry.churned else "")
-        + f"; lifecycle {customer.get_lifecycle_stage_display()}; "
-        f"owner {owner_name(customer, organisation)}",
-        f"  Health {customer.health_category} ({customer.health_score}/10); "
+        f"{heading}; lifecycle {record.get_lifecycle_stage_display()}; "
+        f"owner {owner_name(record, organisation)}",
+        f"  Health {record.health_category} ({record.health_score}/10); "
         f"trend over the last months {trend}",
-        f"  {arr}; {_renewal(entry)}; NPS "
-        + ("not set" if customer.nps_score is None else str(customer.nps_score)),
+        f"  {arr}; {renewal_phrase(record.renewal_date, entry.renewal_days)}; {scores}",
         f"  Triage risk {entry.triage.score} ({factors}; {ACTION_THRESHOLD} or more needs "
         f"action now); {pulse}; {touch}",
     ]
     if entry.signal:
         lines.append(f"  Signal: {entry.signal['label']}")
     return lines
+
+
+def _organisation_lines(entry, organisation):
+    if entry is None:
+        return ["Organisation: not in the asker's portfolio (archived rows included)."]
+    customer = entry.customer
+    return row_lines(
+        customer,
+        entry,
+        organisation,
+        heading=f"Organisation: {customer.name}" + (" (churned)" if entry.churned else ""),
+        scores=nps_text(customer),
+    )
 
 
 def _attention_lines(attention):
