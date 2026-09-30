@@ -1337,6 +1337,60 @@ class AccountCustomerIdsVisibilityTests(APITestCase):
         # The submitted visible set, plus the hidden link the PATCH never mentioned.
         self.assertEqual(set(self.account.customers.all()), {self.globex, taco, self.initech})
 
+    def test_a_normal_patch_of_visible_ids_still_works_flat(self):
+        taco = Customer.objects.create(organisation=self.org, name="Taco Co", owner=self.viewer)
+
+        response = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id, taco.id]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.account.refresh_from_db()
+        # The submitted visible set, plus the hidden link the PATCH never mentioned.
+        self.assertEqual(set(self.account.customers.all()), {self.globex, taco, self.initech})
+
+    def test_a_nonexistent_id_another_tenants_org_and_a_hidden_org_are_indistinguishable(self):
+        # Same literal id reused across all three cases — the id itself is
+        # never secret (the caller chose it), so the only thing that could
+        # leak whether it "exists" is the shape of the 400 it gets back.
+        # Before the fix, a hidden/other-tenant id passed the field-level
+        # PrimaryKeyRelatedField lookup (unrestricted queryset) and only
+        # then failed validate_customer_ids with a different message than
+        # a truly nonexistent id's "Invalid pk ... does not exist."
+        probe_id = 999_001
+
+        nonexistent = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id, probe_id]}, format="json"
+        )
+        self.account.refresh_from_db()
+        unaffected = {self.globex, self.initech}
+        self.assertEqual(set(self.account.customers.all()), unaffected)
+
+        other_org = Organisation.objects.create(name="Other Org")
+        other_tenant = Customer.objects.create(
+            id=probe_id, organisation=other_org, name="Other Tenant Co"
+        )
+        other_tenant_response = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id, probe_id]}, format="json"
+        )
+        other_tenant.delete()
+        self.account.refresh_from_db()
+        self.assertEqual(set(self.account.customers.all()), unaffected)
+
+        Customer.objects.create(
+            id=probe_id, organisation=self.org, name="Hidden Co", owner=self.colleague
+        )
+        hidden_response = self.client.patch(
+            self.flat_url, {"customer_ids": [self.globex.id, probe_id]}, format="json"
+        )
+        self.account.refresh_from_db()
+        self.assertEqual(set(self.account.customers.all()), unaffected)
+
+        for response in (nonexistent, other_tenant_response, hidden_response):
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(nonexistent.data, other_tenant_response.data)
+        self.assertEqual(other_tenant_response.data, hidden_response.data)
+
 
 class CustomerActivityListTests(APITestCase):
     def setUp(self):

@@ -673,11 +673,31 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
         ]
         read_only_fields = ["created_at", "updated_at", "csm_pulse_modified_at"]
 
+    def get_fields(self):
+        # `customer_ids` must fail the same way for an id that doesn't
+        # exist and an id that exists but isn't this viewer's to see —
+        # otherwise the field-level PrimaryKeyRelatedField lookup (against
+        # every Customer) finds the hidden one, and only validate_customer_ids
+        # below rejects it, with a different message than a truly
+        # nonexistent id's "Invalid pk ... does not exist." Restricting the
+        # queryset itself here makes both cases the identical does-not-exist
+        # error. Fails closed (no queryset at all) with no request.
+        # SOC2:AUTH-02
+        fields = super().get_fields()
+        request = self.context.get("request")
+        fields["customer_ids"].child_relation.queryset = (
+            visible_customers(request.user) if request is not None else Customer.objects.none()
+        )
+        return fields
+
     def get_customers(self, obj):
-        # The flat account-page route (services/account_story/urls.py) widens
-        # who can read this beyond a viewer who already opened one of these
-        # Customers via the nested route, so an organisation the viewer may
-        # not open must not leak here either.
+        # The twice-filter: being allowed to open this Account (the view's
+        # own check, on both the nested and the flat route — neither ever
+        # required every linked organisation to be visible too) is the
+        # first filter, not the only one. Each linked organisation named
+        # here is its own record with its own visibility, so a viewer never
+        # sees the name of one they cannot open, same as any other record
+        # this Account's page surfaces.
         # SOC2:AUTH-02
         visible_ids = self._visible_customer_ids()
         return [{"id": c.id, "name": c.name} for c in obj.customers.all() if c.id in visible_ids]

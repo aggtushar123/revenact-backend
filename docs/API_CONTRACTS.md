@@ -838,20 +838,26 @@ their own rule.
    those, on Account.** An Account's own `customers` field lists only
    the linked organisations the requesting viewer may open
    (`AccountSerializer.get_customers`, filtered through
-   `visible_customers(user)`) — added when the flat `/accounts/<id>/…`
-   routes widened who can read this beyond someone who already opened
-   the account through one of its organisations; a name and an id, with
-   no ARR/health/notes attached, so a sibling organisation the viewer
-   owns nothing in and has no other reach into no longer surfaces even
-   that much. Contact/Opportunity/Risk/Survey/Canvas rows still carry
-   their own `companies` list unfiltered by default (Contact's can be
-   narrowed the same way via `ContactCompanyVisibilityMixin`'s
-   `visible_customer_ids` context key when the view passes it, e.g. the
-   Contacts page; the other four never are — filtering those would
-   blank the account page header for an account-only owner, which is
-   still the accepted trade-off there). The write side matches: a
-   `customer_ids` PATCH is validated against the same `visible_customers`
-   set (`400` on any id the caller may not open) and never removes a
+   `visible_customers(user)`). This is the twice-filter (see "Privacy"
+   above), applied one level down: being allowed to open the Account —
+   the view's own check, true on the nested route as much as the flat
+   one, neither ever required every linked organisation to be visible
+   too — is the first filter, not the only one; each linked organisation
+   named here is its own record with its own visibility, so a sibling
+   organisation the viewer owns nothing in and has no other reach into
+   doesn't surface even a name and an id here, same as any other record
+   this Account's page shows. Contact/Opportunity/Risk/Survey/Canvas rows
+   still carry their own `companies` list unfiltered by default
+   (Contact's can be narrowed the same way via
+   `ContactCompanyVisibilityMixin`'s `visible_customer_ids` context key
+   when the view passes it, e.g. the Contacts page) — a known follow-up
+   is giving Opportunity/Risk/Survey/Canvas's serializers the same
+   `visible_customer_ids`-context-key treatment as Contact's, rather than
+   a reason those four are left as they are. The write side matches: a
+   `customer_ids` PATCH's own field is scoped to `visible_customers(user)`
+   (not just same-tenant), so an id outside it is `400`, byte-identical
+   whether it belongs to another tenant, is a same-tenant organisation
+   this viewer can't open, or doesn't exist at all — and never removes a
    link the caller can't see, even when it isn't in the submitted list —
    otherwise a filtered read plus a full-replace write would let a
    viewer blind to one shared organisation silently unlink it.
@@ -1116,12 +1122,17 @@ more than one Customer — see "Known consequences" #1 above), surfaced on
 write-only `customer_ids` (a full-replace id list, optional on write).
 Both are visibility-aware: `customers` lists only the linked
 organisations the requesting viewer may open (`visible_customers`), and
-a `customer_ids` write accepts only organisations the viewer may open
-(`400` otherwise, same message whether the id belongs to another tenant
-or is simply invisible to this viewer) and never removes a link to an
-organisation the viewer can't see, even when the submitted list omits
-it — a full-replace write against a now-filtered read would otherwise
-silently unlink it. See the PATCH endpoint below.
+a `customer_ids` write accepts only organisations the viewer may open —
+its field itself is scoped to `visible_customers(user)` (not just "same
+tenant"), so an id outside it is `400 "Invalid pk … - object does not
+exist."`, byte-identical whether that id belongs to another tenant, is a
+same-tenant organisation this viewer can't open, or never existed at
+all; `validate_customer_ids` still rejects the same set as
+defence-in-depth, should a future caller ever reach it some other way —
+and never removes a link to an organisation the viewer can't see, even
+when the submitted list omits it — a full-replace write against a
+now-filtered read would otherwise silently unlink it. See the PATCH
+endpoint below.
 
 **Add/Edit Account** covers identity, ownership, lifecycle stage, and
 renewal date — same product decision as Customer's own Add/Edit form.
@@ -1186,10 +1197,11 @@ same thing from either.
 
 create. `customer_ids` (plural — see Models above) can add or drop
 *other* linked organisations: every submitted id must be one the caller
-may open (`400` otherwise, same shape whether it's another tenant's or
-merely invisible to this caller — see "Known consequences" #2), and any
-currently-linked organisation the caller can't open is kept regardless
-of whether the submitted list mentions it.
+may open, else `400 "Invalid pk … - object does not exist."` — byte-
+identical whether it's another tenant's, a same-tenant organisation the
+caller can't open, or doesn't exist at all (see "Known consequences"
+#2) — and any currently-linked organisation the caller can't open is
+kept regardless of whether the submitted list mentions it.
 
 **Response `200`** (both) — the (possibly updated) account, `customers`
 filtered the same visibility-aware way as every other read of this
