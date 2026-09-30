@@ -22,7 +22,7 @@ the Deals & risks tabs have always shown it. No FX.
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
 
 from django.db.models import Q
@@ -54,6 +54,21 @@ def quarter_bounds(today):
     if first_month == 10:
         return start, date(today.year, 12, 31)
     return start, date(today.year, first_month + 3, 1) - timedelta(days=1)
+
+
+def quarter_moments(today):
+    """This quarter as UTC instants, [first moment, first moment of the next
+    quarter): "this quarter" is the calendar quarter of `stage_changed_at`
+    in UTC, whatever the server's time zone. The `changed` filter and the
+    "…this quarter" tile both read it, so they cannot disagree."""
+    start, end = quarter_bounds(today)
+    since = datetime.combine(start, time.min, tzinfo=UTC)
+    return since, datetime.combine(end + timedelta(days=1), time.min, tzinfo=UTC)
+
+
+def in_quarter(moment, today):
+    since, until = quarter_moments(today)
+    return since <= moment < until
 
 
 def scope(user, kind: Kind):
@@ -142,8 +157,8 @@ def filtered_queryset(user, kind: Kind, params: PipelineParams, *, today):
         items = items.filter(date_q(kind, params.date, today=today))
 
     if params.changed == "quarter":
-        start, end = quarter_bounds(today)
-        items = items.filter(stage_changed_at__date__gte=start, stage_changed_at__date__lte=end)
+        since, until = quarter_moments(today)
+        items = items.filter(stage_changed_at__gte=since, stage_changed_at__lt=until)
 
     return items
 

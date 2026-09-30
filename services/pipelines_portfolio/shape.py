@@ -10,11 +10,12 @@ filtered set, so a section header or a tile never counts only the page.
 
 import calendar
 
+from services.organizations.book import RENEWING_WINDOWS
 from services.portfolio_core.shape import PortfolioOrder, fingerprint, name_rank
 
-from .book import OUTSIDE_OWNER
+from .book import OUTSIDE_OWNER, in_quarter
 from .params import NO_DEPARTMENT, OUTSIDE, UNASSIGNED
-from .rows import department_label
+from .rows import department_label, row_payload
 
 PRIORITY_ORDER = ("high", "medium", "low")
 #: So `-priority` puts High first.
@@ -23,6 +24,8 @@ PRIORITY_RANK = {"high": 3, "medium": 2, "low": 1}
 OVERDUE, NO_DATE = "overdue", "none"
 #: Owner sections after the named people: outside the tenant, then nobody.
 OWNER_BUCKET_ORDER = (OUTSIDE, UNASSIGNED)
+#: The "closing / due in 30 / 90 days" tiles: Organizations' renewing windows.
+TILE_WINDOWS = RENEWING_WINDOWS
 
 
 def sort_value(entry, sort_key, kind):
@@ -158,3 +161,78 @@ def filter_fingerprint(params, kind):
 def paginate(entries, *, params, kind):
     """The shared keyset cursor over `select`'s order."""
     return ordering(kind).paginate(entries, params, fingerprint=filter_fingerprint(params, kind))
+
+
+def _total(entries):
+    return {"count": len(entries), "mrr": round(sum(entry.mrr for entry in entries), 2)}
+
+
+def build_summary(book, *, today):
+    """The tiles, over every filtered row — never the page. Every filter of
+    the list applies except `stage`: the tiles read every stage of the
+    filtered set (`book.entries`), so "Won this quarter" and the stage strip
+    survive the default open-only view, and picking a stage changes the rows
+    but not the tiles. Each tile is the rule of the filter it sets, so
+    clicking it (under the same other filters) lists exactly its N:
+      open — the kind's open stages (the default `stage`);
+      within 30/90 — open, dated today to today+N (`date=30|90`);
+      overdue — open, dated before today (`date=overdue`);
+      done_this_quarter — Closed Won (risks: Mitigated) whose stage last
+        changed in this calendar quarter, in UTC
+        (`stage=<stage>&changed=quarter`);
+      stages — every stage, empty ones included (`stage=<value>`): the strip
+        and the Board's column headers.
+    Pure: no queries."""
+    kind = book.kind
+    entries = book.entries
+    open_entries = [entry for entry in entries if entry.is_open]
+    done = [
+        entry
+        for entry in entries
+        if entry.item.stage == kind.done_stage and in_quarter(entry.item.stage_changed_at, today)
+    ]
+    return {
+        "items": len(entries),
+        "mrr": round(sum(entry.mrr for entry in entries), 2),
+        "open": _total(open_entries),
+        "within": {
+            str(days): _total(
+                [
+                    entry
+                    for entry in open_entries
+                    if entry.days is not None and 0 <= entry.days <= days
+                ]
+            )
+            for days in TILE_WINDOWS
+        },
+        "overdue": _total([entry for entry in open_entries if entry.overdue]),
+        "done_this_quarter": {"stage": kind.done_stage, **_total(done)},
+        "stages": [
+            {
+                "value": value,
+                "label": label,
+                **_total([entry for entry in entries if entry.item.stage == value]),
+            }
+            for value, label in kind.model.Stage.choices
+        ],
+    }
+
+
+def build_listing(book, params, *, filters, today):
+    """The endpoint's body, in the Organizations and Accounts listings'
+    shape plus `kind`. `count` is the rows this query pages through (after
+    `stage` and `group_value`); `groups` cover the chosen stages before
+    `group_value`, so a Board column's header never shrinks to a page;
+    `summary` covers every stage of the filtered set (`build_summary`)."""
+    entries, groups = select(book, params)
+    page, next_cursor = paginate(entries, params=params, kind=book.kind)
+    return {
+        "kind": book.kind.key,
+        "results": [row_payload(entry, book.kind) for entry in page],
+        "next_cursor": next_cursor,
+        "count": len(entries),
+        "groups": groups,
+        "summary": build_summary(book, today=today),
+        "filters": filters,
+        "currency": book.organisation.currency,
+    }
