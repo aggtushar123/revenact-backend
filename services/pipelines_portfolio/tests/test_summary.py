@@ -268,3 +268,30 @@ class ListingTests(PipelineFixture):
             build_listing(book, params, filters={}, today=self.today)
         self.assertEqual(len(few), 0)
         self.assertEqual(len(many), 0)
+
+
+class EmptyBucketTests(PipelineFixture):
+    def test_an_empty_book_totals_every_bucket_as_a_float(self):
+        for kind in (OPPORTUNITIES, RISKS):
+            book = load_book(self.csm, kind, parse_params(QueryDict(""), kind), today=self.today)
+            summary = build_summary(book, today=self.today)
+            buckets = [
+                summary["open"],
+                summary["overdue"],
+                summary["done_this_quarter"],
+                *summary["within"].values(),
+                *summary["stages"],
+            ]
+            for bucket in buckets:
+                self.assertIsInstance(bucket["mrr"], float, bucket)
+                self.assertEqual(bucket["mrr"], 0.0)
+            self.assertIsInstance(summary["mrr"], float)
+
+    def test_an_empty_stage_beside_a_full_one_totals_a_float(self):
+        self.opportunity("Only", mrr=Decimal("250"))
+        book = load_book(
+            self.csm, OPPORTUNITIES, parse_params(QueryDict(""), OPPORTUNITIES), today=self.today
+        )
+        stages = {s["value"]: s for s in build_summary(book, today=self.today)["stages"]}
+        self.assertIsInstance(stages["closed_won"]["mrr"], float)
+        self.assertEqual(stages["discovery"]["mrr"], 250.0)

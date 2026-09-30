@@ -163,8 +163,13 @@ def paginate(entries, *, params, kind):
     return ordering(kind).paginate(entries, params, fingerprint=filter_fingerprint(params, kind))
 
 
+def _money(entries):
+    """The entries' MRR, always a float: `sum([])` alone is the int 0."""
+    return round(sum((entry.mrr for entry in entries), 0.0), 2)
+
+
 def _total(entries):
-    return {"count": len(entries), "mrr": round(sum(entry.mrr for entry in entries), 2)}
+    return {"count": len(entries), "mrr": _money(entries)}
 
 
 def build_summary(book, *, today):
@@ -193,7 +198,7 @@ def build_summary(book, *, today):
     ]
     return {
         "items": len(entries),
-        "mrr": round(sum(entry.mrr for entry in entries), 2),
+        "mrr": _money(entries),
         "open": _total(open_entries),
         "within": {
             str(days): _total(

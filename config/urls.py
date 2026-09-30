@@ -115,6 +115,11 @@ urlpatterns = [
     # list-create endpoints under services.customers.urls.
     path("api/v1/risks/<int:pk>/", RiskDetailView.as_view(), name="risk-detail"),
     path("api/v1/risks/", RiskListView.as_view(), name="risk-list"),
+    # The Pipelines page's own book (list, Board, tiles, export, bulk) for
+    # both kinds — services/pipelines_portfolio. /opportunities/ and /risks/
+    # above stay for the Deals & risks tabs and the forms; no other route
+    # lives under /pipelines/, so the prefix shadows nothing.
+    path("api/v1/pipelines/", include("services.pipelines_portfolio.urls")),
     # Survey, same reasoning as Opportunity/Risk above — mounted at its
     # own top-level /api/v1/surveys/ prefix since it's the one Survey
     # view spanning every Customer/Account at once (the standalone
