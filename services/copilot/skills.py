@@ -130,6 +130,34 @@ SKILLS = (
         "/contacts",
     ),
     Skill(
+        "accounts",
+        "Ask Revenact on Accounts",
+        "Answers a question about the accounts in view on Accounts, or one account, from the "
+        "same list, Board or account page and the records behind it.",
+        (
+            "On the list or the Board: the asker's accounts recomputed with the portfolio's "
+            "code for the page's filters — the summary tiles, the sections, the ten riskiest "
+            "accounts and the renewals due within 90 days",
+            "On one account's page: its portfolio row, what needs attention, its story counts "
+            "and its story items from the last 30 days (at most 25), and the story item asked "
+            "about, each under its own record rule",
+            "The records retrieval finds for the question on that account, under the asker's "
+            "own visibility",
+            "The conversation so far",
+        ),
+        ("Answer in prose", "Quote the records it used as sources on the reply"),
+        (
+            "Change a record",
+            "Send anything to a customer",
+            "See accounts or records outside the asker's visibility",
+            "Quote the AI pulse reason or anything counted under another person's rules",
+            "Take figures from the client",
+        ),
+        "A person asks from the Accounts list, Board or an account's page Ask rail",
+        "Any signed-in user, while the organisation's AI agent is enabled",
+        "/accounts",
+    ),
+    Skill(
         "headlines",
         "Account headlines",
         "Summarises one account's last three months of real activity into headlines.",

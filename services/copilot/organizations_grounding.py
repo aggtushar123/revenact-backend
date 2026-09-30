@@ -26,7 +26,6 @@ from services.organizations.shape import build_summary, order_entries, select
 from .context import Grounding
 from .dashboard_grounding import (
     OUTSIDE_OWNER,
-    _days,
     _money,
     company_lines,
     dashboard_system_prompt,
@@ -34,7 +33,7 @@ from .dashboard_grounding import (
     owner_name,
 )
 from .organization_detail_context import DETAIL
-from .organization_detail_grounding import build_detail_grounding
+from .organization_detail_grounding import build_detail_grounding, renewal_phrase
 from .organizations_context import VIEWS, filter_labels, params_of
 
 RISKIEST = 10
@@ -125,14 +124,7 @@ def _arr(entry, currency):
 
 
 def _renewal(entry):
-    date, days = entry.customer.renewal_date, entry.renewal_days
-    if date is None:
-        return "no renewal date"
-    if days < 0:
-        return f"renewal was due {date.isoformat()} ({_days(-days)} overdue)"
-    if days == 0:
-        return f"renews today ({date.isoformat()})"
-    return f"renews {date.isoformat()} (in {_days(days)})"
+    return renewal_phrase(entry.customer.renewal_date, entry.renewal_days)
 
 
 def _header(view, labels, currency):

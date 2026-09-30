@@ -817,7 +817,7 @@ def _records_of(turn, answered):
         return None
     if _is_detail(context):
         return None
-    if context.get("surface") == "contacts":
+    if context.get("surface") in ("contacts", "accounts"):
         return None  # it quotes records; with none stored it fails closed
     return []
 
@@ -827,8 +827,9 @@ def _pipeline_of(turn, answered):
     reply written before snapshots existed, nothing when its own Ask turn's
     digest never carried pipeline (a Dashboard Health or Support area, the
     Organizations list) — and None, failing closed, when it could have (a
-    Dashboard Overview or Revenue reply, or a context-less reply fed Ask
-    history, whose sources are unknown)."""
+    Dashboard Overview or Revenue reply, an Accounts reply — the surface
+    postdates snapshots — or a context-less reply fed Ask history, whose
+    sources are unknown)."""
     stored = _stored_pipeline(turn)
     if stored is not None:
         return stored
@@ -839,6 +840,8 @@ def _pipeline_of(turn, answered):
         return None
     if context.get("surface") == "dashboard" and context.get("area") in PIPELINE_AREAS:
         return None
+    if context.get("surface") == "accounts":
+        return None  # every Accounts reply stores one; a null was never written by it
     return NO_PIPELINE
 
 
@@ -857,7 +860,7 @@ def _tickets_of(turn, answered):
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
         return None
-    if context.get("surface") in ("organizations", "contacts"):
+    if context.get("surface") in ("organizations", "contacts", "accounts"):
         return None
     if context.get("surface") == "dashboard" and (
         context.get("area") in TICKET_AREAS or is_support_focus(context.get("focus"))
@@ -990,11 +993,14 @@ class SendMessageView(APIView):
     the Dashboard ({surface: "dashboard", area, view, filters, focus}), on
     Organizations ({surface: "organizations", view, filters, focus}), or on
     Contacts ({surface: "contacts", view: "list", filters} or {surface:
-    "contacts", view: "person", contact, focus}). It is validated by
+    "contacts", view: "person", contact, focus}), or on Accounts ({surface:
+    "accounts", view: "list" | "board", filters} or {surface: "accounts",
+    view: "detail", account, focus}). It is validated by
     AskContextSerializer, which hands it to the surface's own serializer (a
     400 `{"context": {...}}` otherwise); the answer is grounded by that
     surface's grounding in the recomputed screen and its records, metered
-    under the surface's purpose (`dashboard`, `organizations`, `contacts`),
+    under the surface's purpose (`dashboard`, `organizations`, `contacts`,
+    `accounts`),
     and the validated context is stored on the user turn; the conversation's
     `origin` is set from the first one and never changed. See
     services/copilot/ask.py."""

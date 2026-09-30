@@ -12,8 +12,6 @@ on the server, from the asker's own filter options — never from anything the
 client sent.
 """
 
-from dataclasses import replace
-
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -21,14 +19,15 @@ from services.customers.models import Customer
 from services.organizations.book import filter_options, filtered_queryset
 from services.organizations.params import DEFAULT_SORT, parse_params
 
+from . import portfolio_context
 from .dashboard_context import company_ids
 from .organization_detail_context import DETAIL, OrganizationDetailContextSerializer
-
-VIEWS = {"list": "List", "board": "Board"}
-
-#: The group each view opens with when the URL names none (spec §1: health on
-#: the List, lifecycle on the Board).
-DEFAULT_GROUP = {"list": "health", "board": "lifecycle"}
+from .portfolio_context import (  # noqa: F401 (re-exported for the grounding and tests)
+    MAX_SEARCH_LENGTH,
+    NPS_LABELS,
+    UNKNOWN,
+    VIEWS,
+)
 
 #: The portfolio parameters that decide which accounts are in view, plus sort
 #: and group so a reopened conversation restores the page. `cursor`, `limit`
@@ -46,32 +45,6 @@ FILTER_KEYS = (
     "sort",
     "group",
 )
-
-#: A search longer than this is not a search; it is ignored.
-MAX_SEARCH_LENGTH = 100
-#: Any value longer than this is ignored (500 ids fit well inside it).
-MAX_VALUE_LENGTH = 6000
-
-#: What a label says for an owner or product the asker's options do not name.
-UNKNOWN = "not in your book"
-
-NPS_LABELS = {"promoter": "Promoters", "passive": "Passives", "detractor": "Detractors"}
-
-
-def _text(value):
-    """A filter value as the URL would carry it, or None: text, a whole
-    number, or a list of them joined with commas."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list) and all(
-        isinstance(item, (str, int)) and not isinstance(item, bool) for item in value
-    ):
-        return ",".join(str(item) for item in value)
-    return None
 
 
 def canonical(params):
@@ -105,31 +78,16 @@ def canonical(params):
 
 def clean_filters(raw):
     """The client's filters, through the portfolio's parser, in canonical
-    form. Unknown keys and values are dropped, never rejected. An explicit
-    empty `group` survives as "not grouped"."""
-    query = {}
-    for key in FILTER_KEYS:
-        if key not in raw:
-            continue
-        value = _text(raw[key])
-        if value is None or len(value) > MAX_VALUE_LENGTH:
-            continue
-        if key == "search" and len(value.strip()) > MAX_SEARCH_LENGTH:
-            continue
-        query[key] = value
-    filters = canonical(parse_params(query))
-    if query.get("group") == "":
-        filters["group"] = ""
-    return filters
+    form (`portfolio_context.clean_filters`)."""
+    return portfolio_context.clean_filters(
+        raw, keys=FILTER_KEYS, parse=parse_params, canonical=canonical
+    )
 
 
 def params_of(filters, *, view=None):
     """Canonical filters as `PortfolioParams`. With a view, a missing `group`
     is the view's default; an explicit `""` stays ungrouped."""
-    params = parse_params(filters)
-    if view is not None and "group" not in filters:
-        params = replace(params, group=DEFAULT_GROUP[view])
-    return params
+    return portfolio_context.params_of(filters, parse=parse_params, view=view)
 
 
 def filter_labels(params, options):

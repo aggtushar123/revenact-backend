@@ -4642,7 +4642,9 @@ invite card is gone.
   { "id": 7, "title": "Why is at-risk ARR up?", "origin": { "surface": "dashboard", "area": "revenue", "view": "forecast", "filters": { "owner": "2", "lifecycle": "", "customer": "" } }, "created_at": "2026-09-24T10:00:00Z", "updated_at": "2026-09-24T10:01:00Z" },
   { "id": 9, "title": "Which accounts need me first?", "origin": { "surface": "organizations", "view": "list", "filters": { "owner": "2", "health": "poor" }, "labels": ["Owner: Carl CSM", "Health: Poor"] }, "created_at": "2026-09-26T10:00:00Z", "updated_at": "2026-09-26T10:01:00Z" },
   { "id": 11, "title": "Why is Sam negative?", "origin": { "surface": "contacts", "view": "person", "contact": 41, "label": "Sam Pizza · Pizza Hut" }, "created_at": "2026-09-28T10:00:00Z", "updated_at": "2026-09-28T10:01:00Z" },
-  { "id": 12, "title": "Who is unhappy?", "origin": { "surface": "contacts", "view": "list", "filters": { "sentiment": "negative" }, "label": "Contacts · Negative" }, "created_at": "2026-09-28T10:05:00Z", "updated_at": "2026-09-28T10:06:00Z" }
+  { "id": 12, "title": "Who is unhappy?", "origin": { "surface": "contacts", "view": "list", "filters": { "sentiment": "negative" }, "label": "Contacts · Negative" }, "created_at": "2026-09-28T10:05:00Z", "updated_at": "2026-09-28T10:06:00Z" },
+  { "id": 14, "title": "What renews soon?", "origin": { "surface": "accounts", "view": "board", "filters": { "renews_within": "30" }, "label": "Accounts · Renews within 30 days" }, "created_at": "2026-09-30T10:00:00Z", "updated_at": "2026-09-30T10:01:00Z" },
+  { "id": 15, "title": "What does this mean for EMEA?", "origin": { "surface": "accounts", "view": "detail", "account": 12, "label": "EMEA" }, "created_at": "2026-09-30T10:05:00Z", "updated_at": "2026-09-30T10:06:00Z" }
 ]
 ```
 
@@ -4650,12 +4652,14 @@ invite card is gone.
 `context` without its `focus` — or `null`. Set once, never changed. The
 history shows it as a tag. For the Dashboard the tag is the area and view. For
 Organizations it is "Organizations" followed by the `labels`, joined with " · "
-("Organizations · Owner: Carl CSM"). For Contacts the tag is the `label` itself
-("Sam Pizza · Pizza Hut", "Contacts · Negative"). Reopening it opens
-`/organizations/<view>?<filters>` for Organizations, or the person's profile or
-the filtered list for Contacts, because `filters` (list) or `contact` (person)
-are the page's own URL parameters/id. The server builds `labels`/`label` when
-the question is asked, and the client never sends them.
+("Organizations · Owner: Carl CSM"). For Contacts or Accounts the tag is the
+`label` itself ("Sam Pizza · Pizza Hut", "Contacts · Negative", "Accounts ·
+Renews within 30 days", "EMEA"). Reopening it opens `/organizations/<view>?
+<filters>` for Organizations, the person's profile or the filtered list for
+Contacts, or the accounts list/Board/one account's page for Accounts, because
+`filters` (list/Board), `contact` (person) or `account` (account page) are the
+page's own URL parameters/id. The server builds `labels`/`label` when the
+question is asked, and the client never sends them.
 
 `origin` follows the title. A viewer who does not see the whole conversation
 gets `origin: null` unless they may read both its first turn (the title's
@@ -4707,7 +4711,7 @@ client never sends figures.
 }
 ```
 
-- `surface`: `"dashboard"` (the fields below) or `"organizations"` (see **Asked from Organizations** below). Any other value is `{"context": {"surface": ["\"x\" is not a valid choice."]}}`.
+- `surface`: `"dashboard"` (the fields below), `"organizations"` (see **Asked from Organizations** below), `"contacts"` (see **Asked from Contacts** below) or `"accounts"` (see **Asked from Accounts** below). Any other value is `{"context": {"surface": ["\"x\" is not a valid choice."]}}`.
 - `area`: `overview | revenue | health | support`.
 - `view`: one of the area's sub-views (`DASHBOARD_VIEWS` in `services/copilot/dashboard_context.py`, mirroring the frontend's `src/pages/dashboard/areas.ts`): revenue `forecast|customers|products`; health `triage|divergence|movement|renewals|usage|activity|distribution`; support `tickets|topics`. The Overview takes `null`.
 - `filters`: only `owner`, `lifecycle`, `customer`; other keys are dropped, and a value that is not text or a whole number is ignored.
@@ -4885,7 +4889,106 @@ ticket department the reply drew on, and a reply written with no snapshot, or wh
 longer parses, fails closed rather than being shown. A person who becomes unreadable between the
 check and the grounding is a `404`.
 
-**Shared sessions.** Every Ask reply (Dashboard, Organizations or Contacts) stores a snapshot when it is
+**Asked from Accounts** (`services/copilot/accounts_context.py`, `accounts_grounding.py`,
+`account_detail_grounding.py`). Two body shapes, one per kind of view.
+
+The list or Board:
+
+```json
+{
+  "content": "Who needs me first?",
+  "context": {
+    "surface": "accounts",
+    "view": "list",
+    "filters": {"owner": "2", "health": "poor"}
+  }
+}
+```
+
+One account:
+
+```json
+{
+  "content": "What does this mean for EMEA?",
+  "context": {
+    "surface": "accounts",
+    "view": "detail",
+    "account": 12,
+    "focus": {"kind": "note", "id": 88}
+  }
+}
+```
+
+- `view`: `list | board | detail`, required.
+- `filters` (list and Board only): the portfolio's own query keys (`GET /accounts/portfolio/`) —
+  `search`, `organisation`, `owner`, `lifecycle`, `health`, `renews_within`, `nps`, `ids`, `sort`,
+  `group` — through `services/accounts_portfolio/params.py:parse_params`. An unknown key, or a
+  value the portfolio would ignore, is dropped, never rejected. Filters are stored in canonical
+  form and the default sort is left out. An explicit `group: ""` is stored as not grouped, not as
+  the view's default. An `organisation` id the caller cannot open is `400
+  {"context": {"filters": {"organisation": ["Not an organisation you can open."]}}}`, the same
+  whether it exists or not. `focus` is ignored on these views: the client may send it, but it is
+  dropped unvalidated and never stored.
+- `account` (detail only): required. An account the caller cannot open — including a missing,
+  non-positive or nonexistent one — is `400 {"context": {"account": ["Not an account you can
+  open."]}}`, the same message and the same status every time; there is no separate
+  `min_value`-style message, because the field has none (an id that cannot exist is folded into
+  the same "can they open it" check, not rejected first on shape).
+- `focus` (detail only): `null`, or one story item, `{"kind", "id"}`. `kind` is one of `activity`,
+  `calendar_event`, `call`, `email`, `note`, `survey`, `task`, `ticket` or `health`. The item is
+  read again with the story's own rules — filed on this account, dated up to today, and admitted
+  by its own record rule (mail by mailbox owner and chain, tickets by department, notes and tasks
+  by their personal chains). An item the caller may not read this way is `400 {"context": {"focus":
+  ["Not a story item you can open."]}}`. **Unlike the organisation page**, which drops such an item
+  silently and stores `null`, the account page refuses the send outright.
+- The stored context gains `label`, which the server builds, never the client's: on the list and
+  the Board, "Accounts" followed by the active filters in toolbar order ("Accounts · Owner: Carl
+  CSM · Health: Poor" — the `view` itself is stored separately, not folded into the label); on the
+  account page, the account's own name ("EMEA"). The history tag is the `label`. `origin` is the
+  stored context without `focus`.
+
+The list and Board digest is grounded in the caller's filtered accounts, recomputed by the
+portfolio's own code (`load_portfolio`, `select`, `build_summary`, `order_entries`) so every figure
+matches what `GET /accounts/portfolio/` returns for the same filters and the same person. It
+contains:
+
+- the five tiles and the sections for the effective group;
+- the ten riskiest accounts (Triage score above 0, highest first);
+- the renewals due within 90 days (overdue included), soonest first, at most 25 lines then "…and N
+  more", where N counts only accounts the asker can open.
+
+The account page digest is grounded in the page, recomputed for the caller with the same code that
+serves it:
+
+- the account's own portfolio row — lifecycle, owner, health, ARR, renewal, NPS/CSAT, Triage risk
+  and signal — but never the AI pulse reason, which is model-written from records under nobody's
+  rule;
+- the story's Needs attention block, cut down to the renewal and the open High or Critical tickets
+  only; its overdue tasks and other sources are left out, each depending on the asker's own rules;
+- a count line over the story's readable records up to today, in which emails, notes and tasks are
+  not counted (each follows the asker's personal record rules, and the digest can be shown to a
+  shared reader whose rules differ);
+- the story items of the last 30 days, newest first, at most 25;
+- the focused item, even when older than 30 days;
+- up to 6 records the retrieval finds for the question on the account (`retrieval.py`), cited in the
+  reply's `sources`.
+
+Story and record text is record text, fenced inside `<dashboard_data>` like every Ask digest, with
+the same neutralising of fence tags.
+
+Metered as the `accounts` purpose (`usage.PURPOSES["accounts"] = "Ask Revenact on Accounts"`).
+Grounded like every Ask surface: `Grounding.customer_ids` (the organisations the digest names —
+every quoted row's organisation, plus the organisation filter, on the list and Board; the "Part of"
+organisations on the account page), `.records` (every account the digest counted, every story item
+it quoted, and the focus) and `.tickets` (the urgent tickets counted, plus, on the account page, the
+story's own readable tickets) are fixed on the reply when it is written and checked exactly as the
+other surfaces are (see **Shared sessions** below) — a shared reader must be able to open every
+organisation, account, record and ticket department the reply drew on. This fails closed: a legacy
+`accounts` reply with no records or tickets snapshot stored is withheld from mentioned-only readers,
+since every real Accounts reply stores one. An account that becomes unreadable between the check and
+the grounding is a `404`.
+
+**Shared sessions.** Every Ask reply (Dashboard, Organizations, Contacts or Accounts) stores a snapshot when it is
 written: `grounded_customer_ids` — the ids of every customer its digest could have drawn on — and
 `carries_anomaly_text` — whether it could carry a stored, org-wide anomaly title or summary
 (`services/copilot/views.ask_snapshot`, migration `0013_message_grounded_customer_ids`). A
@@ -4913,19 +5016,20 @@ id check; for anyone else the ids of every reply in the conversation are checked
 read.
 
 `400` if `content` is blank or over 8000 characters, or `{"context": {<field>: [..]}}` for a
-wrong `surface`, `area`, `view` (Dashboard, Organizations or Contacts), `focus.kind`, a `contact`,
-`organization` or `account` (or a `filters.customer`/`filters.account`) the caller cannot open,
-more than 200 `ids`, or an attention key not on the caller's list (`{"context": {"focus": {"key":
-["Not an item on your list."]}}}` — the same for a malformed key and someone else's). `403` if
+wrong `surface`, `area`, `view` (Dashboard, Organizations, Contacts or Accounts), `focus.kind`, a
+`contact`, `organization` or `account` (or a `filters.customer`/`filters.account`/
+`filters.organisation`) the caller cannot open, a focus item the caller cannot open, more than 200
+`ids`, or an attention key not on the caller's list (`{"context": {"focus": {"key": ["Not an item
+on your list."]}}}` — the same for a malformed key and someone else's). `403` if
 `Organisation.ai_agent_enabled` is `false`. `429` if the organisation's monthly budget for the
-purpose (`copilot`; or `dashboard` / `organizations` / `contacts` for a `context` from that
-surface) is spent. `503` if the selected provider's credentials aren't configured. `502` if the
+purpose (`copilot`; or `dashboard` / `organizations` / `contacts` / `accounts` for a `context` from
+that surface) is spent. `503` if the selected provider's credentials aren't configured. `502` if the
 API call itself fails.
 
 **Response `200`** — the (possibly newly created) Conversation, same nested shape as the detail
 endpoint's GET, including this turn's user message (with `context` echoed, after the focus
 intersection) and the model's reply. `origin` is set from the first Ask message of any surface
-(Dashboard, Organizations or Contacts) and never overwritten.
+(Dashboard, Organizations, Contacts or Accounts) and never overwritten.
 
 ---
 

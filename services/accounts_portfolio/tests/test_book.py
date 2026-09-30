@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import timedelta
 from decimal import Decimal
 
@@ -5,7 +6,7 @@ from services.accounts.models import User
 from services.accounts_portfolio import book
 from services.accounts_portfolio.params import parse_params
 from services.accounts_portfolio.tests.fixtures import AccountPortfolioFixture
-from services.customers.models import Customer
+from services.customers.models import Customer, Ticket
 
 
 class FilteredQuerysetTests(AccountPortfolioFixture):
@@ -180,3 +181,41 @@ class FilterOptionsTests(AccountPortfolioFixture):
         self.account("Hidden", customers=[self.taco], owner=ghost)
         names = [row["name"] for row in book.filter_options(self.csm)["owners"]]
         self.assertNotIn("Ghost", names)
+
+
+class AccountUrgentTicketsTests(AccountPortfolioFixture):
+    """The open High/Critical tickets filed on these accounts, under the
+    department rule: what a row's signal counts and what an Ask reply's
+    ticket snapshot fixes."""
+
+    def ticket(self, number, **fields):
+        values = {
+            "ticket_number": number,
+            "title": f"Ticket {number}",
+            "priority": Ticket.Priority.HIGH,
+            "opened_at": self.today,
+            **fields,
+        }
+        return Ticket.objects.create(**values)
+
+    def test_open_urgent_tickets_on_the_accounts_under_the_department_rule(self):
+        emea = self.account("EMEA")
+        urgent = self.ticket("T-1", account=emea, department="cs")
+        critical = self.ticket("T-2", account=emea, priority=Ticket.Priority.CRITICAL)
+        self.ticket("T-3", account=emea, priority=Ticket.Priority.MEDIUM)
+        self.ticket("T-4", account=emea, status=Ticket.RESOLVED_STATUSES[0])
+        engineering = self.ticket("T-5", account=emea, department="engineering")
+        self.ticket("T-6", customer=self.pizza)  # the organisation's, not the account's
+
+        carl = set(book.account_urgent_tickets(self.csm, [emea.pk]).values_list("pk", flat=True))
+        alice = set(book.account_urgent_tickets(self.admin, [emea.pk]).values_list("pk", flat=True))
+
+        self.assertEqual(carl, {urgent.pk, critical.pk})
+        self.assertEqual(alice, {urgent.pk, critical.pk, engineering.pk})
+        self.assertEqual(
+            book.account_urgent_ticket_counts(self.csm, [emea.pk]), Counter({emea.pk: 2})
+        )
+
+    def test_no_ids_reads_nothing(self):
+        self.assertFalse(book.account_urgent_tickets(self.csm, []).exists())
+        self.assertEqual(book.account_urgent_ticket_counts(self.csm, []), Counter())
