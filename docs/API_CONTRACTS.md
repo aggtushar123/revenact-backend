@@ -3023,14 +3023,17 @@ it in `failed` with the reason `"Could not be updated."` and the batch continues
 Built for the redesigned list and Board (spec: react-ts-app `docs/superpowers/specs/2026-09-30-pipelines-redesign-design.md`
 §1–§2). One book of opportunities or risks across organisations **and** accounts. No model:
 `services/pipelines_portfolio/book.py` loads the viewer's items and `shape.py` orders, groups and totals them in
-Python, with Organizations' keyset cursor. `/opportunities/`, `/risks/` and their nested routes are unchanged apart
-from the new fields.
+Python, with `services/portfolio_core`'s keyset cursor, section order and bulk reasons (shared with Organizations and
+Accounts; CSV cell escaping and `build_table` stay in `services/organizations/export.py`). `/opportunities/`, `/risks/`
+and their nested routes are unchanged apart from the new fields.
 
 ### `GET /api/v1/pipelines/opportunities/` and `GET /api/v1/pipelines/risks/`
 
 Auth: `IsAuthenticated`. Scope (`book.scope`, the twice-filter, applied once): an item exists only if the viewer may
 open its organisation or account (`visible_children_q`) **and** may read it by department (`pipeline_visible_q`) —
 the detail endpoints' own rule. Every filter narrows that scope. Unknown parameter values are ignored, never a 400.
+Items on an archived organisation still appear in the book, as they always have on the older `/opportunities/` list —
+unlike the Organizations list, which hides archived organisations.
 
 | Param | Meaning |
 |---|---|

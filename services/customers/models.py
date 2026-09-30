@@ -2167,11 +2167,11 @@ class Opportunity(StageClockMixin, models.Model):
     alongside "Apple EMEA" — before this model existed).
 
     Mirrors the frontend's mock `PipelineCard`/`Column` shape: `stage`
-    is the closed set of 7 columns (Closed Lost joined Closed Won on
-    2026-09-30, the Pipelines redesign) (Kanban
-    columns, not a separate model — there's no per-tenant pipeline
-    customisation asked for, so a fixed enum is enough, same reasoning
-    as Task/Ticket's own status enums). `priority` is a real field —
+    is the closed set of 7 Kanban columns (Closed Lost joined Closed Won
+    on 2026-09-30, the Pipelines redesign), not a separate model — there's
+    no per-tenant pipeline customisation asked for, so a fixed enum is
+    enough, same reasoning as Task/Ticket's own status enums. `priority`
+    is a real field —
     every mock card already had one, same as Task/Ticket. `mrr` mirrors
     Account's own ARR-family fields' `DecimalField(max_digits=12,
     decimal_places=2)` shape. The mock's own `orgColor`/`orgInitials`

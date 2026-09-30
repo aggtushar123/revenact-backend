@@ -184,7 +184,7 @@ def counted_pipeline(customers, viewer):
     (`copilot.Message.grounded_pipeline`), so a shared reader is checked
     against what the answer counted.
 
-    Every stage, Closed Won included, on purpose: the expansion figure
+    Every stage except Closed Lost, Closed Won included, on purpose: the expansion figure
     weights a Closed Won opportunity at 1.0 (`STAGE_PROBABILITY`) and the
     stage breakdown lists it, so it *is* counted — leaving it out would
     under-snapshot. (A row the figures skip for want of an exchange rate is
