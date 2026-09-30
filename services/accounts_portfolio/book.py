@@ -118,22 +118,25 @@ class AccountPortfolio:
     organisation: object
 
 
-def account_urgent_ticket_counts(user, ids):
-    """Open High/Critical tickets filed on each account — the attention
+def account_urgent_tickets(user, ids):
+    """Open High/Critical tickets filed on these accounts — the attention
     list's support priorities, read under the department rule. Only the
-    account's own tickets: one filed on its organisation belongs to the
-    organisation. One query."""
+    accounts' own tickets: one filed on an organisation belongs to the
+    organisation. A row's urgent count and an Ask reply's ticket snapshot
+    (`copilot.accounts_grounding`) both read this one queryset."""
+    # SOC2:AUTH-02 tickets are read department-wise; `ids` are visible accounts
+    return (
+        visible_tickets(user, Ticket.objects.filter(account_id__in=ids))
+        .filter(priority__in=SUPPORT_PRIORITIES)
+        .exclude(status__in=Ticket.RESOLVED_STATUSES)
+    )
+
+
+def account_urgent_ticket_counts(user, ids):
+    """`account_urgent_tickets`, counted per account. One query."""
     if not ids:
         return Counter()
-    # SOC2:AUTH-02 tickets are read department-wise; `ids` are visible accounts
-    tickets = visible_tickets(user, Ticket.objects.filter(account_id__in=ids))
-    rows = (
-        tickets.filter(priority__in=SUPPORT_PRIORITIES)
-        .exclude(status__in=Ticket.RESOLVED_STATUSES)
-        .order_by()
-        .values("account_id")
-        .annotate(n=Count("id"))
-    )
+    rows = account_urgent_tickets(user, ids).order_by().values("account_id").annotate(n=Count("id"))
     return Counter({row["account_id"]: row["n"] for row in rows})
 
 
