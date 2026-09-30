@@ -5,11 +5,11 @@ across every source. The cursor names the last item served; the next page is
 every item that sorts strictly after it. The cut is by value, not by a row
 count, so rows added or removed elsewhere never cause a skip or a repeat.
 
-The cursor also carries a hash of the organisation and the filters it was
-cut under, the portfolio's rule (`shape.filter_fingerprint`): changing any
-filter, or the organisation, while keeping the cursor reads the new list from
-its first page. A malformed or
-tampered cursor reads as absent, the first page too.
+The cursor also carries a hash of the scope's `cursor_key` (the organisation
+id, or the account page's `account:<id>`) and the filters it was cut under,
+the portfolio's rule (`shape.filter_fingerprint`): changing any filter, or the
+organisation or account, while keeping the cursor reads the new list from its
+first page. A malformed or tampered cursor reads as absent, the first page too.
 """
 
 import base64
@@ -31,12 +31,12 @@ class Cut:
     id: int
 
 
-def fingerprint(params, customer_id: int) -> str:
+def fingerprint(params, key: int | str) -> str:
     """Everything that decides which items a list holds, but not `cursor`
-    or `limit`: the organisation and the filters. `sources` is already
-    sorted and de-duplicated."""
+    or `limit`: the scope's `cursor_key` and the filters. `sources` is
+    already sorted and de-duplicated."""
     state = [
-        customer_id,
+        key,
         params.group,
         list(params.sources),
         params.account,
