@@ -855,7 +855,14 @@ class AccountListCreateView(generics.ListCreateAPIView):
         # viewer isn't allowed to open must not appear here either, even
         # though they may open the organisation itself.
         customer = self.get_customer()
-        return with_pulse_inputs(visible_accounts(self.request.user).filter(customers=customer))
+        # `.prefetch_related("customers")` so AccountSerializer.get_customers'
+        # visibility filter reads each row's linked organisations from cache
+        # instead of a query per row — same reasoning as AccountListView's own.
+        return with_pulse_inputs(
+            visible_accounts(self.request.user)
+            .filter(customers=customer)
+            .prefetch_related("customers")
+        )
 
     def perform_create(self, serializer):
         # `customer_ids` (if the client sent it) already set whatever

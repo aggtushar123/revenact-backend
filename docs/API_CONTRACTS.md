@@ -844,7 +844,12 @@ their own rule.
    `visible_customer_ids` context key when the view passes it, e.g. the
    Contacts page; the other four never are — filtering those would
    blank the account page header for an account-only owner, which is
-   still the accepted trade-off there).
+   still the accepted trade-off there). The write side matches: a
+   `customer_ids` PATCH is validated against the same `visible_customers`
+   set (`400` on any id the caller may not open) and never removes a
+   link the caller can't see, even when it isn't in the submitted list —
+   otherwise a filtered read plus a full-replace write would let a
+   viewer blind to one shared organisation silently unlink it.
 3. **Still organisation-wide:** Copilot session invites disclose an
    account name before acceptance — deliberate, since being invited to
    collaborate on an account is itself a decision to share it, and an
@@ -1100,6 +1105,19 @@ same both-names-write rule as Customer), `ai_pulse_reason`,
 `renewal_date`, `arr` (MRR is derived, `arr / 12`, not stored — same
 convention as Customer).
 
+`Account.customers` is actually a many-to-many (an account can belong to
+more than one Customer — see "Known consequences" #1 above), surfaced on
+`AccountSerializer` as read-only `customers` (`[{id, name}]`) and
+write-only `customer_ids` (a full-replace id list, optional on write).
+Both are visibility-aware: `customers` lists only the linked
+organisations the requesting viewer may open (`visible_customers`), and
+a `customer_ids` write accepts only organisations the viewer may open
+(`400` otherwise, same message whether the id belongs to another tenant
+or is simply invisible to this viewer) and never removes a link to an
+organisation the viewer can't see, even when the submitted list omits
+it — a full-replace write against a now-filtered read would otherwise
+silently unlink it. See the PATCH endpoint below.
+
 **Add/Edit Account** covers identity, ownership, lifecycle stage, and
 renewal date — same product decision as Customer's own Add/Edit form.
 `health_score`/`pulse`/`ai_pulse_value`/`ai_pulse_score`/
@@ -1161,7 +1179,16 @@ notified through `after_account_update` — the same after-save rule the
 Accounts bulk edit (`POST /accounts/bulk/`) uses, so a reassign means the
 same thing from either.
 
-**Response `200`** (both) — the (possibly updated) account.
+create. `customer_ids` (plural — see Models above) can add or drop
+*other* linked organisations: every submitted id must be one the caller
+may open (`400` otherwise, same shape whether it's another tenant's or
+merely invisible to this caller — see "Known consequences" #2), and any
+currently-linked organisation the caller can't open is kept regardless
+of whether the submitted list mentions it.
+
+**Response `200`** (both) — the (possibly updated) account, `customers`
+filtered the same visibility-aware way as every other read of this
+serializer.
 
 ### `GET /api/v1/accounts/`
 

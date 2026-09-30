@@ -687,12 +687,18 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
         # instance (and its context dict) across every row of a list
         # response, so this is one query for the whole page rather than
         # one per Account — `obj.customers.all()` above then reads from
-        # AccountListView's own `.prefetch_related("customers")` instead
-        # of issuing a query of its own.
+        # AccountListView's/AccountListCreateView's own
+        # `.prefetch_related("customers")` instead of issuing a query of
+        # its own.
         cache = self.context
         if "visible_customer_ids" not in cache:
-            cache["visible_customer_ids"] = set(
-                visible_customers(cache["request"].user).values_list("id", flat=True)
+            request = cache.get("request")
+            # Fail closed: no request in context means nothing is provably
+            # visible, not that everything is.
+            cache["visible_customer_ids"] = (
+                set(visible_customers(request.user).values_list("id", flat=True))
+                if request is not None
+                else set()
             )
         return cache["visible_customer_ids"]
 
@@ -734,6 +740,22 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
     def update(self, instance, validated_data):
         # The handover note is for the record, not the row (see the view).
         self.context["handover_note"] = validated_data.pop("handover_note", "")
+        if "customers" in validated_data:
+            # DRF's default ModelSerializer.update() fully replaces an M2M
+            # field with whatever was submitted. `customer_ids` is validated
+            # (validate_customer_ids below) to hold only organisations this
+            # viewer may open, but the account's *current* links can also
+            # hold ones hidden from them (get_customers omits those on
+            # read) — a PATCH that never mentioned those must not silently
+            # unlink them, or a viewer blind to one shared organisation
+            # could drop it just by editing the ones they can see.
+            # SOC2:AUTH-02
+            visible_ids = self._visible_customer_ids()
+            hidden_current = instance.customers.exclude(id__in=visible_ids)
+            merged = {c.id: c for c in validated_data["customers"]}
+            for customer in hidden_current:
+                merged.setdefault(customer.id, customer)
+            validated_data["customers"] = list(merged.values())
         return super().update(instance, validated_data)
 
     def validate_customer_ids(self, customers):
@@ -741,9 +763,19 @@ class AccountSerializer(PulseWritesMixin, serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "An account must belong to at least one organization."
             )
-        request = self.context["request"]
-        outside = [c for c in customers if c.organisation_id != request.user.organisation_id]
-        if outside:
+        request = self.context.get("request")
+        visible_ids = self._visible_customer_ids()
+        # Same message either way — same-tenant-but-invisible and another
+        # tenant entirely must be indistinguishable to the caller.
+        # SOC2:AUTH-02
+        invalid = [
+            c
+            for c in customers
+            if request is None
+            or c.organisation_id != request.user.organisation_id
+            or c.id not in visible_ids
+        ]
+        if invalid:
             raise serializers.ValidationError(
                 "Every linked organization must be in your own organisation."
             )
