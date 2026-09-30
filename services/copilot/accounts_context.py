@@ -74,7 +74,7 @@ def canonical(params):
     if params.nps:
         filters["nps"] = params.nps
     if params.ids is not None:
-        filters["ids"] = ",".join(str(pk) for pk in params.ids)
+        filters["ids"] = ",".join(dict.fromkeys(str(pk) for pk in params.ids))
     if params.sort != DEFAULT_SORT:
         filters["sort"] = params.sort
     if params.group:

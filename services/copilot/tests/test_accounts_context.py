@@ -5,6 +5,7 @@ or not."""
 
 from datetime import timedelta
 
+from services.accounts.models import User
 from services.copilot.accounts_context import (
     NOT_A_STORY_ITEM,
     NOT_OPEN_ACCOUNT,
@@ -110,6 +111,13 @@ class ListContextTests(AccountsContextFixture):
             },
         )
 
+    def test_repeated_ids_are_deduped_so_the_label_matches_the_stored_filter(self):
+        valid, data = self.check(self.listing(ids=f"{self.emea.pk},{self.apac.pk},{self.emea.pk}"))
+
+        self.assertTrue(valid, data)
+        self.assertEqual(data["label"], "Accounts · Chosen accounts (2)")
+        self.assertEqual(data["filters"], {"ids": f"{self.emea.pk},{self.apac.pk}"})
+
     def test_an_owner_outside_the_askers_book_is_not_named(self):
         self.account(
             "Dana's", owner=self.other, customers=[self.customer("Taco", owner=self.other)]
@@ -207,6 +215,7 @@ class DetailContextTests(AccountsContextFixture):
         on_apac = self.note(self.apac)
         on_pizza = self.note(self.pizza)
         future = self.note(self.emea, day=self.today + timedelta(days=3))
+        other_department = self.ticket(self.emea, department=User.Function.ENGINEERING)
         for kind, pk in (
             ("note", private.pk),
             ("note", on_apac.pk),
@@ -214,6 +223,7 @@ class DetailContextTests(AccountsContextFixture):
             ("note", future.pk),
             ("note", 999999),
             ("ticket", private.pk),
+            ("ticket", other_department.pk),
         ):
             with self.subTest(kind=kind, pk=pk):
                 valid, errors = self.check(self.detail(self.emea, {"kind": kind, "id": pk}))

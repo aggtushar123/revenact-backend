@@ -23,13 +23,10 @@ from . import portfolio_context
 from .dashboard_context import company_ids
 from .organization_detail_context import DETAIL, OrganizationDetailContextSerializer
 from .portfolio_context import (  # noqa: F401 (re-exported for the grounding and tests)
-    DEFAULT_GROUP,
     MAX_SEARCH_LENGTH,
-    MAX_VALUE_LENGTH,
     NPS_LABELS,
     UNKNOWN,
     VIEWS,
-    _text,
 )
 
 #: The portfolio parameters that decide which accounts are in view, plus sort

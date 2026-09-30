@@ -74,7 +74,7 @@ class AccountsGroundingTests(AccountsAskFixture):
                     [entry.account.pk for entry in figures["riskiest"]],
                     [row["id"] for row in risky if row["risk"]["score"] > 0][:10],
                 )
-                renewing = self.portfolio(**{**filters, "renews_within": "90"}, sort="renewal")
+                renewing = self.portfolio(**{"renews_within": "90", **filters}, sort="renewal")
                 self.assertEqual(
                     [entry.account.pk for entry in figures["renewing"]],
                     [row["id"] for row in renewing["results"]],

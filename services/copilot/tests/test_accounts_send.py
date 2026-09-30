@@ -15,7 +15,7 @@ from rest_framework.test import APIClient
 
 from services.account_story.tests.fixtures import AccountStoryFixture
 from services.copilot.accounts_context import NOT_A_STORY_ITEM, NOT_OPEN_ACCOUNT
-from services.copilot.grounded_records import account_ref
+from services.copilot.grounded_records import account_ref, record_ref
 from services.copilot.models import Conversation, Message
 from services.copilot.views import (
     UNKNOWN,
@@ -213,18 +213,40 @@ class SharedReaderTests(AccountsSendFixture):
         asked, reply = pair
         return _reply_readable_by(reply, user or self.viewer, asked)
 
+    @staticmethod
+    def no_retrieval_sources():
+        """`setUp` patches `rank_by_similarity` to keep every candidate, so
+        an unpatched `retrieve_with_sources` would return the withheld
+        record as a `source` too — withholding would then pass even if
+        `grounded_records` had stopped carrying it. Tests that mean to prove
+        `grounded_records` is what closes the reply use this so `sources` is
+        empty and cannot be the reason."""
+        return patch(
+            "services.copilot.account_detail_grounding.retrieve_with_sources", return_value=[]
+        )
+
     # The list and the Board.
 
     def test_a_list_counting_an_account_the_reader_cannot_open_is_withheld(self):
-        self.assertFalse(self.readable(self.ask(listing())))
+        # Narrowed to just the seen and hidden accounts, so only the hidden
+        # one can be the reason the reply is withheld.
+        ids = f"{self.seen.pk},{self.hidden.pk}"
+        self.assertFalse(self.readable(self.ask(listing(ids=ids))))
 
     def test_a_list_of_only_what_the_reader_opens_is_shown(self):
         self.assertTrue(self.readable(self.ask(listing(ids=str(self.seen.pk)))))
 
     def test_a_list_naming_an_organisation_the_reader_cannot_open_is_withheld(self):
         hooli = Customer.objects.create(organisation=self.org, name="Hooli", owner=self.colleague)
+        # A second organisation the viewer does own, so "Shared" itself is
+        # one they can open (`accounts__owner`) — the account's own `owner`
+        # stays unset, so that visibility does not also open Hooli. Only
+        # Hooli, hidden from them, can be why the reply is withheld.
+        viewers_org = Customer.objects.create(
+            organisation=self.org, name="Viewer Co", owner=self.viewer
+        )
         shared = Account.objects.create(name="Shared", renewal_date=self.today + timedelta(days=10))
-        shared.customers.add(hooli)
+        shared.customers.add(hooli, viewers_org)
 
         pair = self.ask(listing(ids=str(shared.pk)))
 
@@ -256,38 +278,55 @@ class SharedReaderTests(AccountsSendFixture):
         self.assertTrue(self.readable(self.ask(detail(self.seen))))
 
     def test_a_quoted_note_the_reader_may_not_read_withholds_it(self):
-        self.note(self.seen, title="Colleague's own note", author=self.colleague)
+        note = self.note(self.seen, title="Colleague's own note", author=self.colleague)
 
-        pair = self.ask(detail(self.seen), author=self.colleague)
+        with self.no_retrieval_sources():
+            pair = self.ask(detail(self.seen), author=self.colleague)
 
+        ref = record_ref("note", note.pk, customer_id=None, account_id=self.seen.pk)
+        self.assertIn(ref, pair[1].grounded_records)
         self.assertFalse(self.readable(pair))
 
     def test_a_quoted_task_the_reader_may_not_read_withholds_it(self):
-        self.task(self.seen, title="Colleague's own task", created_by=self.colleague)
+        task = self.task(self.seen, title="Colleague's own task", created_by=self.colleague)
 
-        pair = self.ask(detail(self.seen), author=self.colleague)
+        with self.no_retrieval_sources():
+            pair = self.ask(detail(self.seen), author=self.colleague)
 
+        ref = record_ref("task", task.pk, customer_id=None, account_id=self.seen.pk)
+        self.assertIn(ref, pair[1].grounded_records)
         self.assertFalse(self.readable(pair))
 
     def test_quoted_mail_from_a_mailbox_outside_the_readers_chain_withholds_it(self):
-        self.email(self.seen, subject="Colleague's mailbox", mailbox_owner=self.colleague)
+        email = self.email(self.seen, subject="Colleague's mailbox", mailbox_owner=self.colleague)
 
-        pair = self.ask(detail(self.seen), author=self.colleague)
+        with self.no_retrieval_sources():
+            pair = self.ask(detail(self.seen), author=self.colleague)
 
+        ref = record_ref("email", email.pk, customer_id=None, account_id=self.seen.pk)
+        self.assertIn(ref, pair[1].grounded_records)
         self.assertFalse(self.readable(pair))
 
     def test_a_ticket_of_another_department_withholds_it(self):
-        self.ticket(self.seen, title="Engineering outage", department="engineering")
+        ticket = self.ticket(self.seen, title="Engineering outage", department="engineering")
 
-        pair = self.ask(detail(self.seen))
+        with self.no_retrieval_sources():
+            pair = self.ask(detail(self.seen))
 
+        ref = record_ref("ticket", ticket.pk, customer_id=None, account_id=self.seen.pk)
+        self.assertIn(ref, pair[1].grounded_records)
         self.assertFalse(self.readable(pair))
 
     def test_a_focus_on_a_record_the_reader_may_not_read_withholds_it(self):
         old = self.note(self.seen, title="Old", day=self.days_ago(90), author=self.colleague)
 
-        pair = self.ask(detail(self.seen, {"kind": "note", "id": old.pk}), author=self.colleague)
+        with self.no_retrieval_sources():
+            pair = self.ask(
+                detail(self.seen, {"kind": "note", "id": old.pk}), author=self.colleague
+            )
 
+        ref = record_ref("note", old.pk, customer_id=None, account_id=self.seen.pk)
+        self.assertIn(ref, pair[1].grounded_records)
         self.assertFalse(self.readable(pair))
 
     # Fail closed.
