@@ -32,6 +32,11 @@ DATE_FILTERS = (*(str(days) for days in DATE_WINDOWS), "overdue", "none")
 #: The department value that stands for blank (everyone's) in a filter or group.
 NO_DEPARTMENT = "none"
 DEPARTMENTS = (*User.Function.values, NO_DEPARTMENT)
+#: The owner values that are not a person: no owner, or an owner outside the
+#: viewer's organisation (a bad import; the row reads "Not in your book").
+UNASSIGNED = "unassigned"
+OUTSIDE = "outside"
+OWNER_BUCKETS = (UNASSIGNED, OUTSIDE)
 
 
 @dataclass(frozen=True)
@@ -78,7 +83,7 @@ def _choices(raw, allowed):
 
 def parse_params(query: Mapping, kind: Kind) -> PipelineParams:
     owner_raw = query.get("owner")
-    owner = "unassigned" if owner_raw == "unassigned" else int_or_none(owner_raw)
+    owner = owner_raw if owner_raw in OWNER_BUCKETS else int_or_none(owner_raw)
 
     ids = None
     if "ids" in query:

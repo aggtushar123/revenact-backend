@@ -65,6 +65,7 @@ class ParamsTests(SimpleTestCase):
         self.assertEqual(params.priorities, ("high",))
         self.assertEqual(params.departments, ("sales", "none"))
         self.assertEqual(parse("owner=unassigned").owner, "unassigned")
+        self.assertEqual(parse("owner=outside").owner, "outside")
         self.assertIsNone(parse("owner=someone").owner)
 
     def test_date_and_changed(self):

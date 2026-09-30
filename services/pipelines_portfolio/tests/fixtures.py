@@ -13,10 +13,11 @@ _CARL = object()
 class PipelineFixture(TestCase):
     """Carl and Dana are CSMs (Customer Success) in Acme, Sid is in Sales and
     Alice is its admin (Leadership); Globex is another tenant. Carl owns Pizza
-    Hut and Dana owns Taco Bell, so Carl opens Pizza Hut and not Taco Bell.
-    `opportunity()`/`risk()` make an organisation-level item on Pizza Hut in
-    Customer Success, 1,000 MRR, unless a test says otherwise; `account()`
-    makes an account owned by Carl under Pizza Hut."""
+    Hut and Dana owns Taco Bell, so Carl opens Pizza Hut and not Taco Bell,
+    unless he owns an account under it. `opportunity()`/`risk()` make an
+    organisation-level item on Pizza Hut in Customer Success, 1,000 MRR,
+    unless a test says otherwise; `account()` makes an account owned by Carl
+    under Pizza Hut."""
 
     def setUp(self):
         self.today = timezone.localdate()

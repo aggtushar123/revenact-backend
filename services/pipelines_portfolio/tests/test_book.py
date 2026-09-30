@@ -5,6 +5,7 @@ from django.http import QueryDict
 from django.test import SimpleTestCase
 from django.utils import timezone
 
+from services.accounts.hierarchy import subtree_ids
 from services.accounts.models import User
 from services.customers.models import Customer, Opportunity
 from services.customers.scoping import sees_everything
@@ -102,6 +103,40 @@ class BookTests(PipelineFixture):
         self.assertEqual(self.titles(query=f"owner={self.csm.pk}"), ["On Pizza Hut"])
         self.assertEqual(self.titles(query=f"owner={self.other.pk}"), ["On Dana's"])
         self.assertEqual(self.titles(query="owner=unassigned"), ["On unowned"])
+
+    def stranger(self):
+        return User.objects.create_user(
+            email="gus@globex.io",
+            password="supersecret1",
+            name="Gus Globex",
+            organisation=self.other_org,
+            role=User.Role.CSM,
+        )
+
+    def test_an_owner_filter_naming_another_tenants_person_selects_nothing(self):
+        stranger = self.stranger()
+        odd = self.account("Odd import", owner=stranger)
+        self.opportunity("On odd", account=odd)
+        self.assertEqual(self.titles(), ["On odd"])
+        self.assertEqual(self.titles(query=f"owner={stranger.pk}"), [])
+        self.assertEqual(self.titles(query=f"owner={stranger.pk}", rows=False), [])
+
+    def test_outside_selects_exactly_the_rows_owned_outside_and_unassigned_excludes_them(self):
+        stranger = self.stranger()
+        odd = self.account("Odd import", owner=stranger)
+        unowned = self.account("Unowned", owner=None)
+        self.opportunity("On Pizza Hut")
+        self.opportunity("On odd", account=odd)
+        self.opportunity("On unowned", account=unowned)
+        self.assertEqual(self.titles(query="owner=outside"), ["On odd"])
+        self.assertEqual(self.titles(query="owner=unassigned"), ["On unowned"])
+
+    def test_an_account_item_from_another_department_is_hidden(self):
+        emea = self.account("Pizza EMEA")
+        self.opportunity("Ours", account=emea)
+        self.opportunity("Sales'", account=emea, department=User.Function.SALES)
+        self.assertEqual(self.titles(), ["Ours"])
+        self.assertEqual(self.titles(self.admin), ["Ours", "Sales'"])
 
     def test_search_reads_the_title_and_the_parent_name(self):
         emea = self.account("Pizza EMEA")
@@ -213,7 +248,10 @@ class EntryTests(PipelineFixture):
         )
         odd = self.account("Odd import", owner=stranger)
         entry = self.entry(self.opportunity("On odd", account=odd))
-        self.assertEqual((entry.owner.pk, entry.owner.name), (None, "Not in your book"))
+        self.assertEqual(
+            (entry.owner.pk, entry.owner.name, entry.owner.key),
+            (None, "Not in your book", "outside"),
+        )
         Customer.objects.filter(pk=self.pizza.pk).update(owner=stranger)
         entry = self.entry(self.opportunity("On Pizza Hut"), user=self.admin)
         self.assertEqual((entry.owner.pk, entry.owner.name), (None, "Not in your book"))
@@ -281,8 +319,8 @@ class FilterOptionTests(PipelineFixture):
 
 class QueryCountTests(PipelineFixture):
     """The book and its options cost the same number of queries at any size.
-    The viewer's own reads (organisation, membership, role) happen once per
-    request whatever the book holds, so each count starts from a viewer who
+    The viewer's own reads (organisation, membership, role, their reports)
+    happen once per request whatever the book holds, so each count starts from a viewer who
     has made them."""
 
     def grow(self, n):
@@ -291,10 +329,11 @@ class QueryCountTests(PipelineFixture):
             self.opportunity(f"On division {i}", account=account)
             self.opportunity(f"On Pizza Hut {i}", priority="high")
 
-    def viewer(self):
-        viewer = User.objects.get(pk=self.admin.pk)
+    def viewer(self, user=None):
+        viewer = User.objects.get(pk=(user or self.admin).pk)
         viewer.organisation  # the per-request reads, made up front
         sees_everything(viewer)
+        subtree_ids(viewer)
         return viewer
 
     def load(self, viewer):
@@ -308,6 +347,17 @@ class QueryCountTests(PipelineFixture):
             small = self.load(viewer)
         self.grow(5)
         viewer = self.viewer()
+        with self.assertNumQueries(2):
+            large = self.load(viewer)
+        self.assertEqual((len(small.entries), len(large.entries)), (2, 12))
+
+    def test_a_csms_book_costs_two_queries_at_any_size(self):
+        self.grow(1)
+        viewer = self.viewer(self.csm)
+        with self.assertNumQueries(2):
+            small = self.load(viewer)
+        self.grow(5)
+        viewer = self.viewer(self.csm)
         with self.assertNumQueries(2):
             large = self.load(viewer)
         self.assertEqual((len(small.entries), len(large.entries)), (2, 12))

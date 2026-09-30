@@ -38,11 +38,13 @@ from services.customers.scoping import (
 from services.customers.serializers import department_label
 
 from .kinds import Kind
-from .params import NO_DEPARTMENT, PipelineParams
+from .params import NO_DEPARTMENT, OUTSIDE, UNASSIGNED, PipelineParams
 
 #: Who a row names as its owner when the parent's owner is outside the
-#: viewer's organisation: no id, no name of theirs.
-OUTSIDE_OWNER = SimpleNamespace(pk=None, name="Not in your book")
+#: viewer's organisation: no id, no name of theirs. It serialises as
+#: `{"id": null, "name": "Not in your book"}`; `key` is its bucket in the
+#: owner filter and grouping ("outside"), distinct from Unassigned.
+OUTSIDE_OWNER = SimpleNamespace(pk=None, name="Not in your book", key=OUTSIDE)
 
 
 def quarter_bounds(today):
@@ -100,16 +102,32 @@ def filtered_queryset(user, kind: Kind, params: PipelineParams, *, today):
         )
 
     if params.accounts:
-        # SOC2:AUTH-02 an account the viewer cannot open narrows to nothing
+        # SOC2:AUTH-02 an account the viewer cannot open narrows to nothing.
+        # Defence in depth: `scope` already admits an account-level item only
+        # through `visible_accounts`, so this repeats that rule at the filter.
         items = items.filter(account__in=visible_accounts(user).filter(pk__in=params.accounts))
 
-    if params.owner == "unassigned":
+    if params.owner == UNASSIGNED:
         items = items.filter(
             Q(customer__isnull=False, customer__owner__isnull=True)
             | Q(account__isnull=False, account__owner__isnull=True)
         )
+    elif params.owner == OUTSIDE:
+        # The rows that read "Not in your book": an owner, not of this tenant.
+        items = items.filter(
+            Q(customer__isnull=False, customer__owner__isnull=False)
+            & ~Q(customer__owner__organisation_id=user.organisation_id)
+            | Q(account__isnull=False, account__owner__isnull=False)
+            & ~Q(account__owner__organisation_id=user.organisation_id)
+        )
     elif params.owner is not None:
-        items = items.filter(Q(customer__owner_id=params.owner) | Q(account__owner_id=params.owner))
+        # SOC2:AUTH-02 only a person of the viewer's organisation can be named:
+        # another tenant's user id narrows to nothing (no linkage oracle)
+        org = user.organisation_id
+        items = items.filter(
+            Q(customer__owner_id=params.owner, customer__owner__organisation_id=org)
+            | Q(account__owner_id=params.owner, account__owner__organisation_id=org)
+        )
 
     if params.priorities:
         items = items.filter(priority__in=params.priorities)
