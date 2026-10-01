@@ -11,6 +11,7 @@ from services.copilot.pipelines_context import (
     PipelinesContextSerializer,
     params_of,
 )
+from services.customers.models import Customer
 from services.customers.tests.test_views import blind_to_one_account
 from services.pipelines_portfolio.kinds import OPPORTUNITIES, RISKS
 from services.pipelines_portfolio.tests.fixtures import PipelineFixture
@@ -223,6 +224,24 @@ class ContextTests(PipelinesContextFixture):
                 self.assertTrue(valid, data)
                 self.assertEqual(data["label"], f"Pipelines · Opportunities · {label}")
                 self.assertEqual(data["filters"], {"owner": owner})
+
+    def test_a_colleague_whose_only_items_are_in_another_department_is_not_named(self):
+        # Carl opens Burger King (he owns an account under it), but Sid's
+        # only item there is in Sales, which Carl may not read.
+        burger = Customer.objects.create(
+            organisation=self.org, name="Burger King", owner=self.sales
+        )
+        self.account("Burger EU", customers=[burger])
+        self.opportunity("Sales only", customer=burger, department=User.Function.SALES)
+
+        for user, label in (
+            (self.csm, "Owner: Not in your book"),
+            (self.admin, "Owner: Sid Sales"),
+        ):
+            with self.subTest(user=user.name):
+                valid, data = self.check(self.listing(owner=str(self.sales.pk)), user)
+                self.assertTrue(valid, data)
+                self.assertEqual(data["label"], f"Pipelines · Opportunities · {label}")
 
 
 class RefusalTests(PipelinesContextFixture):
