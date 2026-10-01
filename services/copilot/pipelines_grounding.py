@@ -59,7 +59,6 @@ LIST_LINES = 25
 
 WORDS = {
     "opportunities": {
-        "one": "opportunity",
         "many": "opportunities",
         "open": "Open pipeline",
         "within": "Closing",
@@ -69,7 +68,6 @@ WORDS = {
         "no_date": "no close date",
     },
     "risks": {
-        "one": "risk",
         "many": "risks",
         "open": "MRR at risk",
         "within": "Due",
@@ -137,6 +135,8 @@ def pipelines_figures(user, kind, params, *, today):
         "groups": groups,
         "summary": build_summary(book, today=today),
         "largest": order_entries(open_rows if lists_open else rows, "mrr", True, kind)[:LARGEST],
+        # Ruling P17: the Board lists closed stages too, so their largest
+        # items are quoted (and snapshotted) apart from the open ones.
         "largest_closed": (
             order_entries(closed_rows, "mrr", True, kind)[:LARGEST]
             if lists_open and lists_closed
@@ -149,8 +149,7 @@ def pipelines_figures(user, kind, params, *, today):
 
 
 def _items(n, kind):
-    words = WORDS[kind.key]
-    return f"{n} {words['one'] if n == 1 else words['many']}"
+    return f"{n} {kind.item if n == 1 else WORDS[kind.key]['many']}"
 
 
 def date_text(entry, kind):
@@ -184,7 +183,7 @@ def item_line(entry, kind, currency):
 
 def _header(kind, view, labels, params, currency):
     stages = dict(kind.model.Stage.choices)
-    everything = f"none (every {WORDS[kind.key]['one']} the asker can see)"
+    everything = f"none (every {kind.item} the asker can see)"
     return [
         f"Screen: Pipelines › {KIND_TITLES[kind.key]} › {VIEWS[view]}",
         f"Filters: {'; '.join(labels) or everything}",
@@ -253,7 +252,7 @@ def _largest_lines(figures, kind, currency):
 def _focus_lines(user, kind, focus, *, today, currency):
     if not focus:
         return [], None
-    one = WORDS[kind.key]["one"]
+    one = kind.item
     # SOC2:AUTH-02 the item is re-read under the book's two rules; `ids`
     # reaches every stage, so a closed item asked about is found
     book = load_book(user, kind, parse_params({"ids": str(focus["id"])}, kind), today=today)

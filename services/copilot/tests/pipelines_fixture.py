@@ -19,6 +19,12 @@ from services.pipelines_portfolio.tests.fixtures import PipelineFixture
 PIPELINE_URL = "/api/v1/pipelines/{}/"
 
 
+def listing(kind="opportunities", view="list", focus=None, **filters):
+    """A context as the client sends it from Pipelines: the URL's own filter
+    values, never a label the server would read."""
+    return {"surface": "pipelines", "kind": kind, "view": view, "filters": filters, "focus": focus}
+
+
 class PipelinesAskFixture(PipelineFixture):
     def setUp(self):
         super().setUp()

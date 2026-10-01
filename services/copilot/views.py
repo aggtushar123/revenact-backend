@@ -333,6 +333,25 @@ def _task_rule():
     return Task, visible_tasks
 
 
+def _pipeline_rule(key):
+    """Opportunities and risks are re-read exactly as the Pipelines book
+    reads them (`book.scope`): the item's organisation or account must be
+    one the reader may open, and its department one they may read. So an
+    item moved to another department, or under an account the reader cannot
+    open, after the reply withholds it."""
+
+    def rule():
+        from services.pipelines_portfolio.book import scope
+        from services.pipelines_portfolio.kinds import KINDS
+
+        kind = KINDS[key]
+        # SOC2:AUTH-02 a quoted opportunity or risk passes the book's own two
+        # rules for the reader, not only its company's
+        return kind.model, lambda user, rows: rows & scope(user, kind)
+
+    return rule
+
+
 def _record_id(value):
     """A cited record's id as a positive int — an int, or a string of
     digits as a stored JSON source may carry it — or None for anything
@@ -355,7 +374,13 @@ RECORD_RULES = {
     "note": _note_rule,
     "ticket": _ticket_rule,
     "task": _task_rule,
+    "opportunity": _pipeline_rule("opportunities"),
+    "risk": _pipeline_rule("risks"),
 }
+
+#: Record kinds whose quoted id, once missing, reads as one the reader cannot
+#: open: a deleted opportunity or risk reads the same as a hidden one.
+MISSING_IS_UNREADABLE = frozenset({"opportunity", "risk"})
 
 
 def _checked_refs(turn):
@@ -419,7 +444,8 @@ class _Reader:
     def readable_ids(self, kind):
         """`(existing, readable)` ids of the `kind` records any reply here
         cites: two queries per kind for the union, cached. A cited record
-        since deleted is in neither, and passes, as it always has."""
+        since deleted is in neither, and passes, as it always has — unless
+        its kind is in `MISSING_IS_UNREADABLE`."""
         cache = self.__dict__.setdefault("_readable_ids", {})
         if kind not in cache:
             model, rule = RECORD_RULES[kind]()
@@ -606,7 +632,9 @@ def _reply_readable_by(turn, user, user_turn=None, *, reader=None):
             if record_id is None:
                 return False
             existing, readable = reader.readable_ids(kind)
-            if record_id in existing and record_id not in readable:
+            if record_id not in readable and (
+                record_id in existing or kind in MISSING_IS_UNREADABLE
+            ):
                 return False
     return True
 
@@ -805,8 +833,9 @@ def _records_of(turn, answered):
     references, or for a reply written before snapshots existed, nothing when
     its own Ask turn's digest quoted none — every surface but an
     organisation's page — and None, failing closed, when it could have (an
-    organisation page reply, or a context-less reply fed Ask history, whose
-    sources are unknown)."""
+    organisation page reply; a Contacts, Accounts or Pipelines reply, whose
+    surface postdates snapshots; or a context-less reply fed Ask history,
+    whose sources are unknown)."""
     stored = _stored_records(turn)
     if stored is not None:
         return stored
@@ -817,7 +846,7 @@ def _records_of(turn, answered):
         return None
     if _is_detail(context):
         return None
-    if context.get("surface") in ("contacts", "accounts"):
+    if context.get("surface") in ("contacts", "accounts", "pipelines"):
         return None  # it quotes records; with none stored it fails closed
     return []
 
@@ -827,8 +856,8 @@ def _pipeline_of(turn, answered):
     reply written before snapshots existed, nothing when its own Ask turn's
     digest never carried pipeline (a Dashboard Health or Support area, the
     Organizations list) — and None, failing closed, when it could have (a
-    Dashboard Overview or Revenue reply, an Accounts reply — the surface
-    postdates snapshots — or a context-less reply fed Ask history, whose
+    Dashboard Overview or Revenue reply, an Accounts or Pipelines reply — the
+    surfaces postdate snapshots — or a context-less reply fed Ask history, whose
     sources are unknown)."""
     stored = _stored_pipeline(turn)
     if stored is not None:
@@ -840,8 +869,8 @@ def _pipeline_of(turn, answered):
         return None
     if context.get("surface") == "dashboard" and context.get("area") in PIPELINE_AREAS:
         return None
-    if context.get("surface") == "accounts":
-        return None  # every Accounts reply stores one; a null was never written by it
+    if context.get("surface") in ("accounts", "pipelines"):
+        return None  # every such reply stores one; a null was never written by it
     return NO_PIPELINE
 
 
@@ -850,8 +879,9 @@ def _tickets_of(turn, answered):
     reply written before snapshots existed, nothing when its own Ask turn's
     digest never counted tickets — and None, failing closed, when it could
     have (a Dashboard Overview or Support reply, a support attention focus,
-    an Organizations reply — its rows' signals count urgent tickets — or a
-    context-less reply fed Ask history)."""
+    an Organizations reply — its rows' signals count urgent tickets — a
+    Contacts, Accounts or Pipelines reply, whose surface stores one always,
+    or a context-less reply fed Ask history)."""
     stored = _stored_tickets(turn)
     if stored is not None:
         return stored
@@ -860,7 +890,7 @@ def _tickets_of(turn, answered):
     context = answered.context if answered is not None else None
     if not isinstance(context, dict) or not context:
         return None
-    if context.get("surface") in ("organizations", "contacts", "accounts"):
+    if context.get("surface") in ("organizations", "contacts", "accounts", "pipelines"):
         return None
     if context.get("surface") == "dashboard" and (
         context.get("area") in TICKET_AREAS or is_support_focus(context.get("focus"))
@@ -995,12 +1025,13 @@ class SendMessageView(APIView):
     Contacts ({surface: "contacts", view: "list", filters} or {surface:
     "contacts", view: "person", contact, focus}), or on Accounts ({surface:
     "accounts", view: "list" | "board", filters} or {surface: "accounts",
-    view: "detail", account, focus}). It is validated by
+    view: "detail", account, focus}), or on Pipelines ({surface: "pipelines",
+    kind, view: "list" | "board", filters, focus}). It is validated by
     AskContextSerializer, which hands it to the surface's own serializer (a
     400 `{"context": {...}}` otherwise); the answer is grounded by that
     surface's grounding in the recomputed screen and its records, metered
     under the surface's purpose (`dashboard`, `organizations`, `contacts`,
-    `accounts`),
+    `accounts`, `pipelines`),
     and the validated context is stored on the user turn; the conversation's
     `origin` is set from the first one and never changed. See
     services/copilot/ask.py."""

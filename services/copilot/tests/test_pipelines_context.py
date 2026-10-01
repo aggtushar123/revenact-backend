@@ -16,6 +16,8 @@ from services.customers.tests.test_views import blind_to_one_account
 from services.pipelines_portfolio.kinds import OPPORTUNITIES, RISKS
 from services.pipelines_portfolio.tests.fixtures import PipelineFixture
 
+from .pipelines_fixture import listing
+
 
 class PipelinesContextFixture(PipelineFixture):
     """PipelineFixture: Carl owns Pizza Hut and Dana Taco Bell; Sid is in
@@ -26,15 +28,7 @@ class PipelinesContextFixture(PipelineFixture):
         valid = serializer.is_valid()
         return valid, (serializer.validated_data if valid else serializer.errors)
 
-    @staticmethod
-    def listing(view="list", kind="opportunities", focus=None, **filters):
-        return {
-            "surface": "pipelines",
-            "kind": kind,
-            "view": view,
-            "filters": filters,
-            "focus": focus,
-        }
+    listing = staticmethod(listing)
 
 
 class ContextTests(PipelinesContextFixture):
@@ -64,7 +58,7 @@ class ContextTests(PipelinesContextFixture):
         )
 
     def test_risks_are_labelled_as_risks(self):
-        valid, data = self.check(self.listing("board", "risks", date="30"))
+        valid, data = self.check(self.listing("risks", "board", date="30"))
 
         self.assertTrue(valid, data)
         self.assertEqual(data["label"], "Pipelines · Risks · Due within 30 days")
@@ -155,12 +149,14 @@ class ContextTests(PipelinesContextFixture):
         self.assertEqual(data["filters"], {})
 
     def test_on_the_board_every_stage_is_the_default_and_the_open_ones_a_filter(self):
-        valid, data = self.check(self.listing("board", stage=",".join(OPPORTUNITIES.stages)))
+        valid, data = self.check(self.listing(view="board", stage=",".join(OPPORTUNITIES.stages)))
         self.assertTrue(valid, data)
         self.assertEqual(data["filters"], {})
         self.assertEqual(data["label"], "Pipelines · Opportunities")
 
-        valid, data = self.check(self.listing("board", stage=",".join(OPPORTUNITIES.open_stages)))
+        valid, data = self.check(
+            self.listing(view="board", stage=",".join(OPPORTUNITIES.open_stages))
+        )
         self.assertTrue(valid, data)
         self.assertEqual(data["filters"], {"stage": ",".join(OPPORTUNITIES.open_stages)})
         self.assertEqual(
@@ -301,11 +297,13 @@ class FocusTests(PipelinesContextFixture):
     def test_a_risk_is_asked_about_from_the_risks_book(self):
         risk = self.risk("Budget")
 
-        valid, data = self.check(self.listing("board", "risks", {"kind": "risk", "id": risk.pk}))
+        valid, data = self.check(self.listing("risks", "board", {"kind": "risk", "id": risk.pk}))
         self.assertTrue(valid, data)
         self.assertEqual(data["focus"], {"kind": "risk", "id": risk.pk})
 
-        valid, errors = self.check(self.listing("board", focus={"kind": "risk", "id": risk.pk}))
+        valid, errors = self.check(
+            self.listing(view="board", focus={"kind": "risk", "id": risk.pk})
+        )
         self.assertEqual((valid, errors), (False, {"focus": [NOT_OPEN_ITEM]}))
 
     def test_a_focus_the_asker_may_not_read_reads_like_one_that_does_not_exist(self):
