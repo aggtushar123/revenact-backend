@@ -114,11 +114,12 @@ class OrganizationDetailAskFlowTests(LiveServerTestCase):
             self.assertEqual(body["visibility"], "partial")
             self.assertIn("Alice Admin", body["messages"][0]["content"])
             self.assertIn("isn't shared with you", body["messages"][1]["content"])
-            # Deliberately, she still sees where it was asked: company names
-            # are visible across the organisation, so the user turn keeps
-            # its label and the conversation its origin.
-            self.assertEqual(body["messages"][0]["context"]["label"], "Pizza Hut · EMEA")
-            self.assertEqual(body["origin"], origin)
+            # Her question's Ask context goes with the withheld reply: the
+            # turn keeps its words but not its label, and the conversation
+            # names no origin for her. The title is the question's words.
+            self.assertIsNone(body["messages"][0]["context"])
+            self.assertIsNone(body["origin"])
+            self.assertEqual(body["title"], "@Alice Admin, what does this mean for EMEA?")
 
             # 6. Dana cannot ask about Carl's organisation at all.
             calls = completion.call_count
