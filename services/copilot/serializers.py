@@ -13,7 +13,7 @@ from .models import (
 class MessageSerializer(serializers.ModelSerializer):
     """`sources` is always present but empty on user turns, so the
     client can render citations without branching on role first. `context`
-    is null on a user turn whose reply is withheld from the reader
+    is null on a user turn whose reply is withheld or dropped for the reader
     (views.visible_messages)."""
 
     questions = serializers.SerializerMethodField()
@@ -59,7 +59,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
     so it goes through views.header_for for the requesting viewer (a
     neutral "Shared conversation" when that turn isn't theirs to read), and
     so does `origin`, the first turn's Ask context (null for that viewer, and
-    for one from whom the first Ask turn's reply is withheld)."""
+    for one from whom the first Ask turn's reply is withheld or dropped)."""
 
     class Meta:
         model = Conversation
