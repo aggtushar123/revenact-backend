@@ -237,10 +237,19 @@ class SharedReaderTests(PipelinesSendFixture):
         self.assertFalse(self.readable(pair))
 
     def test_a_counted_item_of_another_department_is_withheld(self):
-        self.opportunity("Sales on seen", account=self.seen, department=User.Function.SALES)
+        # Closed Lost on the List: counted by the tiles but never quoted, so
+        # only the department snapshot (`pipeline_readable_by`) can withhold it.
+        sales = self.opportunity(
+            "Sales on seen",
+            account=self.seen,
+            department=User.Function.SALES,
+            stage="closed_lost",
+        )
 
         pair = self.ask(listing(account=str(self.seen.pk)))
 
+        refs = {(ref["type"], ref["id"]) for ref in pair[1].grounded_records}
+        self.assertNotIn(("opportunity", sales.pk), refs)
         self.assertEqual(pair[1].grounded_pipeline["departments"], ["cs", "sales"])
         self.assertFalse(self.readable(pair))
 
@@ -308,7 +317,17 @@ class SharedReaderTests(PipelinesSendFixture):
     # Fail closed.
 
     def test_a_pipelines_reply_with_any_snapshot_missing_is_withheld(self):
-        fields = ("grounded_records", "grounded_pipeline", "grounded_tickets")
+        # Every snapshot `_reply_readable_by` reads: the organisations
+        # (`_grounded_ids`), the anomaly flag (a missing one reads as "could
+        # carry one" for a reader who does not see everything), the quoted
+        # records, the counted pipeline and the counted tickets.
+        fields = (
+            "grounded_customer_ids",
+            "carries_anomaly_text",
+            "grounded_records",
+            "grounded_pipeline",
+            "grounded_tickets",
+        )
         for kind in ("opportunities", "risks"):
             asked, reply = self.ask(listing(kind, account=str(self.seen.pk)))
             stored = {field: getattr(reply, field) for field in fields}
@@ -329,6 +348,8 @@ class SharedReaderTests(PipelinesSendFixture):
             ("grounded_records", "garbage"),
             ("grounded_pipeline", {"account_ids": "x", "departments": []}),
             ("grounded_pipeline", UNKNOWN),
+            ("grounded_tickets", {"account_ids": "x", "departments": []}),
+            ("grounded_tickets", UNKNOWN),
         ):
             with self.subTest(field=field, value=value):
                 stored = getattr(reply, field)

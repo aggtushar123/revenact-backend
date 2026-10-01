@@ -380,6 +380,10 @@ RECORD_RULES = {
 
 #: Record kinds whose quoted id, once missing, reads as one the reader cannot
 #: open: a deleted opportunity or risk reads the same as a hidden one.
+#: A side effect, accepted (ruling P19, fails closed): a deleted quoted item
+#: also drops the reply from the asker's own follow-up history (a follow-up
+#: fed it carries its records and is checked per record, even for its own
+#: asker when they are not the conversation's owner).
 MISSING_IS_UNREADABLE = frozenset({"opportunity", "risk"})
 
 
