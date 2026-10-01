@@ -1235,6 +1235,8 @@ class SendMessageView(APIView):
                 customer=asked_about,
                 message=user_message,
                 assignees=asked,
+                # An Ask turn's customer is the asker's screen, not their words.
+                name_only_if_visible=ask is not None,
             )
         elif ask is None and asked_about is not None and not grounding.sources:
             # The question was about a company and retrieval found nothing

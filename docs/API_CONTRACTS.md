@@ -5502,7 +5502,27 @@ first; `/questions/` takes `?mine=true` (waiting on the caller),
 the assignee (or `manage_users`) answers once (`409` after); the answer
 is stored as a contribution whose body opens `In answer to <asker>'s
 question "<text>": …`, the question closes, and the asker gets a
-`question_answered` notification.
+`question_answered` notification. A question about no customer has nothing
+to file a contribution on: it closes with `answer: null` and the asker is
+told.
+
+**Whose customer it names.** A routed question opens its customer to the
+person asked (`visible_customers` admits `questions__assignee`), which is
+deliberate when the asker names the customer, on its page or in their own
+words. A question routed from an **Ask** turn (`POST /copilot/messages/` with
+a `context`) is about the asker's screen instead (a focus on one company, an
+Organizations list narrowed to one). There, a person asked who could not
+already open that customer gets the question about **no customer**:
+- `customer: null` in their inbox;
+- the notification reads "<asker> asked you: …", with no "about X";
+- no stale-question nudge or knowledge gap names it;
+- the question does not open it to them.
+
+Someone who can open it gets it named, as before. On every question payload,
+`customer` is `null` for a reader who may not open that customer. This
+covers the asker's chart and the assignee's managers, who read questions
+they were not asked. (`services/knowledge/mentions.route_questions`,
+`QuestionSerializer.get_customer`.)
 
 ### Questions that age
 
