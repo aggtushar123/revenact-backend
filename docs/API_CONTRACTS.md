@@ -5521,8 +5521,10 @@ already open that customer gets the question about **no customer**:
 Someone who can open it gets it named, as before. On every question payload,
 `customer` is `null` for a reader who may not open that customer. This
 covers the asker's chart and the assignee's managers, who read questions
-they were not asked. (`services/knowledge/mentions.route_questions`,
-`QuestionSerializer.get_customer`.)
+they were not asked. The same reader gets the `answer` contribution with
+`customer_id: null` and `customer_name: null`, since the answer is filed on the
+question's customer. (`services/knowledge/mentions.route_questions`,
+`QuestionSerializer.get_customer`/`get_answer`.)
 
 ### Questions that age
 

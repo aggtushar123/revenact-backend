@@ -37,7 +37,7 @@ class QuestionSerializer(serializers.ModelSerializer):
     customer = serializers.SerializerMethodField()
     asked_by = serializers.SerializerMethodField()
     assignee = serializers.SerializerMethodField()
-    answer = ContributionSerializer(read_only=True)
+    answer = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     days_open = serializers.SerializerMethodField()
 
@@ -91,6 +91,17 @@ class QuestionSerializer(serializers.ModelSerializer):
                 else set(visible_customers(viewer).values_list("pk", flat=True))
             )
         return self.context["_visible_customer_ids"]
+
+    def get_answer(self, obj):
+        if obj.answer is None:
+            return None
+        data = ContributionSerializer(obj.answer).data
+        # SOC2:AUTH-02 the answer is filed on the question's customer: a reader
+        # the question does not name it to (get_customer) gets it unnamed
+        if obj.customer_id and self.get_customer(obj) is None:
+            data["customer_id"] = None
+            data["customer_name"] = None
+        return data
 
     def get_asked_by(self, obj):
         return self._person(obj.asked_by)

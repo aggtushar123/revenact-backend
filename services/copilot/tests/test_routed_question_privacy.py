@@ -131,3 +131,25 @@ class QuestionListReaderTests(RoutedQuestionFixture):
             self.client.force_authenticate(user)
             (row,) = [r for r in self.client.get(QUESTIONS).data if r["id"] == self.question.pk]
             self.assertEqual(row["customer"], {"id": self.secret.pk, "name": "Secret Corp"})
+
+    def answered_row(self, user):
+        from services.knowledge.mentions import answer_question
+
+        answer_question(self.question, self.priya, "SSO is fixed in 4.2.")
+        self.client.force_authenticate(user)
+        (row,) = [r for r in self.client.get(QUESTIONS).data if r["id"] == self.question.pk]
+        return row
+
+    def test_an_answered_question_does_not_name_the_customer_through_its_answer(self):
+        row = self.answered_row(self.dana)
+
+        self.assertIsNone(row["customer"])
+        self.assertIsNone(row["answer"]["customer_id"])
+        self.assertIsNone(row["answer"]["customer_name"])
+        self.assertIn("SSO is fixed in 4.2.", row["answer"]["body"])
+
+    def test_a_reader_who_can_open_the_customer_gets_the_answers_customer(self):
+        row = self.answered_row(self.carl)
+
+        self.assertEqual(row["answer"]["customer_id"], self.secret.pk)
+        self.assertEqual(row["answer"]["customer_name"], "Secret Corp")
