@@ -11,6 +11,8 @@ one. Alice (an admin in Leadership, who sees everything) asks; the viewer
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
 
 from services.accounts.models import User
@@ -22,6 +24,7 @@ from services.copilot.pipelines_context import (
     NOT_OPEN_ORGANISATION,
 )
 from services.copilot.views import (
+    REDACTED_REPLY,
     UNKNOWN,
     _reply_readable_by,
     ask_snapshot,
@@ -371,3 +374,83 @@ class SharedReaderTests(PipelinesSendFixture):
         pair = self.ask(listing(account=str(self.seen.pk)))
 
         self.assertFalse(self.readable(pair, stranger))
+
+
+@patch("services.copilot.views.get_completion", return_value="Here is what is going on.")
+class SharedReadQueryCountTests(PipelinesSendFixture):
+    """A mentioned-only reader's GET of a conversation holding Pipelines
+    replies costs a fixed number of queries, not one more per quoted
+    opportunity or risk — the same discipline as test_ask_followups'
+    SliceReadQueryCountTests, pinned with an equality check as
+    AccountQueryCountTests does. Every item here sits on Seen, which the
+    viewer (`blind_to_one_account`) may open, so `_reply_readable_by`
+    walks the full per-quoted-item path instead of short-circuiting."""
+
+    #: Measured with CaptureQueriesContext on this fixture: flat at 22,
+    #: whether the two replies quote 30 records (10 opportunities + 10
+    #: risks per kind) or 75 (40 per kind). A change is a regression to
+    #: explain, not absorb.
+    PINNED_QUERIES = 22
+
+    def setUp(self):
+        super().setUp()
+        self.viewer, self.seen, self.hidden = blind_to_one_account(self.pizza)
+        self.pizza.refresh_from_db()
+
+    def fill(self, n, *, start=0):
+        for i in range(start, start + n):
+            self.opportunity(
+                f"Opp {i}",
+                account=self.seen,
+                mrr=Decimal(1000 + i),
+                expected_close=self.days(-(i + 1)),
+            )
+            self.risk(
+                f"Risk {i}",
+                account=self.seen,
+                mrr=Decimal(1000 + i),
+                due_by=self.days(-(i + 1)),
+            )
+
+    def ask_and_read(self, n, *, start=0):
+        self.fill(n, start=start)
+        first = self.send(listing("opportunities"), "@Viewer how is this?", user=self.admin)
+        self.assertEqual(first.status_code, 200, first.data)
+        conversation_id = first.data["id"]
+        second = self.send(
+            listing("risks"),
+            "@Viewer and the risks?",
+            user=self.admin,
+            conversation_id=conversation_id,
+        )
+        self.assertEqual(second.status_code, 200, second.data)
+
+        quoted = sum(
+            len(reply.grounded_records)
+            for reply in Message.objects.filter(conversation_id=conversation_id, role="assistant")
+        )
+
+        # A fresh instance: nothing from a previous read memoised on it.
+        viewer = User.objects.get(pk=self.viewer.pk)
+        api = APIClient()
+        api.force_authenticate(viewer)
+        with CaptureQueriesContext(connection) as queries:
+            response = api.get(f"/api/v1/copilot/conversations/{conversation_id}/")
+        self.assertEqual(response.status_code, 200, response.data)
+        replies = [m for m in response.data["messages"] if m["role"] == "assistant"]
+        self.assertEqual(len(replies), 2)
+        for reply in replies:
+            self.assertNotEqual(reply["content"], REDACTED_REPLY)
+
+        return len(queries), quoted
+
+    def test_a_mentioned_reader_pays_a_flat_cost_as_quoted_items_grow(self, completion):
+        small_queries, small_quoted = self.ask_and_read(10)
+        Conversation.objects.all().delete()
+        large_queries, large_quoted = self.ask_and_read(40, start=10)
+
+        # The growth is real — not an accident of caching everything away —
+        # before the flat-cost claim about it means anything.
+        self.assertGreater(large_quoted, small_quoted)
+        self.assertEqual(small_queries, large_queries)
+        self.assertEqual(small_queries, self.PINNED_QUERIES)
