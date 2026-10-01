@@ -197,6 +197,19 @@ class BuildOrgContextSummaryTests(TestCase):
 
         self.assertIn("Your pipeline: 1 open opportunities, 0 open risks, 0 open tickets.", summary)
 
+    def test_a_lost_opportunity_is_not_open(self):
+        customer = Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
+        Opportunity.objects.create(
+            customer=customer, title="Upsell", stage=Opportunity.Stage.NEGOTIATION
+        )
+        Opportunity.objects.create(
+            customer=customer, title="Gone", stage=Opportunity.Stage.CLOSED_LOST
+        )
+
+        summary = build_org_context_summary(self.org, self.user)
+
+        self.assertIn("Your pipeline: 1 open opportunities", summary)
+
     def test_a_company_named_in_the_query_gets_its_own_real_retrieval(self):
         Customer.objects.create(organisation=self.org, name="Globex", owner=self.user)
         Note.objects.create(

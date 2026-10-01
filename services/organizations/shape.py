@@ -1,20 +1,23 @@
 """Ordering, grouping, paging and totals for the portfolio — pure functions
-over the entries `book.load_portfolio` returns. No queries.
+over the entries `book.load_portfolio` returns. No queries. The order,
+section totals and cursor are `portfolio_core`'s; the sort values, sections
+and fingerprint here are the organisation's.
 
 Everything here runs over the whole filtered set: a section header or a tile
 that counted only the page would count nothing useful.
 """
 
-import base64
-import binascii
-import hashlib
-import json
 import math
-from datetime import date
-from functools import total_ordering
 
 from services.customers.models import Customer
 from services.fx_rates.conversion import convert_to_org_currency
+from services.portfolio_core.shape import PortfolioOrder, fingerprint, name_rank
+
+# The cursor lives in `portfolio_core`; re-exported for Organizations' tests.
+from services.portfolio_core.shape import decode_cursor as decode_cursor
+from services.portfolio_core.shape import encode_cursor as encode_cursor
+from services.portfolio_core.shape import keyset_page as keyset_page
+from services.portfolio_core.shape import wrap_desc as wrap_desc
 
 from .book import NPS_Q, RENEWING_WINDOWS
 from .params import NUMERIC_SORT_KEYS, RENEWS_WITHIN_DAYS
@@ -46,9 +49,6 @@ def _window_labels():
 
 
 RENEWAL_WINDOWS = _window_labels()
-
-#: The bucket for "nobody" / "nothing", which always closes the list.
-EMPTY_KEYS = frozenset({"unassigned", "none"})
 
 
 def _numeric(field):
@@ -84,50 +84,23 @@ def _tiebreak(entry):
     return (entry.customer.name.casefold(), entry.customer.pk)
 
 
-@total_ordering
-class Desc:
-    """Wraps an orderable value so ascending comparison sees it in reverse —
-    lets one tuple comparison serve both sort directions, for any orderable
-    type (numbers, dates, names), without negating anything."""
-
-    __slots__ = ("value",)
-
-    def __init__(self, value):
-        self.value = value
-
-    def __eq__(self, other):
-        return self.value == other.value
-
-    def __lt__(self, other):
-        return other.value < self.value
-
-
-def wrap_desc(value, descending):
-    return Desc(value) if descending else value
-
-
-def _rank(entry, sort_key, descending, portfolio, group=""):
-    """The exact tuple `select`, `order_entries` and the cursor all sort by:
-    the section's position first when the list is grouped (`()` when it is
-    not), then missing values last regardless of direction, then the sort
-    value (reversed for descending), then the name/id tiebreak — always
-    ascending, so ties keep one order in either direction. One function for
-    all three means the list order and the paging order can never drift
-    apart."""
-    section = group_rank(*group_key(entry, group), group) if group else ()
-    value = SORT_GETTERS[sort_key](entry, portfolio)
-    if value is None:
-        return (section, 1, None, _tiebreak(entry))
-    return (section, 0, wrap_desc(value, descending), _tiebreak(entry))
+def _ordering(portfolio):
+    """This portfolio's parts of the shared order (`portfolio_core`): money
+    sorts need the portfolio's rates, so the order is built per portfolio."""
+    return PortfolioOrder(
+        sort_value=lambda entry, sort_key: SORT_GETTERS[sort_key](entry, portfolio),
+        tiebreak=_tiebreak,
+        group_key=group_key,
+        section_rank=group_rank,
+        money=lambda entry: entry.arr,
+        money_field="arr",
+    )
 
 
 def order_entries(portfolio, sort_key, descending, group=""):
     """Sections in their fixed order, then missing values last in either
     direction; ties by name, then id."""
-    return sorted(
-        portfolio.entries,
-        key=lambda entry: _rank(entry, sort_key, descending, portfolio, group),
-    )
+    return _ordering(portfolio).order(portfolio.entries, sort_key, descending, group)
 
 
 def renewal_window(days):
@@ -164,59 +137,14 @@ def group_rank(key, label, group):
         return (Customer.LifecycleStage.values.index(key), "", "")
     if group == "renewal":
         return ([window for window, _label in RENEWAL_WINDOWS].index(key), "", "")
-    # Owners and products by name; the key splits two people who share one.
-    return (1 if key in EMPTY_KEYS else 0, label.casefold(), key)
-
-
-def build_groups(entries, group):
-    groups = {}
-    for entry in entries:
-        key, label = group_key(entry, group)
-        bucket = groups.setdefault(key, {"key": key, "label": label, "count": 0, "arr": 0.0})
-        bucket["count"] += 1
-        if entry.arr is not None:
-            bucket["arr"] += entry.arr
-    ordered = sorted(groups.values(), key=lambda g: group_rank(g["key"], g["label"], group))
-    for bucket in ordered:
-        bucket["arr"] = round(bucket["arr"], 2)
-    return ordered
+    # Owners and products by name, the empty bucket last.
+    return name_rank(key, label)
 
 
 def select(portfolio, params):
     """The rows in list order — sections first, the chosen sort inside each —
     and the section totals over every row, before `group_value` narrows."""
-    entries = order_entries(portfolio, params.sort_key, params.descending, params.group)
-    if not params.group:
-        return entries, []
-    groups = build_groups(entries, params.group)
-    if params.group_value is not None:
-        entries = [e for e in entries if group_key(e, params.group)[0] == params.group_value]
-    return entries, groups
-
-
-def _dump_value(value):
-    """A rank value, JSON-safe: dates as ISO strings, everything else as the
-    JSON types it already is (a float, including `inf` for "never touched",
-    or a casefolded name string)."""
-    if value is None:
-        return None, "none"
-    if isinstance(value, date):
-        return value.isoformat(), "date"
-    if isinstance(value, str):
-        return value, "str"
-    return float(value), "num"
-
-
-def _load_value(raw, kind):
-    if kind == "none":
-        return None
-    if kind == "date":
-        return date.fromisoformat(raw)
-    if kind == "str":
-        return raw
-    if kind == "num":
-        return float(raw)
-    raise ValueError(kind)
+    return _ordering(portfolio).select(portfolio.entries, params)
 
 
 def filter_fingerprint(params):
@@ -241,122 +169,13 @@ def filter_fingerprint(params):
         params.group,
         params.group_value,
     ]
-    digest = hashlib.sha256(json.dumps(state, separators=(",", ":")).encode())
-    return digest.hexdigest()[:16]
-
-
-def encode_cursor(section, bucket, value, name, entry_id, fingerprint):
-    """The last served row's rank, unwrapped: its section's position (`[]`
-    when the list is not grouped), bucket (0 present, 1 missing), its raw sort
-    value, then the name/id tiebreak — exactly what `_rank` computes, minus
-    the direction wrapping, which the next request's own `descending`
-    re-applies — plus the `filter_fingerprint` of the list it was cut from."""
-    dumped, kind = _dump_value(value)
-    raw = json.dumps(
-        {
-            "sec": list(section),
-            "b": bucket,
-            "v": dumped,
-            "t": kind,
-            "n": name,
-            "id": entry_id,
-            "f": fingerprint,
-        },
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def _load_section(raw):
-    """`group_rank`'s (position, name, key) triple, or `()` ungrouped."""
-    if raw == []:
-        return ()
-    if (
-        isinstance(raw, list)
-        and len(raw) == 3
-        and isinstance(raw[0], int)
-        and isinstance(raw[1], str)
-        and isinstance(raw[2], str)
-    ):
-        return tuple(raw)
-    raise ValueError(raw)
-
-
-def decode_cursor(cursor):
-    if not cursor:
-        return None
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        data = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if not isinstance(data, dict):
-            return None
-        section = _load_section(data["sec"])
-        bucket, kind = data["b"], data["t"]
-        if bucket not in (0, 1):
-            return None
-        value = _load_value(data["v"], kind)
-        name, entry_id, fingerprint = data["n"], data["id"], data["f"]
-        if not isinstance(name, str) or not isinstance(entry_id, int):
-            return None
-        if not isinstance(fingerprint, str):
-            return None
-    except (binascii.Error, ValueError, UnicodeError, KeyError, TypeError):
-        return None
-    return section, bucket, value, name, entry_id, fingerprint
-
-
-def keyset_page(entries, *, rank, cursor, limit, descending, fingerprint, grouped):
-    """Keyset pagination over an already-ordered list, for any kind of entry.
-    `rank(entry)` is the exact tuple the list was sorted by — `(section,
-    bucket, wrapped value, (name, id))`, as `_rank` builds it. The cursor
-    names the last served row's full rank, unwrapped, plus the fingerprint of
-    the list it was cut from. The next page is every entry that ranks
-    strictly after it, found with a scan over `entries`. Rows added or removed
-    anywhere else in the set, in any number, never cause a skip or a repeat:
-    the cut is by value, not by a row count. A malformed or tampered cursor,
-    or one cut from a list with another fingerprint or grouping, is treated
-    as absent — the first page."""
-    start = 0
-    decoded = decode_cursor(cursor)
-    if decoded is not None and decoded[5] == fingerprint and bool(decoded[0]) == grouped:
-        section, bucket, value, name, entry_id, _fingerprint = decoded
-        # Missing values are never wrapped in a rank either — only a present
-        # value's direction is reversed.
-        wrapped = value if bucket == 1 else wrap_desc(value, descending)
-        cursor_rank = (section, bucket, wrapped, (name, entry_id))
-        try:
-            start = next(
-                (index for index, entry in enumerate(entries) if rank(entry) > cursor_rank),
-                len(entries),
-            )
-        except TypeError:
-            # A value of a type the sort cannot compare — the safest read is
-            # the first page.
-            start = 0
-    page = entries[start : start + limit]
-    next_cursor = None
-    if page and start + len(page) < len(entries):
-        section, last_bucket, last_value, (last_name, last_id) = rank(page[-1])
-        raw_value = last_value.value if isinstance(last_value, Desc) else last_value
-        next_cursor = encode_cursor(
-            section, last_bucket, raw_value, last_name, last_id, fingerprint
-        )
-    return page, next_cursor
+    return fingerprint(state)
 
 
 def paginate(entries, *, params, portfolio):
-    """`keyset_page` over `select`'s order: ranked by `_rank` with this list's
-    sort and group, cut against this list's `filter_fingerprint`."""
-    sort_key, descending, group = params.sort_key, params.descending, params.group
-    return keyset_page(
-        entries,
-        rank=lambda entry: _rank(entry, sort_key, descending, portfolio, group),
-        cursor=params.cursor,
-        limit=params.limit,
-        descending=descending,
-        fingerprint=filter_fingerprint(params),
-        grouped=bool(group),
-    )
+    """The shared keyset cursor over `select`'s order, cut against this
+    list's `filter_fingerprint`."""
+    return _ordering(portfolio).paginate(entries, params, fingerprint=filter_fingerprint(params))
 
 
 def build_summary(entries):

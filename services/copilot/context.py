@@ -240,7 +240,7 @@ def build_grounding(organisation, user, query: str = "") -> Grounding:
         open_opportunities = (
             Opportunity.objects.filter(my_scope)
             .filter(readable_pipeline_q(user))
-            .exclude(stage=Opportunity.Stage.CLOSED_WON)
+            .exclude(stage__in=Opportunity.CLOSED_STAGES)
         )
         open_risks = (
             Risk.objects.filter(my_scope)

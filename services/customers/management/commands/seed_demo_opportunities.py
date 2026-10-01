@@ -14,7 +14,8 @@ Basecamp, GreenLeaf Organics, EOS Software, Mailchimp) — rather than
 force-fitting those onto an unrelated real company, the rest of this
 file's entries are new demo content covering more of the companies
 seed_demo_customers/seed_demo_accounts actually create, spread across
-every stage so the board's own 6 columns all have real cards to show.
+every stage but Closed Lost so the board's other 6 columns all have real
+cards to show (the seed doesn't create Closed Lost rows).
 
 Idempotent: matched by (parent, title), so re-running updates existing
 rows instead of duplicating them. Silently skips any customer_name/

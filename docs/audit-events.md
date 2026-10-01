@@ -84,6 +84,18 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `organizations.bulk_updated` | `services.organizations.views.BulkUpdateView` | user | — | `action`, `value` (owner id, stage, or true for archive), `ids` updated, `failed_ids`; written in a `finally`, outcome `failure` when nothing was updated or the batch did not finish |
 | `accounts.exported` | `services.accounts_portfolio.views.AccountPortfolioExportView` | user | — | `count` of rows exported, `params`: the query-parameter names used (never their values — a search term is the user's own words) |
 | `accounts.bulk_updated` | `services.accounts_portfolio.views.AccountBulkUpdateView` | user | — | `action`, `value` (owner id or null, or stage), `ids` updated, `failed_ids`; written in a `finally`, outcome `failure` when nothing was updated or the batch did not finish |
+| `pipelines.exported` | `services.pipelines_portfolio.views.PipelineExportView` | user | — | `kind`, `count` of rows exported, `params`: the query-parameter names used (never their values) |
+| `pipelines.bulk_updated` | `services.pipelines_portfolio.views.PipelineBulkUpdateView` | user | — | `kind`, `action`, `field`, `ids` updated, `failed_ids`; never the value; written in a `finally`, outcome `failure` when nothing was updated or the batch did not finish; the items are not also recorded one by one |
+| `opportunity.created` / `risk.created` | `services.customers.pipeline_audit.create`, called from every create path (`CustomerOpportunityListView`, `AccountOpportunityListView`, `OpportunityListView`, and the Risk equivalents) | user | Opportunity or Risk (`target_repr` is just the kind and id — never the title) | `customer_id`, `account_id` (whichever parent it landed on) |
+| `opportunity.updated` / `risk.updated` | `services.customers.pipeline_audit.update`, via `PipelineItemWriteMixin.perform_update` on `OpportunityDetailView`/`RiskDetailView` (a Board drag included) | user | Opportunity or Risk | `fields`: the changed field names only, never their values; a PATCH that changes nothing records nothing |
+| `opportunity.deleted` / `risk.deleted` | `services.customers.pipeline_audit.delete`, via `PipelineItemWriteMixin.perform_destroy` | user | Opportunity or Risk | `customer_id`, `account_id` (its parent, for context after the row is gone) |
+
+Create, update and delete each happen in the same database transaction as the write itself
+(`pipeline_audit.create`/`update`/`delete`), so a failed audit write can't leave an
+unaudited change, and vice versa. A write made from the Django admin, and a cascade delete
+when a parent organisation or account is deleted, are **not** individually audited — only
+the parent's own deletion is (the volume of per-row events a cascade would produce isn't
+useful, and admin access is already covered by Django's own admin log).
 
 Adding a new one: call `audit.record` at the point the change is committed, annotate the
 line `# SOC2:LOG-01`, and add a row here.

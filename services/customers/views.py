@@ -23,7 +23,16 @@ from services.fx_rates.conversion import convert_to_org_currency, rates_for
 from services.notifications.models import Notification
 from services.notifications.realtime import notify as send_notification
 
-from . import activity_tracking, drill, forecast, interactions, portfolio, product_usage, usage
+from . import (
+    activity_tracking,
+    drill,
+    forecast,
+    interactions,
+    pipeline_audit,
+    portfolio,
+    product_usage,
+    usage,
+)
 from .contact_list import contacts_summary, filtered_contacts, parse_contact_filters
 from .headline_generation import NothingToSummarise, generate_headlines
 from .interactions import _parse_int
@@ -1730,8 +1739,11 @@ class CustomerOpportunityListView(generics.ListCreateAPIView):
         )
 
     def perform_create(self, serializer):
-        serializer.save(
-            **_pipeline_defaults(self.request, serializer), customer=self.get_customer()
+        pipeline_audit.create(
+            self.request,
+            serializer,
+            **_pipeline_defaults(self.request, serializer),
+            customer=self.get_customer(),
         )
 
 
@@ -1754,7 +1766,12 @@ class AccountOpportunityListView(generics.ListCreateAPIView):
         return self.get_account().opportunities.filter(pipeline_visible_q(self.request.user))
 
     def perform_create(self, serializer):
-        serializer.save(**_pipeline_defaults(self.request, serializer), account=self.get_account())
+        pipeline_audit.create(
+            self.request,
+            serializer,
+            **_pipeline_defaults(self.request, serializer),
+            account=self.get_account(),
+        )
 
 
 class OpportunityListView(generics.ListCreateAPIView):
@@ -1804,15 +1821,36 @@ class OpportunityListView(generics.ListCreateAPIView):
             # pk, which `.get()` (what get_object_or_404 calls) treats
             # as MultipleObjectsReturned rather than a single match.
             account = get_object_or_404(visible_accounts(self.request.user), pk=account_id)
-            serializer.save(**_pipeline_defaults(self.request, serializer), account=account)
+            pipeline_audit.create(
+                self.request,
+                serializer,
+                **_pipeline_defaults(self.request, serializer),
+                account=account,
+            )
         elif customer_id:
             customer = get_object_or_404(visible_customers(self.request.user), pk=customer_id)
-            serializer.save(**_pipeline_defaults(self.request, serializer), customer=customer)
+            pipeline_audit.create(
+                self.request,
+                serializer,
+                **_pipeline_defaults(self.request, serializer),
+                customer=customer,
+            )
         else:
             raise ValidationError("Provide either customer_id or account_id.")
 
 
-class OpportunityDetailView(generics.RetrieveUpdateDestroyAPIView):
+class PipelineItemWriteMixin:
+    """The opportunity and risk detail views' PATCH (a Board drag included)
+    and DELETE, audited (`pipeline_audit`)."""
+
+    def perform_update(self, serializer):
+        pipeline_audit.update(self.request, serializer)
+
+    def perform_destroy(self, instance):
+        pipeline_audit.delete(self.request, instance)
+
+
+class OpportunityDetailView(PipelineItemWriteMixin, generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/opportunities/<id>/ — a single
     Opportunity, scoped to the caller's own organisation, regardless of
     whether it's organisation-level or account-level. Flat, not nested
@@ -1854,8 +1892,11 @@ class CustomerRiskListView(generics.ListCreateAPIView):
         )
 
     def perform_create(self, serializer):
-        serializer.save(
-            **_pipeline_defaults(self.request, serializer), customer=self.get_customer()
+        pipeline_audit.create(
+            self.request,
+            serializer,
+            **_pipeline_defaults(self.request, serializer),
+            customer=self.get_customer(),
         )
 
 
@@ -1878,7 +1919,12 @@ class AccountRiskListView(generics.ListCreateAPIView):
         return self.get_account().risks.filter(pipeline_visible_q(self.request.user))
 
     def perform_create(self, serializer):
-        serializer.save(**_pipeline_defaults(self.request, serializer), account=self.get_account())
+        pipeline_audit.create(
+            self.request,
+            serializer,
+            **_pipeline_defaults(self.request, serializer),
+            account=self.get_account(),
+        )
 
 
 class RiskListView(generics.ListCreateAPIView):
@@ -1920,15 +1966,25 @@ class RiskListView(generics.ListCreateAPIView):
             # `.distinct()` before `get_object_or_404` — same
             # reasoning as OpportunityListView.perform_create's own.
             account = get_object_or_404(visible_accounts(self.request.user), pk=account_id)
-            serializer.save(**_pipeline_defaults(self.request, serializer), account=account)
+            pipeline_audit.create(
+                self.request,
+                serializer,
+                **_pipeline_defaults(self.request, serializer),
+                account=account,
+            )
         elif customer_id:
             customer = get_object_or_404(visible_customers(self.request.user), pk=customer_id)
-            serializer.save(**_pipeline_defaults(self.request, serializer), customer=customer)
+            pipeline_audit.create(
+                self.request,
+                serializer,
+                **_pipeline_defaults(self.request, serializer),
+                customer=customer,
+            )
         else:
             raise ValidationError("Provide either customer_id or account_id.")
 
 
-class RiskDetailView(generics.RetrieveUpdateDestroyAPIView):
+class RiskDetailView(PipelineItemWriteMixin, generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/risks/<id>/ — a single Risk, scoped to
     the caller's own organisation, regardless of whether it's
     organisation-level or account-level. Flat, not nested — same

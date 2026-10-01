@@ -69,7 +69,7 @@ expects.
 | Tickets (`ActivityFeed`'s "Tickets" filter) | `customers` (`Ticket` model) | 🟢 Read-only, API-complete — see below. `TicketsTab.tsx` fetches real data through `fetchTicketsForCustomer`/`fetchTicketsForAccount`; the flag icon now reflects real priority and the link line a real per-ticket count. No create/update endpoint yet. |
 | Calendar Events (`ActivityFeed`'s "Calendar Events" filter) | `customers` (`CalendarEvent` model) | 🟡 Backend built, read-only — see below. Model + two scoped list endpoints (per-Customer, per-Account) exist and are seeded; frontend still reads the `CALENDAR_EVENTS_DATA`/`ACCOUNT_ID_MAP` mock in `activityData.ts`/`accountActivityData.ts`, not yet wired to these endpoints. |
 | Contacts (standalone `/contacts/list` page, Organization/Account Details' Contacts tabs) | `customers` (`Contact` model) | 🟢 Full CRUD, API-complete — see below. Global paginated+searchable list (`ContactListView`/`ContactStatsView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat `ContactDetailView` (GET/PATCH/DELETE by id, regardless of parent) exist and are seeded; the standalone list page's Add/Edit/Delete are wired to them. |
-| Pipelines (standalone board — "Opportunities" and "Risks" tabs) | `customers` (`Opportunity`, `Risk` models) | 🟢 Full CRUD, API-complete — see below. Both tabs have the same shape: a global unpaginated list (`OpportunityListView`/`RiskListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Both are seeded; the board's own Add/Edit/Delete/drag-and-drop are wired to both tabs. |
+| Pipelines (`/pipelines` list and Board — opportunities and risks) | `customers` (`Opportunity`, `Risk` models), `pipelines_portfolio` | ✅ Built — the page's book is `GET /pipelines/opportunities/` and `GET /pipelines/risks/` (rows, groups, tiles, filters, cursor pages, `group_value` for a Board column), `…/export.csv` and `POST /pipelines/{opportunities,risks}/bulk/` (stage, priority, department, date). The per-item endpoints stay for the Deals & risks tabs and the forms — global unpaginated lists (`OpportunityListView`/`RiskListView`), per-Customer and per-Account list-create endpoints, flat detail views (GET/PATCH/DELETE) — and now read and write `expected_close`/`due_by`, return `stage_changed_at`, name only openable organisations in `companies`, and are audited |
 | Surveys (`ActivityFeed`'s "Surveys" filter, standalone `/surveys` page) | `customers` (`Survey` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines: a global unpaginated list (`SurveyListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). Responding syncs the score onto the parent's own `nps_score`/`csat_score`/`ces_percentage`. CES is Customer-only (Account has no `ces_percentage`). No email delivery — logging only. |
 | Canvas (sidebar gallery `/canvas`, "Canvas List" tab on Details pages) | `customers` (`Canvas` model) | 🟢 Full CRUD, API-complete — see below. Same shape as Pipelines/Surveys: a global unpaginated list (`CanvasListView`), two scoped list-create endpoints (per-Customer, per-Account), and a flat detail view (GET/PATCH/DELETE by id). `nodes`/`edges` round-trip verbatim (React Flow's own shape); a node references a real `Contact` by id rather than snapshotting its name/role/sentiment. |
 | Headlines (`ActivityFeed`'s "Headlines" sub-tab on both Details pages) | `customers` (`Headline` model) | 🟢 API-complete — see below. Model + two scoped list-create endpoints (per-Customer, per-Account), a flat detail view (GET/PATCH/DELETE by id), and a real generation endpoint that summarises the parent's own Notes/Emails/Tickets/Activities through `services.copilot`'s Anthropic client. Seeded. `HeadlinesTab.tsx` fetches real data through `fetchHeadlinesForCustomer`/`fetchHeadlinesForAccount`; the group pill and the "Data sources" footer now reflect real values rather than stored/decorative text. |
@@ -842,14 +842,11 @@ their own rule.
    named here is its own record with its own visibility, so a sibling
    organisation the viewer owns nothing in and has no other reach into
    doesn't surface even a name and an id here, same as any other record
-   this Account's page shows. Contact/Opportunity/Risk/Survey/Canvas rows
-   still carry their own `companies` list unfiltered by default
-   (Contact's can be narrowed the same way via
-   `ContactCompanyVisibilityMixin`'s `visible_customer_ids` context key
-   when the view passes it, e.g. the Contacts page) — a known follow-up
-   is giving Opportunity/Risk/Survey/Canvas's serializers the same
-   `visible_customer_ids`-context-key treatment as Contact's, rather than
-   a reason those four are left as they are. The write side matches: a
+   this Account's page shows. Opportunity and Risk rows name only organisations the viewer may open, on every endpoint
+   (`PipelineItemSerializer.get_companies` over `VisibleCustomersMixin`, which fails closed without a request).
+   Contact's list is narrowed the same way when the view passes `visible_customer_ids` (`ContactCompanyVisibilityMixin`,
+   e.g. the Contacts page). Survey and Canvas rows still carry theirs unfiltered — the known follow-up is giving those
+   two the same treatment. The write side matches: a
    `customer_ids` PATCH's own field is scoped to `visible_customers(user)`
    (not just same-tenant), so an id outside it is `400`, byte-identical
    whether it belongs to another tenant, is a same-tenant organisation
@@ -1654,6 +1651,8 @@ disagree with in one place:
 * **Expansion is weighted by sales stage** (discovery 10% → negotiation
   80% → closed won 100%) and **contraction by risk priority** (high 60%,
   medium 30%, low 10%). Ordinary ladders, stated as assumptions.
+* **A Closed Lost opportunity is not counted anywhere** — not expansion, not `pipeline`, not the scenarios, not a
+  Copilot pipeline snapshot. `pipeline` keeps its six stages.
 * **The same ARR is never lost twice.** An account both renewing badly
   and carrying an open Risk contributes the *larger* of the two, never
   the sum.
@@ -2463,8 +2462,10 @@ pipeline_visible_q(user)`: a person sees their own department's items
 plus the undeparted ones; a role holding `view_all_accounts`, and anyone
 in Leadership, see every department. Applied to every opportunity and
 risk list (standalone and nested) and to the detail endpoints (another
-department's item is a 404). The Pipelines page's filter narrows further
-by department, priority and stage on the client.
+department's item is a 404). The Pipelines page's book (`/pipelines/{opportunities,risks}/`, see `pipelines_portfolio`) applies the same rule once,
+together with the parent rule, and filters by department, priority and stage on the server. Creates, edits (a Board
+drag included) and deletes on every endpoint here are audited (`opportunity.created|updated|deleted`, `risk.…`: ids
+and changed field names only; a PATCH that changes nothing is not recorded).
 
 ### Contact sentiment is computed (`services/customers/contact_sentiment.py`)
 
@@ -3017,6 +3018,139 @@ it in `failed` with the reason `"Could not be updated."` and the batch continues
 `accounts.bulk_updated`, written in a `finally` so a batch that raised still records what was saved; outcome
 `failure` when nothing was updated or the batch did not finish.
 
+## `pipelines_portfolio` — Pipelines (`/pipelines`)
+
+Built for the redesigned list and Board (spec: react-ts-app `docs/superpowers/specs/2026-09-30-pipelines-redesign-design.md`
+§1–§2). One book of opportunities or risks across organisations **and** accounts. No model:
+`services/pipelines_portfolio/book.py` loads the viewer's items and `shape.py` orders, groups and totals them in
+Python, with `services/portfolio_core`'s keyset cursor, section order and bulk reasons (shared with Organizations and
+Accounts; CSV cell escaping and `build_table` stay in `services/organizations/export.py`). `/opportunities/`, `/risks/`
+and their nested routes are unchanged apart from the new fields.
+
+### `GET /api/v1/pipelines/opportunities/` and `GET /api/v1/pipelines/risks/`
+
+Auth: `IsAuthenticated`. Scope (`book.scope`, the twice-filter, applied once): an item exists only if the viewer may
+open its organisation or account (`visible_children_q`) **and** may read it by department (`pipeline_visible_q`) —
+the detail endpoints' own rule. Every filter narrows that scope. Unknown parameter values are ignored, never a 400.
+Items on an archived organisation still appear in the book, as they always have on the older `/opportunities/` list —
+unlike the Organizations list, which hides archived organisations.
+
+| Param | Meaning |
+|---|---|
+| `search` | title, or the item's organisation or account name, case-insensitive contains |
+| `organisation` | comma list of organisation ids: items on it, plus items on its accounts the viewer may open. An id the viewer cannot open matches nothing |
+| `account` | comma list of account ids: items on it. An id the viewer cannot open matches nothing |
+| `owner` | a user id (only people in the viewer's organisation — any other id narrows to nothing), `unassigned`, or `outside` (the parent's owner is outside the viewer's organisation, named "Not in your book") |
+| `stage` | comma list of the kind's stages. **Default: the open stages** (opportunities: not `closed_won`/`closed_lost`; risks: `open`). Closed stages are opt-in; the Board sends every stage. With `ids` and no `stage`, every stage |
+| `priority` | comma list of `high,medium,low` |
+| `department` | comma list of `User.Function` values; `none` = undeparted |
+| `date` | `30`, `90`, `180` (dated today to today+N, inclusive), `overdue` (open and dated before today) or `none` (no date). Opportunities read `expected_close`, risks `due_by` |
+| `changed` | `quarter`: the stage last changed this calendar quarter (`stage_changed_at`, UTC) |
+| `ids` | comma list, first 500 read; present with no usable id → no rows |
+| `sort` | `mrr`, `date`, `priority` (`-priority` = High first), `stage` (board order), `title`; `-` prefix descending; default `-mrr`. Missing values sort last either way; ties by title, then id |
+| `group` | `stage` (board order), `month` (`overdue`, then `YYYY-MM` ascending, then `none`; a closed item past its date sits in its month), `parent` (`organisation:<id>`/`account:<id>`, by name), `owner` (by name, `outside` after named people, `unassigned` last), `department` (by name, `none` last), `priority` (High, Medium, Low), or empty |
+| `group_value` | with `group` only: restrict `results` and `count` to that group key (a Board column). `groups` and `summary` stay whole |
+| `cursor` | opaque, from `next_cursor`; valid only for the same kind and the same filters, search, `ids`, sort, `group` and `group_value` |
+| `limit` | default 50, max 100 |
+
+```json
+{
+  "kind": "opportunities",
+  "results": [{
+    "id": 41, "kind": "opportunity", "title": "EMEA seats",
+    "parent": {"type": "account", "id": 12, "name": "Pizza Hut EMEA"},
+    "companies": [{"id": 7, "name": "Pizza Hut"}],
+    "owner": {"id": 2, "name": "Carl CSM"},
+    "mrr": 2000.0,
+    "stage": {"value": "negotiation", "label": "Negotiation"},
+    "priority": {"value": "high", "label": "High"},
+    "department": {"value": "cs", "label": "Customer Success"},
+    "date": {"value": "2026-10-07", "days": 7},
+    "open": true, "overdue": false,
+    "signal": {"kind": "high_priority", "label": "High priority"},
+    "stage_changed_at": "2026-09-30T10:00:00+00:00",
+    "created_at": "2026-09-01T09:00:00+00:00"
+  }],
+  "next_cursor": "<opaque string; pass back as ?cursor=>",
+  "count": 12,
+  "groups": [{"key": "negotiation", "label": "Negotiation", "count": 3, "mrr": 6400.0}],
+  "summary": {
+    "items": 20, "mrr": 41000.0,
+    "open": {"count": 12, "mrr": 26000.0},
+    "within": {"30": {"count": 2, "mrr": 4000.0}, "90": {"count": 5, "mrr": 9000.0}},
+    "overdue": {"count": 1, "mrr": 3000.0},
+    "done_this_quarter": {"stage": "closed_won", "count": 3, "mrr": 7000.0},
+    "stages": [{"value": "discovery", "label": "Discovery", "count": 4, "mrr": 5000.0}]
+  },
+  "filters": {
+    "organisations": [{"value": "7", "name": "Pizza Hut"}],
+    "accounts": [{"value": "12", "name": "Pizza Hut EMEA"}],
+    "owners": [{"value": "2", "name": "Carl CSM"}, {"value": "outside", "name": "Not in your book"}, {"value": "unassigned", "name": "Unassigned"}],
+    "stages": [{"value": "discovery", "name": "Discovery"}],
+    "priorities": [{"value": "high", "name": "High"}],
+    "departments": [{"value": "cs", "name": "Customer Success"}, {"value": "none", "name": "No department"}]
+  },
+  "currency": "USD"
+}
+```
+
+- **Rows.** `parent` is the "Part of" link: the organisation or account the item hangs off, always one the viewer may
+  open (otherwise the row does not exist). `companies` lists the parent organisations the viewer may open (for an
+  account-level item, its account's openable organisations, lowest id first; possibly none). `owner` names the
+  parent's owner only when that person is in the viewer's own organisation; otherwise it reads `{"id": null, "name":
+  "Not in your book"}` — stricter than the Accounts portfolio, on purpose. `date.days` is days from today (negative
+  once passed). `open` follows the kind's open stages; `overdue` is open with a past date (due today is
+  not overdue). `signal` is at most one of `overdue`, then `high_priority` on an open item.
+- **Money.** `mrr` is in the workspace's currency (top-level `currency`), as the Pipelines page and the Deals & risks
+  tabs have always shown it; no FX. Always a float.
+- **Totals.** `count` is the rows this query pages through (after `stage` and `group_value`). `groups` cover the chosen
+  stages before `group_value`. `summary` covers **every stage** of the filtered set — every filter but `stage` applies,
+  so the won/mitigated tile and the stage strip survive the default open-only view. Each tile is
+  its filter's rule, so clicking it with the default stages lists exactly its N: `open` (default `stage`), `within.30`/
+  `within.90` (open; `date=30|90`), `overdue` (`date=overdue`), `done_this_quarter` (Closed Won for opportunities,
+  Mitigated for risks, whose stage last changed this calendar quarter; `stage=<done_this_quarter.stage>&changed=quarter`),
+  `stages` (every stage — the Board's column headers; the frontend's strip shows the open ones — empty ones included;
+  `stage=<value>`).
+- **Quarter.** The calendar quarter of `stage_changed_at` in UTC, whatever the server's time zone — the same "today"
+  every portfolio uses.
+- **Filters** are the viewer's own: organisations they may open that hold one of their readable items (directly or
+  through an account), the accounts they may open that hold one, the owners of those items' parents named only when
+  in the viewer's own organisation (plus an `{"value": "outside", "name": "Not in your book"}` option, no count, when
+  such rows exist, and `unassigned` when a parent has no owner), the departments present, and the kind's fixed
+  stages and priorities.
+- 8 constant queries per request for an admin, whatever the book size (pinned by `PipelineQueryCountTests`).
+
+### `GET /api/v1/pipelines/{opportunities,risks}/export.csv`
+
+Auth: `IsAuthenticated`. Same parameters (`cursor`/`limit` ignored); every row the list would page through, in list
+order. `text/csv`, `Content-Disposition: attachment; filename="<kind>-<date>.csv"`. 12 columns: Title, Revenact ID,
+Organizations (the openable ones, `; `-joined), Account (blank for an organisation-level item), Owner, Stage, Priority,
+Department, MRR, Expected Close (risks: Due By), Stage Changed At, Created Date, then a 13th, `Currency` — every
+field. Text cells beginning with `= + - @`, tab or CR are prefixed with `'`. An error response renders as a two-row
+CSV. Audited as `pipelines.exported` with `kind`, `count` and `params` (the query-parameter names, never their
+values).
+
+### `POST /api/v1/pipelines/{opportunities,risks}/bulk/`
+
+Auth: `IsAuthenticated`. Body `{"ids": [1, 2], "action": "set_stage" | "set_priority" | "set_department" | "set_date",
+"value": …}`: `set_stage` takes one of the route kind's stages; `set_priority` `high|medium|low`; `set_department` a
+`User.Function` value or `""` (everyone's); `set_date` `YYYY-MM-DD`, or `null` to clear — the `value` key must be present
+(omitting it is a 400). 1–500 ids, duplicates applied once.
+
+Each id is locked and re-read (`select_for_update`) through the editor's own twice-filter, then saved through the kind's
+single-edit serializer (partial) in its own transaction — the single PATCH's rules, so a stage change moves
+`stage_changed_at` as a Board drag does. `200`:
+
+```json
+{"updated": [1], "failed": [{"id": 2, "reason": "Not found."}]}
+```
+
+An id the caller cannot read (another department, an account they cannot open, another tenant, the other kind) reads
+`"Not found."`, like one that does not exist. A database error on one id puts it in `failed` with
+`"Could not be updated."` and the batch continues. Audited once as `pipelines.bulk_updated` (`kind`, `action`, `field`,
+`ids`, `failed_ids`; never the value), written in a `finally`; outcome `failure` when nothing was updated or the batch
+did not finish. The items are not also audited one by one.
+
 ## `account_story` — the account page (`/accounts/:id`)
 
 The account page's own endpoints, in `services/account_story/`. No model.
@@ -3527,14 +3661,20 @@ Same "belongs to exactly one of `Customer` or `Account`" shape as
 `Contact` above — there can be an organisation-level opportunity and,
 separately, one tied to a specific Account (the mock's own card list
 already mixed both, e.g. "Apple Inc" alongside "Apple EMEA", before
-this model existed). `stage` is the closed set of 6 Kanban columns the
+this model existed). `stage` is the closed set of 7 Kanban columns the
 board already has (`discovery`/`qualification`/`solution_validation`/
-`proposal_price_review`/`negotiation`/`closed_won`) — a fixed enum, not
-a separate configurable-pipeline model, since no per-tenant
-customisation was asked for. `priority` (`high`/`medium`/`low`) is a
-real field, same as Task/Ticket's own. `mrr` is a
+`proposal_price_review`/`negotiation`/`closed_won`/`closed_lost`) — a
+fixed enum, not a separate configurable-pipeline model, since no
+per-tenant customisation was asked for. `priority` (`high`/`medium`/`low`)
+is a real field, same as Task/Ticket's own. `mrr` is a
 `DecimalField(max_digits=12, decimal_places=2)`, same shape as
 Account's own ARR-family fields.
+
+**Since 2026-09-30 (Pipelines redesign):** `stage` also has `closed_lost` (Closed Lost), after `closed_won`; *open*
+means neither. `expected_close` is an optional date (null reads "No date"). `stage_changed_at` (read-only) is when
+the stage last changed, creation included (`StageClockMixin`; rows from before it start at `created_at`). Every
+opportunity endpoint below reads and writes `expected_close` and returns `stage_changed_at`. `companies` names only
+the organisations the caller may open, on every endpoint.
 
 The mock's own `orgColor`/`orgInitials` aren't stored — decorative,
 derived from the company name on the frontend (`EntityAvatar`, same as
@@ -3600,7 +3740,9 @@ that parent — exactly one of the two must be given (`400` otherwise).
     "department_display": "",
     "companies": [{ "id": 6, "name": "Apple Inc" }],
     "account_id": 12,
-    "account_name": "Apple EMEA"
+    "account_name": "Apple EMEA",
+    "stage_changed_at": "2026-09-30T10:00:00+00:00",
+    "expected_close": "2026-11-15"
   }
 ]
 ```
@@ -3628,6 +3770,10 @@ Same "belongs to exactly one of `Customer` or `Account`" shape as
 board's Risks tab already has (`open`/`mitigated`/`realised`/
 `abandoned`) — a fixed enum, same reasoning as Opportunity's own
 `stage`. `priority`/`mrr` are the same shape as Opportunity's.
+
+**Since 2026-09-30:** `due_by` is an optional date (null reads "No date"); *open* is stage `open`. `stage_changed_at`
+as on Opportunity. Every risk endpoint below reads and writes `due_by` and returns `stage_changed_at`; `companies` names
+only the organisations the caller may open.
 
 Unlike Opportunity's mock, none of the Risk mock's own card data named
 real seeded companies — its org names ("Digital Operations", "Culinary
@@ -3692,7 +3838,9 @@ parent — exactly one of the two must be given (`400` otherwise).
     "department_display": "",
     "companies": [{ "id": 8, "name": "WeWork" }],
     "account_id": null,
-    "account_name": null
+    "account_name": null,
+    "stage_changed_at": "2026-09-30T10:00:00+00:00",
+    "due_by": null
   }
 ]
 ```

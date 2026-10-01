@@ -28,13 +28,20 @@ def cell(value):
     return "'" + text if text.startswith(FORMULA_PREFIXES) else text
 
 
-def table(rows):
-    header = [field.label for field in FIELDS] + ["Currency"]
-    body = [
-        [cell(field.value(row)) for field in FIELDS] + [row["details"]["commercial"]["currency"]]
-        for row in rows
-    ]
+def build_table(rows, fields, currency):
+    """The shared shape behind every portfolio's CSV export (Organizations,
+    Accounts, Pipelines): a header of `fields`' labels plus "Currency", then
+    one escaped (`cell`) row per item. `currency` is either a fixed value
+    (Accounts, Pipelines: one workspace currency) or a callable of the row
+    (Organizations: each customer bills in its own)."""
+    header = [field.label for field in fields] + ["Currency"]
+    get_currency = currency if callable(currency) else lambda _row: currency
+    body = [[cell(field.value(row)) for field in fields] + [get_currency(row)] for row in rows]
     return [header, *body]
+
+
+def table(rows):
+    return build_table(rows, FIELDS, lambda row: row["details"]["commercial"]["currency"])
 
 
 class CSVRenderer(BaseRenderer):

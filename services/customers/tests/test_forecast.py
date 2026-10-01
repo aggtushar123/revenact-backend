@@ -15,8 +15,8 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from services.accounts.models import Organisation, User
-from services.customers import churn
-from services.customers.models import Activity, Customer, Opportunity, Risk
+from services.customers import churn, forecast
+from services.customers.models import Account, Activity, Customer, Opportunity, Risk
 
 
 class ChurnRuleTests(TestCase):
@@ -344,6 +344,36 @@ class ForecastViewTests(APITestCase):
         self.assertEqual(stage["weighted"], 1_200.0)
         self.assertEqual(stage["count"], 1)
 
+    def test_a_lost_opportunity_is_neither_expansion_nor_pipeline(self):
+        customer = self._customer("Lost deal", 100_000, renews_in_days=800)
+        Opportunity.objects.create(
+            customer=customer,
+            title="Gone",
+            mrr=Decimal("5000"),
+            stage=Opportunity.Stage.CLOSED_LOST,
+        )
+
+        data = self.client.get(self.url).data
+
+        self.assertEqual(data["bridge"]["expansion"], 0.0)
+        self.assertEqual(data["scenarios"]["best"], 100_000.0)
+        self.assertEqual(sum(row["count"] for row in data["pipeline"]), 0)
+
+    def test_the_stage_breakdown_keeps_its_six_stages(self):
+        # Closed Lost is not pipeline, so it gets no row: the response is
+        # what it was before the stage existed.
+        self.assertEqual(
+            [row["key"] for row in self.client.get(self.url).data["pipeline"]],
+            [
+                "discovery",
+                "qualification",
+                "solution_validation",
+                "proposal_price_review",
+                "negotiation",
+                "closed_won",
+            ],
+        )
+
     # ── window and filters ───────────────────────────────────────────
 
     def test_the_horizon_can_be_moved_and_is_clamped(self):
@@ -508,3 +538,26 @@ class ForecastPipelineVisibilityTests(APITestCase):
 
         self.assertEqual(self._read(self.viewer)[0]["contraction"], 0.0)
         self.assertGreater(self._read(self.admin)[0]["contraction"], 0.0)
+
+
+class CountedPipelineClosedLostTests(TestCase):
+    def test_a_lost_opportunitys_account_is_not_in_the_snapshot(self):
+        org = Organisation.objects.create(name="Acme Inc")
+        admin = User.objects.create_user(
+            email="alice@acme.io",
+            password="supersecret1",
+            name="Alice",
+            organisation=org,
+            role=User.Role.ADMIN,
+        )
+        customer = Customer.objects.create(organisation=org, name="Pizza Hut")
+        account = Account.objects.create(name="Pizza EMEA")
+        account.customers.add(customer)
+        Opportunity.objects.create(
+            account=account, title="Gone", stage=Opportunity.Stage.CLOSED_LOST
+        )
+
+        self.assertEqual(
+            forecast.counted_pipeline([customer], admin),
+            {"account_ids": [], "departments": []},
+        )
