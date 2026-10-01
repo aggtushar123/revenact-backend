@@ -248,7 +248,9 @@ class RowTests(CommunicationsBase):
             opened_at=timezone.localdate() - timedelta(days=5),
         )
 
-        rows, truncated = communications.rows(communications.waiting_querysets(self.carl))
+        rows, truncated = communications.rows(
+            communications.waiting_querysets(self.carl), viewer=self.carl
+        )
         self.assertFalse(truncated)
         self.assertEqual([r["kind"] for r in rows], ["email", "ticket", "question"])
         self.assertEqual([r["waiting_days"] for r in rows], [9, 5, 0])
@@ -259,7 +261,7 @@ class RowTests(CommunicationsBase):
         self.pizza.save()
         self.email(thread="t1", direction=Email.Direction.RECEIVED, days=9)
 
-        rows, _ = communications.rows(communications.waiting_querysets(self.carl))
+        rows, _ = communications.rows(communications.waiting_querysets(self.carl), viewer=self.carl)
         context = rows[0]["context"]
         self.assertEqual(context["days_to_renewal"], 34)
         self.assertEqual(context["arr"], 128400.0)
@@ -270,7 +272,7 @@ class RowTests(CommunicationsBase):
         for index in range(4):
             self.email(thread=f"t{index}", direction=Email.Direction.RECEIVED, days=index + 1)
         querysets = communications.waiting_querysets(self.carl, kinds=["email"])
-        rows, truncated = communications.rows(querysets, limit_per_kind=2)
+        rows, truncated = communications.rows(querysets, viewer=self.carl, limit_per_kind=2)
         self.assertEqual(len(rows), 2)
         self.assertTrue(truncated)
 
@@ -285,7 +287,9 @@ class RowTests(CommunicationsBase):
             summary="",
             logged_by=self.carl,
         )
-        rows, _ = communications.rows(communications.waiting_querysets(self.carl, kinds=["call"]))
+        rows, _ = communications.rows(
+            communications.waiting_querysets(self.carl, kinds=["call"]), viewer=self.carl
+        )
         self.assertEqual(
             rows[0]["account"], {"id": account.id, "name": "Pizza Hut EMEA", "type": "account"}
         )

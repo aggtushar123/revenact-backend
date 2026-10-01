@@ -6934,6 +6934,14 @@ ticket count: a ticket carries a department, not an assignee, so there is no
 personal ticket to separate from a team one. `stats` says so in
 `ticket_scope_note` rather than pretending the two differ.
 
+A question is routed by assignee, not by customer. Under `?scope=team`, a
+report's question about a customer the caller may not open
+(`visible_customers`) comes with `account: null` and `context: null`: no name,
+id, health, ARR, renewal or owner. A `q` search cannot find it by that name
+either. The question's own words (`subject`, `preview`) are shown as before.
+Emails, tickets and calls are read through their customer or account's own
+visibility already.
+
 ### What counts as a reply owed
 
 An `Email` with `direction="received"` that is the **newest message in its
