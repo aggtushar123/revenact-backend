@@ -4811,10 +4811,13 @@ question is asked, and the client never sends them.
 
 `origin` follows the title. A viewer who does not see the whole conversation
 gets `origin: null` unless they may read both its first turn (the title's
-turn) and its first Ask turn (the one the origin was taken from): the filters
-carry the asker's free-text `search` and ids, and the labels name owners and
-products. It is `null`, not a surface-only stub. The detail endpoint and the
-send's response apply the same rule.
+turn) and its first Ask turn (the one the origin was taken from), **and the
+reply to that Ask turn is not withheld from them**: the filters carry the
+asker's free-text `search` and ids, and the labels name owners, products,
+organisations and accounts. It is `null`, not a surface-only stub. The title
+is the first turn's opening words (never the label), so a reader of that turn
+keeps it even when its reply is withheld. The detail endpoint and the send's
+response apply the same rule, on every Ask surface.
 
 ### `GET/DELETE /api/v1/copilot/conversations/<id>/`
 
@@ -4829,8 +4832,13 @@ conversation's title/messages are only ever set by `POST .../messages/`.
 read the turns it came from, see the list above), `visibility` (`full` or
 `partial`), and nested `messages` (each
 `{id, role, content, author, sources, questions, ask_suggestions,
-context, created_at}`; `context` is the dashboard context a user turn
-was asked on, else `null`).
+context, created_at}`; `context` is the Ask context a user turn was asked
+on — any surface — else `null`). **A user turn whose paired reply is withheld
+from this viewer comes with `context: null`**: the question's own words stay,
+but its label, filters (the asker's `search` among them), focus and ids go
+with the reply (`copilot.views.visible_messages`). The owner, participants
+and mentioned readers who may read the reply get the stored context as is.
+The decision reuses the reply's readability check: no extra query per turn.
 **Response `204`** (DELETE) — empty body.
 
 ### `POST /api/v1/copilot/messages/`
@@ -5349,7 +5357,10 @@ seeing replies that quoted its records — on a plain Copilot or
 Communications reply that includes replies to their own questions (an
 Ask asker still reads their own Ask reply regardless) — and
 shows as "This reply isn't shared with you…" instead (`copilot.views.
-_reply_readable_by`); the stored turn is untouched. Pairing a reply with
+_reply_readable_by`); the stored turn is untouched. The question that
+reply answers is still shown, with `context: null` for that viewer, and the
+conversation's `origin` is `null` for them when it is the first Ask turn's
+reply that is withheld (see `GET /api/v1/copilot/conversations/`). Pairing a reply with
 the question it answers uses `Message.reply_to`, set on every new reply
 (a legacy row with none falls back to the immediately preceding user
 turn) — ordering alone can't be trusted once two participants can send
