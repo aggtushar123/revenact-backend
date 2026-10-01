@@ -211,3 +211,77 @@ class WithheldContextQueryCountTests(WithheldAskContextFixture):
 
     def test_a_slice_reader_pays_a_flat_extra_for_withheld_turns(self):
         self.assertEqual(self.costs(1), self.costs(4))
+
+
+class DroppedReplyTests(WithheldAskContextFixture):
+    """Fail closed: a question whose reply the reader is not shown at all — not
+    redacted, dropped, because a turn they may not read was sent in between
+    (two participants interleaving) — keeps its words but not its Ask
+    context, and as the first Ask turn gives no origin either."""
+
+    def setUp(self):
+        super().setUp()
+        self.ask_context = {
+            "surface": "accounts",
+            "view": "list",
+            "filters": {"search": "Hidden"},
+            "label": 'Accounts · Search: "Hidden"',
+        }
+        self.conversation = Conversation.objects.create(
+            organisation=self.org,
+            user=self.alice,
+            title=QUESTION[:50],
+            origin=dict(self.ask_context),
+        )
+        self.asked = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content=QUESTION,
+            author=self.alice,
+            context=dict(self.ask_context),
+        )
+        from services.knowledge.models import Question
+
+        Question.objects.create(
+            organisation=self.org,
+            asked_by=self.alice,
+            assignee=self.viewer,
+            text=QUESTION,
+            message=self.asked,
+        )
+        # Carl's turn, sent before the reply landed and addressed to Priya:
+        # not the Viewer's to read, so neither is what follows it.
+        aside = Message.objects.create(
+            conversation=self.conversation,
+            role="user",
+            content="@Priya Nair Carl's own aside",
+            author=self.carl,
+        )
+        Question.objects.create(
+            organisation=self.org,
+            asked_by=self.carl,
+            assignee=self.priya,
+            text=aside.content,
+            message=aside,
+        )
+        Message.objects.create(
+            conversation=self.conversation,
+            role="assistant",
+            content=ANSWER,
+            reply_to=self.asked,
+        )
+
+    def test_the_question_carries_no_ask_context_and_the_header_no_origin(self):
+        body = self.detail(self.viewer, self.conversation.pk)
+
+        # Precondition: the question is theirs, its reply is not shown at all.
+        self.assertEqual([m["content"] for m in body["messages"]], [QUESTION])
+        self.assertIsNone(body["messages"][0]["context"])
+        self.assertIsNone(body["origin"])
+        self.assertIsNone(self.listed(self.viewer, self.conversation.pk)["origin"])
+
+    def test_the_owner_keeps_the_whole_context(self):
+        body = self.detail(self.alice, self.conversation.pk)
+
+        self.assertEqual(body["messages"][0]["context"], self.ask_context)
+        self.assertEqual(body["origin"], self.ask_context)

@@ -243,7 +243,7 @@ def header_for(conversation, user, turns=None):
         .first()
     )
     # SOC2:AUTH-02 the origin is the first Ask turn's context: withheld with it
-    # when that turn's reply is withheld from this reader (visible_messages)
+    # when that turn's reply is not shown to this reader (visible_messages)
     origin = (
         conversation.origin
         if any(t.id == first_ask and not getattr(t, "context_withheld", False) for t in turns)
@@ -260,9 +260,10 @@ def visible_messages(conversation, user):
     the turns that mention them or anyone who reports to them, their own,
     and the Copilot's replies to those turns. A manager therefore sees what
     was asked of their team and what the team replied. A reply they may not
-    read (`_reply_readable_by`) is `REDACTED_REPLY`, and the question it
-    answers comes with `context` null: its words stay, its Ask context (label,
-    filters, search, focus) goes with the reply."""
+    read (`_reply_readable_by`) is `REDACTED_REPLY`. A question whose reply
+    they are not shown — withheld, or dropped entirely behind a turn they may
+    not read — comes with `context` null: its words stay, its Ask context
+    (label, filters, search, focus) goes with the reply."""
     from services.accounts.hierarchy import scope_ids
 
     turns = list(
@@ -289,9 +290,9 @@ def visible_messages(conversation, user):
     reader = _Reader(user, turns)
     kept, previous_kept = [], False
     last_user_turn = None
-    # The user turns a withheld reply answers — decided by the readability
-    # check below, so hiding their context costs no query of its own.
-    withheld_questions = set()
+    # The user turns a reply shown to this reader answers — decided by the
+    # readability check below, so hiding the others' context costs no query.
+    answered_readably = set()
     for turn in turns:
         if turn.role == Message.Role.USER:
             last_user_turn = turn
@@ -311,12 +312,20 @@ def visible_messages(conversation, user):
             answered = turn.reply_to if turn.reply_to_id else last_user_turn
             readable = _reply_readable_by(turn, user, answered, reader=reader)
             kept.append(turn if readable else _redacted(turn))
-            if not readable and answered is not None:
-                withheld_questions.add(answered.id)
-    # SOC2:AUTH-02 a withheld reply's question keeps its words but not its Ask
-    # context: the label, filters (the asker's search among them) and focus
-    # name what the asker was looking at, which the reply was withheld for
-    return [_without_context(turn) if turn.id in withheld_questions else turn for turn in kept]
+            if readable and answered is not None:
+                answered_readably.add(answered.id)
+    # SOC2:AUTH-02 fail closed: a question keeps its Ask context only when the
+    # reply answering it is shown to this reader. Withheld (redacted) or not
+    # shown at all (dropped behind a turn they may not read, as interleaved
+    # sends can leave it), the question keeps its words but not the label,
+    # filters (the asker's search among them) and focus, which name what the
+    # asker was looking at
+    return [
+        _without_context(turn)
+        if turn.role == Message.Role.USER and turn.context and turn.id not in answered_readably
+        else turn
+        for turn in kept
+    ]
 
 
 def _without_context(turn):
