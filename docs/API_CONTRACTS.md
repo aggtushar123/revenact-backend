@@ -5218,7 +5218,10 @@ department, and read each quoted item as it stands when they read: `opportunity`
 their own record rules, which re-read the item through `pipelines_portfolio.book.scope` (parent and
 department), so an item moved to another department or account after the reply withholds it. A
 quoted item since deleted reads as one the reader cannot open (`MISSING_IS_UNREADABLE`). This fails
-closed: a `pipelines` reply with any snapshot missing, malformed or unknown is withheld.
+closed for any reader the rule binds: `grounded_pipeline` and `grounded_tickets` are only checked —
+and so only withhold the reply when missing, malformed or unknown — for a reader who does not see
+every account; a reader who sees every account and reads every department is not bound by either
+snapshot (`_reply_readable_by`'s `reader.sees_everything` branch).
 
 **Shared sessions.** Every Ask reply (Dashboard, Organizations, Contacts, Accounts or Pipelines) stores a snapshot when it is
 written: `grounded_customer_ids` — the ids of every customer its digest could have drawn on — and
