@@ -164,6 +164,20 @@ class OrganizationsTests(WithheldAskContextMixin, WithheldAskContextFixture):
         self.assertIn('Search: "Secret"', self.stored["labels"])
         self.assertEqual(self.origin["filters"]["search"], "Secret")
 
+    def test_the_redacted_reply_can_never_be_saved(self):
+        from services.copilot.views import visible_messages
+
+        conversation = Conversation.objects.get(pk=self.conversation)
+        viewer = User.objects.get(pk=self.viewer.pk)
+        redacted = [m for m in visible_messages(conversation, viewer) if m.role == "assistant"]
+        self.assertEqual([m.content for m in redacted], [REDACTED_REPLY])
+
+        with self.assertRaises(TypeError):
+            redacted[0].save()
+
+        stored = Message.objects.get(pk=redacted[0].pk)
+        self.assertEqual(stored.content, ANSWER)
+
 
 class ContactsTests(WithheldAskContextMixin, WithheldAskContextFixture):
     def context(self):
@@ -285,6 +299,22 @@ class DroppedReplyTests(WithheldAskContextFixture):
 
         self.assertEqual(body["messages"][0]["context"], self.ask_context)
         self.assertEqual(body["origin"], self.ask_context)
+
+    def test_the_stripped_copy_can_never_be_saved(self):
+        from services.copilot.views import visible_messages
+
+        conversation = Conversation.objects.get(pk=self.conversation.pk)
+        viewer = User.objects.get(pk=self.viewer.pk)
+        (stripped,) = visible_messages(conversation, viewer)
+        self.assertIsNone(stripped.context)
+
+        with self.assertRaises(TypeError):
+            stripped.save()
+        with self.assertRaises(TypeError):
+            stripped.save(update_fields=["context"])
+
+        self.asked.refresh_from_db()
+        self.assertEqual(self.asked.context, self.ask_context)
 
 
 class MultiTurnTests(WithheldAskContextFixture):

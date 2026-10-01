@@ -336,6 +336,18 @@ def _without_context(turn):
     message = copy.copy(turn)
     message.context = None
     message.context_withheld = True
+    return _read_only(message)
+
+
+def _read_only(message):
+    """A per-reader view of a stored turn carries that turn's real id, so a
+    `save()` on it would overwrite the stored row — the asker's context with
+    null, a reply's words with REDACTED_REPLY. It is for serialising only."""
+
+    def refuse(*args, **kwargs):
+        raise TypeError("A per-reader view of a turn is never saved.")
+
+    message.save = refuse
     return message
 
 
@@ -941,7 +953,7 @@ def _redacted(turn):
         created_at=turn.created_at,
     )
     message.withheld = True
-    return message
+    return _read_only(message)
 
 
 class ConversationListView(generics.ListAPIView):
