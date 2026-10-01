@@ -109,7 +109,8 @@ def pipelines_system_prompt(tone_instruction, summary):
 
 def pipelines_figures(user, kind, params, *, today):
     """The page's numbers, from the book's own code:
-    - `entries` and `groups` exactly as `select` returns them, and `count`;
+    - `groups` exactly as `select` returns them, and `count` (from its
+      `entries`, not stored — nothing reads the list itself);
     - the tiles over every stage of the filtered set (`summary`);
     - `largest`: the ten largest open listed items (`stage=<listed open>`,
       `sort=-mrr`), or the ten largest listed when no open stage is listed;
@@ -130,7 +131,6 @@ def pipelines_figures(user, kind, params, *, today):
     ]
     return {
         "book": book,
-        "entries": entries,
         "count": len(entries),
         "groups": groups,
         "summary": build_summary(book, today=today),
