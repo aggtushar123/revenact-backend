@@ -62,8 +62,8 @@ class WithheldAskContextFixture(ChartFixture):
         )
         Contact.objects.create(account=self.hidden, name="Hal Hidden")
 
-    def send(self, context, conversation=None, content=QUESTION):
-        self.client.force_authenticate(self.alice)
+    def send(self, context, conversation=None, content=QUESTION, user=None):
+        self.client.force_authenticate(user or self.alice)
         body = {"content": content, "context": context}
         if conversation is not None:
             body["conversation_id"] = conversation
@@ -285,3 +285,54 @@ class DroppedReplyTests(WithheldAskContextFixture):
 
         self.assertEqual(body["messages"][0]["context"], self.ask_context)
         self.assertEqual(body["origin"], self.ask_context)
+
+
+class MultiTurnTests(WithheldAskContextFixture):
+    """Two Ask turns, one reply readable to the Viewer and one withheld: each
+    question's context follows its own reply, and the origin follows the
+    first Ask turn's. A later Ask reply is fed the earlier ones as history and
+    folds in their snapshot, so after a withheld first reply the second is
+    readable only when the Viewer asked it themselves (an asker always reads
+    their own Ask reply)."""
+
+    READABLE = {"surface": "accounts", "view": "list", "filters": {"search": "Seen"}}
+    WITHHELD = {"surface": "accounts", "view": "list", "filters": {"search": "Hidden"}}
+
+    def converse(self, first, second, second_by=None):
+        conversation = self.send(first, content=QUESTION + " (1)")
+        self.send(second, conversation=conversation, content=QUESTION + " (2)", user=second_by)
+        stored = {
+            m.content: m.context
+            for m in Message.objects.filter(conversation_id=conversation, role="user")
+        }
+        origin = Conversation.objects.get(pk=conversation).origin
+        body = self.detail(self.viewer, conversation)
+        questions = [m for m in body["messages"] if m["role"] == "user"]
+        replies = [m["content"] for m in body["messages"] if m["role"] == "assistant"]
+        listed = self.listed(self.viewer, conversation)
+        return stored, origin, body, questions, replies, listed
+
+    def test_a_readable_first_and_a_withheld_second(self):
+        stored, origin, body, questions, replies, listed = self.converse(
+            self.READABLE, self.WITHHELD
+        )
+
+        self.assertEqual(replies, [ANSWER, REDACTED_REPLY])
+        self.assertEqual(questions[0]["context"], stored[QUESTION + " (1)"])
+        self.assertIsNotNone(questions[0]["context"])
+        self.assertIsNone(questions[1]["context"])
+        self.assertEqual(body["origin"], origin)
+        self.assertIsNotNone(body["origin"])
+        self.assertEqual(listed["origin"], origin)
+
+    def test_a_withheld_first_and_a_readable_second(self):
+        stored, origin, body, questions, replies, listed = self.converse(
+            self.WITHHELD, self.READABLE, second_by=self.viewer
+        )
+
+        self.assertEqual(replies, [REDACTED_REPLY, ANSWER])
+        self.assertIsNone(questions[0]["context"])
+        self.assertEqual(questions[1]["context"], stored[QUESTION + " (2)"])
+        self.assertIsNotNone(questions[1]["context"])
+        self.assertIsNone(body["origin"])
+        self.assertIsNone(listed["origin"])
