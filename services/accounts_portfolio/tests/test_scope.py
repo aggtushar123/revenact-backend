@@ -19,9 +19,9 @@ class SegmentScopeTests(AccountPortfolioFixture):
     def test_a_scope_never_widens_what_the_viewer_may_open(self):
         north = self.account("North")
         hidden = self.account("Hidden", customers=[self.taco], owner=self.other)
-        self.assertEqual(
-            self.names(Account.objects.filter(pk__in=[north.pk, hidden.pk])), ["North"]
-        )
+        foreign = self.account("Foreign", customers=[self.globex], owner=None)
+        scope = Account.objects.filter(pk__in=[north.pk, hidden.pk, foreign.pk])
+        self.assertEqual(self.names(scope), ["North"])
 
     def test_the_page_filters_still_narrow_a_scope(self):
         self.account("North")
