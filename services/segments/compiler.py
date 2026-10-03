@@ -55,8 +55,9 @@ from django.db.models.lookups import Exact
 from services.accounts_portfolio.book import account_renewing_q
 from services.attributes.models import AIAttribute, AIAttributeValue
 from services.customers.contact import last_account_contact_annotation, last_contact_annotation
-from services.customers.models import Customer, Ticket
+from services.customers.models import Account, Customer, Ticket
 from services.customers.personal import visible_tickets
+from services.customers.scoping import visible_accounts, visible_customers
 from services.fx_rates.conversion import rates_for
 from services.organizations.book import CHURNED, NPS_Q, health_q, renewing_q
 
@@ -297,6 +298,8 @@ class Compiler:
 
     def leaf_q(self, condition):
         key, op, value = condition.get("field", ""), condition.get("op"), condition.get("value")
+        if self.kind == "contact" and key.startswith(registry.PARENT_PREFIX):
+            return self._parent(key.removeprefix(registry.PARENT_PREFIX), op, value)
         field = registry.resolve(self.kind, key, self.attributes)
         if field is None or op not in field.operators:
             return nothing()
@@ -316,6 +319,10 @@ class Compiler:
             return renewing(value, today=self.today)
         if field.type == OWNER:
             return _choice(op, value, _owner)
+        if key == "organisation":
+            return self._organisation(op, value)
+        if key == "account":
+            return self._account(op, value)
         if field.type == RECORD:
             return _ids(field.column, op, value)
         json = key.startswith(registry.ATTRIBUTE_PREFIX)
@@ -406,6 +413,54 @@ class Compiler:
             low, high = value
             return Q(**{f"{column}__gte": ago(high), f"{column}__lte": ago(low)})
         return nothing()
+
+    def _openable(self, record, op, value):
+        ids = [part for part in (value if op == "in" else [value]) if part is not None]
+        # SOC2:AUTH-02 an id the viewer cannot open names nothing in their book
+        records = (
+            visible_customers(self.user) if record == "customer" else visible_accounts(self.user)
+        )
+        return records.filter(pk__in=ids).values("pk")
+
+    def _organisation(self, op, value):
+        """An account linked to the organisation; a contact on it or on one of
+        its accounts."""
+        openable = self._openable("customer", op, value)
+        if self.kind == "account":
+            hit = Q(customers__in=openable)
+        else:
+            hit = Q(customer__in=openable) | Q(account__customers__in=openable)
+        return ~hit if op == "is_not" else hit
+
+    def _account(self, op, value):
+        hit = Q(account__in=self._openable("account", op, value))
+        return ~hit if op == "is_not" else hit
+
+    def _parent(self, key, op, value):
+        """A contacts rule on the contact's own organisation or account. The
+        condition is compiled for each parent kind that has the field, over
+        that kind's records in the workspace, and a contact matches when its
+        own parent does. A contact is visible only through a parent its viewer
+        may open, so this reads nothing the viewer could not."""
+        if key in registry.PARENT_EXCLUDED:
+            return nothing()
+        organisation_id = self.user.organisation_id
+        parents = (
+            ("customer", "customer__in", Customer.objects.filter(organisation_id=organisation_id)),
+            (
+                "account",
+                "account__in",
+                Account.objects.filter(customers__organisation_id=organisation_id),
+            ),
+        )
+        sides = []
+        for parent_kind, relation, records in parents:
+            if registry.resolve(parent_kind, key, self.attributes) is None:
+                continue
+            sub = Compiler(parent_kind, user=self.user, today=self.today, cache=self.cache)
+            condition = sub.leaf_q({"field": key, "op": op, "value": value})
+            sides.append(Q(**{relation: sub.annotated(records).filter(condition).values("pk")}))
+        return _combine("any", sides)
 
 
 def compile_rules(rules, kind, *, user, today):
