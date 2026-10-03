@@ -4792,7 +4792,8 @@ invite card is gone.
   { "id": 11, "title": "Why is Sam negative?", "origin": { "surface": "contacts", "view": "person", "contact": 41, "label": "Sam Pizza · Pizza Hut" }, "created_at": "2026-09-28T10:00:00Z", "updated_at": "2026-09-28T10:01:00Z" },
   { "id": 12, "title": "Who is unhappy?", "origin": { "surface": "contacts", "view": "list", "filters": { "sentiment": "negative" }, "label": "Contacts · Negative" }, "created_at": "2026-09-28T10:05:00Z", "updated_at": "2026-09-28T10:06:00Z" },
   { "id": 14, "title": "What renews soon?", "origin": { "surface": "accounts", "view": "board", "filters": { "renews_within": "30" }, "label": "Accounts · Renews within 30 days" }, "created_at": "2026-09-30T10:00:00Z", "updated_at": "2026-09-30T10:01:00Z" },
-  { "id": 15, "title": "What does this mean for EMEA?", "origin": { "surface": "accounts", "view": "detail", "account": 12, "label": "EMEA" }, "created_at": "2026-09-30T10:05:00Z", "updated_at": "2026-09-30T10:06:00Z" }
+  { "id": 15, "title": "What does this mean for EMEA?", "origin": { "surface": "accounts", "view": "detail", "account": 12, "label": "EMEA" }, "created_at": "2026-09-30T10:05:00Z", "updated_at": "2026-09-30T10:06:00Z" },
+  { "id": 16, "title": "What should I chase?", "origin": { "surface": "pipelines", "kind": "opportunities", "view": "list", "filters": {}, "label": "Pipelines · Opportunities" }, "created_at": "2026-10-01T10:00:00Z", "updated_at": "2026-10-01T10:01:00Z" }
 ]
 ```
 
@@ -4869,7 +4870,7 @@ client never sends figures.
 }
 ```
 
-- `surface`: `"dashboard"` (the fields below), `"organizations"` (see **Asked from Organizations** below), `"contacts"` (see **Asked from Contacts** below) or `"accounts"` (see **Asked from Accounts** below). Any other value is `{"context": {"surface": ["\"x\" is not a valid choice."]}}`.
+- `surface`: `"dashboard"` (the fields below), `"organizations"` (see **Asked from Organizations** below), `"contacts"` (see **Asked from Contacts** below) `"accounts"` (see **Asked from Accounts** below) or `"pipelines"` (see **Asked from Pipelines** below). Any other value is `{"context": {"surface": ["\"x\" is not a valid choice."]}}`.
 - `area`: `overview | revenue | health | support`.
 - `view`: one of the area's sub-views (`DASHBOARD_VIEWS` in `services/copilot/dashboard_context.py`, mirroring the frontend's `src/pages/dashboard/areas.ts`): revenue `forecast|customers|products`; health `triage|divergence|movement|renewals|usage|activity|distribution`; support `tickets|topics`. The Overview takes `null`.
 - `filters`: only `owner`, `lifecycle`, `customer`; other keys are dropped, and a value that is not text or a whole number is ignored.
@@ -5146,7 +5147,93 @@ organisation, account, record and ticket department the reply drew on. This fail
 since every real Accounts reply stores one. An account that becomes unreadable between the check and
 the grounding is a `404`.
 
-**Shared sessions.** Every Ask reply (Dashboard, Organizations, Contacts or Accounts) stores a snapshot when it is
+**Asked from Pipelines** (`services/copilot/pipelines_context.py`, `pipelines_grounding.py`). The
+List or the Board, for opportunities or risks:
+
+```json
+{
+  "content": "Should we worry about this?",
+  "context": {
+    "surface": "pipelines",
+    "kind": "risks",
+    "view": "board",
+    "filters": {"owner": "2", "priority": "high"},
+    "focus": {"kind": "risk", "id": 31}
+  }
+}
+```
+
+- `kind`: `opportunities | risks`, optional, opportunities by default (as the page's URL leaves it
+  out); always stored. `view`: `list | board`, required. One conversation can span both kinds and
+  both views: each user turn stores its own context, and `origin` stays the first.
+- `filters`: the Pipelines book's own query keys (`GET /pipelines/<kind>/`) — `search`,
+  `organisation`, `account`, `owner`, `stage`, `priority`, `department`, `date`, `changed`, `ids`,
+  `sort`, `group` — through `services/pipelines_portfolio/params.py:parse_params`. An unknown key,
+  or a value the page would ignore, is dropped, never rejected. Filters are stored in the page's URL
+  spelling, with the default stages, sort (`-mrr`) and group (`stage`) left out, and "not grouped"
+  stored as `"group": "none"` (`""` is accepted for it; the Board reads it as stage, as the page
+  does). The default stages are each view's own: with no `stage` filter, the List lists the open
+  stages and the Board every stage; a `stage` filter (closed stages included) or `ids` (every
+  stage) changes them. An `organisation` id the caller cannot open is `400 {"context": {"filters":
+  {"organisation": ["Not an organisation you can open."]}}}`, and an `account` id `400 {"context":
+  {"filters": {"account": ["Not an account you can open."]}}}`, each the same whether it exists or
+  not.
+- `focus`: `null`, or the item "Ask about this" was pressed on, `{"kind": "opportunity" | "risk",
+  "id"}`, matching `kind`. It must be an item the caller may read (its organisation or account
+  openable and its department theirs, `pipelines_portfolio.book.scope`). It need not match the
+  filters: a closed item on the Board can be asked about. Anything else — missing, hidden, another
+  department, another tenant, the other kind, a malformed shape — is `400 {"context": {"focus":
+  ["Not an opportunity or risk you can open."]}}`.
+- The stored context gains `label`, built by the server, never the client's: "Pipelines" and the
+  kind, then the active filters in toolbar order ("Pipelines · Opportunities · Owner: Carl CSM ·
+  Priority: High"; the `view` is stored separately). An owner the caller may not be told about (not
+  in their organisation, or owning nothing they may read), and the page's own `outside` bucket,
+  both read "Owner: Not in your book"; `unassigned` reads "Owner: Unassigned". The History tag is
+  the `label`, and `origin` is the stored context without `focus`.
+
+The digest is computed by the book's own code (`load_book`, `select`, `build_summary`,
+`order_entries`), so every figure matches `GET /pipelines/<kind>/` for the same filters and the same
+person. It contains:
+
+- the screen, the filters, the stages listed and the currency;
+- the tiles, over every stage of the filtered set whatever stages are listed;
+- the sections for the effective group;
+- "Largest open … listed, by MRR": the ten largest open items listed (all listed items when the
+  stage filter names no open stage); when the listed stages mix open and closed ones (the Board
+  with no stage filter), also "Largest closed … listed, by MRR", the ten largest closed items
+  listed;
+- the listed items that are overdue (most overdue first) and the open ones that close (risks: are
+  due) within 90 days (soonest first), at most 25 lines each, then "…and N more";
+- the focused item, re-read at grounding through the same two rules (every stage); if it stopped
+  being readable, the digest says so.
+
+An item names only its own organisation or account and an owner from the caller's organisation.
+Titles, names and the search text are record text, fenced inside `<dashboard_data>`. Nothing is
+retrieved for the question; `sources` is empty.
+
+Metered as the `pipelines` purpose (`usage.PURPOSES["pipelines"] = "Ask Revenact on Pipelines"`).
+The snapshot fixed on the reply:
+
+- `grounded_customer_ids`: the organisation of every organisation-level item counted (every stage
+  of the filtered set, and the focus), plus the organisation filter;
+- `grounded_pipeline`: the account of every account-level item counted, and every department
+  counted (checked by `forecast.pipeline_readable_by`);
+- `grounded_records`: every item quoted (largest, largest closed, overdue, closing or due, the
+  focus) as an `opportunity` or `risk` reference, plus each account filter as an `account`
+  reference;
+- `grounded_tickets`: empty (no ticket is counted).
+
+A mentioned-only reader must be able to open every organisation and account, read every
+department, and read each quoted item as it stands when they read: `opportunity` and `risk` have
+their own record rules, which re-read the item through `pipelines_portfolio.book.scope` (parent and
+department), so an item moved to another department or account after the reply withholds it. A
+quoted item since deleted reads as one the reader cannot open (`MISSING_IS_UNREADABLE`). This fails
+closed for any reader the rule binds: `grounded_pipeline` and `grounded_tickets` are only checked —
+and so only withhold the reply when missing, malformed or unknown — for a reader who does not see
+every account; a reader who sees every account and reads every department is not bound by either
+snapshot (`_reply_readable_by`'s `reader.sees_everything` branch).
+
+**Shared sessions.** Every Ask reply (Dashboard, Organizations, Contacts, Accounts or Pipelines) stores a snapshot when it is
 written: `grounded_customer_ids` — the ids of every customer its digest could have drawn on — and
 `carries_anomaly_text` — whether it could carry a stored, org-wide anomaly title or summary
 (`services/copilot/views.ask_snapshot`, migration `0013_message_grounded_customer_ids`). A
@@ -5174,20 +5261,20 @@ id check; for anyone else the ids of every reply in the conversation are checked
 read.
 
 `400` if `content` is blank or over 8000 characters, or `{"context": {<field>: [..]}}` for a
-wrong `surface`, `area`, `view` (Dashboard, Organizations, Contacts or Accounts), `focus.kind`, a
+wrong `surface`, `area`, `kind`, `view` (Dashboard, Organizations, Contacts, Accounts or Pipelines), `focus.kind`, a
 `contact`, `organization` or `account` (or a `filters.customer`/`filters.account`/
 `filters.organisation`) the caller cannot open, a focus item the caller cannot open, more than 200
 `ids`, or an attention key not on the caller's list (`{"context": {"focus": {"key": ["Not an item
 on your list."]}}}` — the same for a malformed key and someone else's). `403` if
 `Organisation.ai_agent_enabled` is `false`. `429` if the organisation's monthly budget for the
-purpose (`copilot`; or `dashboard` / `organizations` / `contacts` / `accounts` for a `context` from
+purpose (`copilot`; or `dashboard` / `organizations` / `contacts` / `accounts` / `pipelines` for a `context` from
 that surface) is spent. `503` if the selected provider's credentials aren't configured. `502` if the
 API call itself fails.
 
 **Response `200`** — the (possibly newly created) Conversation, same nested shape as the detail
 endpoint's GET, including this turn's user message (with `context` echoed, after the focus
 intersection) and the model's reply. `origin` is set from the first Ask message of any surface
-(Dashboard, Organizations, Contacts or Accounts) and never overwritten.
+(Dashboard, Organizations, Contacts, Accounts or Pipelines) and never overwritten.
 
 ---
 

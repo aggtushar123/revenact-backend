@@ -19,6 +19,7 @@ PURPOSES = {
     "organizations": "Ask Revenact on Organizations",
     "contacts": "Ask Revenact on Contacts",
     "accounts": "Ask Revenact on Accounts",
+    "pipelines": "Ask Revenact on Pipelines",
     "headlines": "Account headlines",
     "classification": "Interaction classifier",
     "brief": "Management brief",

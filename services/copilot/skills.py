@@ -158,6 +158,31 @@ SKILLS = (
         "/accounts",
     ),
     Skill(
+        "pipelines",
+        "Ask Revenact on Pipelines",
+        "Answers a question about the opportunities or risks in view on Pipelines, from the "
+        "same List or Board.",
+        (
+            "The asker's opportunities or risks recomputed with the Pipelines book's code for "
+            "the page's kind and filters — the summary tiles over every stage, the sections, "
+            "the ten largest items listed, what is overdue and what closes or is due within 90 "
+            "days (at most 25 each)",
+            "The item asked about, read again under the same two rules",
+            "The conversation so far",
+        ),
+        ("Answer in prose", "Name the items it drew on by their title"),
+        (
+            "Change a record",
+            "Send anything to a customer",
+            "See opportunities, risks, organisations or accounts outside the asker's visibility",
+            "Read another department's opportunities or risks unless the asker may",
+            "Take figures from the client",
+        ),
+        "A person asks from the Pipelines List or Board Ask rail",
+        "Any signed-in user, while the organisation's AI agent is enabled",
+        "/pipelines",
+    ),
+    Skill(
         "headlines",
         "Account headlines",
         "Summarises one account's last three months of real activity into headlines.",
