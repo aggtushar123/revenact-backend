@@ -259,20 +259,32 @@ class ContactFieldTests(AccountsAndContactsFixture):
         """`parent.` compiles each field with the organisation and account
         code the tests above cover field by field. These cases pin the
         mechanism: both parents, a field only an organisation has, the
-        owner, an AI attribute, a date window and the churn flag."""
+        owner, an AI attribute, `is_not` (which includes no value), a date
+        window and the churn flag."""
         cases = (
             ("parent.health_score", "gt", 6, {"Sam", "Uma"}),
             ("parent.ces_percentage", "gt", 50, {"Sam"}),
             # Decision 4: the account lacks the field, so not even is_empty.
             ("parent.ces_percentage", "is_empty", None, {"Tom"}),
             ("parent.owner", "is", self.csm.pk, {"Sam", "Uma"}),
+            ("parent.owner", "is_not", self.csm.pk, {"Tom", "Wes"}),
             ("parent.attr:plan", "is", "pro", {"Sam", "Wes"}),
+            # "Is not" includes "no answer": neither Taco Bell nor Pizza EMEA has one.
+            ("parent.attr:plan", "is_not", "pro", {"Uma", "Tom"}),
             ("parent.renewal_date", "within_next", 30, {"Tom"}),
             ("parent.churned", "is", False, {"Sam", "Tom"}),
         )
         for field, op, value, expected in cases:
             with self.subTest(field=field, op=op):
                 self.assertEqual(self.contacts(rule(field, op, value)), expected)
+
+    def test_an_operator_the_parents_field_does_not_take_matches_nothing(self):
+        # Decision 2: numbers and percents take no `is_not`. Validation refuses
+        # it with a 400; the compiler still never reads it as "not equal".
+        # Pizza Hut's CES is 80 and its health 8.0, so a not-equal reading
+        # would match Tom, and Uma, Tom and Wes.
+        self.assertEqual(self.contacts(rule("parent.ces_percentage", "is_not", 80)), set())
+        self.assertEqual(self.contacts(rule("parent.health_score", "is_not", 8.0)), set())
 
     def test_a_parent_field_that_does_not_resolve_matches_nothing(self):
         self.assertEqual(self.contacts(rule("parent.organisation", "is", self.pizza.pk)), set())

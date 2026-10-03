@@ -441,7 +441,11 @@ class Compiler:
         condition is compiled for each parent kind that has the field, over
         that kind's records in the workspace, and a contact matches when its
         own parent does. A contact is visible only through a parent its viewer
-        may open, so this reads nothing the viewer could not."""
+        may open, so this reads nothing the viewer could not. That claim rests
+        on the `contact_belongs_to_exactly_one_parent` check constraint on
+        Contact: a contact has its organisation or its account, never both, so
+        the parent a condition reads is always the one its visibility came
+        through."""
         if key in registry.PARENT_EXCLUDED:
             return nothing()
         organisation_id = self.user.organisation_id
