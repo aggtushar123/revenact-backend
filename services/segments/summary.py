@@ -67,7 +67,12 @@ def segment_summary(members, segment, viewer, *, today, rates=None):
             rates = rates if rates is not None else rates_for(organisation)
             members = members.annotate(_seg_arr=arr_expression(organisation, rates))
             aggregates["arr"] = Sum("_seg_arr")
-            aggregates["unconverted_count"] = Count("pk", filter=Q(_seg_arr__isnull=True))
+            # Unconverted: a value with no rate. A member with no value has
+            # nothing to convert.
+            column = organisation.effective_global_attributes()["arr"]
+            aggregates["unconverted_count"] = Count(
+                "pk", filter=Q(_seg_arr__isnull=True) & Q(**{f"{column}__isnull": False})
+            )
         else:
             aggregates["arr"] = Sum("arr")
         row = members.aggregate(**aggregates)

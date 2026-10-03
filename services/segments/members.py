@@ -2,18 +2,21 @@
 
 Organisations and accounts come from the Organizations and Accounts books
 with the segment's members as `scope`: the same rows, groups, sort and
-keyset cursor. Contacts come from the Contacts list's own filters and
-serializer, paged by a keyset cursor by name. Everything is the viewer's
+keyset cursor. Contacts come from the Contacts list's own filters, order
+(`name`, then `pk`, in the database's collation) and serializer, paged in
+the database by a keyset cursor on that order. Everything is the viewer's
 own: `members_queryset` runs the rules over their book, and the books apply
 visibility again.
 """
+
+from django.db.models import Q
 
 from services.accounts_portfolio import book as account_book
 from services.accounts_portfolio import params as account_params
 from services.accounts_portfolio import rows as account_rows
 from services.accounts_portfolio import shape as account_shape
 from services.accounts_portfolio.export import table as account_table
-from services.customers.contact_list import filtered_contacts, parse_contact_filters
+from services.customers.contact_list import filtered_contacts, parse_contact_filters, search_q
 from services.customers.models import Contact
 from services.customers.scoping import visible_customers
 from services.customers.serializers import ContactSerializer
@@ -24,7 +27,7 @@ from services.organizations import shape as organisation_shape
 from services.organizations.export import table as organisation_table
 from services.organizations.params import DEFAULT_LIMIT, MAX_LIMIT, int_or_none
 from services.organizations.rows import person
-from services.portfolio_core.shape import fingerprint, keyset_page, rank_of
+from services.portfolio_core.shape import decode_cursor, encode_cursor, fingerprint
 
 from .evaluate import hidden_count, members_queryset
 from .export import contacts_table
@@ -55,37 +58,33 @@ def _contact_rows(contacts, viewer):
     return ContactSerializer(contacts, many=True, context={"visible_customer_ids": visible}).data
 
 
-def _name_rank(entry):
-    pk, name = entry
-    folded = name.casefold()
-    return rank_of((), folded, False, (folded, pk))
-
-
 def _contacts_page(scope, viewer, query):
-    contacts = _contacts(scope, viewer, query)
-    filters = parse_contact_filters(query)
-    entries = sorted(
-        Contact.objects.filter(pk__in=contacts.values("pk")).values_list("pk", "name"),
-        key=_name_rank,
-    )
+    """One page after the cursor's (name, pk), fetched with a LIMIT in the
+    list's own order; the count is a plain COUNT, without the list's
+    readable-calls annotation. A malformed cursor, or one cut under another
+    search, reads the first page."""
+    search = parse_contact_filters(query).search
+    state = fingerprint([search])
     limit = int_or_none(query.get("limit"))
-    page, next_cursor = keyset_page(
-        entries,
-        rank=_name_rank,
-        cursor=query.get("cursor") or "",
-        limit=DEFAULT_LIMIT if limit is None or limit < 1 else min(limit, MAX_LIMIT),
-        descending=False,
-        fingerprint=fingerprint(
-            [filters.search, filters.customer, filters.account, filters.sentiment, filters.role]
-        ),
-        grouped=False,
-    )
-    wanted = [pk for pk, _name in page]
-    found = {contact.pk: contact for contact in contacts.filter(pk__in=wanted)}
+    limit = DEFAULT_LIMIT if limit is None or limit < 1 else min(limit, MAX_LIMIT)
+    contacts = _contacts(scope, viewer, query)
+    decoded = decode_cursor(query.get("cursor") or "")
+    if decoded is not None and decoded[0] == () and decoded[5] == state:
+        name, pk = decoded[3], decoded[4]
+        contacts = contacts.filter(Q(name__gt=name) | Q(name=name, pk__gt=pk))
+    rows = list(contacts[: limit + 1])
+    page = rows[:limit]
+    next_cursor = None
+    if len(rows) > limit:
+        last = page[-1]
+        next_cursor = encode_cursor((), 0, None, last.name, last.pk, state)
+    counted = Contact.objects.filter(pk__in=scope.values("pk"))
+    if search:
+        counted = counted.filter(search_q(search))
     return {
-        "results": _contact_rows([found[pk] for pk in wanted], viewer),
+        "results": _contact_rows(page, viewer),
         "next_cursor": next_cursor,
-        "count": len(entries),
+        "count": counted.count(),
         "groups": [],
     }
 
@@ -148,10 +147,8 @@ def members_table(segment, viewer, query, *, today):
         entries, _groups = account_shape.select(portfolio, params)
         rows = [account_rows.row_payload(entry) for entry in entries]
         return account_table(rows, currency=viewer.organisation.currency), len(rows)
-    contacts = sorted(
-        _contacts(scope, viewer, query), key=lambda contact: (contact.name.casefold(), contact.pk)
-    )
-    rows = _contact_rows(contacts, viewer)
+    # The list's own order, `name` then `pk`, as the database sorts them.
+    rows = _contact_rows(_contacts(scope, viewer, query).order_by("name", "pk"), viewer)
     return contacts_table(rows), len(rows)
 
 

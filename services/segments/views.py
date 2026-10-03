@@ -240,30 +240,33 @@ class SegmentMemberView(APIView):
         # SOC2:AUTH-02 only a record the owner may open; missing and hidden read the same
         if not visible_records(segment.kind, request.user).filter(pk=record_id).exists():
             raise Http404
-        was_pinned = record_id in segment.pinned_ids
-        was_excluded = record_id in segment.excluded_ids
-        pinned = [pk for pk in segment.pinned_ids if pk != record_id]
-        excluded = [pk for pk in segment.excluded_ids if pk != record_id]
-        if state == "pinned":
-            pinned.append(record_id)
-        elif state == "excluded":
-            excluded.append(record_id)
-        if len(pinned) > MAX_PINNED or len(excluded) > MAX_PINNED:
-            return Response({"detail": PIN_LIMIT}, status=status.HTTP_400_BAD_REQUEST)
-        events = []
-        if (state == "pinned") != was_pinned:
-            events.append(
-                ("segment.member_pinned", {"record_id": record_id, "pinned": state == "pinned"})
-            )
-        if (state == "excluded") != was_excluded:
-            events.append(
-                (
-                    "segment.member_excluded",
-                    {"record_id": record_id, "excluded": state == "excluded"},
+        with transaction.atomic():
+            # The lists are read under a row lock, so two PATCHes at once
+            # neither lose one another's change nor pass the limit together.
+            segment = Segment.objects.select_for_update().get(pk=segment.pk)
+            was_pinned = record_id in segment.pinned_ids
+            was_excluded = record_id in segment.excluded_ids
+            pinned = [pk for pk in segment.pinned_ids if pk != record_id]
+            excluded = [pk for pk in segment.excluded_ids if pk != record_id]
+            if state == "pinned":
+                pinned.append(record_id)
+            elif state == "excluded":
+                excluded.append(record_id)
+            if len(pinned) > MAX_PINNED or len(excluded) > MAX_PINNED:
+                return Response({"detail": PIN_LIMIT}, status=status.HTTP_400_BAD_REQUEST)
+            events = []
+            if (state == "pinned") != was_pinned:
+                events.append(
+                    ("segment.member_pinned", {"record_id": record_id, "pinned": state == "pinned"})
                 )
-            )
-        if events:
-            with transaction.atomic():
+            if (state == "excluded") != was_excluded:
+                events.append(
+                    (
+                        "segment.member_excluded",
+                        {"record_id": record_id, "excluded": state == "excluded"},
+                    )
+                )
+            if events:
                 segment.pinned_ids, segment.excluded_ids = sorted(pinned), sorted(excluded)
                 segment.save(update_fields=["pinned_ids", "excluded_ids", "updated_at"])
                 rebaseline(segment, today=timezone.localdate())

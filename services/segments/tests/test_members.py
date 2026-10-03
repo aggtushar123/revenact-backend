@@ -13,7 +13,7 @@ from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
 
 from core.models import AuditEvent
-from services.accounts.models import User
+from services.accounts.models import Organisation, User
 from services.accounts_portfolio.fields import FIELDS as ACCOUNT_FIELDS
 from services.customers.models import (
     Account,
@@ -103,9 +103,21 @@ class RowTests(MembersFixture):
         body = self.members(self.admin, segment)
         listed = self.api(self.admin).get("/api/v1/contacts/").data["results"]
         self.assertEqual([row["name"] for row in body["results"]], ["Sam", "Tom", "Uma"])
-        self.assertEqual(
-            body["results"], sorted(listed, key=lambda row: (row["name"].casefold(), row["id"]))
-        )
+        self.assertEqual(body["results"], listed)
+
+    def test_contacts_come_in_the_contacts_lists_own_order(self):
+        # The database's collation, not Python's casefold: under en_US the two
+        # disagree on these names (Python puts "É" after every plain letter).
+        Contact.objects.create(customer=self.pizza, name="Éva")
+        Contact.objects.create(customer=self.pizza, name="Ezra")
+        segment = self.segment(owner=self.admin, kind="contact", rules=ACTIVE)
+        listed = self.api(self.admin).get("/api/v1/contacts/").data["results"]
+        self.assertEqual(self.members(self.admin, segment)["results"], listed)
+        self.assertEqual(self.export_names(segment), [row["name"] for row in listed])
+
+    def export_names(self, segment):
+        response = self.api(self.admin).get(f"{URL}{segment.pk}/members/export.csv")
+        return [row[0] for row in csv.reader(io.StringIO(response.content.decode()))][1:]
 
     def test_sort_group_and_cursor_are_the_lists_own(self):
         segment = self.segment(owner=self.admin, rules=HEALTHY)
@@ -129,6 +141,29 @@ class RowTests(MembersFixture):
         self.assertEqual(
             ([row["name"] for row in second["results"]], second["next_cursor"]), (["Uma"], None)
         )
+
+    def test_a_bad_or_foreign_contacts_cursor_reads_the_first_page(self):
+        segment = self.segment(owner=self.admin, kind="contact", rules=ACTIVE)
+        cursor = self.members(self.admin, segment, limit="1")["next_cursor"]
+        tampered = self.members(self.admin, segment, limit="1", cursor="not-a-cursor")
+        self.assertEqual([row["name"] for row in tampered["results"]], ["Sam"])
+        searched = self.members(self.admin, segment, limit="1", search="tom", cursor=cursor)
+        self.assertEqual(
+            ([row["name"] for row in searched["results"]], searched["count"]), (["Tom"], 1)
+        )
+
+    def test_contacts_are_paged_in_the_database(self):
+        """No query reads every member's row: the page is fetched with a
+        LIMIT and the count is a COUNT."""
+        segment = self.segment(owner=self.admin, kind="contact", rules=ACTIVE)
+        with CaptureQueriesContext(connection) as ctx:
+            body = self.members(self.admin, segment, limit="2")
+        self.assertEqual(body["count"], 3)
+        rows = ('SELECT DISTINCT "customers_contact"', 'SELECT "customers_contact"')
+        reads = [q["sql"] for q in ctx.captured_queries if q["sql"].startswith(rows)]
+        self.assertTrue(reads)
+        for sql in reads:
+            self.assertIn("LIMIT", sql)
 
     def test_the_lists_own_filters_do_not_narrow_members(self):
         segment = self.segment(owner=self.admin, rules=HEALTHY)
@@ -186,6 +221,20 @@ class SummaryTests(MembersFixture):
         summary = self.members(self.admin, segment)["summary"]
         self.assertEqual(
             (summary["members"], summary["arr"], summary["unconverted_count"]), (3, 27000.0, 1)
+        )
+
+    def test_a_member_with_no_arr_value_is_not_unconverted(self):
+        # No mappable ARR column is nullable today; CSAT stands in for one
+        # that is. Taco Bell (EUR, CSAT 40) converts; Yen Co has no value.
+        Organisation.objects.filter(pk=self.org.pk).update(global_attributes={"arr": "csat_score"})
+        Customer.objects.create(
+            organisation=self.org, name="Yen Co", currency="JPY", owner=self.admin,
+            health_score=Decimal("5.0"),
+        )  # fmt: skip
+        segment = self.segment(owner=self.admin, rules=HEALTHY)
+        summary = self.members(User.objects.get(pk=self.admin.pk), segment)["summary"]
+        self.assertEqual(
+            (summary["members"], summary["arr"], summary["unconverted_count"]), (3, 140.0, 0)
         )
 
     def test_entries_and_exits_count_only_what_the_viewer_may_open(self):
@@ -313,6 +362,20 @@ class PinTests(MembersFixture):
             ],
         )
 
+    def test_the_segment_is_locked_before_its_lists_are_changed(self):
+        """Two PATCHes at once must not lose one another's change or pass
+        the limit together: the segment row is read `FOR UPDATE` inside the
+        transaction, before the write."""
+        segment = self.segment(owner=self.admin, rules=HEALTHY)
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(
+                self.mark(self.admin, segment, self.taco.pk, "pinned").status_code, 200
+            )
+        sql = [query["sql"] for query in ctx.captured_queries]
+        lock = next(i for i, q in enumerate(sql) if '"segments_segment"' in q and "FOR UPDATE" in q)
+        write = next(i for i, q in enumerate(sql) if q.startswith('UPDATE "segments_segment"'))
+        self.assertLess(lock, write)
+
     def test_only_a_record_the_owner_may_open_and_missing_reads_the_same(self):
         segment = self.segment(owner=self.csm, rules=HEALTHY)
         hidden = self.mark(self.csm, segment, self.taco.pk, "pinned")
@@ -399,21 +462,6 @@ class PreviewTests(MembersFixture):
             pinned_ids=[self.taco.pk],
         ).data
         self.assertEqual((body["count"], body["results"]), (0, []))
-
-    def test_the_query_count_is_pinned(self):
-        """Six queries for an organisations preview by an admin, whatever the
-        book's size: the caller's active membership and role (capabilities),
-        the first ten members (owner joined), `user.organisation` (the ARR
-        tile's mapping and currency), the FX rates and the tiles (one
-        aggregate)."""
-        client = APIClient()
-        client.force_authenticate(User.objects.get(pk=self.admin.pk))
-        with CaptureQueriesContext(connection) as ctx:
-            response = client.post(
-                f"{URL}preview/", {"kind": "customer", "rules": HEALTHY}, format="json"
-            )
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(len(ctx.captured_queries), 6)
 
 
 class MembersQueryCountTests(MembersFixture):
@@ -519,6 +567,28 @@ class MembersQueryCountTests(MembersFixture):
         self.assertEqual(self.count(self.admin, admins), small)
         self.assertEqual(self.count(self.csm, carls), small_csm)
         self.assertEqual((small, small_csm), (10, 11))
+
+    def test_the_preview_is_pinned_and_flat(self):
+        """Six queries for an organisations preview by an admin, whatever the
+        book's size: the caller's active membership and role (capabilities),
+        the first ten members (owner joined), `user.organisation` (the ARR
+        tile's mapping and currency), the FX rates and the tiles (one
+        aggregate)."""
+
+        def count():
+            client = APIClient()
+            client.force_authenticate(User.objects.get(pk=self.admin.pk))
+            with CaptureQueriesContext(connection) as ctx:
+                response = client.post(
+                    f"{URL}preview/", {"kind": "customer", "rules": HEALTHY}, format="json"
+                )
+            self.assertEqual(response.status_code, 200, response.content)
+            return len(ctx.captured_queries)
+
+        self.book(3)
+        small = count()
+        self.book(12)
+        self.assertEqual((small, count()), (6, 6))
 
 
 class AuthenticationTests(MembersFixture):
