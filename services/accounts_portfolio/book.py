@@ -53,9 +53,13 @@ def account_renewing_q(days, *, today):
     return Q(renewal_date__isnull=False, renewal_date__lte=today + timedelta(days=days))
 
 
-def filtered_queryset(user, params: AccountPortfolioParams, *, today):
+def filtered_queryset(user, params: AccountPortfolioParams, *, today, scope=None):
+    """`scope` is a saved segment's members (services.segments): it can only
+    narrow the visible book."""
     # SOC2:AUTH-02 record visibility comes first; filters only narrow it
     accounts = visible_accounts(user)
+    if scope is not None:
+        accounts = accounts.filter(pk__in=scope.values("pk"))
 
     if params.ids is not None:
         if not params.ids:
@@ -189,14 +193,14 @@ def _entry(account, *, today, snapshots, urgent, organisations):
     )
 
 
-def load_portfolio(user, params: AccountPortfolioParams, *, today):
+def load_portfolio(user, params: AccountPortfolioParams, *, today, scope=None):
     """The whole filtered book with its signals, in a fixed number of
     queries: the accounts (last-touch subquery, owner joined), their
     snapshots, the urgent tickets and the linked organisations."""
     organisation = user.organisation
     earliest = today - timedelta(days=31 * CustomerHealthView.DEFAULT_HISTORY_MONTHS)
     accounts = list(
-        filtered_queryset(user, params, today=today)
+        filtered_queryset(user, params, today=today, scope=scope)
         .annotate(_last_touch_on=last_account_contact_annotation())
         .select_related("owner")
     )
