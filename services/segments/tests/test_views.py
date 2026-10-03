@@ -372,6 +372,21 @@ class WriteTests(Endpoint):
         self.assertFalse(Segment.objects.exists())
         self.assertEqual(self.events("segment.deleted"), [(str(segment.pk), {"kind": "customer"})])
 
+    def test_the_segment_is_locked_before_it_is_deleted(self):
+        """A delete while the nightly step holds the segment must queue up,
+        not race it: the row is read `FOR UPDATE` before the `DELETE`."""
+        segment = self.segment(owner=self.csm)
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(self.api(self.csm).delete(f"{URL}{segment.pk}/").status_code, 204)
+        sql = [query["sql"] for query in ctx.captured_queries]
+        lock = next(
+            (i for i, q in enumerate(sql) if '"segments_segment"' in q and "FOR UPDATE" in q),
+            None,
+        )
+        delete = next(i for i, q in enumerate(sql) if q.startswith('DELETE FROM "segments_segment"'))
+        self.assertIsNotNone(lock)
+        self.assertLess(lock, delete)
+
 
 class DuplicateTests(Endpoint):
     def duplicate(self, user, segment):

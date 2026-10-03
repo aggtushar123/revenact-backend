@@ -4367,7 +4367,7 @@ Body: `{name, kind: "customer" | "account" | "contact", description?, rules?, sh
   - Changing `rules` re-takes the baseline.
   - Audited as `segment.updated` with the changed field names, and as `segment.shared` when `sharing` or `shared_with` changed.
   - A concurrent edit and the nightly step take the same row lock, so a PATCH waits for an in-flight evaluation (and sees its result) rather than overwriting it; the write only ever changes the fields the request named.
-- `DELETE` → `204`, audited as `segment.deleted`.
+- `DELETE` → `204`, audited as `segment.deleted`. It takes the segment's row lock first, the one the nightly step holds, so a delete during an evaluation waits for it.
 
 ### `POST /api/v1/segments/<id>/duplicate/`
 

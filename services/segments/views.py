@@ -144,6 +144,9 @@ class SegmentDetailView(APIView):
     def delete(self, request, pk):
         segment = get_owned(request.user, pk)
         with transaction.atomic():
+            # Take the nightly step's row lock first, so a delete during an
+            # evaluation waits for it instead of racing it.
+            segment = Segment.objects.select_for_update(of=("self",)).get(pk=segment.pk)
             audit.record(  # SOC2:LOG-01
                 "segment.deleted", request=request, target=segment, metadata={"kind": segment.kind}
             )
