@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core import audit
+from services.accounts.models import User
 from services.organizations.export import CSVRenderer
 
 from .access import get_owned, get_readable, readable_segments
@@ -27,6 +28,11 @@ PIN_LIMIT = f"A segment can pin at most {MAX_PINNED} records, and keep out as ma
 
 
 def _limit_reached(user):
+    """Whether `user` already owns the most segments allowed. Call inside the
+    transaction that creates the new one: the owner's User row is locked
+    first, so two creates at once queue up instead of both passing the
+    count."""
+    list(User.objects.select_for_update().filter(pk=user.pk).values_list("pk", flat=True))
     return Segment.objects.filter(owner=user).count() >= MAX_OWNED
 
 
@@ -80,11 +86,11 @@ class SegmentListCreateView(APIView):
         return Response(list_rows(segments, request.user, today=timezone.localdate()))
 
     def post(self, request):
-        if _limit_reached(request.user):
-            return Response({"detail": LIMIT_REACHED}, status=status.HTTP_400_BAD_REQUEST)
         serializer = SegmentWriteSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
+            if _limit_reached(request.user):
+                return Response({"detail": LIMIT_REACHED}, status=status.HTTP_400_BAD_REQUEST)
             segment = serializer.save(
                 owner=request.user, organisation_id=request.user.organisation_id
             )
@@ -146,10 +152,10 @@ class SegmentDuplicateView(APIView):
 
     def post(self, request, pk):
         source = get_readable(request.user, pk)
-        if _limit_reached(request.user):
-            return Response({"detail": LIMIT_REACHED}, status=status.HTTP_400_BAD_REQUEST)
         rules, _labels = present_rules(source.rules, source.kind, user=request.user)
         with transaction.atomic():
+            if _limit_reached(request.user):
+                return Response({"detail": LIMIT_REACHED}, status=status.HTTP_400_BAD_REQUEST)
             duplicate = Segment.objects.create(
                 organisation_id=request.user.organisation_id,
                 owner=request.user,

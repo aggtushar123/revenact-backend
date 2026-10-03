@@ -113,17 +113,46 @@ class CreateTests(Endpoint):
         )
         self.assertEqual(self.post(self.admin).status_code, 201)
 
+    def test_the_limit_is_counted_under_a_lock_on_the_owner(self):
+        """Two creates at once must not both pass the count: the owner's row
+        is locked (`FOR UPDATE`) before their segments are counted."""
+        for create in (
+            lambda: self.post(self.csm),
+            lambda: self.api(self.csm).post(
+                f"{URL}{self.segment(owner=self.admin, sharing='workspace').pk}/duplicate/"
+            ),
+        ):
+            with CaptureQueriesContext(connection) as ctx:
+                self.assertEqual(create().status_code, 201)
+            sql = [query["sql"] for query in ctx.captured_queries]
+            lock = next(
+                i for i, q in enumerate(sql) if '"accounts_user"' in q and "FOR UPDATE" in q
+            )
+            count = next(
+                i
+                for i, q in enumerate(sql)
+                if q.startswith("SELECT COUNT(*)") and '"segments_segment"' in q
+            )
+            self.assertLess(lock, count)
+
     def test_sharing_with_people_needs_active_teammates_from_the_workspace(self):
         self.assertEqual(
             self.post(self.csm, sharing="people", shared_with=[]).data,
             {"shared_with": ["Choose at least one teammate."]},
         )
         inactive = person("ivy@acme.io", "Ivy", self.org, is_active=False)
-        for outsider in (self.stranger.pk, self.csm.pk, inactive.pk, 999999):
+        missing = self.post(self.csm, sharing="people", shared_with=[999999])
+        self.assertEqual(missing.status_code, 400)
+        self.assertIn("shared_with", missing.data)
+        for outsider in (self.stranger.pk, self.csm.pk, inactive.pk):
             with self.subTest(outsider=outsider):
                 response = self.post(self.csm, sharing="people", shared_with=[outsider])
-                self.assertEqual(response.status_code, 400)
-                self.assertIn("shared_with", response.data)
+                # The whole body, with the id swapped: a foreign teammate and
+                # a missing one read the same.
+                self.assertEqual(
+                    (response.status_code, json.dumps(response.data)),
+                    (400, json.dumps(missing.data).replace("999999", str(outsider))),
+                )
 
 
 class ListTests(Endpoint):
@@ -193,7 +222,13 @@ class ListTests(Endpoint):
     def test_the_query_count_is_pinned(self):
         """Two queries, whatever the number of segments: the segments (owner
         joined, member lists deferred), and every owned row's last 30 days
-        of changes, counted per day."""
+        of changes, counted per day. Rows owned by others and shared by
+        name with several people are among them, so a per-row owner or
+        teammates lookup would show."""
+        for name in ("D", "E"):
+            theirs = self.segment(owner=self.other, name=name, sharing="people")
+            theirs.shared_with.add(self.csm, self.admin)
+        self.segment(owner=self.admin, name="F", sharing="workspace")
         for name in ("A", "B", "C"):
             segment = self.segment(
                 owner=self.csm, name=name, member_count=1, last_evaluated_on=self.today
@@ -247,12 +282,14 @@ class DetailTests(Endpoint):
         self.assertNotIn(str(self.pizza.pk), json.dumps(dana["rules"]))
 
     def test_pins_of_hidden_records_are_neither_shown_nor_named(self):
+        apac = self.make_account("Pizza APAC", self.pizza, self.csm)
         segment = self.segment(
-            owner=self.csm, sharing="workspace", pinned_ids=[self.pizza.pk],
-            excluded_ids=[self.emea.pk],
+            owner=self.csm, kind="account", sharing="workspace", pinned_ids=[self.emea.pk],
+            excluded_ids=[apac.pk],
         )  # fmt: skip
-        self.assertEqual(self.get(self.csm, segment).data["pinned_ids"], [self.pizza.pk])
-        self.assertEqual(self.get(self.other, segment).data["pinned_ids"], [])
+        carl, dana = self.get(self.csm, segment).data, self.get(self.other, segment).data
+        self.assertEqual((carl["pinned_ids"], carl["excluded_ids"]), ([self.emea.pk], [apac.pk]))
+        self.assertEqual((dana["pinned_ids"], dana["excluded_ids"]), ([], []))
 
     def test_the_query_count_is_pinned(self):
         """Two queries for a segment with no ids in its rules and no pins:
@@ -317,13 +354,13 @@ class WriteTests(Endpoint):
         shared = self.segment(owner=self.csm, name="Shared", sharing="workspace")
         private = self.segment(owner=self.csm, name="Private")
         dana = self.api(self.other)
-        for target, expected in ((shared, (403, NOT_OWNER)), (private, (404, None))):
+        missing = dana.delete(f"{URL}999999/")
+        self.assertEqual(missing.status_code, 404)
+        for target, expected in ((shared, (403, NOT_OWNER)), (private, (404, missing.data))):
             path = f"{URL}{target.pk}/"
             for response in (dana.patch(path, {"name": "x"}, format="json"), dana.delete(path)):
                 with self.subTest(target=target.name, method=response.request["REQUEST_METHOD"]):
-                    self.assertEqual(response.status_code, expected[0])
-                    if expected[1] is not None:
-                        self.assertEqual(response.data, expected[1])
+                    self.assertEqual((response.status_code, response.data), expected)
         self.assertEqual(
             sorted(Segment.objects.values_list("name", flat=True)), ["Private", "Shared"]
         )
