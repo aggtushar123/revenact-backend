@@ -117,12 +117,19 @@ class SegmentDetailView(APIView):
 
     def patch(self, request, pk):
         segment = get_owned(request.user, pk)
-        serializer = SegmentWriteSerializer(
-            segment, data=request.data, partial=True, context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        changed = _changed(segment, serializer.validated_data)
         with transaction.atomic():
+            # Re-read under the row lock the nightly step takes, so an edit
+            # made while it runs works on what it wrote, not a stale copy.
+            segment = (
+                Segment.objects.select_for_update(of=("self",))
+                .select_related("owner")
+                .get(pk=segment.pk)
+            )
+            serializer = SegmentWriteSerializer(
+                segment, data=request.data, partial=True, context={"request": request}
+            )
+            serializer.is_valid(raise_exception=True)
+            changed = _changed(segment, serializer.validated_data)
             segment = serializer.save()
             if "rules" in changed:
                 rebaseline(segment, today=timezone.localdate())

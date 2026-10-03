@@ -17,7 +17,7 @@ from rest_framework.test import APIClient
 from services.accounts.models import User
 from services.customers.models import Customer
 from services.notifications.models import Notification
-from services.segments import nightly
+from services.segments import nightly, views
 from services.segments.baseline import rebaseline
 from services.segments.models import Segment, SegmentChange
 from services.segments.nightly import alert_message, evaluate_nightly
@@ -132,10 +132,14 @@ class NightlyTests(NightlyFixture):
     def test_evaluated_as_the_owner(self):
         carls = self.segment(owner=self.csm, rules=POOR, name="Carl's")
         rebaseline(carls, today=self.yesterday)
-        self.set_health(self.taco, "1.0")
+        # Both are poor now; Carl can open Pizza Hut and not Taco Bell.
+        self.set_health(self.pizza, "2.0")
         evaluate_nightly(today=self.today)
         carls.refresh_from_db()
-        self.assertEqual((carls.last_members, self.changes(carls)), ([], []))
+        self.assertEqual(
+            (carls.last_members, self.changes(carls)),
+            ([self.pizza.pk], [(self.pizza.pk, "entered", self.today, ["health_category"])]),
+        )
 
     def test_reasons_for_a_deleted_record_lost_access_and_the_churn_default(self):
         segment = self.segment(owner=self.csm, rules=rule("health_score", "gt", 0), name="Book")
@@ -180,8 +184,9 @@ class NightlyTests(NightlyFixture):
         self.watch.refresh_from_db()
         self.assertEqual((self.watch.last_members, self.changes()), ([self.taco.pk], []))
 
-    def test_a_failing_segment_is_logged_and_skipped(self):
-        other = self.segment(owner=self.csm, rules=POOR, name="Carl's")
+    def test_a_failing_segment_is_logged_skipped_and_retried_on_the_next_run(self):
+        other = self.segment(owner=self.csm, rules=POOR, name="Carl's", alert_on_changes=True)
+        self.set_health(self.pizza, "2.0")
         real = nightly.member_ids
 
         def flaky(segment, user, *, today):
@@ -200,6 +205,35 @@ class NightlyTests(NightlyFixture):
         self.assertEqual(
             (self.watch.last_evaluated_on, other.last_evaluated_on), (self.yesterday, self.today)
         )
+        # The same night, run again: the failed one is evaluated; the other,
+        # already done today, is skipped and writes nothing more.
+        again = evaluate_nightly(today=self.today)
+        self.watch.refresh_from_db()
+        self.assertEqual((again.evaluated, again.changes, again.alerts), (1, 1, 1))
+        self.assertEqual(self.watch.last_evaluated_on, self.today)
+        self.assertEqual(self.changes(other), [])
+        self.assertEqual(
+            list(Notification.objects.values_list("message", flat=True)),
+            ["Poor health: 1 entered, 0 left"],
+        )
+
+    def test_an_edit_during_the_night_keeps_what_the_step_wrote(self):
+        stale = Segment.objects.select_related("owner").get(pk=self.watch.pk)
+        self.set_health(self.pizza, "2.0")
+        evaluate_nightly(today=self.today)
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        # The edit read the segment before the step ran.
+        with patch.object(views, "get_owned", return_value=stale):
+            response = client.patch(f"{URL}{self.watch.pk}/", {"name": "Renamed"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.watch.refresh_from_db()
+        self.assertEqual(
+            (self.watch.name, self.watch.last_members, self.watch.last_evaluated_on),
+            ("Renamed", sorted([self.pizza.pk, self.taco.pk]), self.today),
+        )
+        evaluate_nightly(today=self.today)
+        self.assertEqual(Notification.objects.count(), 1)
 
     def test_one_workspace_at_a_time(self):
         evaluate_nightly(self.other_org, today=self.today)

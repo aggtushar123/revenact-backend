@@ -66,6 +66,18 @@ class SegmentWriteSerializer(serializers.ModelSerializer):
             attrs["shared_with"] = []
         return attrs
 
+    def update(self, instance, validated_data):
+        """Writes only the fields the request names (and `updated_at`), so an
+        edit never writes back the nightly step's `last_members`,
+        `member_count`, `last_evaluated_on` or `paused`."""
+        people = validated_data.pop("shared_with", None)
+        for name, value in validated_data.items():
+            setattr(instance, name, value)
+        instance.save(update_fields=[*validated_data, "updated_at"])
+        if people is not None:
+            instance.shared_with.set(people)
+        return instance
+
 
 class PreviewSerializer(serializers.Serializer):
     """An unsaved segment, checked exactly as a save would check it."""
