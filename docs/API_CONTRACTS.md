@@ -4447,8 +4447,9 @@ codebase, so a send runs synchronously, in-request — the same limit
 
 ### Models
 
-- `Campaign` — `name`, `subject`, `body`, `status` (`draft`/`sent` — no
-  `scheduled` state, no task queue to honor a future send time),
+- `Campaign` — `name`, `subject`, `body`, `status` (`draft`/`sending`/`sent` — no
+  `scheduled` state, no task queue to honor a future send time;
+  `sending` means a send has claimed it and not finished),
   `recipients` (a real ManyToManyField to `customers.Contact` — no new
   audience-builder, the same real Contacts already on `/contacts/list`),
   `send_log` (list of `{contact_id, contact_name, status: "sent"|"skipped",
@@ -4466,7 +4467,8 @@ codebase, so a send runs synchronously, in-request — the same limit
 
 ### Conventions specific to this app
 
-A sent Campaign is locked — `PATCH` 400s once `status == "sent"` rather
+A campaign that is `sending` or `sent` is locked — `PATCH` 400s (and
+`DELETE` 400s while `sending`) rather
 than silently accepting an edit nobody could act on (you can't unsend a
 real email). `recipient_ids` (a list of Contact ids) is never a real
 serializer field — read straight off raw request data in
@@ -4544,7 +4546,8 @@ an optional `recipient_ids` array alongside `name`/`subject`/`body`.
 
 Auth: `IsAuthenticated`. Scoped to the caller's own organisation (404,
 not 403, otherwise). PATCH accepts `name`/`subject`/`body`/
-`recipient_ids`; `400` if the campaign has already been sent.
+`recipient_ids`; `400` if the campaign is `sending` or has already been
+sent. DELETE is `400` while the campaign is `sending`.
 
 **Response `200`** (GET/PATCH) — same shape as the list endpoint.
 **Response `204`** (DELETE) — empty body.
@@ -4555,7 +4558,19 @@ Auth: `IsAuthenticated` — any member of the organisation, as for every
 other campaign write (there is no owner or creator to restrict it to).
 The send reaches every recipient, including any the sender can't open;
 the response is filtered like any other read. Body: none. The real send. `400` if already
-sent, if `subject`/`body` is blank, or if there are no recipients.
+sent or `sending`, if `subject`/`body` is blank, or if there are no recipients.
+
+The send is claimed, not locked throughout: (1) a short transaction
+locks the row, refuses anything but a draft, and commits
+`status: "sending"` — a second send at the same moment waits only for
+that and then gets the `400`; (2) the emails go out with no transaction
+or lock held, each `Email` row committing as its mail leaves; (3) a
+final short transaction writes `sent`, `sent_at` and `send_log`. If the
+process dies during (2) or (3) the campaign **stays `sending`, never
+back at `draft`**, so it can't be sent twice by accident. An admin
+reconciles it: the `Email` rows with this `campaign` show who was
+reached, and the status is set to `sent` (or back to `draft`) in the
+Django admin.
 Runs synchronously — there's no task queue, so the response IS the
 completed send, `send_log` and all. A recipient with no email on file
 (or any other per-recipient send failure) is logged as `"skipped"`,
