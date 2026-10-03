@@ -865,9 +865,11 @@ their own rule.
    every member. Neither has a creator or owner field, so there is
    nothing to scope them by; what *is* scoped is which customers and
    contacts you can point them at (see the two app sections below). A
-   campaign's recipient roster therefore stays readable by any member —
-   closing that needs a `created_by` on Campaign, which is a data-model
-   decision rather than a queryset one.
+   campaign's recipient roster and send log are read twice filtered: a
+   contact the reader may not open is left out and only counted in
+   `hidden_recipients`. Who may *edit, send or delete* a campaign is still
+   any member — restricting that needs a `created_by` on Campaign, which
+   is a data-model decision rather than a queryset one.
 
 ### Dashboard drill (`?drill=`)
 
@@ -4451,8 +4453,9 @@ codebase, so a send runs synchronously, in-request — the same limit
   audience-builder, the same real Contacts already on `/contacts/list`),
   `send_log` (list of `{contact_id, contact_name, status: "sent"|"skipped",
   detail}`, one per recipient, written once by `POST .../send/` and
-  never touched again — `sent_count`/`skipped_count` are derived from
-  this in the serializer, not stored separately), `sent_at`,
+  never touched again — stored whole, served filtered (see below);
+  `sent_count`/`skipped_count` are derived from the served lines in the
+  serializer, not stored separately), `sent_at`,
   `created_at`/`updated_at`.
 - `customers.Email` gained one new nullable field, `campaign` — set
   only on a row `CampaignSendView` itself created as a byproduct of a
@@ -4481,6 +4484,30 @@ failure, because you can't unsend the seven and nothing tells you about
 the three. Recipients are resolved *before* the Campaign row is saved,
 so a rejected list leaves nothing behind.
 
+**Recipients are twice filtered.** Campaigns are org-wide — every
+member sees every campaign — but every response (list, detail, the
+PATCH/POST echo, the send response) lists in `recipients` and
+`send_log` only the contacts the reader may open (`visible_children_q`,
+the rule `ContactDetailView` uses). The rest name nobody: they are
+counted in `hidden_recipients` and nothing else. `sent_count`/
+`skipped_count` count the served log lines only. A send-log line whose
+contact has since been deleted is no longer anyone's to read, so it is
+dropped for every reader. An admin (or any role with
+`view_all_accounts`) sees everyone and `hidden_recipients: 0`. The list
+is a fixed six queries however many campaigns or recipients.
+
+**A PATCH replaces only the recipients you can see.** `recipient_ids`
+is the list the editor was shown, which can't mention the hidden ones;
+replacing the whole set with it would silently drop people a colleague
+picked, and refusing the edit would say more than the count already
+does. So recipients the editor can't open are kept untouched and only
+the visible ones are replaced. Naming a contact you can't open is still
+a `400`.
+
+**Audit.** `campaign.created` / `campaign.updated` / `campaign.deleted` /
+`campaign.sent` are recorded with ids only (never a name, subject, body
+or address) — see docs/audit-events.md.
+
 ### `GET/POST /api/v1/campaigns/`
 
 Auth: `IsAuthenticated`. GET: every Campaign the caller's own
@@ -4499,6 +4526,7 @@ an optional `recipient_ids` array alongside `name`/`subject`/`body`.
     "status": "sent",
     "status_display": "Sent",
     "recipients": [ { "id": 12, "name": "Sarah Chen", "email": "sarah@apple.example" } ],
+    "hidden_recipients": 1,
     "send_log": [ { "contact_id": 12, "contact_name": "Sarah Chen", "status": "sent", "detail": "Emailed sarah@apple.example" } ],
     "sent_count": 1,
     "skipped_count": 0,
@@ -4520,7 +4548,10 @@ not 403, otherwise). PATCH accepts `name`/`subject`/`body`/
 
 ### `POST /api/v1/campaigns/<id>/send/`
 
-Auth: `IsAuthenticated`. Body: none. The real send. `400` if already
+Auth: `IsAuthenticated` — any member of the organisation, as for every
+other campaign write (there is no owner or creator to restrict it to).
+The send reaches every recipient, including any the sender can't open;
+the response is filtered like any other read. Body: none. The real send. `400` if already
 sent, if `subject`/`body` is blank, or if there are no recipients.
 Runs synchronously — there's no task queue, so the response IS the
 completed send, `send_log` and all. A recipient with no email on file
