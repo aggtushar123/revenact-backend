@@ -1,7 +1,7 @@
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import generics, status
+from rest_framework import generics, serializers, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -34,9 +34,15 @@ def _resolve_recipients(request):
     reassignment is enough), silently sending to seven of the ten
     people you picked is the worse failure: you can't unsend the seven,
     and nothing tells you about the three."""
-    recipient_ids = request.data.get("recipient_ids")
-    if recipient_ids is None:
+    if request.data.get("recipient_ids") is None:
         return None
+    # Shape first: anything but a list of ints is a 400, never a 500 from
+    # the ORM choking on `id__in=["x"]`.
+    field = serializers.ListField(child=serializers.IntegerField())
+    try:
+        recipient_ids = field.run_validation(request.data["recipient_ids"])
+    except ValidationError as exc:
+        raise ValidationError({"recipient_ids": exc.detail}) from exc
 
     # SOC2:AUTH-02 only a contact the caller may open can be added
     recipients = visible_contacts(request.user).filter(id__in=recipient_ids)
