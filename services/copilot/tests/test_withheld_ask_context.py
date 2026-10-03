@@ -16,6 +16,7 @@ the Viewer owns its Seen account and cannot open its Hidden one, nor Carl's
 Secret Corp. Alice (an admin in Leadership, who sees everything) asks and
 mentions both the Viewer and Zoe, another admin who sees everything."""
 
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.db import connection
@@ -24,7 +25,7 @@ from django.test.utils import CaptureQueriesContext
 from services.accounts.models import User
 from services.copilot.models import Conversation, Message
 from services.copilot.views import REDACTED_REPLY
-from services.customers.models import Contact, Customer
+from services.customers.models import Contact, Customer, Opportunity
 from services.customers.tests.test_views import blind_to_one_account
 from services.knowledge.tests.test_hierarchy import ChartFixture
 
@@ -191,6 +192,28 @@ class ContactsTests(WithheldAskContextMixin, WithheldAskContextFixture):
 class AccountsTests(WithheldAskContextMixin, WithheldAskContextFixture):
     def context(self):
         return {"surface": "accounts", "view": "list", "filters": {"search": "Hidden"}}
+
+    def test_the_stored_context_carries_the_search(self):
+        self.assertIn("Hidden", self.stored["label"])
+        self.assertIn("Hidden", self.origin["label"])
+
+
+class PipelinesTests(WithheldAskContextMixin, WithheldAskContextFixture):
+    def context(self):
+        # A deal on the account the Viewer is blind to: the reply counts it,
+        # so it is withheld from them, and so is the question's Ask context.
+        Opportunity.objects.create(
+            title="Hidden seats",
+            mrr=Decimal("1000"),
+            stage=Opportunity.Stage.NEGOTIATION,
+            account=self.hidden,
+        )
+        return {
+            "surface": "pipelines",
+            "kind": "opportunities",
+            "view": "list",
+            "filters": {"search": "Hidden"},
+        }
 
     def test_the_stored_context_carries_the_search(self):
         self.assertIn("Hidden", self.stored["label"])
