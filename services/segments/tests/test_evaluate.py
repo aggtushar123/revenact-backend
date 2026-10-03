@@ -95,7 +95,15 @@ class HiddenCountTests(SegmentFixture):
 
     def test_the_owner_hides_nothing_from_themselves(self):
         segment = self.segment(owner=self.csm, rules=HEALTHY)
-        self.assertEqual(hidden_count(segment, self.csm, today=self.today), 0)
+        # No query: the owner check answers before any counting.
+        with self.assertNumQueries(0):
+            self.assertEqual(hidden_count(segment, self.csm, today=self.today), 0)
+
+    def test_an_unsaved_draft_hides_nothing(self):
+        with self.assertNumQueries(0):
+            self.assertEqual(
+                hidden_count(Draft("customer", HEALTHY), self.csm, today=self.today), 0
+            )
 
     def test_a_record_the_viewer_sees_but_the_owner_does_not_is_the_viewers(self):
         segment = self.segment(owner=self.csm, rules=HEALTHY, sharing="workspace")
