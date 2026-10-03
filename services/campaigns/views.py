@@ -115,14 +115,21 @@ class CampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
         return _campaigns(self.request)
 
     def perform_update(self, serializer):
-        campaign = serializer.instance
-        if campaign.status == Campaign.Status.SENT:
-            raise ValidationError({"detail": "Can't edit a campaign that's already been sent."})
-        # Same ordering as perform_create's, same reason — a rejected
-        # recipient list shouldn't leave the rest of the edit applied.
-        recipients = _resolve_recipients(self.request)
-        changed = audit.changed_fields(campaign, serializer.validated_data)
         with transaction.atomic():
+            # Row lock for the whole edit. Without it a send could land
+            # between the status check and the save (editing a campaign that
+            # has gone out), and two editors' read-hidden-then-set could
+            # interleave so one drops what the other just added. A send takes
+            # the same lock, so it waits for this edit or this edit waits
+            # for it and then sees `sent`.
+            locked = Campaign.objects.select_for_update().get(pk=serializer.instance.pk)
+            if locked.status == Campaign.Status.SENT:
+                raise ValidationError({"detail": "Can't edit a campaign that's already been sent."})
+            # Resolved before the save, same reason as perform_create's — a
+            # rejected recipient list shouldn't leave the rest of the edit
+            # applied (the transaction rolls back either way).
+            recipients = _resolve_recipients(self.request)
+            changed = audit.changed_fields(locked, serializer.validated_data)
             campaign = serializer.save()
             if recipients is not None:
                 before = set(campaign.recipients.values_list("id", flat=True))
@@ -167,8 +174,19 @@ class CampaignSendView(APIView):
 
     def post(self, request, pk):
         # SOC2:AUTH-02 tenant scope: another organisation's campaign is a 404
-        campaign = get_object_or_404(Campaign, pk=pk, organisation=request.user.organisation)
+        get_object_or_404(Campaign, pk=pk, organisation=request.user.organisation)
+        with transaction.atomic():
+            # Row lock held for the whole send, and the status checked under
+            # it: a second send of the same campaign blocks here until the
+            # first commits, then reads `sent` and is refused — a double
+            # send (every recipient emailed twice) can't happen. Holding one
+            # row's lock through a synchronous send is the price; there is no
+            # task queue to hand it to, and an edit of this campaign waiting
+            # meanwhile is the right outcome.
+            campaign = Campaign.objects.select_for_update().get(pk=pk)
+            return self._send(request, campaign)
 
+    def _send(self, request, campaign):
         if campaign.status == Campaign.Status.SENT:
             return Response(
                 {"detail": "This campaign has already been sent."},
@@ -223,15 +241,14 @@ class CampaignSendView(APIView):
         campaign.send_log = log
         campaign.status = Campaign.Status.SENT
         campaign.sent_at = timezone.now()
-        with transaction.atomic():
-            campaign.save(update_fields=["send_log", "status", "sent_at"])
-            audit.record(
-                request,
-                campaign,
-                "sent",
-                {
-                    "sent": sum(1 for e in log if e["status"] == "sent"),
-                    "skipped": sum(1 for e in log if e["status"] == "skipped"),
-                },
-            )
+        campaign.save(update_fields=["send_log", "status", "sent_at"])
+        audit.record(
+            request,
+            campaign,
+            "sent",
+            {
+                "sent": sum(1 for e in log if e["status"] == "sent"),
+                "skipped": sum(1 for e in log if e["status"] == "skipped"),
+            },
+        )
         return Response(CampaignSerializer(campaign, context={"request": request}).data)
