@@ -35,6 +35,11 @@ class Campaign(models.Model):
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
+        # Claimed by a send that hasn't finished. A send that crashes leaves
+        # it here, never back at draft, so it can't go out twice; an admin
+        # checks the Email rows it wrote and sets it to sent (or draft) in
+        # the Django admin. See CampaignSendView.
+        SENDING = "sending", "Sending"
         SENT = "sent", "Sent"
 
     organisation = models.ForeignKey(

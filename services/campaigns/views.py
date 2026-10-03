@@ -1,17 +1,23 @@
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import generics, status
+from rest_framework import generics, serializers, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from services.customers.models import Contact, Email
-from services.customers.scoping import visible_children_q
+from services.customers.models import Email
 from services.email import send_campaign_email
 
+from . import audit
 from .models import Campaign
-from .serializers import CampaignSerializer
+from .serializers import (
+    CampaignSerializer,
+    forget_recipient_visibility,
+    visible_contacts,
+    with_recipient_visibility,
+)
 
 
 def _resolve_recipients(request):
@@ -28,13 +34,18 @@ def _resolve_recipients(request):
     reassignment is enough), silently sending to seven of the ten
     people you picked is the worse failure: you can't unsend the seven,
     and nothing tells you about the three."""
-    recipient_ids = request.data.get("recipient_ids")
-    if recipient_ids is None:
+    if request.data.get("recipient_ids") is None:
         return None
+    # Shape first: anything but a list of ints is a 400, never a 500 from
+    # the ORM choking on `id__in=["x"]`.
+    field = serializers.ListField(child=serializers.IntegerField())
+    try:
+        recipient_ids = field.run_validation(request.data["recipient_ids"])
+    except ValidationError as exc:
+        raise ValidationError({"recipient_ids": exc.detail}) from exc
 
-    recipients = Contact.objects.filter(
-        visible_children_q(request.user), id__in=recipient_ids
-    ).distinct()
+    # SOC2:AUTH-02 only a contact the caller may open can be added
+    recipients = visible_contacts(request.user).filter(id__in=recipient_ids)
 
     missing = len(set(recipient_ids)) - recipients.count()
     if missing:
@@ -49,49 +60,110 @@ def _resolve_recipients(request):
     return recipients
 
 
+_LOCKED = {
+    Campaign.Status.SENDING: "This campaign is being sent and can't be changed.",
+    Campaign.Status.SENT: "Can't edit a campaign that's already been sent.",
+}
+
+
+def _campaigns(request):
+    """Every campaign in the caller's organisation — campaigns are org-wide
+    (no owner or creator to scope them by) — read twice filtered."""
+    # SOC2:AUTH-02 tenant scope; recipients are filtered per reader by the serializer
+    return with_recipient_visibility(
+        Campaign.objects.filter(organisation=request.user.organisation), request.user
+    )
+
+
 class CampaignListCreateView(generics.ListCreateAPIView):
     """GET/POST /api/v1/campaigns/ — every Campaign the caller's own
     organisation owns. Powers /campaigns and /campaigns/create.
     Pagination off — same reasoning as ScenarioListCreateView: a small,
-    whole-collection list, not one meant to be paged through."""
+    whole-collection list, not one meant to be paged through.
+
+    Org-wide, but twice filtered: a recipient the reader may not open is
+    left out and only counted (CampaignSerializer)."""
 
     serializer_class = CampaignSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = None
 
     def get_queryset(self):
-        return Campaign.objects.filter(organisation=self.request.user.organisation)
+        return _campaigns(self.request)
 
     def perform_create(self, serializer):
         # Resolved *before* the save: _resolve_recipients can raise, and
         # doing it after left a campaign row behind on a 400 — a half-made
         # record from a request the caller was told had failed.
         recipients = _resolve_recipients(self.request)
-        campaign = serializer.save(organisation=self.request.user.organisation)
-        if recipients is not None:
-            campaign.recipients.set(recipients)
+        with transaction.atomic():
+            campaign = serializer.save(organisation=self.request.user.organisation)
+            if recipients is not None:
+                campaign.recipients.set(recipients)
+            audit.record(
+                self.request,
+                campaign,
+                "created",
+                {"recipient_ids": sorted(campaign.recipients.values_list("id", flat=True))},
+            )
 
 
 class CampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PATCH/DELETE /api/v1/campaigns/<id>/ — scoped to the caller's
     own organisation. A sent Campaign is locked against further edits —
-    you can't unsend a real email, so it shouldn't look editable."""
+    you can't unsend a real email, so it shouldn't look editable.
+
+    `recipient_ids` replaces only the recipients the editor may open.
+    Recipients they can't see were never shown to them, so the list they
+    send back can't mention them: replacing the whole set would silently
+    drop people a colleague picked, and refusing the edit would confirm
+    that somebody hidden is there beyond the count already shown. So the
+    hidden ones are kept untouched."""
 
     serializer_class = CampaignSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Campaign.objects.filter(organisation=self.request.user.organisation)
+        return _campaigns(self.request)
 
     def perform_update(self, serializer):
-        if serializer.instance.status == Campaign.Status.SENT:
-            raise ValidationError({"detail": "Can't edit a campaign that's already been sent."})
-        # Same ordering as perform_create's, same reason — a rejected
-        # recipient list shouldn't leave the rest of the edit applied.
-        recipients = _resolve_recipients(self.request)
-        campaign = serializer.save()
-        if recipients is not None:
-            campaign.recipients.set(recipients)
+        with transaction.atomic():
+            # Row lock for the whole edit. Without it a send could land
+            # between the status check and the save (editing a campaign that
+            # has gone out), and two editors' read-hidden-then-set could
+            # interleave so one drops what the other just added. A send takes
+            # the same lock, so it waits for this edit or this edit waits
+            # for it and then sees `sent`.
+            locked = Campaign.objects.select_for_update().get(pk=serializer.instance.pk)
+            if locked.status != Campaign.Status.DRAFT:
+                raise ValidationError({"detail": _LOCKED[locked.status]})
+            # Resolved before the save, same reason as perform_create's — a
+            # rejected recipient list shouldn't leave the rest of the edit
+            # applied (the transaction rolls back either way).
+            recipients = _resolve_recipients(self.request)
+            changed = audit.changed_fields(locked, serializer.validated_data)
+            campaign = serializer.save()
+            if recipients is not None:
+                before = set(campaign.recipients.values_list("id", flat=True))
+                # SOC2:AUTH-02 recipients the editor can't open are kept, never replaced
+                hidden = campaign.recipients.exclude(
+                    pk__in=visible_contacts(self.request.user).values("pk")
+                )
+                campaign.recipients.set([*recipients, *hidden])
+                if set(campaign.recipients.values_list("id", flat=True)) != before:
+                    changed = sorted([*changed, "recipients"])
+            if changed:
+                audit.record(self.request, campaign, "updated", {"fields": changed})
+        forget_recipient_visibility(campaign)
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            # Same lock as perform_update's: a send in flight keeps its row.
+            locked = Campaign.objects.select_for_update().get(pk=instance.pk)
+            if locked.status == Campaign.Status.SENDING:
+                raise ValidationError({"detail": _LOCKED[locked.status]})
+            audit.record(self.request, instance, "deleted")
+            instance.delete()
 
 
 class CampaignSendView(APIView):
@@ -107,31 +179,69 @@ class CampaignSendView(APIView):
     previously provenance-free thing real provenance" move Survey
     Tier 0 made for Customer.nps_score: every campaign send now shows
     up for real in that recipient's own parent Customer/Account's
-    Activity Feed, not just in this campaign's own send report."""
+    Activity Feed, not just in this campaign's own send report.
+
+    Any member of the organisation may send, as before: a campaign has no
+    owner or creator to restrict it to. The send reaches every recipient,
+    but the response is read twice filtered like any other — the log
+    lines of contacts the sender can't open are left out."""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        campaign = get_object_or_404(Campaign, pk=pk, organisation=request.user.organisation)
+        # SOC2:AUTH-02 tenant scope: another organisation's campaign is a 404
+        get_object_or_404(Campaign, pk=pk, organisation=request.user.organisation)
+        # 1. The claim: a short transaction that locks the row, refuses
+        # anything but a draft, and commits `sending`. A second send blocks
+        # only for this moment, then reads `sending` (or `sent`) and gets a
+        # 400. No lock is held while mail goes out, so a long send never
+        # blocks an edit or another request on the row.
+        with transaction.atomic():
+            campaign = Campaign.objects.select_for_update().get(pk=pk)
+            refusal = self._refusal(campaign)
+            if refusal:
+                return Response({"detail": refusal}, status=status.HTTP_400_BAD_REQUEST)
+            recipients = list(campaign.recipients.all())
+            campaign.status = Campaign.Status.SENDING
+            campaign.save(update_fields=["status"])
 
+        # 2. The send, outside any transaction: each Email row commits as its
+        # mail leaves. If the process dies here, or in step 3, the campaign
+        # stays `sending` — never `draft` — so nobody can send it again by
+        # accident; an admin reconciles it from the Email rows.
+        log = self._deliver(request, campaign, recipients)
+
+        # 3. The finish, one short transaction.
+        with transaction.atomic():
+            campaign.send_log = log
+            campaign.status = Campaign.Status.SENT
+            campaign.sent_at = timezone.now()
+            campaign.save(update_fields=["send_log", "status", "sent_at"])
+            audit.record(
+                request,
+                campaign,
+                "sent",
+                {
+                    "sent": sum(1 for e in log if e["status"] == "sent"),
+                    "skipped": sum(1 for e in log if e["status"] == "skipped"),
+                },
+            )
+        return Response(CampaignSerializer(campaign, context={"request": request}).data)
+
+    @staticmethod
+    def _refusal(campaign):
         if campaign.status == Campaign.Status.SENT:
-            return Response(
-                {"detail": "This campaign has already been sent."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return "This campaign has already been sent."
+        if campaign.status == Campaign.Status.SENDING:
+            return "This campaign is already being sent."
         if not campaign.subject or not campaign.body:
-            return Response(
-                {"detail": "Add a subject and body before sending."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return "Add a subject and body before sending."
+        if not campaign.recipients.exists():
+            return "Add at least one recipient before sending."
+        return None
 
-        recipients = list(campaign.recipients.all())
-        if not recipients:
-            return Response(
-                {"detail": "Add at least one recipient before sending."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+    @staticmethod
+    def _deliver(request, campaign, recipients):
         log = []
         for contact in recipients:
             try:
@@ -165,8 +275,4 @@ class CampaignSendView(APIView):
                     }
                 )
 
-        campaign.send_log = log
-        campaign.status = Campaign.Status.SENT
-        campaign.sent_at = timezone.now()
-        campaign.save(update_fields=["send_log", "status", "sent_at"])
-        return Response(CampaignSerializer(campaign).data)
+        return log

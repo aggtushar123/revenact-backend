@@ -60,6 +60,23 @@ class CampaignListCreateTests(APITestCase):
             [{"id": self.contact.id, "name": "Jane Doe", "email": "jane@globex.example"}],
         )
 
+    def test_recipient_ids_that_are_not_a_list_of_ints_are_a_400(self):
+        self.client.force_authenticate(self.user)
+        for bad in ["abc", ["x"], [None], {"id": 1}, 5]:
+            with self.subTest(recipient_ids=bad):
+                response = self.client.post(
+                    self.url, {"name": "Bad", "recipient_ids": bad}, format="json"
+                )
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn("recipient_ids", response.data)
+        self.assertFalse(Campaign.objects.filter(name="Bad").exists())
+
+        campaign = Campaign.objects.create(organisation=self.org, name="Draft")
+        response = self.client.patch(
+            f"/api/v1/campaigns/{campaign.id}/", {"recipient_ids": "abc"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_recipient_ids_rejects_another_organisations_contact(self):
         other_customer = Customer.objects.create(organisation=self.other_org, name="Initech")
         foreign_contact = Contact.objects.create(
