@@ -60,6 +60,12 @@ def _resolve_recipients(request):
     return recipients
 
 
+_LOCKED = {
+    Campaign.Status.SENDING: "This campaign is being sent and can't be changed.",
+    Campaign.Status.SENT: "Can't edit a campaign that's already been sent.",
+}
+
+
 def _campaigns(request):
     """Every campaign in the caller's organisation — campaigns are org-wide
     (no owner or creator to scope them by) — read twice filtered."""
@@ -129,8 +135,8 @@ class CampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
             # the same lock, so it waits for this edit or this edit waits
             # for it and then sees `sent`.
             locked = Campaign.objects.select_for_update().get(pk=serializer.instance.pk)
-            if locked.status == Campaign.Status.SENT:
-                raise ValidationError({"detail": "Can't edit a campaign that's already been sent."})
+            if locked.status != Campaign.Status.DRAFT:
+                raise ValidationError({"detail": _LOCKED[locked.status]})
             # Resolved before the save, same reason as perform_create's — a
             # rejected recipient list shouldn't leave the rest of the edit
             # applied (the transaction rolls back either way).
@@ -152,6 +158,10 @@ class CampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         with transaction.atomic():
+            # Same lock as perform_update's: a send in flight keeps its row.
+            locked = Campaign.objects.select_for_update().get(pk=instance.pk)
+            if locked.status == Campaign.Status.SENDING:
+                raise ValidationError({"detail": _LOCKED[locked.status]})
             audit.record(self.request, instance, "deleted")
             instance.delete()
 
@@ -181,36 +191,57 @@ class CampaignSendView(APIView):
     def post(self, request, pk):
         # SOC2:AUTH-02 tenant scope: another organisation's campaign is a 404
         get_object_or_404(Campaign, pk=pk, organisation=request.user.organisation)
+        # 1. The claim: a short transaction that locks the row, refuses
+        # anything but a draft, and commits `sending`. A second send blocks
+        # only for this moment, then reads `sending` (or `sent`) and gets a
+        # 400. No lock is held while mail goes out, so a long send never
+        # blocks an edit or another request on the row.
         with transaction.atomic():
-            # Row lock held for the whole send, and the status checked under
-            # it: a second send of the same campaign blocks here until the
-            # first commits, then reads `sent` and is refused — a double
-            # send (every recipient emailed twice) can't happen. Holding one
-            # row's lock through a synchronous send is the price; there is no
-            # task queue to hand it to, and an edit of this campaign waiting
-            # meanwhile is the right outcome.
             campaign = Campaign.objects.select_for_update().get(pk=pk)
-            return self._send(request, campaign)
+            refusal = self._refusal(campaign)
+            if refusal:
+                return Response({"detail": refusal}, status=status.HTTP_400_BAD_REQUEST)
+            recipients = list(campaign.recipients.all())
+            campaign.status = Campaign.Status.SENDING
+            campaign.save(update_fields=["status"])
 
-    def _send(self, request, campaign):
+        # 2. The send, outside any transaction: each Email row commits as its
+        # mail leaves. If the process dies here, or in step 3, the campaign
+        # stays `sending` — never `draft` — so nobody can send it again by
+        # accident; an admin reconciles it from the Email rows.
+        log = self._deliver(request, campaign, recipients)
+
+        # 3. The finish, one short transaction.
+        with transaction.atomic():
+            campaign.send_log = log
+            campaign.status = Campaign.Status.SENT
+            campaign.sent_at = timezone.now()
+            campaign.save(update_fields=["send_log", "status", "sent_at"])
+            audit.record(
+                request,
+                campaign,
+                "sent",
+                {
+                    "sent": sum(1 for e in log if e["status"] == "sent"),
+                    "skipped": sum(1 for e in log if e["status"] == "skipped"),
+                },
+            )
+        return Response(CampaignSerializer(campaign, context={"request": request}).data)
+
+    @staticmethod
+    def _refusal(campaign):
         if campaign.status == Campaign.Status.SENT:
-            return Response(
-                {"detail": "This campaign has already been sent."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return "This campaign has already been sent."
+        if campaign.status == Campaign.Status.SENDING:
+            return "This campaign is already being sent."
         if not campaign.subject or not campaign.body:
-            return Response(
-                {"detail": "Add a subject and body before sending."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return "Add a subject and body before sending."
+        if not campaign.recipients.exists():
+            return "Add at least one recipient before sending."
+        return None
 
-        recipients = list(campaign.recipients.all())
-        if not recipients:
-            return Response(
-                {"detail": "Add at least one recipient before sending."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+    @staticmethod
+    def _deliver(request, campaign, recipients):
         log = []
         for contact in recipients:
             try:
@@ -244,17 +275,4 @@ class CampaignSendView(APIView):
                     }
                 )
 
-        campaign.send_log = log
-        campaign.status = Campaign.Status.SENT
-        campaign.sent_at = timezone.now()
-        campaign.save(update_fields=["send_log", "status", "sent_at"])
-        audit.record(
-            request,
-            campaign,
-            "sent",
-            {
-                "sent": sum(1 for e in log if e["status"] == "sent"),
-                "skipped": sum(1 for e in log if e["status"] == "skipped"),
-            },
-        )
-        return Response(CampaignSerializer(campaign, context={"request": request}).data)
+        return log
