@@ -128,6 +128,8 @@ class SegmentsFlowTests(LiveServerTestCase):
                     "date": tomorrow.isoformat(),
                     "entered": [],
                     "left": [{"id": pizza, "name": "Pizza Hut", "reason": ["csat_score"]}],
+                    "totals": {"entered": 0, "left": 1},
+                    "more": {"entered": 0, "left": 0},
                 }
             ],
         )

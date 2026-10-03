@@ -281,6 +281,8 @@ class ChangesEndpointTests(NightlyFixture):
                             }
                         ],
                         "left": [],
+                        "totals": {"entered": 1, "left": 0},
+                        "more": {"entered": 0, "left": 0},
                     }
                 ],
                 "hidden_count": 1,
@@ -322,3 +324,50 @@ class ChangesEndpointTests(NightlyFixture):
             response = client.get(f"{URL}{self.watch.pk}/changes/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(ctx.captured_queries), 6)
+
+    def capped_day(self):
+        """Carl owns 105 more organisations, and all of them entered today,
+        with Taco Bell (Dana's); Pizza Hut left. Above the 100-name cap."""
+        many = Customer.objects.bulk_create(
+            Customer(organisation=self.org, name=f"Org {i:03}", owner=self.csm) for i in range(105)
+        )
+        SegmentChange.objects.bulk_create(
+            [
+                SegmentChange(
+                    segment=self.watch, record_id=record, change="entered", changed_on=self.today
+                )
+                for record in [c.pk for c in many] + [self.taco.pk]
+            ]
+            + [
+                SegmentChange(
+                    segment=self.watch, record_id=self.pizza.pk, change="left",
+                    changed_on=self.today,
+                )
+            ]
+        )  # fmt: skip
+        Segment.objects.filter(pk=self.watch.pk).update(sharing="workspace")
+        return sorted(c.pk for c in many)
+
+    def test_a_day_names_at_most_a_hundred_each_way_and_counts_the_rest(self):
+        many = self.capped_day()
+        body = self.get(self.csm, self.watch).data
+        [day] = body["days"]
+        self.assertEqual([row["id"] for row in day["entered"]], many[:100])
+        self.assertEqual(day["entered"][0]["name"], "Org 000")
+        self.assertEqual([row["name"] for row in day["left"]], ["Pizza Hut"])
+        self.assertEqual(
+            (day["totals"], day["more"], body["hidden_count"]),
+            ({"entered": 105, "left": 1}, {"entered": 5, "left": 0}, 1),
+        )
+
+    def test_the_query_count_stays_flat_above_the_cap(self):
+        self.capped_day()
+        client = APIClient()
+        client.force_authenticate(User.objects.get(pk=self.admin.pk))
+        with CaptureQueriesContext(connection) as ctx:
+            response = client.get(f"{URL}{self.watch.pk}/changes/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["days"][0]["entered"]), 100)
+        self.assertEqual(len(ctx.captured_queries), 6)
+        # No id list: the names are looked up by subquery, never `pk IN (…105 ids…)`.
+        self.assertLess(max(q["sql"].count(",") for q in ctx.captured_queries), 100)

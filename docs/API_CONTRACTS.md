@@ -4433,12 +4433,16 @@ Body `{"state": "pinned" | "excluded" | "none"}`. Owner only.
   "kind": "customer",
   "days": [{"date": "2026-10-03",
             "entered": [{"id": 12, "name": "Pizza Hut", "reason": ["csat_score"]}],
-            "left": []}],
+            "left": [],
+            "totals": {"entered": 1, "left": 0},
+            "more": {"entered": 0, "left": 0}}],
   "hidden_count": 3
 }
 ```
 
 - Only records the caller may open are named. The rest, deleted ones included, are counted in `hidden_count`.
+- A day names at most 100 records each way (`entered`, `left`), lowest id first. `totals` counts every record the caller may open that moved that day, and `more` how many of those the cap left unnamed (`totals` minus the names; `0` when the day is not capped).
+- Two queries whatever the size (visibility is a correlated `EXISTS`, the cap a window per day and direction; no id list is built). The query count is pinned at 6 and stays flat above the cap.
 - `reason` is field keys, never values:
   - for an entry, the conditions that now hold;
   - for an exit, those that no longer hold;

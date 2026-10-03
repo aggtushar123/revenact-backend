@@ -383,7 +383,9 @@ class WriteTests(Endpoint):
             (i for i, q in enumerate(sql) if '"segments_segment"' in q and "FOR UPDATE" in q),
             None,
         )
-        delete = next(i for i, q in enumerate(sql) if q.startswith('DELETE FROM "segments_segment"'))
+        delete = next(
+            i for i, q in enumerate(sql) if q.startswith('DELETE FROM "segments_segment"')
+        )
         self.assertIsNotNone(lock)
         self.assertLess(lock, delete)
 
