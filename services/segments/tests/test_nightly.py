@@ -217,6 +217,22 @@ class NightlyTests(NightlyFixture):
             ["Poor health: 1 entered, 0 left"],
         )
 
+    def test_a_segment_deleted_after_the_due_list_was_read_is_skipped_not_failed(self):
+        gone = self.segment(owner=self.csm, rules=POOR, name="Gone")
+        real = nightly.evaluate_segment
+
+        def deleted_first(segment_id, *, today):
+            if segment_id == gone.pk:
+                Segment.objects.filter(pk=gone.pk).delete()
+            return real(segment_id, today=today)
+
+        with (
+            patch.object(nightly, "evaluate_segment", side_effect=deleted_first),
+            self.assertNoLogs("services.segments.nightly", "ERROR"),
+        ):
+            result = evaluate_nightly(today=self.today)
+        self.assertEqual((result.failed, result.evaluated), (0, 1))
+
     def test_an_edit_during_the_night_keeps_what_the_step_wrote(self):
         stale = Segment.objects.select_related("owner").get(pk=self.watch.pk)
         self.set_health(self.pizza, "2.0")

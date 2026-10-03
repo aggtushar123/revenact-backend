@@ -122,10 +122,13 @@ def change_reasons(segment, owner, entered, left, *, today):
 
 
 def evaluate_segment(segment_id, *, today):
-    """One segment's night, under a row lock. Call inside a transaction."""
-    segment = (
-        Segment.objects.select_for_update(of=("self",)).select_related("owner").get(pk=segment_id)
-    )
+    """One segment's night, under a row lock. Call inside a transaction. A
+    segment deleted since the due list was read is skipped, not failed."""
+    locked = Segment.objects.select_for_update(of=("self",)).select_related("owner")
+    try:
+        segment = locked.get(pk=segment_id)
+    except Segment.DoesNotExist:
+        return Outcome()
     if segment.last_evaluated_on is not None and segment.last_evaluated_on >= today:
         return Outcome()
     owner = segment.owner
