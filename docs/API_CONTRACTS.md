@@ -4381,7 +4381,7 @@ Any reader. It creates a private copy owned by the caller, named "<name> (copy)"
 The members the caller may open, as the kind's own list reads them:
 - organisations: `/organizations/portfolio/`'s rows and its `sort`, `group`, `group_value`, `search`, `cursor` and `limit`;
 - accounts: `/accounts/portfolio/`'s;
-- contacts: `/contacts/`'s rows and filters (`search`, `customer`, `account`, `sentiment`, `role`), by name, with `cursor` and `limit`.
+- contacts: `/contacts/`'s rows and `search`, by name, with `cursor` and `limit`.
 
 Only these six parameter names ever reach the kind's own list code (`sort`, `group`, `group_value`, `search`, `cursor`, `limit`); every other filter the lists take (owner, health, lifecycle, ids, …) is dropped, since the members tab does not filter. Unknown values are ignored. Body:
 
