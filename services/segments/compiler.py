@@ -71,6 +71,10 @@ def nothing():
     return Q(pk__in=[])
 
 
+# The function name is fixed and its one expression is compiled by the ORM
+# (the AIAttributeValue.value JSON column, never user input), so nothing
+# reaches the SQL unescaped.
+# nosemgrep: python.django.security.audit.extends-custom-expression.extends-custom-expression
 class JsonbTypeof(Func):
     function = "jsonb_typeof"
     output_field = CharField()
