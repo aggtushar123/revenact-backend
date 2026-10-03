@@ -176,8 +176,14 @@ This backend grows in lockstep with the frontend, one feature at a time:
 ## Tests
 
 ```bash
-python manage.py test
+python manage.py test --parallel auto --noinput
 ```
+
+CI splits the suite by test class across four parallel runners
+(`scripts/ci_shard_labels.py`; `python scripts/ci_shard_labels.py 2 4` prints
+shard 2's labels, `--check 4` proves the shards cover every test exactly once).
+New test modules and apps are picked up automatically. The required `test`
+check passes only when lint and all four shards pass.
 
 Every feature ships with three tiers of tests (see `.claude/skills/testing/SKILL.md`):
 
