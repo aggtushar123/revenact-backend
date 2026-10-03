@@ -26,8 +26,11 @@ def readable_segments(user):
 
 def get_readable(user, pk):
     """The segment, or a 404 that reads the same for a missing segment and
-    for one `user` may not read."""
-    return get_object_or_404(readable_segments(user).select_related("owner"), pk=pk)
+    for one `user` may not read. Read without `last_members` (up to 100,000
+    ids no endpoint returns); a writer that needs it re-reads the segment
+    under the row lock."""
+    segments = readable_segments(user).select_related("owner").defer("last_members")
+    return get_object_or_404(segments, pk=pk)
 
 
 def get_owned(user, pk):

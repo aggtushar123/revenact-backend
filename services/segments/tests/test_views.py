@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 
 from core.models import AuditEvent
 from services.accounts.models import User
+from services.segments.access import get_readable
 from services.segments.models import MAX_OWNED, Segment, SegmentChange
 from services.segments.tests.fixtures import SegmentFixture, person, rule
 
@@ -249,6 +250,17 @@ class DetailTests(Endpoint):
         self.assertEqual(set(body), DETAIL_KEYS)
         self.assertEqual(body["owner"], {"id": self.csm.pk, "name": "Carl CSM"})
         self.assertEqual(body["rules"], HEALTHY)
+
+    def test_a_read_never_loads_the_owners_member_ids(self):
+        """`last_members` can hold 100,000 ids and no endpoint returns it:
+        the segment is read without it, by every endpoint that reads one."""
+        segment = self.segment(owner=self.csm, last_members=[self.pizza.pk])
+        self.assertIn("last_members", get_readable(self.csm, segment.pk).get_deferred_fields())
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(self.get(self.csm, segment).status_code, 200)
+        reads = [q["sql"] for q in ctx.captured_queries if 'FROM "segments_segment"' in q["sql"]]
+        self.assertTrue(reads)
+        self.assertFalse([q for q in reads if '"last_members"' in q])
 
     def test_only_the_owner_reads_the_owners_member_count(self):
         segment = self.segment(owner=self.csm, sharing="workspace", member_count=7)
