@@ -125,6 +125,8 @@ class CustomerFieldTests(SegmentFixture):
             # Organizations list's lifecycle filter does (ruling S4).
             ("lifecycle_stage", "is", "churn", {"Delta"}),
             ("lifecycle_stage", "in", ["live", "churn"], {"Alpha", "Delta"}),
+            # Excluding the stage is not asking for churned rows (ruling S4a).
+            ("lifecycle_stage", "is_not", "churn", {"Alpha", "Beta", "Gamma"}),
             ("health_score", "gt", 6, {"Alpha"}),
             ("health_score", "lt", 6, {"Beta", "Gamma"}),
             ("health_score", "between", [4, 8], alpha_beta),
@@ -261,6 +263,14 @@ class CustomerFieldTests(SegmentFixture):
         )  # fmt: skip
         self.assertNotIn("Foxtrot", self.matched(rule("arr", "gt", 0)))
         self.assertEqual(self.matched(rule("arr", "is_empty")), {"Foxtrot"})
+
+    def test_is_not_churn_keeps_the_churned_default(self):
+        # Foxtrot left (a churn date) but its stage was never moved to Churn.
+        Customer.objects.create(
+            organisation=self.org, name="Foxtrot", owner=self.csm, lifecycle_stage="live",
+            churn_date=self.today,
+        )  # fmt: skip
+        self.assertNotIn("Foxtrot", self.matched(rule("lifecycle_stage", "is_not", "churn")))
 
     def test_seat_use_is_rounded_to_two_decimals_as_the_page_shows_it(self):
         Customer.objects.create(

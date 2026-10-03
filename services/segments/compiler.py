@@ -147,15 +147,25 @@ def latest_value(attribute, kind):
 def latest_number(attribute, kind):
     """`latest_value` as a number, or NULL when the newest answer is not a
     JSON number. An attribute whose type changed keeps its old answers, and
-    casting one of them must not fail the page."""
-    return Case(
-        When(
-            Exact(JsonbTypeof(latest_value(attribute, kind)), Value("number")),
-            then=Cast(latest_value(attribute, kind), FloatField()),
-        ),
-        default=None,
-        output_field=FloatField(),
+    casting one of them must not fail the page. One subquery: the CASE on
+    `jsonb_typeof` is evaluated inside it, on the newest row."""
+    parent = "account" if kind == "account" else "customer"
+    rows = (
+        AIAttributeValue.objects.filter(attribute=attribute, **{parent: OuterRef("pk")})
+        .order_by("-computed_at", "-id")
+        .annotate(
+            _number=Case(
+                When(
+                    Exact(JsonbTypeof(F("value")), Value("number")),
+                    then=Cast(F("value"), FloatField()),
+                ),
+                default=None,
+                output_field=FloatField(),
+            )
+        )
+        .values("_number")[:1]
     )
+    return Subquery(rows, output_field=FloatField())
 
 
 @dataclass
@@ -167,10 +177,10 @@ class Compiled:
     named: frozenset
     #: Each top-level condition as `(field keys, Q)`, for a change's reason.
     conditions: tuple
-    #: True when a rule names `churned`, or a lifecycle stage condition's
-    #: value holds `churn`: the Organizations list lifts its churned default
-    #: for `churn` among the lifecycle filters, and so does a segment
-    #: (ruling S4).
+    #: True when a rule names `churned`, or a lifecycle stage condition asks
+    #: for `churn` with `is`/`in`: the Organizations list lifts its churned
+    #: default for `churn` among the lifecycle filters, and so does a segment
+    #: (rulings S4, S4a). `is_not churn` keeps the default.
     names_churned: bool = False
 
     def annotate(self, queryset):
@@ -192,13 +202,14 @@ class Compiled:
 def _names_churned(rules):
     churn = Customer.LifecycleStage.CHURN
     for condition in leaves(rules):
-        field = condition.get("field")
-        value = condition.get("value")
+        field, op, value = condition.get("field"), condition.get("op"), condition.get("value")
         if field == "churned":
             return True
-        if field == "lifecycle_stage" and (
-            value == churn or (isinstance(value, list) and churn in value)
-        ):
+        if field != "lifecycle_stage":
+            continue
+        if op == "is" and value == churn:
+            return True
+        if op == "in" and isinstance(value, list) and churn in value:
             return True
     return False
 
