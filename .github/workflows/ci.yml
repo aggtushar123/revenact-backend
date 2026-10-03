@@ -9,7 +9,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # well above the suite's normal run; a hung runner must not block deploys for hours
+    # Above the suite's run on GitHub's runners (18-28 min by 2026-10-03,
+    # 3492 tests); a hung runner still must not block deploys for hours.
+    # Back to 30 once the suite is split across parallel runners.
+    timeout-minutes: 45
 
     services:
       postgres:
