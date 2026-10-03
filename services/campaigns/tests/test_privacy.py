@@ -88,6 +88,45 @@ class CampaignRecipientPrivacyTests(APITestCase):
         self.assertEqual(response.data["hidden_recipients"], 1)
         self.assertNamesNobodyHidden(response)
 
+    def test_a_reader_who_sees_none_keeps_every_recipient_with_an_empty_list(self):
+        self.campaign.recipients.set([self.hidden_contact])
+        self.client.force_authenticate(self.viewer)
+        response = self.client.patch(self._detail(), {"recipient_ids": []}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list(self.campaign.recipients.all()), [self.hidden_contact])
+        self.assertEqual(response.data["recipients"], [])
+        self.assertEqual(response.data["hidden_recipients"], 1)
+        self.assertNamesNobodyHidden(response)
+
+    def test_patch_reply_counts_hidden_recipients_after_the_change(self):
+        """The detail queryset annotates the counts before the write; the
+        reply must be read after it."""
+        self.client.force_authenticate(self.viewer)
+        response = self.client.patch(
+            self._detail(),
+            {"recipient_ids": [self.org_contact.id, self.seen_contact.id]},
+            format="json",
+        )
+        self.assertEqual(response.data["hidden_recipients"], 1)
+
+        # Shrinking the visible list must not shift the hidden count either.
+        response = self.client.patch(self._detail(), {"recipient_ids": []}, format="json")
+        self.assertEqual(response.data["recipients"], [])
+        self.assertEqual(response.data["hidden_recipients"], 1)
+
+    def test_a_send_log_line_for_a_deleted_contact_is_dropped(self):
+        self.client.force_authenticate(self.admin)
+        self.client.post(f"{self._detail()}send/")
+        gone_id = self.org_contact.id
+        self.org_contact.delete()
+
+        response = self.client.get(self._detail())
+
+        self.assertNotIn(gone_id, [e["contact_id"] for e in response.data["send_log"]])
+        self.assertNotIn("Jane Doe", response.content.decode())
+        self.assertEqual(len(response.data["send_log"]), 2)
+
     def test_update_still_refuses_adding_a_contact_the_editor_cannot_see(self):
         self.client.force_authenticate(self.viewer)
         response = self.client.patch(
