@@ -12,6 +12,7 @@ rules a viewer reads are exactly the rules they are evaluated by.
 """
 
 import copy
+import re
 from datetime import date
 
 from services.accounts.models import User
@@ -97,6 +98,9 @@ def _check_block(block, *, top):
 
 def _scalar(field, value):
     if field.type == DATE:
+        # Strictly YYYY-MM-DD: fromisoformat also takes "20260101" and "2026-W01-1".
+        if not (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+            raise RuleError(f"{field.label}: a date as YYYY-MM-DD.")
         try:
             return date.fromisoformat(value)
         except (TypeError, ValueError):

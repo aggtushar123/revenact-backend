@@ -109,37 +109,29 @@ class FieldTests(RuleFixture):
             'Unknown field "parent.health_score" for organisations.',
         )
 
-    def test_every_registry_field_accepts_exactly_its_types_operators(self):
-        for kind, fields in registry.FIELDS.items():
-            for key, field in fields.items():
-                self.assertEqual(field.operators, registry.OPERATORS[field.type], (kind, key))
-        self.assertEqual(
-            set(registry.CUSTOMER_FIELDS),
-            {
-                "lifecycle_stage", "health_score", "health_category", "csat_score", "nps_score",
-                "nps_band", "ces_percentage", "arr", "renewal_date", "owner", "product",
-                "seat_use", "open_tickets", "last_touch", "ai_pulse", "csm_pulse", "churned",
-                "archived", "created",
+    def test_each_kind_has_exactly_these_fields_with_these_value_types(self):
+        shared = {
+            "lifecycle_stage": "choice", "health_score": "number", "health_category": "choice",
+            "csat_score": "percent", "nps_score": "number", "nps_band": "choice",
+            "arr": "number", "renewal_date": "date", "owner": "owner", "open_tickets": "number",
+            "last_touch": "days", "ai_pulse": "number", "csm_pulse": "number", "created": "date",
+        }  # fmt: skip
+        expected = {
+            "customer": {
+                **shared, "ces_percentage": "percent", "product": "record",
+                "seat_use": "percent", "churned": "boolean", "archived": "boolean",
             },
-        )  # fmt: skip
-        self.assertEqual(
-            set(registry.ACCOUNT_FIELDS),
-            set(registry.CUSTOMER_FIELDS)
-            - {"ces_percentage", "product", "seat_use", "churned", "archived"}
-            | {"organisation"},
-        )
-        self.assertEqual(
-            set(registry.CONTACT_FIELDS),
-            {
-                "role",
-                "sentiment",
-                "status",
-                "language",
-                "last_contacted",
-                "organisation",
-                "account",
+            "account": {**shared, "organisation": "record"},
+            "contact": {
+                "role": "choice", "sentiment": "choice", "status": "choice", "language": "text",
+                "last_contacted": "days", "organisation": "record", "account": "record",
             },
-        )
+        }  # fmt: skip
+        actual = {
+            kind: {key: field.type for key, field in fields.items()}
+            for kind, fields in registry.FIELDS.items()
+        }
+        self.assertEqual(actual, expected)
 
     def test_an_operator_its_type_does_not_take_is_refused(self):
         self.refused(rule("health_score", "is", 5), '"is" cannot be used with Health score.')
@@ -161,6 +153,8 @@ class FieldTests(RuleFixture):
             (rule("renewal_date", "within_next", 0), "a number of days from 1 to 3650."),
             (rule("renewal_date", "within_last", 4000), "a number of days from 1 to 3650."),
             (rule("renewal_date", "gt", "next week"), "Renewal date: a date as YYYY-MM-DD."),
+            (rule("renewal_date", "gt", "20260101"), "Renewal date: a date as YYYY-MM-DD."),
+            (rule("renewal_date", "lt", "2026-W01-1"), "Renewal date: a date as YYYY-MM-DD."),
             (rule("last_touch", "gt", -1), "a whole number of days."),
             (rule("lifecycle_stage", "is", "asleep"), '"asleep" is not one of its values.'),
             (rule("lifecycle_stage", "in", []), "choose from 1 to 100 values."),
@@ -233,8 +227,10 @@ class IdTests(RuleFixture):
     def test_people_and_products_come_from_the_writers_workspace(self):
         self.check(rule("owner", "in", [self.other.pk, "unassigned"]))
         self.refused(rule("owner", "is", self.stranger.pk), NOT_OPEN["user"])
+        self.refused(rule("owner", "is", 999999), NOT_OPEN["user"])
         self.check(rule("product", "is", self.core.pk))
         self.refused(rule("product", "is", self.their_product.pk), NOT_OPEN["product"])
+        self.refused(rule("product", "is", 999999), NOT_OPEN["product"])
         self.check(rule("parent.owner", "is", self.csm.pk), "contact")
 
     def test_a_null_id_names_nothing_and_is_accepted(self):
