@@ -2,6 +2,7 @@
 only the owner writes. See docs/API_CONTRACTS.md, `segments`."""
 
 from django.db import transaction
+from django.http import Http404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -9,17 +10,20 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core import audit
+from services.organizations.export import CSVRenderer
 
 from .access import get_owned, get_readable, readable_segments
 from .baseline import rebaseline
-from .evaluate import openable_ids
-from .models import MAX_OWNED, Segment
+from .evaluate import Draft, openable_ids, visible_records
+from .members import LIST_KEYS, members_listing, members_table, preview
+from .models import MAX_OWNED, MAX_PINNED, Segment
 from .payloads import list_rows, segment_payload
 from .rules import present_rules
-from .serializers import SegmentWriteSerializer
+from .serializers import MemberStateSerializer, PreviewSerializer, SegmentWriteSerializer
 
 LIMIT_REACHED = f"You can own at most {MAX_OWNED} segments."
 SHARING_FIELDS = frozenset({"sharing", "shared_with"})
+PIN_LIMIT = f"A segment can pin at most {MAX_PINNED} records, and keep out as many."
 
 
 def _limit_reached(user):
@@ -164,3 +168,124 @@ class SegmentDuplicateView(APIView):
                 metadata={"source": source.pk},
             )
         return Response(segment_payload(duplicate, request.user), status=status.HTTP_201_CREATED)
+
+
+class SegmentMembersView(APIView):
+    """GET /api/v1/segments/<id>/members/ — the members the caller may open,
+    as the kind's own list reads them (rows, groups, sort, search, cursor),
+    with the tiles and `hidden_count`. See docs/API_CONTRACTS.md."""
+
+    # SOC2:AUTH-02 authentication here; `get_readable` checks the segment and
+    # `members_queryset` (services/segments/evaluate.py) every record
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        segment = get_readable(request.user, pk)
+        body = members_listing(
+            segment, request.user, request.query_params, today=timezone.localdate()
+        )
+        return Response(body)
+
+
+class SegmentMembersExportView(APIView):
+    """GET /api/v1/segments/<id>/members/export.csv — every member the caller
+    may open, in list order, with the kind's export columns. Audited: this is
+    confidential data leaving the app."""
+
+    # SOC2:AUTH-02 authentication here; the same checks as the members view
+    permission_classes = [IsAuthenticated]
+    renderer_classes = [CSVRenderer]
+
+    def get(self, request, pk):
+        segment = get_readable(request.user, pk)
+        today = timezone.localdate()
+        rows, count = members_table(segment, request.user, request.query_params, today=today)
+        audit.record(  # SOC2:LOG-01
+            "segment.exported",
+            request=request,
+            target=segment,
+            # Parameter names only, and only the ones the list reads: a search
+            # term (or any other key) is the user's own words.
+            metadata={
+                "count": count,
+                "params": [key for key in sorted(LIST_KEYS) if key in request.query_params],
+            },
+        )
+        response = Response(rows)
+        response["Content-Disposition"] = (
+            f'attachment; filename="segment-{segment.pk}-{today.isoformat()}.csv"'
+        )
+        return response
+
+
+class SegmentMemberView(APIView):
+    """PATCH /api/v1/segments/<id>/members/<record_id>/ — `{"state": "pinned"
+    | "excluded" | "none"}`. Owner only, and only a record the owner may
+    open: a missing one and a hidden one read the same 404."""
+
+    # SOC2:AUTH-02 authentication here; `get_owned` and the record check below
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk, record_id):
+        segment = get_owned(request.user, pk)
+        serializer = MemberStateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        state = serializer.validated_data["state"]
+        # SOC2:AUTH-02 only a record the owner may open; missing and hidden read the same
+        if not visible_records(segment.kind, request.user).filter(pk=record_id).exists():
+            raise Http404
+        was_pinned = record_id in segment.pinned_ids
+        was_excluded = record_id in segment.excluded_ids
+        pinned = [pk for pk in segment.pinned_ids if pk != record_id]
+        excluded = [pk for pk in segment.excluded_ids if pk != record_id]
+        if state == "pinned":
+            pinned.append(record_id)
+        elif state == "excluded":
+            excluded.append(record_id)
+        if len(pinned) > MAX_PINNED or len(excluded) > MAX_PINNED:
+            return Response({"detail": PIN_LIMIT}, status=status.HTTP_400_BAD_REQUEST)
+        events = []
+        if (state == "pinned") != was_pinned:
+            events.append(
+                ("segment.member_pinned", {"record_id": record_id, "pinned": state == "pinned"})
+            )
+        if (state == "excluded") != was_excluded:
+            events.append(
+                (
+                    "segment.member_excluded",
+                    {"record_id": record_id, "excluded": state == "excluded"},
+                )
+            )
+        if events:
+            with transaction.atomic():
+                segment.pinned_ids, segment.excluded_ids = sorted(pinned), sorted(excluded)
+                segment.save(update_fields=["pinned_ids", "excluded_ids", "updated_at"])
+                rebaseline(segment, today=timezone.localdate())
+                for action, metadata in events:
+                    audit.record(  # SOC2:LOG-01
+                        action, request=request, target=segment, metadata=metadata
+                    )
+        return Response(
+            {
+                "pinned_ids": openable_ids(segment.kind, request.user, segment.pinned_ids),
+                "excluded_ids": openable_ids(segment.kind, request.user, segment.excluded_ids),
+            }
+        )
+
+
+class SegmentPreviewView(APIView):
+    """POST /api/v1/segments/preview/ — `{kind, rules, pinned_ids?,
+    excluded_ids?}` evaluated for the caller without saving: the count, the
+    first ten members and the totals. The rules are checked as a save would
+    check them."""
+
+    # SOC2:AUTH-02 authentication here; `validate_rules` and `members_queryset`
+    # do the record checks
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = PreviewSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        draft = Draft(data["kind"], data["rules"], data["pinned_ids"], data["excluded_ids"])
+        return Response(preview(draft, request.user, today=timezone.localdate()))
