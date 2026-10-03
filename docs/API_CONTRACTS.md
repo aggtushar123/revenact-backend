@@ -865,9 +865,11 @@ their own rule.
    every member. Neither has a creator or owner field, so there is
    nothing to scope them by; what *is* scoped is which customers and
    contacts you can point them at (see the two app sections below). A
-   campaign's recipient roster therefore stays readable by any member —
-   closing that needs a `created_by` on Campaign, which is a data-model
-   decision rather than a queryset one.
+   campaign's recipient roster and send log are read twice filtered: a
+   contact the reader may not open is left out and only counted in
+   `hidden_recipients`. Who may *edit, send or delete* a campaign is still
+   any member — restricting that needs a `created_by` on Campaign, which
+   is a data-model decision rather than a queryset one.
 
 ### Dashboard drill (`?drill=`)
 
@@ -4445,14 +4447,16 @@ codebase, so a send runs synchronously, in-request — the same limit
 
 ### Models
 
-- `Campaign` — `name`, `subject`, `body`, `status` (`draft`/`sent` — no
-  `scheduled` state, no task queue to honor a future send time),
+- `Campaign` — `name`, `subject`, `body`, `status` (`draft`/`sending`/`sent` — no
+  `scheduled` state, no task queue to honor a future send time;
+  `sending` means a send has claimed it and not finished),
   `recipients` (a real ManyToManyField to `customers.Contact` — no new
   audience-builder, the same real Contacts already on `/contacts/list`),
   `send_log` (list of `{contact_id, contact_name, status: "sent"|"skipped",
   detail}`, one per recipient, written once by `POST .../send/` and
-  never touched again — `sent_count`/`skipped_count` are derived from
-  this in the serializer, not stored separately), `sent_at`,
+  never touched again — stored whole, served filtered (see below);
+  `sent_count`/`skipped_count` are derived from the served lines in the
+  serializer, not stored separately), `sent_at`,
   `created_at`/`updated_at`.
 - `customers.Email` gained one new nullable field, `campaign` — set
   only on a row `CampaignSendView` itself created as a byproduct of a
@@ -4463,7 +4467,8 @@ codebase, so a send runs synchronously, in-request — the same limit
 
 ### Conventions specific to this app
 
-A sent Campaign is locked — `PATCH` 400s once `status == "sent"` rather
+A campaign that is `sending` or `sent` is locked — `PATCH` 400s (and
+`DELETE` 400s while `sending`) rather
 than silently accepting an edit nobody could act on (you can't unsend a
 real email). `recipient_ids` (a list of Contact ids) is never a real
 serializer field — read straight off raw request data in
@@ -4480,6 +4485,33 @@ scope, sending to seven of the ten people you picked is the worse
 failure, because you can't unsend the seven and nothing tells you about
 the three. Recipients are resolved *before* the Campaign row is saved,
 so a rejected list leaves nothing behind.
+
+**Recipients are twice filtered.** Campaigns are org-wide — every
+member sees every campaign — but every response (list, detail, the
+PATCH/POST echo, the send response) lists in `recipients` and
+`send_log` only the contacts the reader may open (`visible_children_q`,
+the rule `ContactDetailView` uses). The rest name nobody: they are
+counted in `hidden_recipients` and nothing else. `sent_count`/
+`skipped_count` count the served log lines only. A send-log line whose
+contact has since been deleted is no longer anyone's to read, so it is
+dropped for every reader. An admin (or any role with
+`view_all_accounts`) sees everyone and `hidden_recipients: 0`. The list
+is a fixed six queries however many campaigns or recipients.
+
+**A PATCH replaces only the recipients you can see.** `recipient_ids`
+is the list the editor was shown, which can't mention the hidden ones;
+replacing the whole set with it would silently drop people a colleague
+picked, and refusing the edit would say more than the count already
+does. So recipients the editor can't open are kept untouched and only
+the visible ones are replaced. Naming a contact you can't open is still
+a `400`, and `recipient_ids` that isn't a list of integers is a `400`.
+"Visible" is decided at save time: a recipient who became visible to the
+editor between loading the page and saving it, and isn't named in the
+saved list, is dropped by that save.
+
+**Audit.** `campaign.created` / `campaign.updated` / `campaign.deleted` /
+`campaign.sent` are recorded with ids only (never a name, subject, body
+or address) — see docs/audit-events.md.
 
 ### `GET/POST /api/v1/campaigns/`
 
@@ -4499,6 +4531,7 @@ an optional `recipient_ids` array alongside `name`/`subject`/`body`.
     "status": "sent",
     "status_display": "Sent",
     "recipients": [ { "id": 12, "name": "Sarah Chen", "email": "sarah@apple.example" } ],
+    "hidden_recipients": 1,
     "send_log": [ { "contact_id": 12, "contact_name": "Sarah Chen", "status": "sent", "detail": "Emailed sarah@apple.example" } ],
     "sent_count": 1,
     "skipped_count": 0,
@@ -4513,15 +4546,31 @@ an optional `recipient_ids` array alongside `name`/`subject`/`body`.
 
 Auth: `IsAuthenticated`. Scoped to the caller's own organisation (404,
 not 403, otherwise). PATCH accepts `name`/`subject`/`body`/
-`recipient_ids`; `400` if the campaign has already been sent.
+`recipient_ids`; `400` if the campaign is `sending` or has already been
+sent. DELETE is `400` while the campaign is `sending`.
 
 **Response `200`** (GET/PATCH) — same shape as the list endpoint.
 **Response `204`** (DELETE) — empty body.
 
 ### `POST /api/v1/campaigns/<id>/send/`
 
-Auth: `IsAuthenticated`. Body: none. The real send. `400` if already
-sent, if `subject`/`body` is blank, or if there are no recipients.
+Auth: `IsAuthenticated` — any member of the organisation, as for every
+other campaign write (there is no owner or creator to restrict it to).
+The send reaches every recipient, including any the sender can't open;
+the response is filtered like any other read. Body: none. The real send. `400` if already
+sent or `sending`, if `subject`/`body` is blank, or if there are no recipients.
+
+The send is claimed, not locked throughout: (1) a short transaction
+locks the row, refuses anything but a draft, and commits
+`status: "sending"` — a second send at the same moment waits only for
+that and then gets the `400`; (2) the emails go out with no transaction
+or lock held, each `Email` row committing as its mail leaves; (3) a
+final short transaction writes `sent`, `sent_at` and `send_log`. If the
+process dies during (2) or (3) the campaign **stays `sending`, never
+back at `draft`**, so it can't be sent twice by accident. An admin
+reconciles it: the `Email` rows with this `campaign` show who was
+reached, and the status is set to `sent` (or back to `draft`) in the
+Django admin.
 Runs synchronously — there's no task queue, so the response IS the
 completed send, `send_log` and all. A recipient with no email on file
 (or any other per-recipient send failure) is logged as `"skipped"`,

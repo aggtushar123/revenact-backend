@@ -89,6 +89,10 @@ AuditEvent.objects.filter(organisation=org, action="auth.login", outcome="failur
 | `opportunity.created` / `risk.created` | `services.customers.pipeline_audit.create`, called from every create path (`CustomerOpportunityListView`, `AccountOpportunityListView`, `OpportunityListView`, and the Risk equivalents) | user | Opportunity or Risk (`target_repr` is just the kind and id — never the title) | `customer_id`, `account_id` (whichever parent it landed on) |
 | `opportunity.updated` / `risk.updated` | `services.customers.pipeline_audit.update`, via `PipelineItemWriteMixin.perform_update` on `OpportunityDetailView`/`RiskDetailView` (a Board drag included) | user | Opportunity or Risk | `fields`: the changed field names only, never their values; a PATCH that changes nothing records nothing |
 | `opportunity.deleted` / `risk.deleted` | `services.customers.pipeline_audit.delete`, via `PipelineItemWriteMixin.perform_destroy` | user | Opportunity or Risk | `customer_id`, `account_id` (its parent, for context after the row is gone) |
+| `campaign.created` | `services.campaigns.views.CampaignListCreateView` via `services.campaigns.audit.record` | user | Campaign (`target_repr` is just the kind and id — never the name) | `recipient_ids` |
+| `campaign.updated` | `services.campaigns.views.CampaignDetailView.perform_update` | user | Campaign | `fields`: changed field names (`recipients` when the set changed), never values; a PATCH that changes nothing records nothing |
+| `campaign.deleted` | `services.campaigns.views.CampaignDetailView.perform_destroy` | user | Campaign | — |
+| `campaign.sent` | `services.campaigns.views.CampaignSendView` | user | Campaign | `sent`, `skipped` counts; never a contact's name or address |
 
 Create, update and delete each happen in the same database transaction as the write itself
 (`pipeline_audit.create`/`update`/`delete`), so a failed audit write can't leave an
