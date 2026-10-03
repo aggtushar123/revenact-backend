@@ -104,13 +104,20 @@ class ViewTests(APITestCase):
         self.assertEqual(skill.name, "Ask Revenact on Accounts")
         self.assertEqual(skill.surface, "/accounts")
         self.assertIn("See accounts or records outside the asker's visibility", skill.never)
+        self.assertEqual(usage.PURPOSES["pipelines"], "Ask Revenact on Pipelines")
+        skill = skills.BY_PURPOSE["pipelines"]
+        self.assertEqual(skill.surface, "/pipelines")
+        self.assertIn(
+            "See opportunities, risks, organisations or accounts outside the asker's visibility",
+            skill.never,
+        )
 
     def test_every_ask_surface_is_metered_under_a_described_purpose(self):
         from services.copilot.ask import SURFACES
 
         self.assertEqual(
             {surface.purpose for surface in SURFACES.values()},
-            {"dashboard", "organizations", "contacts", "accounts"},
+            {"dashboard", "organizations", "contacts", "accounts", "pipelines"},
         )
         for surface in SURFACES.values():
             self.assertIn(surface.purpose, skills.BY_PURPOSE)

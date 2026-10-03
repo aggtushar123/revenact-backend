@@ -91,6 +91,16 @@ def date_q(kind: Kind, value, *, today):
     return Q(**{f"{field}__gte": today, f"{field}__lte": today + timedelta(days=int(value))})
 
 
+def owner_q(owner, organisation_id):
+    """The items whose organisation or account `owner` owns, when that person
+    is of `organisation_id`, the viewer's organisation."""
+    # SOC2:AUTH-02 only a person of the viewer's organisation can be named:
+    # another tenant's user id narrows to nothing (no linkage oracle)
+    return Q(customer__owner_id=owner, customer__owner__organisation_id=organisation_id) | Q(
+        account__owner_id=owner, account__owner__organisation_id=organisation_id
+    )
+
+
 def filtered_queryset(user, kind: Kind, params: PipelineParams, *, today):
     items = scope(user, kind)
 
@@ -136,13 +146,7 @@ def filtered_queryset(user, kind: Kind, params: PipelineParams, *, today):
             & ~Q(account__owner__organisation_id=user.organisation_id)
         )
     elif params.owner is not None:
-        # SOC2:AUTH-02 only a person of the viewer's organisation can be named:
-        # another tenant's user id narrows to nothing (no linkage oracle)
-        org = user.organisation_id
-        items = items.filter(
-            Q(customer__owner_id=params.owner, customer__owner__organisation_id=org)
-            | Q(account__owner_id=params.owner, account__owner__organisation_id=org)
-        )
+        items = items.filter(owner_q(params.owner, user.organisation_id))
 
     if params.priorities:
         items = items.filter(priority__in=params.priorities)

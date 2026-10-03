@@ -11,7 +11,10 @@ Adding a surface means one row here, a purpose in `usage.PURPOSES` and a
 (`views._reply_readable_by`); without it the surface's replies are withheld
 from mentioned-only readers. For the `accounts` surface `customer_ids` holds
 the organisations the digest names (and the organisation filter), while every
-account it covers is recorded in `Grounding.records`.
+account it covers is recorded in `Grounding.records`. For the `pipelines`
+surface `customer_ids` holds the organisation of every item counted (and the
+organisation filter). Their accounts and departments are in
+`Grounding.pipeline`, and every item quoted is in `Grounding.records`.
 """
 
 from collections.abc import Callable
@@ -27,6 +30,8 @@ from .dashboard_context import DashboardContextSerializer
 from .dashboard_grounding import build_dashboard_grounding, dashboard_system_prompt
 from .organizations_context import OrganizationsContextSerializer
 from .organizations_grounding import build_organizations_grounding, organizations_system_prompt
+from .pipelines_context import PipelinesContextSerializer
+from .pipelines_grounding import build_pipelines_grounding, pipelines_system_prompt
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,12 @@ SURFACES = {
         ground=build_accounts_grounding,
         system_prompt=accounts_system_prompt,
         purpose="accounts",
+    ),
+    "pipelines": Surface(
+        serializer=PipelinesContextSerializer,
+        ground=build_pipelines_grounding,
+        system_prompt=pipelines_system_prompt,
+        purpose="pipelines",
     ),
 }
 
