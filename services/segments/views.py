@@ -12,10 +12,12 @@ from rest_framework.views import APIView
 from core import audit
 from services.accounts.models import User
 from services.organizations.export import CSVRenderer
+from services.organizations.params import int_or_none
 
 from .access import get_owned, get_readable, readable_segments
 from .baseline import rebaseline
 from .evaluate import Draft, openable_ids, visible_records
+from .history import DEFAULT_DAYS, MAX_DAYS, change_history
 from .members import LIST_KEYS, members_listing, members_table, preview
 from .models import MAX_OWNED, MAX_PINNED, Segment
 from .payloads import list_rows, segment_payload
@@ -298,3 +300,20 @@ class SegmentPreviewView(APIView):
         data = serializer.validated_data
         draft = Draft(data["kind"], data["rules"], data["pinned_ids"], data["excluded_ids"])
         return Response(preview(draft, request.user, today=timezone.localdate()))
+
+
+class SegmentChangesView(APIView):
+    """GET /api/v1/segments/<id>/changes/?days=30 — the entry and exit
+    history over the last `days` (1–90), naming only records the caller may
+    open, plus `hidden_count` for the rest."""
+
+    # SOC2:AUTH-02 authentication here; `get_readable` and `change_history` check the rest
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        segment = get_readable(request.user, pk)
+        days = int_or_none(request.query_params.get("days"))
+        days = DEFAULT_DAYS if days is None or days < 1 else min(days, MAX_DAYS)
+        return Response(
+            change_history(segment, request.user, today=timezone.localdate(), days=days)
+        )

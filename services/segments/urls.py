@@ -18,4 +18,5 @@ urlpatterns = [
         views.SegmentMemberView.as_view(),
         name="segment-member",
     ),
+    path("<int:pk>/changes/", views.SegmentChangesView.as_view(), name="segment-changes"),
 ]
