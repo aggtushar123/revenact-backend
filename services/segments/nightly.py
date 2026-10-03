@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from services.notifications.models import Notification
@@ -28,7 +28,7 @@ from services.organizations.book import CHURNED
 
 from .baseline import rebaseline
 from .compiler import compile_rules
-from .evaluate import MODELS, member_ids, visible_records
+from .evaluate import MODELS, member_ids, members_queryset, visible_records
 from .models import MAX_TRACKED_MEMBERS, Segment, SegmentChange
 
 logger = logging.getLogger(__name__)
@@ -59,15 +59,46 @@ def alert_message(segment, entered, left):
     return f"{segment.name[:ALERT_NAME_LENGTH]}: {entered} entered, {left} left"
 
 
+#: How many records one reasons query reads at a time.
+REASON_BATCH = 1000
+
+
+def _batches(ids):
+    ids = sorted(ids)
+    for start in range(0, len(ids), REASON_BATCH):
+        yield ids[start : start + REASON_BATCH]
+
+
 def _keys(compiled, holding, pk, *, holds):
     return sorted(
         {
             key
-            for (keys, _q), held in zip(compiled.conditions, holding)
-            if (pk in held) == holds
+            for (keys, _q), held in zip(compiled.conditions, holding.get(pk, ()))
+            if held == holds
             for key in keys
         }
     )
+
+
+def _holding(compiled, owner, ids):
+    """For each of `ids` the owner may open, whether each top-level condition
+    holds: `{pk: (bool, ...)}`. One query per `REASON_BATCH` records, whatever
+    the number of conditions: each condition is an `EXISTS` over the record
+    itself, so it means exactly what `filter(q)` means, joins included."""
+    kind, holding = compiled.kind, {}
+    if not compiled.conditions:
+        return holding
+    same = compiled.annotate(MODELS[kind].objects.filter(pk=OuterRef("pk")))
+    flags = {
+        f"_reason_{i}": Exists(same.filter(q))
+        for i, (_keys_of, q) in enumerate(compiled.conditions)
+    }
+    for batch in _batches(ids):
+        # SOC2:AUTH-02 only records the owner may open are read
+        rows = visible_records(kind, owner).filter(pk__in=batch).order_by().annotate(**flags)
+        for pk, *held in rows.values_list("pk", *flags):
+            holding[pk] = tuple(held)
+    return holding
 
 
 def _default_exclusions(compiled, owner, ids):
@@ -76,12 +107,13 @@ def _default_exclusions(compiled, owner, ids):
     found = {}
     if compiled.kind != "customer" or not ids:
         return found
-    records = visible_records("customer", owner).filter(pk__in=ids).order_by()
     for key, q in (("churned", CHURNED), ("archived", Q(is_archived=True))):
         if key in compiled.named:
             continue
-        for pk in records.filter(q).values_list("pk", flat=True):
-            found.setdefault(pk, []).append(key)
+        for batch in _batches(ids):
+            records = visible_records("customer", owner).filter(pk__in=batch).order_by()
+            for pk in records.filter(q).values_list("pk", flat=True):
+                found.setdefault(pk, []).append(key)
     return found
 
 
@@ -91,21 +123,18 @@ def change_reasons(segment, owner, entered, left, *, today):
     names those that no longer hold, or `deleted` (it is gone), `access`
     (the owner can no longer open it), or `churned`/`archived` (the
     organisations default took it out). A pin that entered reads `pinned`.
-    At most one query per condition, plus four."""
+    Five queries per `REASON_BATCH` records at most, whatever the number of
+    conditions."""
     if not entered and not left:
         return {}
     kind = segment.kind
     existing, openable = set(), set()
-    if left:
-        existing = set(MODELS[kind].objects.filter(pk__in=left).values_list("pk", flat=True))
-        records = visible_records(kind, owner).filter(pk__in=left).order_by()
-        openable = set(records.values_list("pk", flat=True))
+    for batch in _batches(left):
+        existing |= set(MODELS[kind].objects.filter(pk__in=batch).values_list("pk", flat=True))
+        records = visible_records(kind, owner).filter(pk__in=batch).order_by()
+        openable |= set(records.values_list("pk", flat=True))
     compiled = compile_rules(segment.rules, kind, user=owner, today=today)
-    candidates = compiled.annotate(visible_records(kind, owner).filter(pk__in=entered | openable))
-    holding = [
-        set(candidates.filter(q).order_by().values_list("pk", flat=True))
-        for _keys_of, q in compiled.conditions
-    ]
+    holding = _holding(compiled, owner, entered | openable)
     defaults = _default_exclusions(compiled, owner, openable)
     pinned = set(segment.pinned_ids or [])
     reasons = {}
@@ -142,6 +171,18 @@ def evaluate_segment(segment_id, *, today):
         segment.save(update_fields=["paused"])
         rebaseline(segment, today=today)
         return Outcome(evaluated=True)
+
+    if (
+        segment.last_members is None
+        and segment.member_count is not None
+        and segment.member_count > MAX_TRACKED_MEMBERS
+    ):
+        # Known to be too large: count it, and load the ids only if it shrank.
+        count = members_queryset(segment, owner, today=today).count()
+        if count > MAX_TRACKED_MEMBERS:
+            segment.member_count, segment.last_evaluated_on = count, today
+            segment.save(update_fields=["member_count", "last_evaluated_on"])
+            return Outcome(evaluated=True)
 
     ids = member_ids(segment, owner, today=today)
     tracked = len(ids) <= MAX_TRACKED_MEMBERS

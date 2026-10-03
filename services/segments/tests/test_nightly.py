@@ -184,6 +184,17 @@ class NightlyTests(NightlyFixture):
         self.watch.refresh_from_db()
         self.assertEqual((self.watch.last_members, self.changes()), ([self.taco.pk], []))
 
+    def test_a_segment_known_to_be_too_large_is_counted_without_loading_its_ids(self):
+        with patch.object(nightly, "MAX_TRACKED_MEMBERS", 0):
+            evaluate_nightly(today=self.today)
+            with CaptureQueriesContext(connection) as ctx:
+                evaluate_nightly(today=self.today + timedelta(days=1))
+        sql = [query["sql"] for query in ctx.captured_queries]
+        self.assertFalse([q for q in sql if q.startswith('SELECT "customers_customer"."id"')])
+        self.assertTrue([q for q in sql if q.startswith("SELECT COUNT(*)")])
+        self.watch.refresh_from_db()
+        self.assertEqual((self.watch.last_members, self.watch.member_count), (None, 1))
+
     def test_a_failing_segment_is_logged_skipped_and_retried_on_the_next_run(self):
         other = self.segment(owner=self.csm, rules=POOR, name="Carl's", alert_on_changes=True)
         self.set_health(self.pizza, "2.0")
@@ -232,6 +243,66 @@ class NightlyTests(NightlyFixture):
         ):
             result = evaluate_nightly(today=self.today)
         self.assertEqual((result.failed, result.evaluated), (0, 1))
+
+    def several_conditions(self):
+        """Alice's "Watch list": poor health, or many open tickets, or low
+        health with low CSAT. Pizza Hut turns poor and enters; Taco Bell
+        recovers and leaves."""
+        Segment.objects.filter(pk=self.watch.pk).delete()
+        segment = self.segment(
+            owner=self.admin,
+            name="Watch list",
+            rules={
+                "match": "any",
+                "conditions": [
+                    {"field": "health_category", "op": "is", "value": "poor"},
+                    {"field": "open_tickets", "op": "gt", "value": 5},
+                    {
+                        "group": {
+                            "match": "all",
+                            "conditions": [
+                                {"field": "health_score", "op": "lt", "value": 4},
+                                {"field": "csat_score", "op": "lt", "value": 50},
+                            ],
+                        }
+                    },
+                ],
+            },
+        )
+        rebaseline(segment, today=self.yesterday)
+        self.set_health(self.pizza, "2.0")
+        self.set_health(self.taco, "8.0")
+        return segment
+
+    def test_reasons_over_several_conditions(self):
+        segment = self.several_conditions()
+        # One record per batch: the reasons read the same however they are cut.
+        with patch.object(nightly, "REASON_BATCH", 1):
+            evaluate_nightly(today=self.today)
+        self.assertEqual(
+            self.changes(segment),
+            [
+                (self.pizza.pk, "entered", self.today, ["health_category"]),
+                (
+                    self.taco.pk,
+                    "left",
+                    self.today,
+                    ["csat_score", "health_category", "health_score", "open_tickets"],
+                ),
+            ],
+        )
+
+    def test_the_nightly_query_count_is_pinned_for_several_conditions(self):
+        """Fifteen: the due list, the savepoint and its release, the locked
+        segment, the owner's organisation, membership and role, the members,
+        which leavers still exist and which the owner may open, one query for
+        every condition's reason (not one per condition), the churned and
+        archived defaults, the change rows and the segment's update."""
+        self.several_conditions()
+        with CaptureQueriesContext(connection) as ctx:
+            result = evaluate_nightly(today=self.today)
+        self.assertEqual((result.evaluated, result.changes), (1, 2))
+        self.assertEqual(len(ctx.captured_queries), 15)
 
     def test_an_edit_during_the_night_keeps_what_the_step_wrote(self):
         stale = Segment.objects.select_related("owner").get(pk=self.watch.pk)
