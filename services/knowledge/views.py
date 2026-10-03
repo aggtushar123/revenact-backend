@@ -306,7 +306,10 @@ class CustomerQuestionListCreateView(generics.ListCreateAPIView):
                 {"detail": "Say who should answer — @mention them, or pick a person."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return Response(QuestionSerializer(created, many=True).data, status=status.HTTP_201_CREATED)
+        return Response(
+            QuestionSerializer(created, many=True, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class QuestionListView(generics.ListAPIView):
@@ -358,7 +361,7 @@ class QuestionAnswerView(APIView):
             return Response({"detail": "Say something."}, status=status.HTTP_400_BAD_REQUEST)
         mentions.answer_question(question, user, body)
         question.refresh_from_db()
-        return Response(QuestionSerializer(question).data)
+        return Response(QuestionSerializer(question, context={"request": request}).data)
 
 
 class KnowledgeActivityView(APIView):

@@ -4812,10 +4812,13 @@ question is asked, and the client never sends them.
 
 `origin` follows the title. A viewer who does not see the whole conversation
 gets `origin: null` unless they may read both its first turn (the title's
-turn) and its first Ask turn (the one the origin was taken from): the filters
-carry the asker's free-text `search` and ids, and the labels name owners and
-products. It is `null`, not a surface-only stub. The detail endpoint and the
-send's response apply the same rule.
+turn) and its first Ask turn (the one the origin was taken from), **and the
+reply to that Ask turn is shown to them** (not withheld, not dropped): the filters carry the
+asker's free-text `search` and ids, and the labels name owners, products,
+organisations and accounts. It is `null`, not a surface-only stub. The title
+is the first turn's opening words (never the label), so a reader of that turn
+keeps it even when its reply is withheld. The detail endpoint and the send's
+response apply the same rule, on every Ask surface.
 
 ### `GET/DELETE /api/v1/copilot/conversations/<id>/`
 
@@ -4830,8 +4833,15 @@ conversation's title/messages are only ever set by `POST .../messages/`.
 read the turns it came from, see the list above), `visibility` (`full` or
 `partial`), and nested `messages` (each
 `{id, role, content, author, sources, questions, ask_suggestions,
-context, created_at}`; `context` is the dashboard context a user turn
-was asked on, else `null`).
+context, created_at}`; `context` is the Ask context a user turn was asked
+on — any surface — else `null`). **A user turn whose paired reply is not shown
+to this viewer comes with `context: null`** — withheld (redacted), or dropped
+entirely because a turn they may not read was sent in between (fail closed):
+the question's own words stay,
+but its label, filters (the asker's `search` among them), focus and ids go
+with the reply (`copilot.views.visible_messages`). The owner, participants
+and mentioned readers who may read the reply get the stored context as is.
+The decision reuses the reply's readability check: no extra query per turn.
 **Response `204`** (DELETE) — empty body.
 
 ### `POST /api/v1/copilot/messages/`
@@ -5436,7 +5446,11 @@ seeing replies that quoted its records — on a plain Copilot or
 Communications reply that includes replies to their own questions (an
 Ask asker still reads their own Ask reply regardless) — and
 shows as "This reply isn't shared with you…" instead (`copilot.views.
-_reply_readable_by`); the stored turn is untouched. Pairing a reply with
+_reply_readable_by`); the stored turn is untouched. The question that
+reply answers is still shown, with `context: null` for that viewer, and the
+conversation's `origin` is `null` for them when it is the first Ask turn's
+reply that is not shown to them, withheld or dropped behind a turn they may
+not read (see `GET /api/v1/copilot/conversations/`). Pairing a reply with
 the question it answers uses `Message.reply_to`, set on every new reply
 (a legacy row with none falls back to the immediately preceding user
 turn) — ordering alone can't be trusted once two participants can send
@@ -5575,7 +5589,29 @@ first; `/questions/` takes `?mine=true` (waiting on the caller),
 the assignee (or `manage_users`) answers once (`409` after); the answer
 is stored as a contribution whose body opens `In answer to <asker>'s
 question "<text>": …`, the question closes, and the asker gets a
-`question_answered` notification.
+`question_answered` notification. A question about no customer has nothing
+to file a contribution on: it closes with `answer: null` and the asker is
+told.
+
+**Whose customer it names.** A routed question opens its customer to the
+person asked (`visible_customers` admits `questions__assignee`), which is
+deliberate when the asker names the customer, on its page or in their own
+words. A question routed from an **Ask** turn (`POST /copilot/messages/` with
+a `context`) is about the asker's screen instead (a focus on one company, an
+Organizations list narrowed to one). There, a person asked who could not
+already open that customer gets the question about **no customer**:
+- `customer: null` in their inbox;
+- the notification reads "<asker> asked you: …", with no "about X";
+- no stale-question nudge or knowledge gap names it;
+- the question does not open it to them.
+
+Someone who can open it gets it named, as before. On every question payload,
+`customer` is `null` for a reader who may not open that customer. This
+covers the asker's chart and the assignee's managers, who read questions
+they were not asked. The same reader gets the `answer` contribution with
+`customer_id: null` and `customer_name: null`, since the answer is filed on the
+question's customer. (`services/knowledge/mentions.route_questions`,
+`QuestionSerializer.get_customer`/`get_answer`.)
 
 ### Questions that age
 
@@ -6984,6 +7020,14 @@ what the chain rules already permit. It deliberately does **not** change the
 ticket count: a ticket carries a department, not an assignee, so there is no
 personal ticket to separate from a team one. `stats` says so in
 `ticket_scope_note` rather than pretending the two differ.
+
+A question is routed by assignee, not by customer. Under `?scope=team`, a
+report's question about a customer the caller may not open
+(`visible_customers`) comes with `account: null` and `context: null`: no name,
+id, health, ARR, renewal or owner. A `q` search cannot find it by that name
+either. The question's own words (`subject`, `preview`) are shown as before.
+Emails, tickets and calls are read through their customer or account's own
+visibility already.
 
 ### What counts as a reply owed
 

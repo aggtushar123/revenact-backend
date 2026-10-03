@@ -156,9 +156,26 @@ def routing_summary(routes, customer=None):
     return "; ".join(parts)
 
 
-def route_questions(*, organisation, asked_by, text, customer=None, message=None, assignees=None):
+def route_questions(
+    *,
+    organisation,
+    asked_by,
+    text,
+    customer=None,
+    message=None,
+    assignees=None,
+    name_only_if_visible=False,
+):
     """One Question per person the text mentions (or per explicit assignee),
-    each told about it. Returns the questions created."""
+    each told about it. Returns the questions created.
+
+    A routed question opens its customer to the person asked
+    (`visible_customers`, `questions__assignee`) — deliberate when the asker
+    names the customer, on its page or in their words. With
+    `name_only_if_visible` (an Ask turn, whose customer comes from the asker's
+    screen) the customer is attached, named and so opened only for a person
+    who could already open it; anyone else gets the question about no
+    customer: no name, no id, no access."""
     people = (
         assignees
         if assignees is not None
@@ -166,15 +183,20 @@ def route_questions(*, organisation, asked_by, text, customer=None, message=None
     )
     created = []
     for person in people:
+        about_customer = customer
+        # SOC2:AUTH-02 checked before the question exists: once it does, it is
+        # itself what would let the person open the customer
+        if customer is not None and name_only_if_visible and not _opens(person, customer):
+            about_customer = None
         question = Question.objects.create(
             organisation=organisation,
-            customer=customer,
+            customer=about_customer,
             asked_by=asked_by,
             assignee=person,
             text=text.strip(),
             message=message,
         )
-        about = f" about {customer.name}" if customer else ""
+        about = f" about {about_customer.name}" if about_customer else ""
         notify(
             recipient=person,
             actor=asked_by,
@@ -186,16 +208,28 @@ def route_questions(*, organisation, asked_by, text, customer=None, message=None
     return created
 
 
+def _opens(person, customer):
+    from services.customers.scoping import visible_customers
+
+    return visible_customers(person).filter(pk=customer.pk).exists()
+
+
 def answer_question(question, answerer, body):
     """Store the answer as a contribution from the answerer's function and
-    close the question; the asker is told."""
-    contribution = Contribution.objects.create(
-        organisation=question.organisation,
-        customer=question.customer,
-        author=answerer,
-        function=answerer.function,
-        body=f'In answer to {question.asked_by.name}\'s question "{question.text}": {body.strip()}',
-    )
+    close the question; the asker is told. A question about no customer has
+    nothing to file a contribution on: it is closed and the asker told."""
+    contribution = None
+    if question.customer_id is not None:
+        contribution = Contribution.objects.create(
+            organisation=question.organisation,
+            customer=question.customer,
+            author=answerer,
+            function=answerer.function,
+            body=(
+                f"In answer to {question.asked_by.name}'s question "
+                f'"{question.text}": {body.strip()}'
+            ),
+        )
     question.answer = contribution
     question.status = Question.Status.ANSWERED
     question.answered_at = timezone.now()

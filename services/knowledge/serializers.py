@@ -37,7 +37,7 @@ class QuestionSerializer(serializers.ModelSerializer):
     customer = serializers.SerializerMethodField()
     asked_by = serializers.SerializerMethodField()
     assignee = serializers.SerializerMethodField()
-    answer = ContributionSerializer(read_only=True)
+    answer = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     days_open = serializers.SerializerMethodField()
 
@@ -63,7 +63,45 @@ class QuestionSerializer(serializers.ModelSerializer):
         return {"id": user.id, "name": user.name, "function": user.function}
 
     def get_customer(self, obj):
-        return {"id": obj.customer.id, "name": obj.customer.name} if obj.customer_id else None
+        if not obj.customer_id:
+            return None
+        # SOC2:AUTH-02 a question is read more widely than its customer (the
+        # asker's chart, the assignee's managers): its customer is named only
+        # to a reader who may open it. No reader in context (a shell, a
+        # script) reads it as before.
+        visible = self._visible_customer_ids()
+        if visible is not None and obj.customer_id not in visible:
+            return None
+        return {"id": obj.customer.id, "name": obj.customer.name}
+
+    def _visible_customer_ids(self):
+        """The reader's visible customer ids, read once per response (the
+        list's rows share this context); None for no reader or one who sees
+        every customer."""
+        request = self.context.get("request")
+        viewer = getattr(request, "user", None) or self.context.get("viewer")
+        if viewer is None or not viewer.is_authenticated:
+            return None
+        if "_visible_customer_ids" not in self.context:
+            from services.customers.scoping import sees_everything, visible_customers
+
+            self.context["_visible_customer_ids"] = (
+                None
+                if sees_everything(viewer)
+                else set(visible_customers(viewer).values_list("pk", flat=True))
+            )
+        return self.context["_visible_customer_ids"]
+
+    def get_answer(self, obj):
+        if obj.answer is None:
+            return None
+        data = ContributionSerializer(obj.answer).data
+        # SOC2:AUTH-02 the answer is filed on the question's customer: a reader
+        # the question does not name it to (get_customer) gets it unnamed
+        if obj.customer_id and self.get_customer(obj) is None:
+            data["customer_id"] = None
+            data["customer_name"] = None
+        return data
 
     def get_asked_by(self, obj):
         return self._person(obj.asked_by)

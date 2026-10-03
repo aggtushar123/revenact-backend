@@ -1,3 +1,4 @@
+import copy
 from functools import cached_property
 
 from django.conf import settings
@@ -223,8 +224,10 @@ def header_for(conversation, user, turns=None):
     context of the conversation's first Ask turn — surface, view, filters
     (the asker's free-text search among them) and their labels — so it is
     shown only to a reader of the first turn (as the title) who also reads
-    that Ask turn; anyone else gets `origin: None` (not a surface-only stub:
-    where a conversation started is itself that turn's)."""
+    that Ask turn and its reply; anyone else gets `origin: None` (not a
+    surface-only stub: where a conversation started is itself that turn's).
+    The title is the first turn's opening words, never its label, so a reader
+    of that turn keeps it even when its reply is withheld."""
     if sees_whole_conversation(conversation, user):
         return conversation.title, conversation.origin
     if turns is None:
@@ -239,7 +242,13 @@ def header_for(conversation, user, turns=None):
         .values_list("id", flat=True)
         .first()
     )
-    origin = conversation.origin if any(t.id == first_ask for t in turns) else None
+    # SOC2:AUTH-02 the origin is the first Ask turn's context: withheld with it
+    # when that turn's reply is not shown to this reader (visible_messages)
+    origin = (
+        conversation.origin
+        if any(t.id == first_ask and not getattr(t, "context_withheld", False) for t in turns)
+        else None
+    )
     return conversation.title, origin
 
 
@@ -250,7 +259,11 @@ def visible_messages(conversation, user):
     services.accounts.hierarchy) that are not addressed to someone else,
     the turns that mention them or anyone who reports to them, their own,
     and the Copilot's replies to those turns. A manager therefore sees what
-    was asked of their team and what the team replied."""
+    was asked of their team and what the team replied. A reply they may not
+    read (`_reply_readable_by`) is `REDACTED_REPLY`. A question whose reply
+    they are not shown — withheld, or dropped entirely behind a turn they may
+    not read — comes with `context` null: its words stay, its Ask context
+    (label, filters, search, focus) goes with the reply."""
     from services.accounts.hierarchy import scope_ids
 
     turns = list(
@@ -277,6 +290,9 @@ def visible_messages(conversation, user):
     reader = _Reader(user, turns)
     kept, previous_kept = [], False
     last_user_turn = None
+    # The user turns a reply shown to this reader answers — decided by the
+    # readability check below, so hiding the others' context costs no query.
+    answered_readably = set()
     for turn in turns:
         if turn.role == Message.Role.USER:
             last_user_turn = turn
@@ -296,7 +312,43 @@ def visible_messages(conversation, user):
             answered = turn.reply_to if turn.reply_to_id else last_user_turn
             readable = _reply_readable_by(turn, user, answered, reader=reader)
             kept.append(turn if readable else _redacted(turn))
-    return kept
+            if readable and answered is not None:
+                answered_readably.add(answered.id)
+    # SOC2:AUTH-02 fail closed: a question keeps its Ask context only when the
+    # reply answering it is shown to this reader. Withheld (redacted) or not
+    # shown at all (dropped behind a turn they may not read, as interleaved
+    # sends can leave it), the question keeps its words but not the label,
+    # filters (the asker's search among them) and focus, which name what the
+    # asker was looking at
+    return [
+        _without_context(turn)
+        if turn.role == Message.Role.USER and turn.context and turn.id not in answered_readably
+        else turn
+        for turn in kept
+    ]
+
+
+def _without_context(turn):
+    """The same user turn with its Ask context withheld — an unsaved copy,
+    never written back. `context_withheld` tells `header_for` the
+    conversation's origin (this turn's context, when it is the first Ask
+    turn) is withheld too."""
+    message = copy.copy(turn)
+    message.context = None
+    message.context_withheld = True
+    return _read_only(message)
+
+
+def _read_only(message):
+    """A per-reader view of a stored turn carries that turn's real id, so a
+    `save()` on it would overwrite the stored row — the asker's context with
+    null, a reply's words with REDACTED_REPLY. It is for serialising only."""
+
+    def refuse(*args, **kwargs):
+        raise TypeError("A per-reader view of a turn is never saved.")
+
+    message.save = refuse
+    return message
 
 
 def _contribution_rule():
@@ -935,7 +987,7 @@ def _redacted(turn):
         created_at=turn.created_at,
     )
     message.withheld = True
-    return message
+    return _read_only(message)
 
 
 class ConversationListView(generics.ListAPIView):
@@ -1218,6 +1270,8 @@ class SendMessageView(APIView):
                 customer=asked_about,
                 message=user_message,
                 assignees=asked,
+                # An Ask turn's customer is the asker's screen, not their words.
+                name_only_if_visible=ask is not None,
             )
         elif ask is None and asked_about is not None and not grounding.sources:
             # The question was about a company and retrieval found nothing

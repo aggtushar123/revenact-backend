@@ -334,12 +334,17 @@ ORDER_FIELD = {
 }
 
 
-def rows(querysets, *, today=None, limit_per_kind=MAX_PER_KIND):
+def rows(querysets, *, viewer, today=None, limit_per_kind=MAX_PER_KIND):
     """Merge the waiting querysets into one list, longest wait first.
 
     Merged in Python rather than by a SQL union: the four models share no
     columns, and each contributes at most `limit_per_kind` rows, so the merge
     reads a bounded number regardless of how much is outstanding.
+
+    Emails, tickets and calls are already read through their parent's
+    visibility (`visible_children_q`); a question is routed by assignee, and
+    `?scope=team` shows a report's, so its customer is named — `account` and
+    `context` — only when `viewer` may open it (`_unname_hidden_customers`).
     """
     today = today or timezone.localdate()
     collected = []
@@ -351,13 +356,35 @@ def rows(querysets, *, today=None, limit_per_kind=MAX_PER_KIND):
         if len(records) > limit_per_kind:
             truncated = True
             records = records[:limit_per_kind]
+        built = []
         for record in records:
             row = ROW_BUILDERS[kind](record, today)
             row["id"] = f"{kind}:{record.pk}"
-            collected.append(row)
+            built.append((record, row))
+        if kind == "question":
+            _unname_hidden_customers(viewer, built)
+        collected.extend(row for _, row in built)
 
     collected.sort(key=lambda row: (-row["waiting_days"], row["id"]))
     return collected, truncated
+
+
+def _unname_hidden_customers(viewer, built):
+    """Blank what names a question's customer on rows `viewer` may not open
+    it from: its `account` and its `context` (health, ARR, renewal, owner).
+    One query for the batch."""
+    from .scoping import sees_everything, visible_customers
+
+    ids = {record.customer_id for record, _ in built if record.customer_id}
+    if not ids or sees_everything(viewer):
+        return
+    # SOC2:AUTH-02 a question is routed by assignee, not customer: a manager
+    # reading a report's (scope=team) may not open the customer it is about
+    visible = set(visible_customers(viewer).filter(pk__in=ids).values_list("pk", flat=True))
+    for record, row in built:
+        if record.customer_id and record.customer_id not in visible:
+            row["account"] = None
+            row["context"] = None
 
 
 def counts(user, *, scope="mine"):

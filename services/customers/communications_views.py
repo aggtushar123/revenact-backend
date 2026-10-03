@@ -75,7 +75,7 @@ class CommunicationsListView(views.APIView):
             return Response(payload)
 
         querysets = communications.waiting_querysets(request.user, scope=scope, kinds=kinds)
-        rows, truncated = communications.rows(querysets)
+        rows, truncated = communications.rows(querysets, viewer=request.user)
 
         search = (request.query_params.get("q") or "").strip().lower()
         if search:
