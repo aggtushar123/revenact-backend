@@ -60,6 +60,7 @@ customer records.
 | `scenarios.Scenario`, `scenarios.ScenarioRun` | internal | triggered_by | automation graphs and run logs |
 | `fx_rates.FxRate` | internal | — | |
 | `attention.AttentionSnooze` | internal | — | a per-user snooze on a Dashboard Overview "Needs attention" item; `key` and `fingerprint` reference an item by field values only (numbers, categories, dates and record ids), no record text |
+| `segments.Segment`, `segments.SegmentChange` | confidential | pinned and kept-out ids; the owner's member ids (`last_members`); the entry and exit history (record ids, dates, field keys, never values) | a segment's name, description and rules (field keys, operators, thresholds, dates, choice values, record and person ids); members computed per reader over what they may open (AUTH-02); ids a reader cannot open read `null` and are never named; a shared viewer gets a count only; writes owner-only and audited (LOG-01) |
 
 ## Flows that leave the tenant boundary
 
@@ -78,6 +79,8 @@ customer records.
 | Organizations CSV export (`services/organizations`, `GET /organizations/portfolio/export.csv`) → the requester's device | the 34 organisation fields (commercial terms, owners, churn reasons) for the requester's own visible, filtered book | confidential | visibility-scoped exactly like the list (AUTH-02); audited `organizations.exported` (LOG-01); formula cells neutralised against CSV injection |
 | Accounts CSV export (`services/accounts_portfolio`, `GET /accounts/portfolio/export.csv`) → the requester's device | every account field (ARR, renewal, NPS/CSAT, pulses and the AI pulse reason, owner, contact details, the linked organisations the requester may open) for the requester's own visible, filtered accounts | confidential | visibility-scoped exactly like the list (AUTH-02); audited `accounts.exported` (LOG-01); formula cells neutralised against CSV injection |
 | Pipelines CSV export (`services/pipelines_portfolio`, `GET /pipelines/{opportunities,risks}/export.csv`) → the requester's device | every opportunity or risk field (title, MRR, stage, priority, department, date, stage clock, the parent organisation or account and its owner, the linked organisations the requester may open) for the requester's own readable, filtered book | confidential | twice-filtered exactly like the list (AUTH-02: the parent must be openable and the department readable); audited `pipelines.exported` (LOG-01); formula cells neutralised against CSV injection |
+| Segment CSV export (`GET /segments/<id>/members/export.csv`) → the requester's device | the kind's export columns (Organizations, Accounts, or a contact's name, email, phone, role, status, sentiment, language, last contacted, organisation and account) for the members the requester may open | confidential | twice filtered (AUTH-02); audited `segment.exported` (LOG-01); formula cells neutralised against CSV injection |
+| Segment alert (in-app `Notification`, kind `segment_changes`) | the segment's name and counts of entries and exits | internal | sent to the owner only; names no record |
 
 ## Retention
 

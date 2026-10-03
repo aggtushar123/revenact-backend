@@ -5,17 +5,10 @@ archives one, and exports what is left as CSV."""
 
 import csv
 import io
-import urllib.request
 
 from django.test import LiveServerTestCase
 
-from e2e.http import http_get, http_post
-
-
-def http_get_text(url, token):
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(request) as response:
-        return response.status, response.headers.get("Content-Type"), response.read().decode()
+from e2e.http import http_get, http_get_text, http_post
 
 
 class OrganizationsPortfolioFlowTests(LiveServerTestCase):

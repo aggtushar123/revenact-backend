@@ -290,7 +290,7 @@ contributions_30d.
 | `CustomObjectRecord` | One instance, `data` JSON keyed by field api_name, attached to exactly one parent |
 | `Scenario` | An automation graph: `apply_to`, `nodes` and `edges` JSON, `is_active` gating event runs. A condition reads an allowlist of customer facts, an AI attribute by name, or matches a plain-English phrase against recent interactions by embedding; actions include routing the customer to a person |
 | `ScenarioRun` | One execution with a per-node log |
-| `Notification` | copilot_invite, copilot_handoff, customer_assigned, account_assigned, question_asked, question_answered; message, relative link, read flag |
+| `Notification` | copilot_invite, copilot_handoff, customer_assigned, account_assigned, question_asked, question_answered, segment_changes; message, relative link, read flag |
 | `FxRate` | Current rate to the organisation's currency. No history; cleared when the organisation changes currency |
 
 ---
@@ -374,6 +374,15 @@ its own record rule, and `Account.renewal_date` for Needs attention.
 
 ---
 
+### `segments`
+
+| Model | Purpose |
+|---|---|
+| `Segment` | A saved group of one kind (`customer`, `account` or `contact`): `rules` JSON (`{match, conditions}`, one level of groups, at most 20 conditions), `pinned_ids` and `excluded_ids` (≤ 500 each), `sharing` (`private`, `workspace`, `people` with `shared_with`), `alert_on_changes`, `paused` (set while the owner is inactive), and the nightly baseline: `last_members` (sorted ids as the owner saw them; null before the first run or above 100,000), `member_count`, `last_evaluated_on`. Owned by one person (cascade); at most 50 per owner. Members are never stored for a reader: they are computed per request |
+| `SegmentChange` | One record entering or leaving one segment on one day (unique per segment, record and day): `record_id`, `change` (`entered`/`left`), `changed_on`, `reason` (field keys that moved it, or `pinned`, `deleted`, `access`, `churned`, `archived`; never values) |
+
+---
+
 ### `metrics` (brief delivery)
 
 | Model | Purpose |
@@ -406,6 +415,7 @@ call the matching helper.
 | Synced emails | Mailbox owner and their chain; rows with no mailbox owner are visible to all | `services/mail/visibility.py` |
 | A contact's history (`/contacts/<id>/history/`) | The contact must be visible; then each call, email and ticket by its own company (`visible_children_q`) and its own rule (mail, tickets above), inside the contact's own tenant | `services/customers/contact_history.py` |
 | Opportunities and risks | The parent organisation or account must be openable (`visible_children_q`), then own department plus undeparted; Leadership and `view_all_accounts` see every department. The Pipelines book applies both once (`pipelines_portfolio.book.scope`); `companies` names only openable organisations | `scoping.pipeline_visible_q` |
+| Segments | Read by the owner, the workspace (`workspace`) or chosen teammates (`people`); written by the owner only. Members are the rules over the reader's own visible records, pins added, keep-outs removed, visibility last; ids in rules a reader cannot open read null; a shared viewer gets a count of the rest | `services/segments/access.py`, `evaluate.py` |
 | Contributions and questions | Self, subtree, same function, ancestors, plus anything addressed to you | `services/knowledge/views.py` with `services/accounts/hierarchy.py` |
 | Conversations and sessions | Owner, or an accepted and active participant. The same function gates the WebSocket | `services/copilot/views.conversations_visible_to` |
 | Copilot replies | A reply that cites records outside the viewer's scope is withheld entirely, not trimmed | `copilot.views._reply_readable_by` |
