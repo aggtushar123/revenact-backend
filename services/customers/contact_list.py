@@ -55,6 +55,11 @@ def parse_contact_filters(query: Mapping[str, str]) -> ContactFilters:
     )
 
 
+def search_q(search):
+    """The list's `?search=`: name, email or role, case-insensitive."""
+    return Q(name__icontains=search) | Q(email__icontains=search) | Q(role__icontains=search)
+
+
 def filtered_contacts(user, filters: ContactFilters):
     """Every contact `user` may open, narrowed by `filters`, in name order.
 
@@ -82,11 +87,7 @@ def filtered_contacts(user, filters: ContactFilters):
         .distinct()
     )
     if filters.search:
-        queryset = queryset.filter(
-            Q(name__icontains=filters.search)
-            | Q(email__icontains=filters.search)
-            | Q(role__icontains=filters.search)
-        )
+        queryset = queryset.filter(search_q(filters.search))
     if filters.customer is not None:
         # SOC2:AUTH-02 an id the caller cannot open must not be confirmed to
         # exist by matching contacts on accounts also linked to it.

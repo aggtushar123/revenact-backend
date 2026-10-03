@@ -94,6 +94,7 @@ INSTALLED_APPS = [
     "services.accounts_portfolio",
     "services.account_story",
     "services.pipelines_portfolio",
+    "services.segments",
 ]
 
 # Custom user model — Organisation-scoped, email as USERNAME_FIELD. The app

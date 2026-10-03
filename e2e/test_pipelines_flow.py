@@ -6,24 +6,17 @@ dates the rest in bulk (the admin's id fails), and exports what they see."""
 
 import csv
 import io
-import urllib.request
 from datetime import timedelta
 
 from django.test import LiveServerTestCase
 from django.utils import timezone
 
-from e2e.http import http_get, http_patch, http_post
+from e2e.http import http_get, http_get_text, http_patch, http_post
 
 EVERY_STAGE = (
     "discovery,qualification,solution_validation,proposal_price_review,"
     "negotiation,closed_won,closed_lost"
 )
-
-
-def http_get_text(url, token):
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(request) as response:
-        return response.status, response.headers.get("Content-Type"), response.read().decode()
 
 
 class PipelinesFlowTests(LiveServerTestCase):

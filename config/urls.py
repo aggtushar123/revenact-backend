@@ -146,6 +146,7 @@ urlpatterns = [
     # under a Customer/Account the way Task/Note/etc. are: a Scenario
     # isn't owned by one company, it's a tenant-wide automation.
     path("api/v1/scenarios/", include("services.scenarios.urls")),
+    path("api/v1/segments/", include("services.segments.urls")),
     # Campaigns — its own app, same "tenant-wide, not owned by one
     # Customer/Account" reasoning as Scenarios above: a Campaign's
     # audience naturally spans many Customers/Accounts at once.

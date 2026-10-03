@@ -36,3 +36,9 @@ def http_patch(url, payload, token=None):
 
 def http_delete(url, token=None):
     return http_request("DELETE", url, token=token)
+
+
+def http_get_text(url, token):
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(request) as response:
+        return response.status, response.headers.get("Content-Type"), response.read().decode()

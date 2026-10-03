@@ -29,6 +29,7 @@ class Notification(models.Model):
         ACCOUNT_ASSIGNED = "account_assigned", "Account assigned"
         QUESTION_ASKED = "question_asked", "Question asked"
         QUESTION_ANSWERED = "question_answered", "Question answered"
+        SEGMENT_CHANGES = "segment_changes", "Segment changes"
 
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL, related_name="notifications", on_delete=models.CASCADE

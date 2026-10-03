@@ -84,17 +84,22 @@ def health_q(category):
     return Q(health_score__lt=upper)
 
 
-def filtered_queryset(user, params: PortfolioParams, *, today):
+def filtered_queryset(user, params: PortfolioParams, *, today, scope=None):
+    """`scope` is a saved segment's members (services.segments): it can only
+    narrow the visible book, and it has decided archive and churn already."""
     # SOC2:AUTH-02 record visibility comes first; filters only narrow it
     customers = visible_customers(user)
+    if scope is not None:
+        customers = customers.filter(pk__in=scope.values("pk"))
 
     if params.ids is None:
-        customers = customers.filter(is_archived=False)
-        asked_for_churned = (
-            params.include_churned or Customer.LifecycleStage.CHURN in params.lifecycles
-        )
-        if not asked_for_churned:
-            customers = customers.exclude(CHURNED)
+        if scope is None:
+            customers = customers.filter(is_archived=False)
+            asked_for_churned = (
+                params.include_churned or Customer.LifecycleStage.CHURN in params.lifecycles
+            )
+            if not asked_for_churned:
+                customers = customers.exclude(CHURNED)
     elif params.ids:
         customers = customers.filter(pk__in=params.ids)
     else:
@@ -262,7 +267,7 @@ def _entry(customer, *, today, organisation, rates, urgent, snapshots):
     )
 
 
-def load_portfolio(user, params: PortfolioParams, *, today):
+def load_portfolio(user, params: PortfolioParams, *, today, scope=None):
     """The whole filtered book with its signals, in a fixed number of queries:
     the customers (touch and ticket subqueries from `with_health_inputs`, the
     people and product joined), their snapshots, the FX table, and the urgent
@@ -270,7 +275,7 @@ def load_portfolio(user, params: PortfolioParams, *, today):
     organisation = user.organisation
     earliest = today - timedelta(days=31 * CustomerHealthView.DEFAULT_HISTORY_MONTHS)
     queryset = (
-        with_health_inputs(filtered_queryset(user, params, today=today))
+        with_health_inputs(filtered_queryset(user, params, today=today, scope=scope))
         .prefetch_related(None)
         .select_related("owner", "primary_product", "created_by", "modified_by")
         .annotate(

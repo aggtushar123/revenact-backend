@@ -4249,6 +4249,222 @@ when no brief has been written yet. Audited as `brief.sent`.
 
 ---
 
+## `segments` — Segments (`/segments`)
+
+Built for the tools section's first delivery (spec: react-ts-app
+`docs/superpowers/specs/2026-10-03-segments-design.md` §1–§2). A segment
+stores rules, never members. Every read is computed for the caller over the
+records they may open (`services/segments/evaluate.py`), so a segment only
+ever holds records its viewer may open. It is unrelated to
+`services/customers/segments.py`, the "Size band" revenue brackets.
+
+**Rules.** `{"match": "all" | "any", "conditions": [...]}`.
+- A condition is `{"field", "op", "value"?}`, or one group `{"group": {"match", "conditions": [...]}}`.
+- Groups do not nest.
+- At most 20 conditions, counting each one inside a group.
+- An empty list matches nothing: the segment is then its pins.
+
+Fields (`services/segments/registry.py`) take operators by type:
+
+| Type | Operators | Value |
+|---|---|---|
+| number, percent | `gt lt between is_empty is_not_empty` | a number; `between` is `[low, high]`, inclusive |
+| days (days since) | `gt lt between is_empty` | whole days. Never counts as more than any number; `is_empty` means never |
+| date | `within_next within_last gt lt between is_empty is_not_empty` | `within_*` take 1–3650 days; dates are `YYYY-MM-DD` |
+| choice | `is is_not in` | one of the field's values; `in` takes 1–100 |
+| text | `is is_not in is_empty is_not_empty` | up to 100 characters |
+| boolean | `is` | `true` or `false` |
+| owner | `is is_not in` | a person's id in the workspace, or `"unassigned"` |
+| record | `is is_not in` | an organisation, account or product id |
+
+The fields per kind:
+- `customer` (organisations): `lifecycle_stage`, `health_score`, `health_category`, `csat_score`, `nps_score`, `nps_band`, `ces_percentage`, `arr`, `renewal_date`, `owner`, `product`, `seat_use`, `open_tickets`, `last_touch`, `ai_pulse`, `csm_pulse`, `churned`, `archived`, `created`.
+- `account`: the same without `ces_percentage`, `product`, `seat_use`, `churned` and `archived`, plus `organisation` (a linked organisation).
+- `contact`: `role`, `sentiment`, `status`, `language`, `last_contacted`, `organisation` (direct or through the account), `account`, and `parent.<field>`.
+  - `parent.<field>` is any organisation or account field except `organisation`.
+  - It is read on the contact's own organisation or account.
+  - A field the account lacks never matches an account-level contact.
+- Any kind: `attr:<api_name>`, an AI attribute that applies to the kind. It is read as its newest value, with its value type's operators plus `is_empty`/`is_not_empty` (not answered yet).
+
+What each field means:
+- `arr`:
+  - for an organisation, the column the workspace's ARR mapping names (`global_attributes`), converted to the workspace currency with its FX rates; a currency with no rate never matches;
+  - for an account, its own `arr`.
+- `renewal_date within_next`: an overdue renewal counts as within.
+- `open_tickets`: unresolved tickets on the record itself that the caller may read under the department rule.
+- `last_touch`: the health rubric's newest contact.
+- `is_not`: also matches "no value".
+- Defaults: churned and archived organisations are left out unless a rule names `churned` or `archived`. Naming `churned` means a top-level `churned` condition, or a `lifecycle_stage` condition asking `is`/`in` for `churn` — the same move that lifts the Organizations list's own default; `is_not churn` does not count, and keeps the default. Pins are added after the rules and exclusions removed, then visibility is applied last.
+
+**Save as segment** (the Organizations/Accounts/Contacts lists' own action, built in the frontend PR, not this one) turns a list's current URL filters into a new segment's rules. Two things do not carry over literally:
+- the list's free-text `search` has no rule: it narrows rows in place, and a segment has no "search" condition. (`GET /segments/` has its own unrelated `search`, which matches a *segment's* name, not its members.)
+- the list's `include_churned=1` has no direct field of the same name: it maps to a `churned` condition (`{"field": "churned", "op": "is", ...}`, or a `lifecycle_stage` `is`/`in` `churn` condition) so the saved segment lifts the churned default the way the list's own toggle does.
+
+**Refusals (400)** read `{"rules": ["<text>"]}`. They cover:
+- an unknown field (`Unknown field "x" for organisations.`);
+- an operator the type does not take (`"is" cannot be used with Health score.`);
+- a bad value, a nested group, or more than 20 conditions.
+
+An id the writer cannot open reads `Not an organisation you can open.`, `Not an account you can open.`, `Not a product in your workspace.` or `Not a person in your workspace.`. Each reads the same for a missing id.
+
+**Rules as read.** Every response's `rules` replaces each id the caller cannot open with `null`. `labels` (`{"organisations", "accounts", "products", "people"}`, each `{"<id>": name}`) names only what the caller may open; people are named only from their own workspace. When rules are evaluated for a caller, ids are narrowed to what they may open, so `null` matches nothing.
+
+**Access.**
+- Readers:
+  - the owner;
+  - everyone in the workspace when `sharing` is `workspace`;
+  - the chosen teammates when `sharing` is `people`.
+- A segment the caller may not read is a 404 identical to a missing one.
+- Writes (PATCH, DELETE, pin and keep out) are owner only: another reader gets `403 {"detail": "Only the segment's owner can change it."}`.
+- Limits: 50 segments per owner, and 500 pinned and 500 kept out per segment.
+
+### `GET /api/v1/segments/`
+
+Auth: `IsAuthenticated`. Query: `scope=mine|shared|all` (default all), `search=` (name contains). Unpaginated, by name:
+
+```json
+[
+  {
+    "id": 7, "name": "Renewal risk", "kind": "customer",
+    "owner": {"id": 4, "name": "Carl CSM"}, "is_owner": true,
+    "sharing": "workspace", "paused": false, "member_count": 41,
+    "today": {"entered": 3, "left": 1},
+    "sparkline": [38, 38, 39, "… 30 sizes, oldest first …", 41],
+    "updated_at": "2026-10-03T09:12:00Z"
+  }
+]
+```
+
+`member_count`, `today` and `sparkline` are the owner's nightly figures: counts only, naming nobody. They are `null` on a row the caller does not own — a shared viewer's own members can differ from the owner's, so the owner's counts are not substituted (Ruling S8). `sparkline` is rebuilt from the count and the change history, and is `[]` before the first evaluation.
+
+### `POST /api/v1/segments/`
+
+Body: `{name, kind: "customer" | "account" | "contact", description?, rules?, sharing?: "private" | "workspace" | "people", shared_with?: [user ids], alert_on_changes?}`.
+- `shared_with` must be 1–50 active teammates in the caller's workspace (never the caller) when `sharing` is `people`, and it is cleared otherwise.
+- The caller becomes the owner.
+- The membership baseline is taken now, so no history is written for the save.
+
+`201` returns the segment, as `GET` below. `400 {"detail": "You can own at most 50 segments."}` at the limit. Audited as `segment.created`, plus `segment.shared` when it is not private.
+
+### `GET/PATCH/DELETE /api/v1/segments/<id>/`
+
+`GET` returns:
+
+```json
+{
+  "id": 7, "name": "Renewal risk", "description": "", "kind": "account",
+  "rules": {"match": "all", "conditions": [{"field": "organisation", "op": "in", "value": [12, null]}]},
+  "labels": {"organisations": {"12": "Pizza Hut"}, "accounts": {}, "products": {}, "people": {}},
+  "pinned_ids": [31], "excluded_ids": [],
+  "sharing": "people", "shared_with": [{"id": 5, "name": "Dana CSM"}],
+  "owner": {"id": 4, "name": "Carl CSM"}, "is_owner": true,
+  "alert_on_changes": true, "paused": false, "member_count": 41,
+  "last_evaluated_on": "2026-10-03", "created_at": "…", "updated_at": "…"
+}
+```
+
+- `pinned_ids` and `excluded_ids` list only records the caller may open.
+- `member_count` is the owner's nightly figure, so it reads `null` for a non-owner reader too — the same rule as the list rows (Ruling S8 extends to the detail view): a shared viewer reads their own members through `/members/`, never the owner's cached count.
+- `PATCH` takes the POST fields except `kind`, which cannot change (`400 {"kind": ["A segment's kind cannot change."]}`).
+  - Changing `rules` re-takes the baseline.
+  - Audited as `segment.updated` with the changed field names, and as `segment.shared` when `sharing` or `shared_with` changed.
+  - A concurrent edit and the nightly step take the same row lock, so a PATCH waits for an in-flight evaluation (and sees its result) rather than overwriting it; the write only ever changes the fields the request named.
+- `DELETE` → `204`, audited as `segment.deleted`. It takes the segment's row lock first, the one the nightly step holds, so a delete during an evaluation waits for it.
+
+### `POST /api/v1/segments/<id>/duplicate/`
+
+Any reader. It creates a private copy owned by the caller, named "<name> (copy)", with alerts off.
+- Its rules are as the caller reads them: ids they cannot open are `null`.
+- It keeps only the pins and keep-outs the caller may open.
+- `201` returns the copy. The limit applies. Audited as `segment.duplicated` (`source`).
+
+### `GET /api/v1/segments/<id>/members/`
+
+The members the caller may open, as the kind's own list reads them:
+- organisations: `/organizations/portfolio/`'s rows and its `sort`, `group`, `group_value`, `search`, `cursor` and `limit`;
+- accounts: `/accounts/portfolio/`'s;
+- contacts: `/contacts/`'s rows and `search`, by name, with `cursor` and `limit`.
+
+Only these six parameter names ever reach the kind's own list code (`sort`, `group`, `group_value`, `search`, `cursor`, `limit`); every other filter the lists take (owner, health, lifecycle, ids, …) is dropped, since the members tab does not filter. Unknown values are ignored. Body:
+
+```json
+{
+  "kind": "customer", "results": ["…the list's own rows…"], "next_cursor": "opaque",
+  "count": 41, "groups": [], "currency": "USD", "hidden_count": 12,
+  "summary": {
+    "members": 41, "arr": 512000.0, "unconverted_count": 0, "avg_health": 5.4,
+    "avg_csat": 71.2, "entered_7d": 6, "left_7d": 2, "currency": "USD"
+  }
+}
+```
+
+- `summary` covers every member the caller may open. Search narrows the rows, not the tiles.
+- `arr` follows the rule's ARR: organisations through the workspace mapping, unconvertible ones counted in `unconverted_count`.
+- A contacts segment's `summary` has `arr`, `avg_health` and `avg_csat` as `null`, and adds `contacts` (the Contacts list's own summary).
+- `entered_7d` and `left_7d` count only records the caller may open.
+- `hidden_count` is how many of the owner's members the caller cannot open: a count only, `0` for the owner.
+- Contacts are paged in the database, in `(name, pk)` order, by a keyset cursor over that order — not fetched in full and sliced in Python, so the query count stays flat as the book grows.
+
+Query counts are pinned and stay flat as members grow: 12 for an organisations segment, 10 for accounts and contacts.
+
+### `GET /api/v1/segments/<id>/members/export.csv`
+
+Every member the caller may open, in list order (`search` and `sort` honoured), with the kind's export columns:
+- organisations: the Organizations export;
+- accounts: the Accounts export;
+- contacts: Name, Email, Phone, Role, Status, Sentiment, Language, Last Contacted, Organisation, Account, built with the Organizations export's own `build_table` (so formula cells go through the same neutralising `cell`), minus the Currency column `build_table` adds — a contact has no money.
+
+Formula cells are neutralised. Audited as `segment.exported` with `count` and the parameter names only.
+
+### `PATCH /api/v1/segments/<id>/members/<record_id>/`
+
+Body `{"state": "pinned" | "excluded" | "none"}`. Owner only.
+- The record must be one the owner may open; a missing one and a hidden one read the same 404.
+- Pinning removes a keep-out and the other way round. The baseline is re-taken.
+- Returns `{pinned_ids, excluded_ids}`.
+- `400 {"detail": "A segment can pin at most 500 records, and keep out as many."}` at the limit.
+- Audited as `segment.member_pinned` (`record_id`, `pinned`) or `segment.member_excluded` (`record_id`, `excluded`); clearing records `false`.
+- Takes the segment's row lock, the same one the nightly step takes, so two pins at once (or a pin during an evaluation) queue up instead of racing past the 500 limit together.
+
+### `GET /api/v1/segments/<id>/changes/`
+
+`?days=` 1–90 (default 30). Entries and exits, newest day first:
+
+```json
+{
+  "kind": "customer",
+  "days": [{"date": "2026-10-03",
+            "entered": [{"id": 12, "name": "Pizza Hut", "reason": ["csat_score"]}],
+            "left": [],
+            "totals": {"entered": 1, "left": 0},
+            "more": {"entered": 0, "left": 0}}],
+  "hidden_count": 3
+}
+```
+
+- Only records the caller may open are named. The rest, deleted ones included, are counted in `hidden_count`.
+- A day names at most 100 records each way (`entered`, `left`), lowest id first. `totals` counts every record the caller may open that moved that day, and `more` how many of those the cap left unnamed (`totals` minus the names; `0` when the day is not capped).
+- Two queries whatever the size (visibility is a correlated `EXISTS`, the cap a window per day and direction; no id list is built). The query count is pinned at 6 and stays flat above the cap.
+- `reason` is field keys, never values:
+  - for an entry, the conditions that now hold;
+  - for an exit, those that no longer hold;
+  - or one of `pinned`, `deleted`, `access` (the owner can no longer open it), `churned` or `archived`.
+
+### `POST /api/v1/segments/preview/`
+
+Body `{kind, rules, pinned_ids?, excluded_ids?}`, checked exactly as a save is. It returns `{kind, count, results, summary}`:
+- `results` are the first ten members by name: `{id, name, owner, health: {score, category}}`, or `{id, name, role, parent: {kind, id, name}}` for contacts.
+- `summary` is the tiles, with `entered_7d`/`left_7d` `null`.
+
+Nothing is saved.
+
+**Nightly.** `run_health_maintenance` evaluates each segment once per date, as its owner (`services/segments/nightly.py`). It writes the entries and exits and updates `member_count`.
+- If `alert_on_changes` is set and something moved, the owner gets one in-app notification. Its kind is `segment_changes`, its message is `"<name>: 3 entered, 1 left"` and its link is `/segments/<id>?tab=changes`.
+- An inactive owner's segments are paused. They resume from a fresh baseline when the owner is active again.
+- Above 100,000 members the count is kept and no history is recorded.
+
+---
+
 ## `scenarios` — Automation builder (`/scenarios`, `CreateScenario.tsx`)
 
 Mirrors: `src/pages/scenarios/CreateScenario.tsx`, `types.ts`,

@@ -180,6 +180,23 @@ class Command(BaseCommand):
             self.style.SUCCESS(f"{verb} {dots} pulse dot(s); {dots_had} already had today's.")
         )
 
+        # Segments: who entered and who left, as each owner sees their book,
+        # after the scores and pulses the rules read are fresh. Once per date
+        # per segment, so a re-run is a no-op (services.segments.nightly).
+        if not options["dry_run"]:
+            from services.segments.nightly import evaluate_nightly
+
+            try:
+                night = evaluate_nightly(organisation)
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"evaluated {night.evaluated} segment(s): {night.changes} change(s), "
+                        f"{night.alerts} alert(s), {night.paused} paused, {night.failed} failed"
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                self.stdout.write(self.style.WARNING(f"segments skipped: {exc}"))
+
         # The metric layer's month-end, after the health scores it reads are
         # fresh. Same job because it is the same kind of work — free,
         # idempotent, one row per period — and one cron entry is easier to
