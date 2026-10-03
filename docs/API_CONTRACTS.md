@@ -4502,7 +4502,10 @@ replacing the whole set with it would silently drop people a colleague
 picked, and refusing the edit would say more than the count already
 does. So recipients the editor can't open are kept untouched and only
 the visible ones are replaced. Naming a contact you can't open is still
-a `400`.
+a `400`, and `recipient_ids` that isn't a list of integers is a `400`.
+"Visible" is decided at save time: a recipient who became visible to the
+editor between loading the page and saving it, and isn't named in the
+saved list, is dropped by that save.
 
 **Audit.** `campaign.created` / `campaign.updated` / `campaign.deleted` /
 `campaign.sent` are recorded with ids only (never a name, subject, body
